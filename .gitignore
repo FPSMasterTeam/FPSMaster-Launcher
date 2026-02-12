@@ -1,0 +1,15 @@
+*.log
+
+# Java
+java-core/.gradle/
+java-core/build/
+
+# Node
+tauri-app/node_modules/
+tauri-app/dist/
+
+# Rust
+tauri-app/src-tauri/target/
+
+# Runtime data
+.minecraft/

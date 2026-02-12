@@ -1,0 +1,90 @@
+:root {
+  color: #102236;
+  background: radial-gradient(circle at 15% 20%, #d7ecff 0, #e9f5ff 45%, #f6fbff 100%);
+  font-family: "Segoe UI", "Noto Sans", sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+}
+
+.screen {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+}
+
+.card {
+  width: min(900px, 100%);
+  background: rgba(255, 255, 255, 0.9);
+  border: 1px solid #c5dced;
+  border-radius: 16px;
+  padding: 22px;
+  box-shadow: 0 14px 30px rgba(39, 95, 140, 0.15);
+}
+
+h1 {
+  margin: 0 0 8px;
+}
+
+label {
+  display: block;
+  margin: 10px 0;
+  font-size: 14px;
+}
+
+input {
+  width: 100%;
+  margin-top: 6px;
+  padding: 10px 12px;
+  border: 1px solid #96b8d3;
+  border-radius: 10px;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 10px;
+}
+
+button {
+  border: 0;
+  border-radius: 10px;
+  padding: 10px 14px;
+  background: linear-gradient(135deg, #1f6fb0, #0e8f9a);
+  color: #fff;
+  cursor: pointer;
+}
+
+button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.output {
+  min-height: 140px;
+  background: #0b1d2f;
+  color: #d3f2ff;
+  border-radius: 10px;
+  padding: 12px;
+  overflow: auto;
+}
+
+.versions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.versions button {
+  background: #eff7ff;
+  color: #102236;
+  border: 1px solid #b7d7ee;
+}
