@@ -7,20 +7,33 @@ import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 
 import java.io.IOException;
+import java.io.InputStreamReader;
+import java.io.BufferedReader;
+import java.io.RandomAccessFile;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.concurrent.Callable;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.ThreadFactory;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Collectors;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
@@ -28,7 +41,8 @@ import java.util.zip.ZipInputStream;
 public final class MinecraftCoreService {
     private static final String VERSION_MANIFEST_URL = "https://piston-meta.mojang.com/mc/game/version_manifest_v2.json";
     private static final String FABRIC_LOADER_URL = "https://meta.fabricmc.net/v2/versions/loader";
-    private static final String HMCL_FORGE_METADATA_URL = "https://hmcl.glavo.site/metadata/forge/";
+    private static final String FORGE_MAVEN_METADATA_URL = "https://maven.minecraftforge.net/net/minecraftforge/forge/maven-metadata.xml";
+    private static final String FORGE_MAVEN_BASE = "https://maven.minecraftforge.net/net/minecraftforge/forge/";
     private static final String DEFAULT_LIBRARY_REPO = "https://libraries.minecraft.net/";
     private static final String DEFAULT_ASSET_REPO = "https://resources.download.minecraft.net/";
 
@@ -53,9 +67,56 @@ public final class MinecraftCoreService {
         return result;
     }
 
+    public JavaRuntimeRequirement resolveJavaRuntimeRequirement(String versionId) throws IOException, InterruptedException {
+        return resolveJavaRuntimeRequirement(null, versionId);
+    }
+
+    public JavaRuntimeRequirement resolveJavaRuntimeRequirement(Path gameDirectory, String versionId) throws IOException, InterruptedException {
+        if (gameDirectory != null) {
+            Path gameDir = gameDirectory.toAbsolutePath().normalize();
+            Path localVersionJson = gameDir.resolve("versions").resolve(versionId).resolve(versionId + ".json");
+            if (Files.isRegularFile(localVersionJson)) {
+                ResolvedVersionDescriptor descriptor = resolveVersionDescriptor(gameDir, versionId, 0);
+                JsonObject merged = descriptor.merged();
+
+                int majorVersion = 8;
+                String component = "jre-legacy";
+                if (merged.has("javaVersion")) {
+                    JsonObject javaVersion = merged.getAsJsonObject("javaVersion");
+                    if (javaVersion.has("majorVersion")) {
+                        majorVersion = javaVersion.get("majorVersion").getAsInt();
+                    }
+                    if (javaVersion.has("component")) {
+                        component = javaVersion.get("component").getAsString();
+                    }
+                }
+                return new JavaRuntimeRequirement(versionId, majorVersion, component);
+            }
+        }
+
+        JsonObject versionInfo = findVersionFromManifest(versionId);
+        JsonObject versionJson = getJson(versionInfo.get("url").getAsString());
+
+        int majorVersion = 8;
+        String component = "jre-legacy";
+        if (versionJson.has("javaVersion")) {
+            JsonObject javaVersion = versionJson.getAsJsonObject("javaVersion");
+            if (javaVersion.has("majorVersion")) {
+                majorVersion = javaVersion.get("majorVersion").getAsInt();
+            }
+            if (javaVersion.has("component")) {
+                component = javaVersion.get("component").getAsString();
+            }
+        }
+
+        return new JavaRuntimeRequirement(versionId, majorVersion, component);
+    }
+
     public InstallResult installVanilla(Path gameDirectory, String versionId) throws IOException, InterruptedException {
         Path normalizedGameDir = gameDirectory.toAbsolutePath().normalize();
         Files.createDirectories(normalizedGameDir);
+        IpcLogBridge.installPhaseStart("vanilla", "prepare", "Prepare install for version=" + versionId);
+        logProgress("vanilla", "Prepare install for version=" + versionId);
 
         JsonObject versionInfo = findVersionFromManifest(versionId);
         String versionJsonUrl = versionInfo.get("url").getAsString();
@@ -67,9 +128,27 @@ public final class MinecraftCoreService {
         Path versionJsonPath = versionDir.resolve(versionId + ".json");
         writeJson(versionJsonPath, versionJson);
 
-        downloadClient(versionJson, versionDir, versionId);
-        List<Path> downloadedLibraries = downloadLibraries(versionJson, normalizedGameDir, versionId);
-        int assetsCount = downloadAssets(versionJson, normalizedGameDir, versionId);
+        IpcLogBridge.installPhaseStart("vanilla", "client", "Download client jar");
+        logProgress("vanilla", "Download client jar");
+        downloadClient(versionJson, versionDir, versionId, "vanilla");
+
+        IpcLogBridge.installPhaseStart("vanilla", "libraries", "Download libraries");
+        logProgress("vanilla", "Download libraries");
+        List<Path> downloadedLibraries = downloadLibraries(versionJson, normalizedGameDir, versionId, "vanilla");
+
+        IpcLogBridge.installPhaseStart("vanilla", "assets", "Download assets");
+        logProgress("vanilla", "Download assets");
+        int assetsCount = downloadAssets(versionJson, normalizedGameDir, versionId, "vanilla");
+
+        logProgress("vanilla", "Install completed version=" + versionId
+                + " libraries=" + downloadedLibraries.size() + " assets=" + assetsCount);
+        IpcLogBridge.installPhaseComplete(
+                "vanilla",
+                "complete",
+                "Install completed version=" + versionId
+                        + " libraries=" + downloadedLibraries.size()
+                        + " assets=" + assetsCount
+        );
 
         return new InstallResult(versionId, versionJsonPath, downloadedLibraries.size(), assetsCount);
     }
@@ -77,20 +156,17 @@ public final class MinecraftCoreService {
     public LaunchPlan buildVanillaLaunchPlan(LaunchRequest request) throws IOException {
         Path gameDir = request.gameDirectory().toAbsolutePath().normalize();
         String versionId = request.versionId();
+        ResolvedVersionDescriptor descriptor = resolveVersionDescriptor(gameDir, versionId, 0);
+        JsonObject versionJson = descriptor.merged();
+
         Path versionDir = gameDir.resolve("versions").resolve(versionId);
-        Path versionJsonPath = versionDir.resolve(versionId + ".json");
-
-        if (!Files.isRegularFile(versionJsonPath)) {
-            throw new IOException("Version metadata not found: " + versionJsonPath);
-        }
-
-        JsonObject versionJson = JsonParser.parseString(Files.readString(versionJsonPath)).getAsJsonObject();
 
         Path nativesDir = versionDir.resolve("natives");
         Files.createDirectories(nativesDir);
 
         List<Path> classPathEntries = new ArrayList<>();
         for (ResolvedLibrary library : resolveLibraries(versionJson, gameDir, versionId)) {
+            ensureLibraryDownloaded(library);
             if (library.classpathEntry()) {
                 classPathEntries.add(library.path());
             }
@@ -99,7 +175,9 @@ public final class MinecraftCoreService {
             }
         }
 
-        Path clientJar = versionDir.resolve(versionId + ".jar");
+        String jarVersionId = descriptor.jarVersionId();
+        Path clientJar = gameDir.resolve("versions").resolve(jarVersionId).resolve(jarVersionId + ".jar");
+        ensureClientJarDownloaded(versionJson, clientJar);
         classPathEntries.add(clientJar);
 
         String classpath = classPathEntries.stream()
@@ -118,6 +196,7 @@ public final class MinecraftCoreService {
         if (versionJson.has("arguments") && versionJson.getAsJsonObject("arguments").has("jvm")) {
             jvmArgs.addAll(resolveArgumentArray(versionJson.getAsJsonObject("arguments").getAsJsonArray("jvm"), variables));
         }
+        jvmArgs = normalizeJvmArguments(jvmArgs);
 
         String mainClass = versionJson.get("mainClass").getAsString();
         List<String> gameArgs = new ArrayList<>();
@@ -142,6 +221,103 @@ public final class MinecraftCoreService {
         return new LaunchPlan(fullCommand, classpath, mainClass, nativesDir);
     }
 
+    public LaunchExecutionResult launchVanilla(LaunchRequest request, boolean waitForExit) throws IOException, InterruptedException {
+        LaunchPlan plan = buildVanillaLaunchPlan(request);
+        logProgress("launch", "Command line: " + String.join(" ", plan.command()));
+        ProcessBuilder builder = new ProcessBuilder(plan.command());
+        builder.directory(request.gameDirectory().toFile());
+        builder.redirectErrorStream(true);
+
+        Process process = builder.start();
+        long pid = process.pid();
+        logProgress("launch", "Process started version=" + request.versionId() + " pid=" + pid);
+
+        startProcessOutputForwarder(process);
+        Path latestLogPath = request.gameDirectory().resolve("logs").resolve("latest.log");
+
+        Integer exitCode = null;
+        if (waitForExit) {
+            exitCode = waitForProcessWithLatestLog(process, latestLogPath);
+            logProgress("launch", "Process finished pid=" + pid + " exitCode=" + exitCode);
+        } else {
+            Thread tailThread = new Thread(() -> {
+                try {
+                    int code = waitForProcessWithLatestLog(process, latestLogPath);
+                    logProgress("launch", "Process finished pid=" + pid + " exitCode=" + code);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+            }, "mc-latest-log-tailer");
+            tailThread.setDaemon(true);
+            tailThread.start();
+        }
+
+        return new LaunchExecutionResult(
+                request.versionId(),
+                pid,
+                waitForExit,
+                exitCode,
+                plan.mainClass(),
+                plan.command()
+        );
+    }
+
+    private void startProcessOutputForwarder(Process process) {
+        Thread thread = new Thread(() -> {
+            try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream(), StandardCharsets.UTF_8))) {
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    if (!line.isBlank()) {
+                        logProgress("game", line);
+                    }
+                }
+            } catch (IOException e) {
+                logProgress("game", "Failed reading game output: " + e.getMessage());
+            }
+        }, "mc-output-forwarder");
+        thread.setDaemon(true);
+        thread.start();
+    }
+
+    private int waitForProcessWithLatestLog(Process process, Path latestLogPath) throws InterruptedException {
+        long offset = 0;
+        while (process.isAlive()) {
+            offset = emitLatestLogIncrement(latestLogPath, offset);
+            Thread.sleep(300);
+        }
+        offset = emitLatestLogIncrement(latestLogPath, offset);
+        return process.exitValue();
+    }
+
+    private long emitLatestLogIncrement(Path latestLogPath, long offset) {
+        if (!Files.isRegularFile(latestLogPath)) {
+            return offset;
+        }
+
+        try {
+            long fileSize = Files.size(latestLogPath);
+            if (fileSize < offset) {
+                offset = 0;
+            }
+        } catch (IOException e) {
+            return offset;
+        }
+
+        try (RandomAccessFile file = new RandomAccessFile(latestLogPath.toFile(), "r")) {
+            file.seek(offset);
+            String line;
+            while ((line = file.readLine()) != null) {
+                if (!line.isBlank()) {
+                    String decoded = new String(line.getBytes(StandardCharsets.ISO_8859_1), StandardCharsets.UTF_8);
+                    logProgress("latest.log", decoded);
+                }
+            }
+            return file.getFilePointer();
+        } catch (IOException e) {
+            return offset;
+        }
+    }
+
     public List<String> listFabricLoaderVersions(String gameVersion) throws IOException, InterruptedException {
         JsonArray versions = getJsonArray(FABRIC_LOADER_URL + "/" + gameVersion);
         List<String> result = new ArrayList<>();
@@ -155,6 +331,7 @@ public final class MinecraftCoreService {
 
     public FabricInstallResult installFabric(Path gameDirectory, String gameVersion, String requestedLoaderVersion) throws IOException, InterruptedException {
         Path gameDir = gameDirectory.toAbsolutePath().normalize();
+        IpcLogBridge.installPhaseStart("fabric", "prepare", "Prepare fabric install gameVersion=" + gameVersion);
         Path baseVersionJson = gameDir.resolve("versions").resolve(gameVersion).resolve(gameVersion + ".json");
         if (!Files.exists(baseVersionJson)) {
             installVanilla(gameDir, gameVersion);
@@ -166,22 +343,18 @@ public final class MinecraftCoreService {
             loaderVersion = chooseLatestStableLoader(allLoaders);
         }
 
-        JsonArray profileRows = getJsonArray(FABRIC_LOADER_URL + "/" + gameVersion + "/" + loaderVersion);
-        if (profileRows.isEmpty()) {
-            throw new IOException("Fabric profile not found for game=" + gameVersion + " loader=" + loaderVersion);
-        }
-
-        JsonObject row = profileRows.get(0).getAsJsonObject();
+        JsonObject row = getFabricProfile(FABRIC_LOADER_URL + "/" + gameVersion + "/" + loaderVersion);
         JsonObject launcherMeta = row.getAsJsonObject("launcherMeta");
         JsonObject intermediary = row.getAsJsonObject("intermediary");
         JsonObject loader = row.getAsJsonObject("loader");
+        String created = row.has("created") ? row.get("created").getAsString() : Instant.now().toString();
 
         String profileId = "fabric-loader-" + loaderVersion + "-" + gameVersion;
         JsonObject versionJson = new JsonObject();
         versionJson.addProperty("id", profileId);
         versionJson.addProperty("inheritsFrom", gameVersion);
-        versionJson.addProperty("time", row.get("created").getAsString());
-        versionJson.addProperty("releaseTime", row.get("created").getAsString());
+        versionJson.addProperty("time", created);
+        versionJson.addProperty("releaseTime", created);
 
         if (launcherMeta.get("mainClass").isJsonObject()) {
             versionJson.addProperty("mainClass", launcherMeta.getAsJsonObject("mainClass").get("client").getAsString());
@@ -214,122 +387,105 @@ public final class MinecraftCoreService {
         Path profileJson = profileDir.resolve(profileId + ".json");
         writeJson(profileJson, versionJson);
 
-        List<Path> downloadedLibraries = downloadLibraries(versionJson, gameDir, profileId);
+        IpcLogBridge.installPhaseStart("fabric", "libraries", "Download fabric libraries");
+        List<Path> downloadedLibraries = downloadLibraries(versionJson, gameDir, profileId, "fabric");
+        IpcLogBridge.installPhaseComplete(
+                "fabric",
+                "complete",
+                "Fabric install completed profile=" + profileId + " libraries=" + downloadedLibraries.size()
+        );
         return new FabricInstallResult(profileId, loaderVersion, profileJson, downloadedLibraries.size());
     }
 
     public List<String> listForgeVersions(String gameVersion) throws IOException, InterruptedException {
-        JsonObject root = getJson(HMCL_FORGE_METADATA_URL);
-        JsonObject mcVersionMap = root.getAsJsonObject("mcversion");
-        if (!mcVersionMap.has(gameVersion)) {
-            return List.of();
-        }
-        JsonArray numberIds = mcVersionMap.getAsJsonArray(gameVersion);
-        JsonObject numberMap = root.getAsJsonObject("number");
-
         List<String> versions = new ArrayList<>();
-        for (JsonElement idElement : numberIds) {
-            String id = idElement.getAsString();
-            if (!numberMap.has(id)) {
-                continue;
+        String xml = getText(FORGE_MAVEN_METADATA_URL);
+        String prefix = gameVersion + "-";
+
+        int index = 0;
+        while (true) {
+            int begin = xml.indexOf("<version>", index);
+            if (begin < 0) {
+                break;
             }
-            JsonObject forge = numberMap.getAsJsonObject(id);
-            versions.add(forge.get("version").getAsString());
+            int end = xml.indexOf("</version>", begin);
+            if (end < 0) {
+                break;
+            }
+
+            String candidate = xml.substring(begin + "<version>".length(), end).trim();
+            if (candidate.startsWith(prefix)) {
+                versions.add(candidate);
+            }
+            index = end + "</version>".length();
         }
-        return versions.stream().distinct().collect(Collectors.toList());
+
+        return versions.stream()
+                .distinct()
+                .sorted((a, b) -> compareForgeVersions(b, a))
+                .collect(Collectors.toList());
+    }
+
+    private int compareForgeVersions(String a, String b) {
+        String[] aParts = a.split("[-.]");
+        String[] bParts = b.split("[-.]");
+        int max = Math.max(aParts.length, bParts.length);
+        for (int i = 0; i < max; i++) {
+            int ai = i < aParts.length ? parseIntSafe(aParts[i]) : 0;
+            int bi = i < bParts.length ? parseIntSafe(bParts[i]) : 0;
+            int cmp = Integer.compare(ai, bi);
+            if (cmp != 0) {
+                return cmp;
+            }
+        }
+        return a.compareTo(b);
+    }
+
+    private int parseIntSafe(String value) {
+        try {
+            return Integer.parseInt(value);
+        } catch (NumberFormatException ignored) {
+            return 0;
+        }
     }
 
     public ForgeInstallResult installForge(Path gameDirectory, String gameVersion, String requestedForgeVersion, Path javaExecutable) throws IOException, InterruptedException {
         Path gameDir = gameDirectory.toAbsolutePath().normalize();
+        IpcLogBridge.installPhaseStart("forge", "prepare", "Prepare forge install gameVersion=" + gameVersion);
         Path baseVersionJson = gameDir.resolve("versions").resolve(gameVersion).resolve(gameVersion + ".json");
         if (!Files.exists(baseVersionJson)) {
             installVanilla(gameDir, gameVersion);
         }
 
-        JsonObject root = getJson(HMCL_FORGE_METADATA_URL);
-        JsonObject mcVersionMap = root.getAsJsonObject("mcversion");
-        JsonObject numberMap = root.getAsJsonObject("number");
-        String artifactName = root.get("artifact").getAsString();
-        String webPath = root.get("webpath").getAsString();
-
-        if (!mcVersionMap.has(gameVersion)) {
-            throw new IOException("No forge metadata for game version " + gameVersion);
-        }
-
-        JsonArray numberIds = mcVersionMap.getAsJsonArray(gameVersion);
-        JsonObject selected = null;
-        for (JsonElement idElement : numberIds) {
-            JsonObject candidate = numberMap.getAsJsonObject(idElement.getAsString());
-            String candidateVersion = candidate.get("version").getAsString();
-            if (requestedForgeVersion == null || requestedForgeVersion.isBlank() || requestedForgeVersion.equals(candidateVersion)) {
-                selected = candidate;
+        String forgeVersion = requestedForgeVersion;
+        if (forgeVersion == null || forgeVersion.isBlank()) {
+            List<String> versions = listForgeVersions(gameVersion);
+            if (versions.isEmpty()) {
+                throw new IOException("No forge versions found for game version " + gameVersion);
             }
+            forgeVersion = versions.get(0);
         }
 
-        if (selected == null) {
-            throw new IOException("Unable to resolve forge version for game=" + gameVersion + " requested=" + requestedForgeVersion);
+        String installerFileName = "forge-" + forgeVersion + "-installer.jar";
+        String installerUrl = FORGE_MAVEN_BASE + forgeVersion + "/" + installerFileName;
+
+        IpcLogBridge.installPhaseStart("forge", "installer", "Run forge installer " + forgeVersion);
+        ModLoaderService.ForgeInstallResult installResult = new ModLoaderService()
+                .installForge(gameDir, forgeVersion, javaExecutable.toAbsolutePath().toString());
+
+        String profileId = installResult.profileId();
+        Path profileJsonPath = gameDir.resolve("versions").resolve(profileId).resolve(profileId + ".json");
+        if (!Files.isRegularFile(profileJsonPath)) {
+            throw new IOException("Forge profile json not found after install: " + profileJsonPath);
         }
 
-        String forgeVersion = selected.get("version").getAsString();
-        String branch = selected.has("branch") && !selected.get("branch").isJsonNull() ? selected.get("branch").getAsString() : null;
-        String classifier = gameVersion + "-" + forgeVersion + ((branch != null && !branch.isBlank()) ? "-" + branch : "");
-
-        String extension = "jar";
-        JsonArray filesArray = selected.getAsJsonArray("files");
-        for (JsonElement fileEntry : filesArray) {
-            JsonArray fileParts = fileEntry.getAsJsonArray();
-            if (fileParts.size() > 1 && "installer".equals(fileParts.get(1).getAsString())) {
-                extension = fileParts.get(0).getAsString();
-                break;
-            }
-        }
-
-        String installerFileName = artifactName + "-" + classifier + "-installer." + extension;
-        String installerUrl = webPath + classifier + "/" + installerFileName;
-
-        Path tempInstaller = Files.createTempFile("forge-installer-", "." + extension);
-        downloadFile(installerUrl, tempInstaller, null);
-
-        List<String> command = List.of(
-                javaExecutable.toAbsolutePath().toString(),
-                "-jar",
-                tempInstaller.toAbsolutePath().toString(),
-                "--installClient",
-                gameDir.toAbsolutePath().toString()
+        IpcLogBridge.installPhaseComplete(
+                "forge",
+                "complete",
+                "Forge install completed profile=" + profileId
         );
 
-        Process process = new ProcessBuilder(command)
-                .directory(gameDir.toFile())
-                .inheritIO()
-                .start();
-
-        int exitCode;
-        try {
-            exitCode = process.waitFor();
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            throw e;
-        } finally {
-            Files.deleteIfExists(tempInstaller);
-        }
-
-        if (exitCode != 0) {
-            throw new IOException("Forge installer exited with code " + exitCode);
-        }
-
-        Path versionsDir = gameDir.resolve("versions");
-        Path installedProfile = findLatestForgeProfile(versionsDir, gameVersion);
-        return new ForgeInstallResult(installedProfile.getFileName().toString(), forgeVersion, installedProfile.resolve(installedProfile.getFileName() + ".json"), installerUrl);
-    }
-
-    private Path findLatestForgeProfile(Path versionsDir, String gameVersion) throws IOException {
-        try (var stream = Files.list(versionsDir)) {
-            return stream
-                    .filter(Files::isDirectory)
-                    .filter(path -> path.getFileName().toString().contains("forge") && path.getFileName().toString().contains(gameVersion))
-                    .max(Comparator.comparingLong(path -> path.toFile().lastModified()))
-                    .orElseThrow(() -> new IOException("Forge profile not found after installation"));
-        }
+        return new ForgeInstallResult(profileId, forgeVersion, profileJsonPath, installerUrl);
     }
 
     private String chooseLatestStableLoader(JsonArray loaderRows) {
@@ -364,6 +520,122 @@ public final class MinecraftCoreService {
         libraries.add(library);
     }
 
+    private ResolvedVersionDescriptor resolveVersionDescriptor(Path gameDir, String versionId, int depth) throws IOException {
+        if (depth > 8) {
+            throw new IOException("Version inheritance depth exceeded limit for " + versionId);
+        }
+
+        Path versionJsonPath = gameDir.resolve("versions").resolve(versionId).resolve(versionId + ".json");
+        if (!Files.isRegularFile(versionJsonPath)) {
+            throw new IOException("Version metadata not found: " + versionJsonPath);
+        }
+
+        JsonObject raw = JsonParser.parseString(Files.readString(versionJsonPath)).getAsJsonObject();
+        if (!raw.has("inheritsFrom")) {
+            String jarVersion = raw.has("jar") ? raw.get("jar").getAsString() : versionId;
+            return new ResolvedVersionDescriptor(raw.deepCopy(), raw, jarVersion);
+        }
+
+        String parentId = raw.get("inheritsFrom").getAsString();
+        ResolvedVersionDescriptor parent = resolveVersionDescriptor(gameDir, parentId, depth + 1);
+        JsonObject merged = mergeVersionJson(parent.merged(), raw);
+        String jarVersion = raw.has("jar") ? raw.get("jar").getAsString() : parent.jarVersionId();
+        return new ResolvedVersionDescriptor(merged, raw, jarVersion);
+    }
+
+    private JsonObject mergeVersionJson(JsonObject parent, JsonObject child) {
+        JsonObject merged = parent.deepCopy();
+
+        for (Map.Entry<String, JsonElement> entry : child.entrySet()) {
+            String key = entry.getKey();
+            JsonElement value = entry.getValue();
+
+            if ("libraries".equals(key) && value.isJsonArray()) {
+                JsonArray mergedLibraries = new JsonArray();
+                if (parent.has("libraries") && parent.get("libraries").isJsonArray()) {
+                    for (JsonElement parentLibrary : parent.getAsJsonArray("libraries")) {
+                        mergedLibraries.add(parentLibrary.deepCopy());
+                    }
+                }
+                for (JsonElement childLibrary : value.getAsJsonArray()) {
+                    mergedLibraries.add(childLibrary.deepCopy());
+                }
+                merged.add("libraries", mergedLibraries);
+                continue;
+            }
+
+            if ("arguments".equals(key) && value.isJsonObject()) {
+                merged.add("arguments", mergeArguments(
+                        parent.has("arguments") && parent.get("arguments").isJsonObject()
+                                ? parent.getAsJsonObject("arguments")
+                                : null,
+                        value.getAsJsonObject()
+                ));
+                continue;
+            }
+
+            merged.add(key, value.deepCopy());
+        }
+
+        return merged;
+    }
+
+    private JsonObject mergeArguments(JsonObject parentArguments, JsonObject childArguments) {
+        JsonObject merged = parentArguments == null ? new JsonObject() : parentArguments.deepCopy();
+
+        for (Map.Entry<String, JsonElement> entry : childArguments.entrySet()) {
+            String key = entry.getKey();
+            JsonElement value = entry.getValue();
+            if (value.isJsonArray() && merged.has(key) && merged.get(key).isJsonArray()) {
+                JsonArray combined = new JsonArray();
+                for (JsonElement parentItem : merged.getAsJsonArray(key)) {
+                    combined.add(parentItem.deepCopy());
+                }
+                for (JsonElement childItem : value.getAsJsonArray()) {
+                    combined.add(childItem.deepCopy());
+                }
+                merged.add(key, combined);
+            } else {
+                merged.add(key, value.deepCopy());
+            }
+        }
+
+        return merged;
+    }
+
+    private void ensureLibraryDownloaded(ResolvedLibrary library) throws IOException {
+        if (Files.isRegularFile(library.path())) {
+            return;
+        }
+        if (library.downloadUrl() == null) {
+            throw new IOException("Missing download URL for library: " + library.path());
+        }
+        try {
+            downloadFile(library.downloadUrl(), library.path(), library.sha1());
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new IOException("Interrupted while downloading library " + library.path(), e);
+        }
+    }
+
+    private void ensureClientJarDownloaded(JsonObject versionJson, Path clientJar) throws IOException {
+        if (Files.isRegularFile(clientJar)) {
+            return;
+        }
+        if (!versionJson.has("downloads") || !versionJson.getAsJsonObject("downloads").has("client")) {
+            throw new IOException("Client download info missing and jar not found: " + clientJar);
+        }
+        JsonObject clientDownload = versionJson.getAsJsonObject("downloads").getAsJsonObject("client");
+        String url = clientDownload.get("url").getAsString();
+        String sha1 = clientDownload.has("sha1") ? clientDownload.get("sha1").getAsString() : null;
+        try {
+            downloadFile(url, clientJar, sha1);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new IOException("Interrupted while downloading client jar", e);
+        }
+    }
+
     private boolean containsClasspathArg(List<String> args) {
         for (String arg : args) {
             if ("-cp".equals(arg) || "-classpath".equals(arg) || arg.startsWith("-Djava.class.path=")) {
@@ -390,6 +662,15 @@ public final class MinecraftCoreService {
         variables.put("${user_type}", "msa");
         variables.put("${auth_xuid}", "0");
         variables.put("${clientid}", "fpsmaster-launcher");
+        variables.put("${user_properties}", "{}");
+        variables.put("${profile_properties}", "{}");
+        variables.put("${auth_session}", request.accessToken());
+        variables.put("${game_assets}", gameDir.resolve("assets").resolve("virtual").resolve("legacy").toString());
+        variables.put("${library_directory}", gameDir.resolve("libraries").toString());
+        variables.put("${resolution_width}", "854");
+        variables.put("${resolution_height}", "480");
+        variables.put("${classpath_separator}", OsUtils.classPathSeparator());
+        variables.put("${primary_jar}", gameDir.resolve("versions").resolve(request.versionId()).resolve(request.versionId() + ".jar").toString());
         return variables;
     }
 
@@ -397,7 +678,7 @@ public final class MinecraftCoreService {
         List<String> arguments = new ArrayList<>();
         for (JsonElement element : argumentArray) {
             if (element.isJsonPrimitive()) {
-                arguments.add(replaceVariables(element.getAsString(), variables));
+                appendResolvedArguments(List.of(element.getAsString()), variables, arguments);
                 continue;
             }
             JsonObject argumentObject = element.getAsJsonObject();
@@ -406,14 +687,44 @@ public final class MinecraftCoreService {
             }
             JsonElement valueElement = argumentObject.get("value");
             if (valueElement.isJsonArray()) {
+                List<String> values = new ArrayList<>();
                 for (JsonElement nested : valueElement.getAsJsonArray()) {
-                    arguments.add(replaceVariables(nested.getAsString(), variables));
+                    values.add(nested.getAsString());
                 }
+                appendResolvedArguments(values, variables, arguments);
             } else {
-                arguments.add(replaceVariables(valueElement.getAsString(), variables));
+                appendResolvedArguments(List.of(valueElement.getAsString()), variables, arguments);
             }
         }
         return arguments;
+    }
+
+    private void appendResolvedArguments(List<String> rawTokens, Map<String, String> variables, List<String> target) {
+        for (int i = 0; i < rawTokens.size(); i++) {
+            String currentRaw = rawTokens.get(i);
+            String current = replaceVariables(currentRaw, variables).trim();
+
+            if (current.startsWith("--") && i + 1 < rawTokens.size()) {
+                String nextRaw = rawTokens.get(i + 1);
+                if (!nextRaw.startsWith("--")) {
+                    String next = replaceVariables(nextRaw, variables).trim();
+                    if (!shouldOmitResolvedArg(next) && !shouldOmitResolvedArg(current)) {
+                        target.add(current);
+                        target.add(next);
+                    }
+                    i++;
+                    continue;
+                }
+            }
+
+            if (!shouldOmitResolvedArg(current)) {
+                target.add(current);
+            }
+        }
+    }
+
+    private boolean shouldOmitResolvedArg(String arg) {
+        return arg.isBlank() || arg.contains("${");
     }
 
     private String replaceVariables(String input, Map<String, String> variables) {
@@ -424,7 +735,38 @@ public final class MinecraftCoreService {
         return result;
     }
 
-    private int downloadAssets(JsonObject versionJson, Path gameDirectory, String versionId) throws IOException, InterruptedException {
+    private List<String> normalizeJvmArguments(List<String> args) {
+        List<String> normalized = new ArrayList<>();
+        for (int i = 0; i < args.size(); i++) {
+            String current = args.get(i);
+
+            if (current.startsWith("-Djava.library.path ")) {
+                String value = current.substring("-Djava.library.path ".length()).trim();
+                normalized.add("-Djava.library.path=" + value);
+                continue;
+            }
+
+            if ("-Djava.library.path".equals(current) && i + 1 < args.size()) {
+                normalized.add("-Djava.library.path=" + args.get(i + 1));
+                i++;
+                continue;
+            }
+
+            if (current.startsWith("-D") && !current.contains("=") && i + 1 < args.size()) {
+                String next = args.get(i + 1);
+                if (next.startsWith(".")) {
+                    normalized.add(current + next);
+                    i++;
+                    continue;
+                }
+            }
+
+            normalized.add(current);
+        }
+        return normalized;
+    }
+
+    private int downloadAssets(JsonObject versionJson, Path gameDirectory, String versionId, String phase) throws IOException, InterruptedException {
         JsonObject assetIndex = versionJson.getAsJsonObject("assetIndex");
         String assetIndexId = assetIndex.get("id").getAsString();
         String assetIndexUrl = assetIndex.get("url").getAsString();
@@ -436,16 +778,42 @@ public final class MinecraftCoreService {
         JsonObject indexObject = JsonParser.parseString(Files.readString(assetIndexPath)).getAsJsonObject();
         JsonObject objects = indexObject.getAsJsonObject("objects");
 
-        int downloaded = 0;
+        int total = objects.entrySet().size();
+        logProgress("assets", "Start download total=" + total + " version=" + versionId);
+        IpcLogBridge.installProgress(phase, "assets", 0, total, 0, total, "Start downloading assets");
+
+        AtomicInteger completed = new AtomicInteger(0);
+        AtomicInteger downloaded = new AtomicInteger(0);
+        List<Callable<Void>> jobs = new ArrayList<>(total);
         for (Map.Entry<String, JsonElement> entry : objects.entrySet()) {
             JsonObject object = entry.getValue().getAsJsonObject();
             String hash = object.get("hash").getAsString();
             String prefix = hash.substring(0, 2);
             String url = DEFAULT_ASSET_REPO + prefix + "/" + hash;
             Path objectPath = gameDirectory.resolve("assets").resolve("objects").resolve(prefix).resolve(hash);
-            downloadFile(url, objectPath, hash);
-            downloaded++;
+            jobs.add(() -> {
+                boolean fetched = downloadFile(url, objectPath, hash);
+                if (fetched) {
+                    downloaded.incrementAndGet();
+                }
+                int done = completed.incrementAndGet();
+                if (done == total || done % 200 == 0) {
+                    logProgress("assets", "Downloaded " + done + "/" + total);
+                    IpcLogBridge.installProgress(
+                            phase,
+                            "assets",
+                            done,
+                            total,
+                            downloaded.get(),
+                            done - downloaded.get(),
+                            "Downloaded assets " + done + "/" + total
+                    );
+                }
+                return null;
+            });
         }
+
+        runParallelJobs("asset download", jobs);
 
         Path legacyDir = gameDirectory.resolve("assets").resolve("virtual").resolve("legacy");
         Files.createDirectories(legacyDir);
@@ -460,20 +828,71 @@ public final class MinecraftCoreService {
                 Files.copy(source, target, StandardCopyOption.REPLACE_EXISTING);
             }
         }
-        return downloaded;
+        logProgress("assets", "Completed downloaded=" + downloaded.get() + " cached=" + (total - downloaded.get()));
+        IpcLogBridge.installProgress(
+                phase,
+                "assets",
+                total,
+                total,
+                downloaded.get(),
+                total - downloaded.get(),
+                "Assets completed downloaded=" + downloaded.get() + " cached=" + (total - downloaded.get())
+        );
+        return total;
     }
 
-    private List<Path> downloadLibraries(JsonObject versionJson, Path gameDirectory, String versionId) throws IOException, InterruptedException {
-        List<Path> downloaded = new ArrayList<>();
+    private List<Path> downloadLibraries(JsonObject versionJson, Path gameDirectory, String versionId, String phase) throws IOException, InterruptedException {
         List<ResolvedLibrary> libraries = resolveLibraries(versionJson, gameDirectory, versionId);
+        Map<Path, ResolvedLibrary> uniqueLibraries = new LinkedHashMap<>();
         for (ResolvedLibrary library : libraries) {
             if (library.downloadUrl() == null) {
                 continue;
             }
-            downloadFile(library.downloadUrl(), library.path(), library.sha1());
-            downloaded.add(library.path());
+            uniqueLibraries.putIfAbsent(library.path(), library);
         }
-        return downloaded;
+
+        int total = uniqueLibraries.size();
+        logProgress("libraries", "Start download total=" + total + " version=" + versionId);
+        IpcLogBridge.installProgress(phase, "libraries", 0, total, 0, total, "Start downloading libraries");
+
+        AtomicInteger completed = new AtomicInteger(0);
+        AtomicInteger downloaded = new AtomicInteger(0);
+        List<Callable<Path>> jobs = new ArrayList<>(total);
+        for (ResolvedLibrary library : uniqueLibraries.values()) {
+            jobs.add(() -> {
+                boolean fetched = downloadFile(library.downloadUrl(), library.path(), library.sha1());
+                if (fetched) {
+                    downloaded.incrementAndGet();
+                }
+                int done = completed.incrementAndGet();
+                if (done == total || done % 25 == 0) {
+                    logProgress("libraries", "Downloaded " + done + "/" + total);
+                    IpcLogBridge.installProgress(
+                            phase,
+                            "libraries",
+                            done,
+                            total,
+                            downloaded.get(),
+                            done - downloaded.get(),
+                            "Downloaded libraries " + done + "/" + total
+                    );
+                }
+                return library.path();
+            });
+        }
+
+        List<Path> results = runParallelJobs("library download", jobs);
+        logProgress("libraries", "Completed downloaded=" + downloaded.get() + " cached=" + (total - downloaded.get()));
+        IpcLogBridge.installProgress(
+                phase,
+                "libraries",
+                total,
+                total,
+                downloaded.get(),
+                total - downloaded.get(),
+                "Libraries completed downloaded=" + downloaded.get() + " cached=" + (total - downloaded.get())
+        );
+        return results;
     }
 
     private List<ResolvedLibrary> resolveLibraries(JsonObject versionJson, Path gameDirectory, String versionId) {
@@ -489,40 +908,71 @@ public final class MinecraftCoreService {
             String name = library.get("name").getAsString();
             String libraryRepo = library.has("url") ? library.get("url").getAsString() : DEFAULT_LIBRARY_REPO;
 
-            if (library.has("downloads") && library.getAsJsonObject("downloads").has("artifact")) {
-                JsonObject artifact = library.getAsJsonObject("downloads").getAsJsonObject("artifact");
+            JsonObject downloads = library.has("downloads") ? library.getAsJsonObject("downloads") : null;
+            JsonObject classifiers = downloads != null && downloads.has("classifiers")
+                    ? downloads.getAsJsonObject("classifiers")
+                    : null;
+            String nativeKey = resolveNativeClassifierKey(library, classifiers);
+
+            if (nativeKey != null && classifiers != null && classifiers.has(nativeKey)) {
+                JsonObject classifier = classifiers.getAsJsonObject(nativeKey);
+                String path = classifier.get("path").getAsString();
+                Path target = gameDirectory.resolve("libraries").resolve(path);
+                String url = classifier.has("url") ? classifier.get("url").getAsString() : normalizeBaseUrl(libraryRepo) + path;
+                String sha1 = classifier.has("sha1") ? classifier.get("sha1").getAsString() : null;
+                resolved.add(new ResolvedLibrary(target, url, sha1, false, true));
+            }
+
+            if (downloads != null && downloads.has("artifact")) {
+                JsonObject artifact = downloads.getAsJsonObject("artifact");
                 String path = artifact.get("path").getAsString();
                 Path target = gameDirectory.resolve("libraries").resolve(path);
                 String url = artifact.has("url") ? artifact.get("url").getAsString() : normalizeBaseUrl(libraryRepo) + path;
                 String sha1 = artifact.has("sha1") ? artifact.get("sha1").getAsString() : null;
                 resolved.add(new ResolvedLibrary(target, url, sha1, true, false));
-            } else {
+                continue;
+            }
+
+            if (nativeKey == null) {
                 MavenCoordinates coordinates = MavenCoordinates.parse(name);
                 String path = coordinates.toJarPath();
                 Path target = gameDirectory.resolve("libraries").resolve(path);
                 String url = normalizeBaseUrl(libraryRepo) + path;
                 resolved.add(new ResolvedLibrary(target, url, null, true, false));
             }
-
-            if (library.has("natives") && library.has("downloads") && library.getAsJsonObject("downloads").has("classifiers")) {
-                JsonObject classifiers = library.getAsJsonObject("downloads").getAsJsonObject("classifiers");
-                String osName = OsUtils.minecraftOsName();
-                String nativeKey = null;
-                if (library.getAsJsonObject("natives").has(osName)) {
-                    nativeKey = library.getAsJsonObject("natives").get(osName).getAsString();
-                    nativeKey = nativeKey.replace("${arch}", OsUtils.archToken());
-                }
-                if (nativeKey != null && classifiers.has(nativeKey)) {
-                    JsonObject classifier = classifiers.getAsJsonObject(nativeKey);
-                    String path = classifier.get("path").getAsString();
-                    Path target = gameDirectory.resolve("libraries").resolve(path);
-                    String url = classifier.has("url") ? classifier.get("url").getAsString() : normalizeBaseUrl(libraryRepo) + path;
-                    String sha1 = classifier.has("sha1") ? classifier.get("sha1").getAsString() : null;
-                    resolved.add(new ResolvedLibrary(target, url, sha1, false, true));
-                }
-            }
         }
         return resolved;
+    }
+
+    private String resolveNativeClassifierKey(JsonObject library, JsonObject classifiers) {
+        if (classifiers == null || classifiers.isEmpty()) {
+            return null;
+        }
+
+        String osName = OsUtils.minecraftOsName();
+        String arch = OsUtils.archToken();
+
+        if (library.has("natives")) {
+            JsonObject natives = library.getAsJsonObject("natives");
+            if (natives.has(osName)) {
+                return natives.get(osName).getAsString().replace("${arch}", arch);
+            }
+        }
+
+        List<String> candidates = List.of(
+                "natives-" + osName + "-" + arch,
+                "native-" + osName + "-" + arch,
+                "natives-" + osName,
+                "native-" + osName,
+                osName + "-" + arch,
+                osName
+        );
+        for (String candidate : candidates) {
+            if (classifiers.has(candidate)) {
+                return candidate;
+            }
+        }
+        return null;
     }
 
     private boolean rulesMatch(JsonArray rules) {
@@ -570,19 +1020,28 @@ public final class MinecraftCoreService {
         }
     }
 
-    private void downloadClient(JsonObject versionJson, Path versionDir, String versionId) throws IOException, InterruptedException {
+    private void downloadClient(JsonObject versionJson, Path versionDir, String versionId, String phase) throws IOException, InterruptedException {
         JsonObject clientDownload = versionJson.getAsJsonObject("downloads").getAsJsonObject("client");
         String url = clientDownload.get("url").getAsString();
         String sha1 = clientDownload.has("sha1") ? clientDownload.get("sha1").getAsString() : null;
         Path target = versionDir.resolve(versionId + ".jar");
-        downloadFile(url, target, sha1);
+        boolean downloaded = downloadFile(url, target, sha1);
+        IpcLogBridge.installProgress(
+                phase,
+                "client",
+                1,
+                1,
+                downloaded ? 1 : 0,
+                downloaded ? 0 : 1,
+                downloaded ? "Client jar downloaded" : "Client jar already cached"
+        );
     }
 
-    private void downloadFile(String url, Path target, String expectedSha1) throws IOException, InterruptedException {
+    private boolean downloadFile(String url, Path target, String expectedSha1) throws IOException, InterruptedException {
         if (Files.isRegularFile(target) && expectedSha1 != null) {
             String localSha1 = Sha1Utils.sha1(target);
             if (expectedSha1.equalsIgnoreCase(localSha1)) {
-                return;
+                return false;
             }
         }
 
@@ -606,6 +1065,58 @@ public final class MinecraftCoreService {
         }
 
         Files.move(tmp, target, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+        return true;
+    }
+
+    private <T> List<T> runParallelJobs(String label, List<Callable<T>> jobs) throws IOException, InterruptedException {
+        if (jobs.isEmpty()) {
+            return List.of();
+        }
+
+        ExecutorService pool = Executors.newFixedThreadPool(downloadThreadCount(), new DownloadThreadFactory());
+        try {
+            List<Future<T>> futures = pool.invokeAll(jobs);
+            List<T> results = new ArrayList<>(futures.size());
+            for (Future<T> future : futures) {
+                try {
+                    results.add(future.get());
+                } catch (ExecutionException e) {
+                    Throwable cause = e.getCause();
+                    if (cause instanceof IOException ioException) {
+                        throw ioException;
+                    }
+                    if (cause instanceof InterruptedException interruptedException) {
+                        Thread.currentThread().interrupt();
+                        throw interruptedException;
+                    }
+                    throw new IOException("Parallel " + label + " failed: " + cause.getMessage(), cause);
+                }
+            }
+            return results;
+        } finally {
+            pool.shutdownNow();
+        }
+    }
+
+    private int downloadThreadCount() {
+        int base = Runtime.getRuntime().availableProcessors() * 2;
+        return Math.max(4, Math.min(16, base));
+    }
+
+    private void logProgress(String stage, String message) {
+        System.err.println("[launcher-core][" + stage + "] " + message);
+        System.err.flush();
+    }
+
+    private static final class DownloadThreadFactory implements ThreadFactory {
+        private final AtomicInteger index = new AtomicInteger(1);
+
+        @Override
+        public Thread newThread(Runnable runnable) {
+            Thread thread = new Thread(runnable, "launcher-download-" + index.getAndIncrement());
+            thread.setDaemon(true);
+            return thread;
+        }
     }
 
     private JsonObject getJson(String url) throws IOException, InterruptedException {
@@ -622,6 +1133,25 @@ public final class MinecraftCoreService {
     }
 
     private JsonArray getJsonArray(String url) throws IOException, InterruptedException {
+        return JsonParser.parseString(getText(url)).getAsJsonArray();
+    }
+
+    private JsonObject getFabricProfile(String url) throws IOException, InterruptedException {
+        JsonElement payload = JsonParser.parseString(getText(url));
+        if (payload.isJsonArray()) {
+            JsonArray array = payload.getAsJsonArray();
+            if (array.isEmpty()) {
+                throw new IOException("Fabric profile not found: empty response from " + url);
+            }
+            return array.get(0).getAsJsonObject();
+        }
+        if (payload.isJsonObject()) {
+            return payload.getAsJsonObject();
+        }
+        throw new IOException("Invalid fabric profile payload from " + url + ": " + payload);
+    }
+
+    private String getText(String url) throws IOException, InterruptedException {
         HttpRequest request = HttpRequest.newBuilder()
                 .GET()
                 .uri(URI.create(url))
@@ -631,7 +1161,7 @@ public final class MinecraftCoreService {
         if (response.statusCode() >= 400) {
             throw new IOException("Request failed url=" + url + " status=" + response.statusCode());
         }
-        return JsonParser.parseString(response.body()).getAsJsonArray();
+        return response.body();
     }
 
     private JsonObject findVersionFromManifest(String versionId) throws IOException, InterruptedException {
@@ -675,10 +1205,26 @@ public final class MinecraftCoreService {
     public record LaunchPlan(List<String> command, String classpath, String mainClass, Path nativesDirectory) {
     }
 
+    public record LaunchExecutionResult(
+            String versionId,
+            long pid,
+            boolean waitForExit,
+            Integer exitCode,
+            String mainClass,
+            List<String> command
+    ) {
+    }
+
+    public record JavaRuntimeRequirement(String versionId, int majorVersion, String component) {
+    }
+
     public record FabricInstallResult(String profileId, String loaderVersion, Path profileJsonPath, int librariesDownloaded) {
     }
 
     public record ForgeInstallResult(String profileId, String forgeVersion, Path profileJsonPath, String installerUrl) {
+    }
+
+    private record ResolvedVersionDescriptor(JsonObject merged, JsonObject raw, String jarVersionId) {
     }
 
     private record ResolvedLibrary(Path path, String downloadUrl, String sha1, boolean classpathEntry, boolean nativeEntry) {

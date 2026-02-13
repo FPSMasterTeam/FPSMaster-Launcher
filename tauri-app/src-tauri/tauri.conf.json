@@ -15,7 +15,8 @@
         "title": "FPSMaster Launcher",
         "width": 1120,
         "height": 760,
-        "resizable": true
+        "resizable": true,
+        "decorations": false
       }
     ],
     "security": {

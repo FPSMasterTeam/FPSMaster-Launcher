@@ -18,10 +18,13 @@ import java.nio.file.StandardCopyOption;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipFile;
 
 public final class ModLoaderService {
     private static final String FABRIC_META = "https://meta.fabricmc.net";
     private static final String FORGE_MAVEN = "https://maven.minecraftforge.net";
+    private static final String MINECRAFT_LIBRARIES = "https://libraries.minecraft.net";
 
     private final HttpClient httpClient;
 
@@ -122,14 +125,25 @@ public final class ModLoaderService {
     public ForgeInstallResult installForge(Path gameDirectory, String forgeVersion, String javaPath) throws IOException, InterruptedException {
         Path gameDir = gameDirectory.toAbsolutePath().normalize();
         Files.createDirectories(gameDir);
+        ensureLauncherProfiles(gameDir);
+        IpcLogBridge.installPhaseStart("forge", "prepare", "Preparing forge installer environment");
 
         String installerName = "forge-" + forgeVersion + "-installer.jar";
         String artifactBase = FORGE_MAVEN + "/net/minecraftforge/forge/" + forgeVersion + "/";
         String installerUrl = artifactBase + installerName;
 
         Path installerPath = gameDir.resolve("installers").resolve(installerName);
+        IpcLogBridge.installProgress("forge", "download-installer", 0, 1, 0, 1, "Downloading forge installer");
         downloadFile(installerUrl, installerPath, null);
+        IpcLogBridge.installProgress("forge", "download-installer", 1, 1, 1, 0, "Forge installer ready");
 
+        ForgeInstallerProfile profile = inspectInstaller(installerPath);
+        if (!profile.newStyle()) {
+            IpcLogBridge.installPhaseStart("forge", "legacy-profile", "Detected legacy forge installer profile");
+            return installForgeOldProfile(gameDir, forgeVersion, installerPath, profile.installProfile());
+        }
+
+        IpcLogBridge.installPhaseStart("forge", "run-installer", "Running forge installer (first attempt)");
         ProcessBuilder firstAttempt = new ProcessBuilder(
                 javaPath,
                 "-jar",
@@ -138,11 +152,15 @@ public final class ModLoaderService {
                 "--installDir",
                 gameDir.toString()
         );
+        firstAttempt.directory(gameDir.toFile());
         ProcessResult firstResult = runProcess(firstAttempt);
         if (firstResult.exitCode() == 0) {
-            return new ForgeInstallResult(forgeVersion, installerPath, firstResult.exitCode(), firstResult.output());
+            String profileId = findLatestForgeProfileId(gameDir, forgeVersion);
+            IpcLogBridge.installPhaseComplete("forge", "run-installer", "Forge installer succeeded on first attempt");
+            return new ForgeInstallResult(forgeVersion, profileId, installerPath, firstResult.exitCode(), firstResult.output());
         }
 
+        IpcLogBridge.installPhaseStart("forge", "fallback-installer", "Retry forge installer with fallback args");
         ProcessBuilder fallbackAttempt = new ProcessBuilder(
                 javaPath,
                 "-jar",
@@ -152,10 +170,109 @@ public final class ModLoaderService {
         fallbackAttempt.directory(gameDir.toFile());
         ProcessResult fallbackResult = runProcess(fallbackAttempt);
         if (fallbackResult.exitCode() != 0) {
+            IpcLogBridge.installError("forge", "run-installer", "Forge installer failed after fallback attempt");
             throw new IOException("Forge installer failed. first=" + firstResult.output() + " fallback=" + fallbackResult.output());
         }
 
-        return new ForgeInstallResult(forgeVersion, installerPath, fallbackResult.exitCode(), fallbackResult.output());
+        String profileId = findLatestForgeProfileId(gameDir, forgeVersion);
+        IpcLogBridge.installPhaseComplete("forge", "fallback-installer", "Forge installer succeeded with fallback args");
+        return new ForgeInstallResult(forgeVersion, profileId, installerPath, fallbackResult.exitCode(), fallbackResult.output());
+    }
+
+    private void ensureLauncherProfiles(Path gameDir) throws IOException {
+        Path launcherProfiles = gameDir.resolve("launcher_profiles.json");
+        if (Files.exists(launcherProfiles)) {
+            return;
+        }
+
+        String json = """
+                {
+                  "profiles": {
+                    "FPSMaster": {
+                      "name": "FPSMaster",
+                      "type": "custom",
+                      "lastVersionId": "latest-release"
+                    }
+                  },
+                  "selectedProfile": "FPSMaster",
+                  "clientToken": "00000000000000000000000000000000",
+                  "authenticationDatabase": {},
+                  "settings": {},
+                  "version": 3
+                }
+                """;
+        Files.writeString(launcherProfiles, json);
+    }
+
+    private ForgeInstallResult installForgeOldProfile(Path gameDir, String forgeVersion, Path installerPath, JsonObject installProfile) throws IOException {
+        JsonObject install = installProfile.getAsJsonObject("install");
+        JsonObject versionInfo = installProfile.getAsJsonObject("versionInfo");
+        if (install == null || versionInfo == null) {
+            throw new IOException("Old forge installer is missing install or versionInfo block");
+        }
+
+        String filePath = install.get("filePath").getAsString();
+        String pathDescriptor = install.get("path").getAsString();
+
+        MavenArtifact artifact = MavenArtifact.parse(pathDescriptor);
+        Path targetLibrary = gameDir.resolve("libraries").resolve(artifact.jarPath());
+        Files.createDirectories(targetLibrary.getParent());
+
+        try (ZipFile zip = new ZipFile(installerPath.toFile())) {
+            ZipEntry universalEntry = zip.getEntry(filePath);
+            if (universalEntry == null) {
+                throw new IOException("Old forge installer universal jar not found: " + filePath);
+            }
+            Files.copy(zip.getInputStream(universalEntry), targetLibrary, StandardCopyOption.REPLACE_EXISTING);
+        }
+
+        String versionId = versionInfo.get("id").getAsString();
+        Path versionDir = gameDir.resolve("versions").resolve(versionId);
+        Files.createDirectories(versionDir);
+        Path versionJsonPath = versionDir.resolve(versionId + ".json");
+        Files.writeString(versionJsonPath, versionInfo.toString());
+        IpcLogBridge.installPhaseComplete("forge", "legacy-profile", "Forge legacy profile installed");
+
+        return new ForgeInstallResult(
+                forgeVersion,
+                versionId,
+                installerPath,
+                0,
+                "Installed with legacy forge installer profile"
+        );
+    }
+
+    private String findLatestForgeProfileId(Path gameDir, String forgeVersion) throws IOException {
+        Path versionsDir = gameDir.resolve("versions");
+        if (!Files.isDirectory(versionsDir)) {
+            throw new IOException("Forge installation finished but versions directory is missing");
+        }
+
+        String[] versionParts = forgeVersion.split("-", 2);
+        String gameVersion = versionParts.length > 0 ? versionParts[0] : forgeVersion;
+
+        try (var stream = Files.list(versionsDir)) {
+            return stream
+                    .filter(Files::isDirectory)
+                    .map(path -> path.getFileName().toString())
+                    .filter(name -> name.contains("forge") && name.contains(gameVersion))
+                    .max(String::compareTo)
+                    .orElseThrow(() -> new IOException("Forge profile not found after installer run"));
+        }
+    }
+
+
+    private ForgeInstallerProfile inspectInstaller(Path installerPath) throws IOException {
+        try (ZipFile zip = new ZipFile(installerPath.toFile())) {
+            ZipEntry profileEntry = zip.getEntry("install_profile.json");
+            if (profileEntry == null) {
+                throw new IOException("forge installer missing install_profile.json");
+            }
+            String profileText = new String(zip.getInputStream(profileEntry).readAllBytes());
+            JsonObject installProfile = JsonParser.parseString(profileText).getAsJsonObject();
+            boolean newStyle = installProfile.has("spec");
+            return new ForgeInstallerProfile(newStyle, installProfile);
+        }
     }
 
     private ProcessResult runProcess(ProcessBuilder builder) throws IOException, InterruptedException {
@@ -224,23 +341,60 @@ public final class ModLoaderService {
     public record FabricInstallResult(String profileId, Path profilePath, int librariesDownloaded) {
     }
 
-    public record ForgeInstallResult(String forgeVersion, Path installerPath, int exitCode, String installerOutput) {
+    public record ForgeInstallResult(String forgeVersion, String profileId, Path installerPath, int exitCode, String installerOutput) {
     }
 
     private record ProcessResult(int exitCode, String output) {
     }
 
-    private record MavenArtifact(String group, String artifact, String version) {
+    private record ForgeInstallerProfile(boolean newStyle, JsonObject installProfile) {
+    }
+
+    private static final class MavenArtifact {
+        private final String group;
+        private final String artifact;
+        private final String version;
+        private final String fileName;
+
+        private MavenArtifact(String group, String artifact, String version, String fileName) {
+            this.group = group;
+            this.artifact = artifact;
+            this.version = version;
+            this.fileName = fileName;
+        }
+
         static MavenArtifact parse(String descriptor) {
-            String[] parts = descriptor.split(":");
+            String normalized = descriptor;
+            String extension = "jar";
+            int at = normalized.indexOf('@');
+            if (at >= 0) {
+                extension = normalized.substring(at + 1);
+                normalized = normalized.substring(0, at);
+            }
+
+            String classifier = null;
+            String[] parts = normalized.split(":");
             if (parts.length < 3) {
                 throw new IllegalArgumentException("Invalid maven descriptor: " + descriptor);
             }
-            return new MavenArtifact(parts[0], parts[1], parts[2]);
+
+            if (parts.length >= 4) {
+                classifier = parts[3];
+            }
+
+            String group = parts[0];
+            String artifact = parts[1];
+            String version = parts[2];
+            String file = classifier == null
+                    ? artifact + "-" + version + "." + extension
+                    : artifact + "-" + version + "-" + classifier + "." + extension;
+
+            return new MavenArtifact(group, artifact, version, file);
         }
 
         String jarPath() {
-            return group.replace('.', '/') + "/" + artifact + "/" + version + "/" + artifact + "-" + version + ".jar";
+            return group.replace('.', '/') + "/" + artifact + "/" + version + "/" + fileName;
         }
+
     }
 }

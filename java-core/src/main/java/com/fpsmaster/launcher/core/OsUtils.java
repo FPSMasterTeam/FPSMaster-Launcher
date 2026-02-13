@@ -39,7 +39,7 @@ final class OsUtils {
     }
 
     static String javaExecutableName() {
-        return current() == OsType.WINDOWS ? "javaw.exe" : "java";
+        return current() == OsType.WINDOWS ? "java.exe" : "java";
     }
 
     static String archToken() {
