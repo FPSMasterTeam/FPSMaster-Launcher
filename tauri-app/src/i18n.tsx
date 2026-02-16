@@ -1,0 +1,522 @@
+import { createContext, type ReactNode, useContext, useMemo } from "react";
+import type { Locale } from "./types";
+
+const translations = {
+  "en-US": {
+    "app.name": "FPSMaster",
+    "window.minimize": "Minimize",
+    "window.maximize": "Maximize",
+    "window.restore": "Restore",
+    "window.close": "Close",
+    "app.status.ready": "Ready",
+    "app.status.loadingVersions": "Loading versions...",
+    "app.status.loadedVersions": "Loaded {count} versions",
+    "app.status.failed": "Failed: {error}",
+    "app.status.missingAutoInstall":
+      "Missing {versionId}, auto installing {baseVersion} ({loader})...",
+    "app.status.autoInstallCompleted": "Auto install completed: {name}",
+    "app.status.launching": "Launching {name}...",
+    "app.status.launchFailed": "Launch failed: {error}",
+    "app.status.launchMissingResult": "Launch failed: missing launch result",
+    "app.status.gameStarted": "Game started pid={pid}",
+    "app.status.gameStartedMonitorFailed": "Game started pid={pid}, monitor window failed: {error}",
+    "app.status.singleInstanceRunning": "A game is already running (pid={pid}). End it before launching another.",
+    "app.status.loadedLoaderVersions": "Loaded {count} {loader} versions",
+    "app.status.noLoaderVersions": "No {loader} versions available for {version}",
+    "app.status.selectLoaderVersionFirst": "Select {loader} version first",
+    "app.status.installing": "Installing {version}...",
+    "app.status.installFailed": "Install failed: {error}",
+    "app.status.installed": "Installed {name}",
+    "app.status.presetCannotDelete": "Preset instances cannot be deleted now",
+
+    "nav.dashboard": "Dashboard",
+    "nav.myGames": "My Games",
+    "nav.settings": "Settings",
+    "nav.player": "Player",
+    "nav.pro": "Pro",
+    "nav.collapse": "Collapse sidebar",
+    "nav.expand": "Expand sidebar",
+
+    "loader.vanilla": "Vanilla",
+    "loader.forge": "Forge",
+    "loader.fabric": "Fabric",
+
+    "home.welcomeBack": "Welcome Back",
+    "home.dashboardReady": "Your gaming dashboard is ready.",
+    "home.status": "Status",
+    "home.latestNews": "Latest News",
+    "home.viewAll": "View All",
+    "home.topServers": "Top Servers",
+    "home.moreServers": "More Servers",
+    "home.proTitle": "FPSMaster Pro",
+    "home.proDesc": "Support development and unlock exclusive cosmetics.",
+    "home.viewPlans": "View Plans",
+    "home.selectedInstance": "Selected Instance",
+    "home.noInstance": "No instance",
+    "home.vanillaReady": "Vanilla Ready",
+    "home.moddedProfile": "Modded Profile",
+    "home.launch": "LAUNCH",
+    "home.launching": "LAUNCHING",
+    "launch.progress.preparing": "Preparing launch...",
+    "launch.error.title": "Launch Failed",
+    "launch.error.subtitle": "The game could not be started. Details:",
+    "launch.error.confirm": "Got it",
+    "home.instancePickerTitle": "Choose Instance",
+    "home.instancePickerSubtitle": "Select an instance card to launch quickly.",
+    "home.instancePickerClose": "Close",
+
+    "home.news.tag": "Update",
+    "home.news.source": "FPSMaster News",
+    "home.news.0.title": "New Launcher Release",
+    "home.news.0.summary":
+      "The FPSMaster launcher built on a modern tech stack is now released, delivering a fast and convenient launch experience.",
+    "home.news.1.title": "Official Presets",
+    "home.news.1.summary": "Default launch list uses 1.8.9 Forge and 1.20.1 Fabric presets.",
+    "home.news.2.title": "Install Progress",
+    "home.news.2.summary": "Install now shows phased progress with file counts and errors.",
+
+    "instances.title": "Instance Manager",
+    "instances.subtitle": "Manage all launch profiles and loaders.",
+    "instances.createInstall": "Create / Install",
+    "instances.searchPlaceholder": "Search instances...",
+    "instances.preset": "Preset",
+    "instances.base": "base",
+    "instances.play": "Play",
+    "instances.settings": "Settings",
+    "instances.select": "Select",
+    "instances.delete": "Delete",
+    "instances.lock": "Lock",
+    "instanceFiles.title": "Instance Settings",
+    "instanceFiles.subtitle": "Manage saves, mods and resource packs for {name}.",
+    "instanceFiles.back": "Back to Instances",
+    "instanceFiles.saves": "Saves",
+    "instanceFiles.mods": "Mods",
+    "instanceFiles.resourcepacks": "Resource Packs",
+    "instanceFiles.openFolder": "Open Folder",
+    "instanceFiles.refresh": "Refresh",
+    "instanceFiles.loading": "Loading...",
+    "instanceFiles.empty": "No files yet.",
+    "instanceFiles.loadFailed": "Load failed: {error}",
+    "instanceFiles.openFailed": "Open folder failed: {error}",
+    "instanceFiles.noInstance": "No instance selected.",
+
+    "install.title": "Install New Version",
+    "install.subtitle": "Choose game version and optional loader.",
+    "install.syncing": "Syncing...",
+    "install.versionCount": "{count} versions",
+    "install.selectVersion": "Select Version",
+    "install.releases": "Releases",
+    "install.snapshots": "Snapshots",
+    "install.modloader": "Modloader",
+    "install.loadingLoaderVersions": "Loading {loader} versions...",
+    "install.selectLoaderVersion": "Select {loader} version",
+    "install.noLoaderVersionsSelected":
+      "No {loader} versions available for selected game version.",
+    "install.versionLabel": "Version:",
+    "install.loaderLabel": "Loader:",
+    "install.notSelected": "(not selected)",
+    "install.button.installSelected": "Install Selected Version",
+    "install.button.installing": "Installing...",
+    "install.button.syncing": "Syncing version list...",
+    "install.button.loadingLoader": "Loading {loader} versions...",
+    "install.installed": "Installed",
+
+    "settings.title": "Settings",
+    "settings.subtitle": "Configure your launcher preferences",
+    "settings.javaMemory": "Java & Memory",
+    "settings.runtimeConfig": "Runtime configuration",
+    "settings.gameDirectory": "Game Directory",
+    "settings.playerName": "Player Name",
+    "settings.heapAllocation": "Heap Allocation",
+    "settings.simulation": "Simulation",
+    "settings.general": "General",
+    "settings.behaviorAppearance": "Behavior & Appearance",
+    "settings.keepOpen": "Keep Open",
+    "settings.keepOpenDesc": "Don't close when game starts",
+    "settings.hardwareAcceleration": "Hardware Acceleration",
+    "settings.hardwareAccelerationDesc": "Smoother animations",
+    "settings.gameOutput": "Game Output",
+    "settings.gameOutputDesc": "Show developer console",
+    "settings.storage": "Storage",
+    "settings.dataAssets": "Data & Assets",
+    "settings.open": "Open",
+    "settings.resetDefaults": "Reset to Defaults",
+    "settings.savedAuto": "Saved Automatically",
+    "settings.language": "Language",
+    "settings.themeMode": "Theme",
+    "settings.themeAccent": "Accent",
+    "settings.theme.dark": "Dark",
+    "settings.theme.light": "Light",
+    "settings.accent.emerald": "Emerald",
+    "settings.accent.cyan": "Cyan",
+    "settings.accent.violet": "Violet",
+    "settings.accent.sunset": "Sunset",
+    "settings.background": "Background Image",
+    "settings.backgroundDesc": "Set a custom launcher wallpaper.",
+    "settings.backgroundMode": "Background Source",
+    "settings.backgroundMode.local": "Local Upload",
+    "settings.backgroundMode.web": "Web Random",
+    "settings.backgroundUpload": "Upload Image",
+    "settings.backgroundRefreshWeb": "Refresh Random",
+    "settings.backgroundClear": "Clear",
+    "settings.backgroundNoImage": "No background image selected",
+    "settings.backgroundOpacity": "Background Opacity",
+    "settings.backgroundBlur": "Background Blur",
+    "settings.backgroundHint": "Recommended PNG/JPG under 4MB for best performance.",
+    "settings.backgroundWebHint": "Uses random image API. Click refresh to get a new wallpaper.",
+    "settings.backgroundTypeError": "Please choose a valid image file.",
+    "settings.backgroundSizeError": "Image is too large. Use a file smaller than 4MB.",
+    "settings.backgroundReadError": "Failed to read image file.",
+
+    "language.en-US": "English",
+    "language.zh-CN": "Simplified Chinese",
+
+    "dialog.installing": "Installing {version}",
+    "dialog.session": "Session {id}",
+    "dialog.hint":
+      "Installation is split into staged phases and tracked through java-core IPC log stream.",
+    "dialog.installationFailed": "Installation failed",
+    "dialog.confirm": "Confirm",
+    "dialog.stage": "stage: {stage}",
+    "dialog.waiting": "waiting...",
+    "dialog.progress":
+      "progress: {current}/{total} downloaded={downloaded} cached={cached}",
+    "dialog.status.pending": "pending",
+    "dialog.status.running": "running",
+    "dialog.status.done": "done",
+    "dialog.status.error": "error",
+    "dialog.stage.prepare": "prepare",
+    "dialog.stage.complete": "complete",
+    "dialog.stage.failed": "failed",
+    "dialog.stage.default": "-",
+
+    "monitor.subtitle": "Game Monitor",
+    "monitor.brandTag": "RUNTIME MONITOR",
+    "monitor.clearLogs": "Clear Logs",
+    "monitor.endGame": "End Game",
+    "monitor.backLauncher": "Back to Launcher",
+    "monitor.pid": "PID",
+    "monitor.status": "Status",
+    "monitor.memory": "Memory",
+    "monitor.uptime": "Uptime",
+    "monitor.running": "Running",
+    "monitor.exited": "Exited",
+    "monitor.consoleOutput": "Game Console Output",
+    "monitor.connecting": "Connecting runtime stream...",
+    "monitor.invalidPid": "Invalid pid",
+    "monitor.processRunning": "Game process is running",
+    "monitor.processExited": "Game process exited",
+    "monitor.runtimePollingFailed": "Runtime polling failed: {error}",
+    "monitor.confirmTitle": "Confirm Action",
+    "monitor.confirmMessage": "Are you sure you want to end the running game process?",
+    "monitor.confirmStop": "End Game",
+    "monitor.confirmBack": "End & Return",
+    "monitor.cancel": "Cancel",
+    "monitor.stopping": "Stopping game process...",
+    "monitor.stopSent": "Game process terminated",
+    "monitor.stopFailed": "Failed to stop game: {error}",
+
+    "install.phase.vanilla": "Vanilla Install",
+    "install.phase.forge": "Forge Install",
+    "install.phase.fabric": "Fabric Install",
+    "install.phase.preparing": "Preparing {version}",
+    "install.phase.vanillaCompleted": "Vanilla install completed",
+    "install.phase.loaderCompleted": "Loader install completed",
+    "install.phase.installingFabric": "Installing fabric {version}",
+    "install.phase.installingForge": "Installing forge {version}"
+  },
+  "zh-CN": {
+    "app.name": "FPSMaster",
+    "window.minimize": "最小化",
+    "window.maximize": "最大化",
+    "window.restore": "还原",
+    "window.close": "关闭",
+    "app.status.ready": "就绪",
+    "app.status.loadingVersions": "正在加载版本...",
+    "app.status.loadedVersions": "已加载 {count} 个版本",
+    "app.status.failed": "失败：{error}",
+    "app.status.missingAutoInstall":
+      "缺少 {versionId}，正在自动安装 {baseVersion}（{loader}）...",
+    "app.status.autoInstallCompleted": "自动安装完成：{name}",
+    "app.status.launching": "正在启动 {name}...",
+    "app.status.launchFailed": "启动失败：{error}",
+    "app.status.launchMissingResult": "启动失败：缺少启动结果",
+    "app.status.gameStarted": "游戏已启动 pid={pid}",
+    "app.status.gameStartedMonitorFailed": "游戏已启动 pid={pid}，但监控窗口失败：{error}",
+    "app.status.singleInstanceRunning": "已有游戏实例在运行（pid={pid}），请先结束后再启动新实例。",
+    "app.status.loadedLoaderVersions": "已加载 {count} 个 {loader} 版本",
+    "app.status.noLoaderVersions": "{version} 没有可用的 {loader} 版本",
+    "app.status.selectLoaderVersionFirst": "请先选择 {loader} 版本",
+    "app.status.installing": "正在安装 {version}...",
+    "app.status.installFailed": "安装失败：{error}",
+    "app.status.installed": "安装完成：{name}",
+    "app.status.presetCannotDelete": "预设实例暂不允许删除",
+
+    "nav.dashboard": "主页",
+    "nav.myGames": "实例",
+    "nav.settings": "设置",
+    "nav.player": "玩家",
+    "nav.pro": "专业版",
+    "nav.collapse": "收起侧边栏",
+    "nav.expand": "展开侧边栏",
+
+    "loader.vanilla": "原版",
+    "loader.forge": "Forge",
+    "loader.fabric": "Fabric",
+
+    "home.welcomeBack": "欢迎回来",
+    "home.dashboardReady": "你的游戏面板已准备就绪。",
+    "home.status": "状态",
+    "home.latestNews": "最新资讯",
+    "home.viewAll": "查看全部",
+    "home.topServers": "热门服务器",
+    "home.moreServers": "更多服务器",
+    "home.proTitle": "FPSMaster 专业版",
+    "home.proDesc": "支持开发并解锁专属外观。",
+    "home.viewPlans": "查看方案",
+    "home.selectedInstance": "当前实例",
+    "home.noInstance": "暂无实例",
+    "home.vanillaReady": "原版可启动",
+    "home.moddedProfile": "模组配置",
+    "home.launch": "启动",
+    "home.launching": "启动中",
+    "launch.progress.preparing": "正在准备启动...",
+    "launch.error.title": "启动失败",
+    "launch.error.subtitle": "游戏启动失败，具体信息如下：",
+    "launch.error.confirm": "我知道了",
+    "home.instancePickerTitle": "选择实例",
+    "home.instancePickerSubtitle": "点击卡片即可选择并快速启动。",
+    "home.instancePickerClose": "关闭",
+
+    "home.news.tag": "更新",
+    "home.news.source": "FPSMaster 资讯",
+    "home.news.0.title": "全新启动器发布",
+    "home.news.0.summary": "基于现代技术栈开发的FPSMaster启动器已发布，提供便捷快速的启动体验。",
+    "home.news.1.title": "官方预设",
+    "home.news.1.summary": "默认启动列表包含 1.8.9 Forge 与 1.20.1 Fabric 预设。",
+    "home.news.2.title": "安装进度可视化",
+    "home.news.2.summary": "安装过程现在支持阶段进度、文件数量与错误展示。",
+
+    "instances.title": "实例管理",
+    "instances.subtitle": "管理所有启动配置与加载器。",
+    "instances.createInstall": "创建 / 安装",
+    "instances.searchPlaceholder": "搜索实例...",
+    "instances.preset": "预设",
+    "instances.base": "基础版本",
+    "instances.play": "启动",
+    "instances.settings": "设置",
+    "instances.select": "选择",
+    "instances.delete": "删除",
+    "instances.lock": "锁定",
+    "instanceFiles.title": "版本设置",
+    "instanceFiles.subtitle": "管理 {name} 的存档、模组和资源包。",
+    "instanceFiles.back": "返回实例列表",
+    "instanceFiles.saves": "存档",
+    "instanceFiles.mods": "模组",
+    "instanceFiles.resourcepacks": "资源包",
+    "instanceFiles.openFolder": "打开文件夹",
+    "instanceFiles.refresh": "刷新",
+    "instanceFiles.loading": "加载中...",
+    "instanceFiles.empty": "暂无内容。",
+    "instanceFiles.loadFailed": "加载失败：{error}",
+    "instanceFiles.openFailed": "打开文件夹失败：{error}",
+    "instanceFiles.noInstance": "未选择实例。",
+
+    "install.title": "安装新版本",
+    "install.subtitle": "选择游戏版本和可选加载器。",
+    "install.syncing": "同步中...",
+    "install.versionCount": "{count} 个版本",
+    "install.selectVersion": "选择版本",
+    "install.releases": "正式版",
+    "install.snapshots": "快照版",
+    "install.modloader": "模组加载器",
+    "install.loadingLoaderVersions": "正在加载 {loader} 版本...",
+    "install.selectLoaderVersion": "选择 {loader} 版本",
+    "install.noLoaderVersionsSelected": "当前游戏版本没有可用的 {loader} 版本。",
+    "install.versionLabel": "版本：",
+    "install.loaderLabel": "加载器：",
+    "install.notSelected": "（未选择）",
+    "install.button.installSelected": "安装所选版本",
+    "install.button.installing": "安装中...",
+    "install.button.syncing": "同步版本列表中...",
+    "install.button.loadingLoader": "正在加载 {loader} 版本...",
+    "install.installed": "已安装",
+
+    "settings.title": "设置",
+    "settings.subtitle": "配置启动器偏好",
+    "settings.javaMemory": "Java 与内存",
+    "settings.runtimeConfig": "运行时配置",
+    "settings.gameDirectory": "游戏目录",
+    "settings.playerName": "玩家名称",
+    "settings.heapAllocation": "堆内存分配",
+    "settings.simulation": "模拟",
+    "settings.general": "通用",
+    "settings.behaviorAppearance": "行为与界面",
+    "settings.keepOpen": "保持启动器打开",
+    "settings.keepOpenDesc": "游戏启动后不隐藏窗口",
+    "settings.hardwareAcceleration": "硬件加速",
+    "settings.hardwareAccelerationDesc": "获得更流畅动画",
+    "settings.gameOutput": "游戏输出",
+    "settings.gameOutputDesc": "显示开发者控制台",
+    "settings.storage": "存储",
+    "settings.dataAssets": "数据与资源",
+    "settings.open": "打开",
+    "settings.resetDefaults": "恢复默认",
+    "settings.savedAuto": "已自动保存",
+    "settings.language": "语言",
+    "settings.themeMode": "主题",
+    "settings.themeAccent": "主题色",
+    "settings.theme.dark": "深色",
+    "settings.theme.light": "亮色",
+    "settings.accent.emerald": "翡翠绿",
+    "settings.accent.cyan": "青蓝",
+    "settings.accent.violet": "紫罗兰",
+    "settings.accent.sunset": "日落橙",
+    "settings.background": "背景图片",
+    "settings.backgroundDesc": "为启动器设置自定义壁纸。",
+    "settings.backgroundMode": "背景来源",
+    "settings.backgroundMode.local": "本地上传",
+    "settings.backgroundMode.web": "网络随机图",
+    "settings.backgroundUpload": "上传图片",
+    "settings.backgroundRefreshWeb": "刷新随机图",
+    "settings.backgroundClear": "清除",
+    "settings.backgroundNoImage": "未选择背景图片",
+    "settings.backgroundOpacity": "背景透明度",
+    "settings.backgroundBlur": "背景模糊度",
+    "settings.backgroundHint": "建议使用 4MB 以内的 PNG/JPG 以保证性能。",
+    "settings.backgroundWebHint": "使用随机图片 API，点击刷新可获取新壁纸。",
+    "settings.backgroundTypeError": "请选择有效的图片文件。",
+    "settings.backgroundSizeError": "图片过大，请使用小于 4MB 的文件。",
+    "settings.backgroundReadError": "读取图片失败。",
+
+    "language.en-US": "英文",
+    "language.zh-CN": "简体中文",
+
+    "dialog.installing": "正在安装 {version}",
+    "dialog.session": "会话 {id}",
+    "dialog.hint": "安装已拆分为多个阶段，并通过 java-core IPC 日志流进行跟踪。",
+    "dialog.installationFailed": "安装失败",
+    "dialog.confirm": "确认",
+    "dialog.stage": "阶段：{stage}",
+    "dialog.waiting": "等待中...",
+    "dialog.progress": "进度：{current}/{total} 下载={downloaded} 缓存={cached}",
+    "dialog.status.pending": "待处理",
+    "dialog.status.running": "进行中",
+    "dialog.status.done": "完成",
+    "dialog.status.error": "错误",
+    "dialog.stage.prepare": "准备",
+    "dialog.stage.complete": "完成",
+    "dialog.stage.failed": "失败",
+    "dialog.stage.default": "-",
+
+    "monitor.subtitle": "游戏监控",
+    "monitor.brandTag": "运行监控",
+    "monitor.clearLogs": "清空日志",
+    "monitor.endGame": "结束游戏",
+    "monitor.backLauncher": "返回启动器",
+    "monitor.pid": "进程 PID",
+    "monitor.status": "状态",
+    "monitor.memory": "内存",
+    "monitor.uptime": "运行时长",
+    "monitor.running": "运行中",
+    "monitor.exited": "已退出",
+    "monitor.consoleOutput": "游戏控制台输出",
+    "monitor.connecting": "正在连接运行日志流...",
+    "monitor.invalidPid": "无效 pid",
+    "monitor.processRunning": "游戏进程运行中",
+    "monitor.processExited": "游戏进程已退出",
+    "monitor.runtimePollingFailed": "运行状态轮询失败：{error}",
+    "monitor.confirmTitle": "确认操作",
+    "monitor.confirmMessage": "你确定要结束当前运行中的游戏进程吗？",
+    "monitor.confirmStop": "结束游戏",
+    "monitor.confirmBack": "结束并返回",
+    "monitor.cancel": "取消",
+    "monitor.stopping": "正在结束游戏进程...",
+    "monitor.stopSent": "游戏进程已结束",
+    "monitor.stopFailed": "结束游戏失败：{error}",
+
+    "install.phase.vanilla": "原版安装",
+    "install.phase.forge": "Forge 安装",
+    "install.phase.fabric": "Fabric 安装",
+    "install.phase.preparing": "准备安装 {version}",
+    "install.phase.vanillaCompleted": "原版安装完成",
+    "install.phase.loaderCompleted": "加载器安装完成",
+    "install.phase.installingFabric": "正在安装 Fabric {version}",
+    "install.phase.installingForge": "正在安装 Forge {version}"
+  }
+} as const;
+
+export type TranslationKey = keyof (typeof translations)["en-US"];
+type TranslationValues = Record<string, string | number>;
+
+export const LOCALE_OPTIONS: readonly Locale[] = ["en-US", "zh-CN"];
+
+export function resolveLocale(input: string | null | undefined): Locale {
+  if (input === "zh-CN" || input === "en-US") {
+    return input;
+  }
+  return detectLocaleFromEnvironment();
+}
+
+export function detectLocaleFromEnvironment(): Locale {
+  if (typeof navigator !== "undefined") {
+    const lang = navigator.language.toLowerCase();
+    if (lang.startsWith("zh")) {
+      return "zh-CN";
+    }
+  }
+  return "en-US";
+}
+
+function interpolate(template: string, values?: TranslationValues): string {
+  if (!values) return template;
+  return template.replace(/\{(\w+)\}/g, (_, key: string) =>
+    key in values ? String(values[key]) : `{${key}}`
+  );
+}
+
+export function createTranslator(locale: Locale) {
+  return (key: TranslationKey, values?: TranslationValues): string => {
+    const table = translations[locale] ?? translations["en-US"];
+    const fallback = translations["en-US"][key];
+    return interpolate(table[key] ?? fallback, values);
+  };
+}
+
+type I18nContextValue = {
+  locale: Locale;
+  setLocale: (locale: Locale) => void;
+  t: (key: TranslationKey, values?: TranslationValues) => string;
+};
+
+const I18nContext = createContext<I18nContextValue>({
+  locale: "en-US",
+  setLocale: () => {
+  },
+  t: createTranslator("en-US")
+});
+
+export function I18nProvider({
+  locale,
+  onLocaleChange,
+  children
+}: {
+  locale: Locale;
+  onLocaleChange: (locale: Locale) => void;
+  children: ReactNode;
+}) {
+  const value = useMemo<I18nContextValue>(
+    () => ({
+      locale,
+      setLocale: onLocaleChange,
+      t: createTranslator(locale)
+    }),
+    [locale, onLocaleChange]
+  );
+
+  return <I18nContext.Provider value={value}>{children}</I18nContext.Provider>;
+}
+
+export function useI18n() {
+  return useContext(I18nContext);
+}

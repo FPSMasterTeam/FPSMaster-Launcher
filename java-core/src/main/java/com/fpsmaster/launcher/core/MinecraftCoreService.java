@@ -25,6 +25,7 @@ import java.util.Comparator;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.Callable;
@@ -45,6 +46,7 @@ public final class MinecraftCoreService {
     private static final String FORGE_MAVEN_BASE = "https://maven.minecraftforge.net/net/minecraftforge/forge/";
     private static final String DEFAULT_LIBRARY_REPO = "https://libraries.minecraft.net/";
     private static final String DEFAULT_ASSET_REPO = "https://resources.download.minecraft.net/";
+    private static final int DOWNLOAD_RETRY_ATTEMPTS = 3;
 
     private final HttpClient httpClient;
     private final Gson gson;
@@ -611,7 +613,7 @@ public final class MinecraftCoreService {
             throw new IOException("Missing download URL for library: " + library.path());
         }
         try {
-            downloadFile(library.downloadUrl(), library.path(), library.sha1());
+            downloadFile(library.downloadUrl(), library.path(), library.sha1(), "library");
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             throw new IOException("Interrupted while downloading library " + library.path(), e);
@@ -629,7 +631,7 @@ public final class MinecraftCoreService {
         String url = clientDownload.get("url").getAsString();
         String sha1 = clientDownload.has("sha1") ? clientDownload.get("sha1").getAsString() : null;
         try {
-            downloadFile(url, clientJar, sha1);
+            downloadFile(url, clientJar, sha1, "client");
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             throw new IOException("Interrupted while downloading client jar", e);
@@ -773,7 +775,7 @@ public final class MinecraftCoreService {
         String assetIndexSha1 = assetIndex.has("sha1") ? assetIndex.get("sha1").getAsString() : null;
 
         Path assetIndexPath = gameDirectory.resolve("assets").resolve("indexes").resolve(assetIndexId + ".json");
-        downloadFile(assetIndexUrl, assetIndexPath, assetIndexSha1);
+        downloadFile(assetIndexUrl, assetIndexPath, assetIndexSha1, "asset-index");
 
         JsonObject indexObject = JsonParser.parseString(Files.readString(assetIndexPath)).getAsJsonObject();
         JsonObject objects = indexObject.getAsJsonObject("objects");
@@ -792,23 +794,21 @@ public final class MinecraftCoreService {
             String url = DEFAULT_ASSET_REPO + prefix + "/" + hash;
             Path objectPath = gameDirectory.resolve("assets").resolve("objects").resolve(prefix).resolve(hash);
             jobs.add(() -> {
-                boolean fetched = downloadFile(url, objectPath, hash);
+                boolean fetched = downloadFile(url, objectPath, hash, "asset");
                 if (fetched) {
                     downloaded.incrementAndGet();
                 }
                 int done = completed.incrementAndGet();
-                if (done == total || done % 200 == 0) {
-                    logProgress("assets", "Downloaded " + done + "/" + total);
-                    IpcLogBridge.installProgress(
-                            phase,
-                            "assets",
-                            done,
-                            total,
-                            downloaded.get(),
-                            done - downloaded.get(),
-                            "Downloaded assets " + done + "/" + total
-                    );
-                }
+                logProgress("assets", "Downloaded " + done + "/" + total);
+                IpcLogBridge.installProgress(
+                        phase,
+                        "assets",
+                        done,
+                        total,
+                        downloaded.get(),
+                        done - downloaded.get(),
+                        "Downloaded assets " + done + "/" + total
+                );
                 return null;
             });
         }
@@ -860,23 +860,21 @@ public final class MinecraftCoreService {
         List<Callable<Path>> jobs = new ArrayList<>(total);
         for (ResolvedLibrary library : uniqueLibraries.values()) {
             jobs.add(() -> {
-                boolean fetched = downloadFile(library.downloadUrl(), library.path(), library.sha1());
+                boolean fetched = downloadFile(library.downloadUrl(), library.path(), library.sha1(), "library");
                 if (fetched) {
                     downloaded.incrementAndGet();
                 }
                 int done = completed.incrementAndGet();
-                if (done == total || done % 25 == 0) {
-                    logProgress("libraries", "Downloaded " + done + "/" + total);
-                    IpcLogBridge.installProgress(
-                            phase,
-                            "libraries",
-                            done,
-                            total,
-                            downloaded.get(),
-                            done - downloaded.get(),
-                            "Downloaded libraries " + done + "/" + total
-                    );
-                }
+                logProgress("libraries", "Downloaded " + done + "/" + total);
+                IpcLogBridge.installProgress(
+                        phase,
+                        "libraries",
+                        done,
+                        total,
+                        downloaded.get(),
+                        done - downloaded.get(),
+                        "Downloaded libraries " + done + "/" + total
+                );
                 return library.path();
             });
         }
@@ -1025,7 +1023,7 @@ public final class MinecraftCoreService {
         String url = clientDownload.get("url").getAsString();
         String sha1 = clientDownload.has("sha1") ? clientDownload.get("sha1").getAsString() : null;
         Path target = versionDir.resolve(versionId + ".jar");
-        boolean downloaded = downloadFile(url, target, sha1);
+        boolean downloaded = downloadFile(url, target, sha1, "client");
         IpcLogBridge.installProgress(
                 phase,
                 "client",
@@ -1037,7 +1035,7 @@ public final class MinecraftCoreService {
         );
     }
 
-    private boolean downloadFile(String url, Path target, String expectedSha1) throws IOException, InterruptedException {
+    private boolean downloadFile(String url, Path target, String expectedSha1, String artifactType) throws IOException, InterruptedException {
         if (Files.isRegularFile(target) && expectedSha1 != null) {
             String localSha1 = Sha1Utils.sha1(target);
             if (expectedSha1.equalsIgnoreCase(localSha1)) {
@@ -1046,26 +1044,145 @@ public final class MinecraftCoreService {
         }
 
         Files.createDirectories(target.getParent());
-        HttpRequest request = HttpRequest.newBuilder()
-                .GET()
-                .uri(URI.create(url))
-                .timeout(Duration.ofMinutes(2))
-                .build();
         Path tmp = target.resolveSibling(target.getFileName() + ".download");
-        HttpResponse<Path> response = httpClient.send(request, HttpResponse.BodyHandlers.ofFile(tmp));
-        if (response.statusCode() >= 400) {
-            throw new IOException("Download failed for " + url + " status=" + response.statusCode());
-        }
 
-        if (expectedSha1 != null) {
-            String downloadedSha1 = Sha1Utils.sha1(tmp);
-            if (!expectedSha1.equalsIgnoreCase(downloadedSha1)) {
-                throw new IOException("SHA1 mismatch for " + url + " expected=" + expectedSha1 + " actual=" + downloadedSha1);
+        for (int attempt = 1; attempt <= DOWNLOAD_RETRY_ATTEMPTS; attempt++) {
+            Files.deleteIfExists(tmp);
+
+            try {
+                HttpRequest request = HttpRequest.newBuilder()
+                        .GET()
+                        .uri(URI.create(url))
+                        .timeout(Duration.ofMinutes(2))
+                        .build();
+                HttpResponse<Path> response = httpClient.send(request, HttpResponse.BodyHandlers.ofFile(tmp));
+                if (response.statusCode() >= 400) {
+                    DownloadTaskException statusError = DownloadTaskException.fromStatusCode(
+                            artifactType,
+                            target,
+                            url,
+                            attempt,
+                            DOWNLOAD_RETRY_ATTEMPTS,
+                            response.statusCode()
+                    );
+                    if (attempt < DOWNLOAD_RETRY_ATTEMPTS && isRetryableHttpStatus(response.statusCode())) {
+                        logProgress(
+                                "download",
+                                "Retry " + (attempt + 1) + "/" + DOWNLOAD_RETRY_ATTEMPTS
+                                        + " for " + target.getFileName()
+                                        + " due to HTTP " + response.statusCode()
+                        );
+                        continue;
+                    }
+                    throw statusError;
+                }
+
+                if (expectedSha1 != null) {
+                    String downloadedSha1 = Sha1Utils.sha1(tmp);
+                    if (!expectedSha1.equalsIgnoreCase(downloadedSha1)) {
+                        throw DownloadTaskException.fromDetail(
+                                artifactType,
+                                target,
+                                url,
+                                attempt,
+                                DOWNLOAD_RETRY_ATTEMPTS,
+                                "SHA1 mismatch expected=" + expectedSha1 + " actual=" + downloadedSha1,
+                                null
+                        );
+                    }
+                }
+
+                Files.move(tmp, target, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+                return true;
+            } catch (InterruptedException e) {
+                Files.deleteIfExists(tmp);
+                Thread.currentThread().interrupt();
+                throw e;
+            } catch (DownloadTaskException e) {
+                Files.deleteIfExists(tmp);
+                if (attempt < DOWNLOAD_RETRY_ATTEMPTS && shouldRetryDownloadException(e)) {
+                    logProgress(
+                            "download",
+                            "Retry " + (attempt + 1) + "/" + DOWNLOAD_RETRY_ATTEMPTS
+                                    + " for " + target.getFileName()
+                                    + " reason=" + e.getReason()
+                    );
+                    continue;
+                }
+                throw e;
+            } catch (IOException e) {
+                Files.deleteIfExists(tmp);
+                DownloadTaskException wrapped = DownloadTaskException.fromDetail(
+                        artifactType,
+                        target,
+                        url,
+                        attempt,
+                        DOWNLOAD_RETRY_ATTEMPTS,
+                        summarizeException(e),
+                        e
+                );
+                if (attempt < DOWNLOAD_RETRY_ATTEMPTS && shouldRetryDownloadException(wrapped)) {
+                    logProgress(
+                            "download",
+                            "Retry " + (attempt + 1) + "/" + DOWNLOAD_RETRY_ATTEMPTS
+                                    + " for " + target.getFileName()
+                                    + " reason=" + wrapped.getReason()
+                    );
+                    continue;
+                }
+                throw wrapped;
             }
         }
 
-        Files.move(tmp, target, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
-        return true;
+        throw DownloadTaskException.fromDetail(
+                artifactType,
+                target,
+                url,
+                DOWNLOAD_RETRY_ATTEMPTS,
+                DOWNLOAD_RETRY_ATTEMPTS,
+                "Unknown download failure",
+                null
+        );
+    }
+
+    private boolean shouldRetryDownloadException(DownloadTaskException error) {
+        if (isRetryableHttpStatus(error.getStatusCode())) {
+            return true;
+        }
+        String reason = error.getReason().toLowerCase(Locale.ROOT);
+        return reason.contains("connection reset")
+                || reason.contains("connection aborted")
+                || reason.contains("connection closed")
+                || reason.contains("connection refused")
+                || reason.contains("timed out")
+                || reason.contains("timeout")
+                || reason.contains("broken pipe")
+                || reason.contains("premature eof")
+                || reason.contains("temporarily unavailable");
+    }
+
+    private boolean isRetryableHttpStatus(Integer statusCode) {
+        if (statusCode == null) {
+            return false;
+        }
+        return statusCode == 408
+                || statusCode == 425
+                || statusCode == 429
+                || statusCode == 500
+                || statusCode == 502
+                || statusCode == 503
+                || statusCode == 504;
+    }
+
+    private String summarizeException(Throwable error) {
+        if (error == null) {
+            return "unknown";
+        }
+        String message = error.getMessage();
+        if (message == null || message.isBlank()) {
+            return error.getClass().getSimpleName();
+        }
+        return message;
     }
 
     private <T> List<T> runParallelJobs(String label, List<Callable<T>> jobs) throws IOException, InterruptedException {

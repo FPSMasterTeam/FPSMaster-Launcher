@@ -133,6 +133,13 @@ struct GameRuntimeStats {
     elapsed_ms: Option<u64>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+struct InstanceSectionEntry {
+    name: String,
+    #[serde(rename = "isDir")]
+    is_dir: bool,
+}
+
 fn ui_log_store() -> &'static Mutex<UiLogStore> {
     UI_LOG_STORE.get_or_init(|| Mutex::new(UiLogStore::default()))
 }
@@ -222,6 +229,58 @@ fn show_main_window(app: tauri::AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn terminate_game_process(pid: i64, force: Option<bool>) -> Result<bool, String> {
+    if pid <= 0 {
+        return Err("Invalid pid".to_string());
+    }
+
+    let hard = force.unwrap_or(true);
+    let running_before = query_process_memory_kb(pid)?.is_some();
+    if !running_before {
+        clear_runtime_pid(pid);
+        return Ok(false);
+    }
+
+    #[cfg(windows)]
+    {
+        let mut command = Command::new("taskkill");
+        command.arg("/PID").arg(pid.to_string()).arg("/T");
+        if hard {
+            command.arg("/F");
+        }
+        let output = command
+            .output()
+            .map_err(|e| format!("Failed to run taskkill: {e}"))?;
+        if !output.status.success() && query_process_memory_kb(pid)?.is_some() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(format!("Failed to terminate process {pid}: {stderr}"));
+        }
+    }
+
+    #[cfg(not(windows))]
+    {
+        let signal = if hard { "-KILL" } else { "-TERM" };
+        let output = Command::new("kill")
+            .arg(signal)
+            .arg(pid.to_string())
+            .output()
+            .map_err(|e| format!("Failed to run kill command: {e}"))?;
+        if !output.status.success() && query_process_memory_kb(pid)?.is_some() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(format!("Failed to terminate process {pid}: {stderr}"));
+        }
+    }
+
+    thread::sleep(Duration::from_millis(120));
+    let running_after = query_process_memory_kb(pid)?.is_some();
+    if !running_after {
+        clear_runtime_pid(pid);
+        push_ui_log("game", "exit", &format!("process terminated pid={pid}"));
+    }
+    Ok(!running_after)
+}
+
+#[tauri::command]
 fn is_version_installed(game_dir: String, version_id: String) -> Result<bool, String> {
     let game_dir_path = resolve_game_dir_path(&game_dir)?;
     let profile_json = game_dir_path
@@ -232,15 +291,151 @@ fn is_version_installed(game_dir: String, version_id: String) -> Result<bool, St
 }
 
 #[tauri::command]
+fn list_installed_versions(game_dir: String) -> Result<Vec<String>, String> {
+    let game_dir_path = resolve_game_dir_path(&game_dir)?;
+    let versions_dir = game_dir_path.join("versions");
+    if !versions_dir.exists() {
+        return Ok(Vec::new());
+    }
+
+    let entries = fs::read_dir(&versions_dir).map_err(|e| {
+        format!(
+            "Failed to read versions directory {}: {e}",
+            versions_dir.display()
+        )
+    })?;
+
+    let mut installed = Vec::new();
+    for entry in entries {
+        let entry = match entry {
+            Ok(value) => value,
+            Err(_) => continue,
+        };
+        let version_path = entry.path();
+        if !version_path.is_dir() {
+            continue;
+        }
+        let version_id = entry.file_name().to_string_lossy().to_string();
+        if version_id.is_empty() {
+            continue;
+        }
+        let version_json = version_path.join(format!("{version_id}.json"));
+        if version_json.exists() {
+            installed.push(version_id);
+        }
+    }
+
+    installed.sort();
+    installed.reverse();
+    Ok(installed)
+}
+
+#[tauri::command]
+fn rename_version_profile(
+    game_dir: String,
+    from_version_id: String,
+    to_version_id: String,
+) -> Result<String, String> {
+    let from_id = from_version_id.trim();
+    let to_id = to_version_id.trim();
+    if from_id.is_empty() || to_id.is_empty() {
+        return Err("Version id cannot be empty".to_string());
+    }
+    if from_id == to_id {
+        return Ok(to_id.to_string());
+    }
+
+    let game_dir_path = resolve_game_dir_path(&game_dir)?;
+    let versions_dir = game_dir_path.join("versions");
+    let from_dir = versions_dir.join(from_id);
+    let to_dir = versions_dir.join(to_id);
+    let to_json = to_dir.join(format!("{to_id}.json"));
+
+    if to_json.exists() {
+        rewrite_version_profile_id(&to_json, to_id)?;
+        return Ok(to_id.to_string());
+    }
+    if to_dir.exists() {
+        return Err(format!(
+            "Target version directory already exists but profile json is missing: {}",
+            to_dir.display()
+        ));
+    }
+    if !from_dir.exists() {
+        return Err(format!(
+            "Source version directory not found: {}",
+            from_dir.display()
+        ));
+    }
+
+    fs::rename(&from_dir, &to_dir).map_err(|e| {
+        format!(
+            "Failed to rename version directory from {} to {}: {e}",
+            from_dir.display(),
+            to_dir.display()
+        )
+    })?;
+
+    let renamed_from_json = to_dir.join(format!("{from_id}.json"));
+    if renamed_from_json.exists() {
+        fs::rename(&renamed_from_json, &to_json).map_err(|e| {
+            format!(
+                "Failed to rename version json from {} to {}: {e}",
+                renamed_from_json.display(),
+                to_json.display()
+            )
+        })?;
+    }
+    if !to_json.exists() {
+        return Err(format!(
+            "Version json missing after rename, expected {}",
+            to_json.display()
+        ));
+    }
+
+    rewrite_version_profile_id(&to_json, to_id)?;
+
+    Ok(to_id.to_string())
+}
+
+fn rewrite_version_profile_id(json_path: &Path, version_id: &str) -> Result<(), String> {
+    let profile_json_text = fs::read_to_string(json_path)
+        .map_err(|e| format!("Failed to read profile json {}: {e}", json_path.display()))?;
+    let mut profile_json: serde_json::Value = serde_json::from_str(&profile_json_text)
+        .map_err(|e| format!("Failed to parse profile json {}: {e}", json_path.display()))?;
+    if let Some(object) = profile_json.as_object_mut() {
+        object.insert(
+            "id".to_string(),
+            serde_json::Value::String(version_id.to_string()),
+        );
+    }
+    let encoded = serde_json::to_string_pretty(&profile_json)
+        .map_err(|e| format!("Failed to encode profile json {}: {e}", json_path.display()))?;
+    fs::write(json_path, format!("{encoded}\n"))
+        .map_err(|e| format!("Failed to write profile json {}: {e}", json_path.display()))?;
+    Ok(())
+}
+
+#[tauri::command]
+fn get_default_game_dir() -> Result<String, String> {
+    let path = default_game_dir_path()?;
+    Ok(strip_windows_verbatim_prefix(&path)
+        .to_string_lossy()
+        .to_string())
+}
+
+#[tauri::command]
 async fn ensure_jdk(
     window: tauri::Window,
     game_dir: String,
     version_id: String,
 ) -> Result<JdkEnsureResult, String> {
     let window_clone = window.clone();
-    tauri::async_runtime::spawn_blocking(move || ensure_jdk_blocking(window_clone, game_dir, version_id))
-        .await
-        .map_err(|e| format!("Failed to join ensure_jdk task: {e}"))?
+    tauri::async_runtime::spawn_blocking(move || {
+        ensure_jdk_blocking(window_clone, game_dir, version_id)
+    })
+    .await
+    .map_err(|e| format!("Failed to join ensure_jdk task: {e}"))?
 }
 
 fn ensure_jdk_blocking(
@@ -248,6 +443,8 @@ fn ensure_jdk_blocking(
     game_dir: String,
     version_id: String,
 ) -> Result<JdkEnsureResult, String> {
+    let game_dir_path = resolve_game_dir_path(&game_dir)?;
+    let resolved_game_dir = game_dir_path.to_string_lossy().to_string();
     let requirement_output = run_java_core(
         Some(&window),
         &[
@@ -255,17 +452,14 @@ fn ensure_jdk_blocking(
             "--version",
             &version_id,
             "--game-dir",
-            &game_dir,
+            &resolved_game_dir,
         ],
     )?;
     let requirement: JavaRuntimeRequirement = serde_json::from_str(&requirement_output)
         .map_err(|e| format!("Failed to parse java runtime requirement: {e}"))?;
 
     let major = requirement.major_version.max(8);
-    let runtime_root = Path::new(&game_dir)
-        .to_path_buf()
-        .join("runtime")
-        .join(format!("jdk-{major}"));
+    let runtime_root = game_dir_path.join("runtime").join(format!("jdk-{major}"));
     fs::create_dir_all(&runtime_root).map_err(|e| format!("Failed creating runtime dir: {e}"))?;
 
     if let Some(java_path) = locate_java_binary(&runtime_root) {
@@ -286,15 +480,59 @@ fn ensure_jdk_blocking(
 
     let archive_ext = if cfg!(windows) { "zip" } else { "tar.gz" };
     let archive_path = runtime_root.join(format!("jdk-{major}.{archive_ext}"));
-    let download_url = adoptium_download_url(major);
+    let sources = jdk_download_sources(major);
+    if sources.is_empty() {
+        return Err("No JDK download source configured".to_string());
+    }
 
-    emit_log(
-        Some(&window),
-        "info",
-        &format!("Downloading JDK {major} from {download_url}"),
-    );
-    download_file_blocking(Some(&window), &download_url, &archive_path)
-        .map_err(|e| format!("Failed downloading JDK archive: {e}"))?;
+    let mut source_errors: Vec<String> = Vec::new();
+    let mut downloaded = false;
+    for (index, source) in sources.iter().enumerate() {
+        emit_log(
+            Some(&window),
+            "info",
+            &format!(
+                "Downloading JDK {major} [{}/{}] {}: {}",
+                index + 1,
+                sources.len(),
+                source.name,
+                source.url
+            ),
+        );
+
+        match download_file_blocking(Some(&window), &source.name, &source.url, &archive_path) {
+            Ok(()) => {
+                downloaded = true;
+                emit_log(
+                    Some(&window),
+                    "info",
+                    &format!("JDK download succeeded from {}", source.name),
+                );
+                break;
+            }
+            Err(err) => {
+                source_errors.push(format!("{} => {}", source.name, err));
+                emit_log(
+                    Some(&window),
+                    "stderr",
+                    &format!(
+                        "JDK source {} failed: {}. Switching to next source...",
+                        source.name, err
+                    ),
+                );
+                let _ = fs::remove_file(&archive_path);
+            }
+        }
+    }
+
+    if !downloaded {
+        let merged_error = format!(
+            "Failed downloading JDK archive from all sources: {}",
+            source_errors.join(" | ")
+        );
+        emit_log(Some(&window), "stderr", &merged_error);
+        return Err(merged_error);
+    }
 
     emit_log(
         Some(&window),
@@ -343,6 +581,9 @@ async fn install_vanilla(
     version_id: String,
     ipc_session: Option<String>,
 ) -> Result<InstallResult, String> {
+    let game_dir = resolve_game_dir_path(&game_dir)?
+        .to_string_lossy()
+        .to_string();
     let mut command = vec![
         "install-vanilla".to_string(),
         "--game-dir".to_string(),
@@ -372,6 +613,9 @@ async fn build_vanilla_launch_plan(
     max_memory_mb: i32,
     java_path: Option<String>,
 ) -> Result<LaunchPlan, String> {
+    let game_dir = resolve_game_dir_path(&game_dir)?
+        .to_string_lossy()
+        .to_string();
     let max_memory = max_memory_mb.to_string();
     let mut command = vec![
         "build-launch-plan".to_string(),
@@ -438,10 +682,17 @@ fn launch_vanilla_blocking(
     java_path: Option<String>,
     wait_for_exit: Option<bool>,
 ) -> Result<LaunchExecutionResult, String> {
+    if let Some(pid) = detect_active_game_pid() {
+        return Err(format!(
+            "Another game process is already running (pid={pid}). Stop it before launching a new instance."
+        ));
+    }
+
     let game_dir_path = resolve_game_dir_path(&game_dir)?;
+    let resolved_game_dir = game_dir_path.to_string_lossy().to_string();
     let plan = resolve_launch_plan_blocking(
         &window,
-        &game_dir,
+        &resolved_game_dir,
         &version_id,
         &player_name,
         &uuid,
@@ -455,14 +706,20 @@ fn launch_vanilla_blocking(
         return Err("Launch command is empty".to_string());
     }
     normalized_command[0] = prefer_java_with_console(&normalized_command[0]);
+    let runtime_dir = resolve_version_runtime_dir(&game_dir_path, &version_id)?;
+    rewrite_launch_game_dir_argument(&mut normalized_command, &runtime_dir);
 
     let executable = normalized_command[0].clone();
     let args = normalized_command[1..].to_vec();
     let command_preview = format_quoted_command(&executable, &args);
-    emit_log(Some(&window), "info", &format!("launch game: {command_preview}"));
+    emit_log(
+        Some(&window),
+        "info",
+        &format!("launch game: {command_preview}"),
+    );
 
     let should_wait = wait_for_exit.unwrap_or(false);
-    let mut child = spawn_game_process(&game_dir_path, &executable, &args)?;
+    let mut child = spawn_game_process(&runtime_dir, &executable, &args)?;
     let pid = i64::from(child.id());
     if let Ok(mut store) = game_runtime_starts().lock() {
         store.insert(pid, std::time::Instant::now());
@@ -495,7 +752,12 @@ fn launch_vanilla_blocking(
         let _ = stderr_handle.join();
         let exit_code = status.code().unwrap_or(-1);
         let _ = window.emit("game-exit", GameExitEvent { pid, exit_code });
-        push_ui_log("game", "exit", &format!("process exited pid={pid} code={exit_code}"));
+        push_ui_log(
+            "game",
+            "exit",
+            &format!("process exited pid={pid} code={exit_code}"),
+        );
+        clear_runtime_pid(pid);
 
         return Ok(LaunchExecutionResult {
             version_id,
@@ -518,7 +780,12 @@ fn launch_vanilla_blocking(
         let _ = stdout_handle.join();
         let _ = stderr_handle.join();
         let _ = wait_window.emit("game-exit", GameExitEvent { pid, exit_code });
-        push_ui_log("game", "exit", &format!("process exited pid={pid} code={exit_code}"));
+        push_ui_log(
+            "game",
+            "exit",
+            &format!("process exited pid={pid} code={exit_code}"),
+        );
+        clear_runtime_pid(pid);
     });
 
     Ok(LaunchExecutionResult {
@@ -534,6 +801,42 @@ fn launch_vanilla_blocking(
         },
         command: normalized_command,
     })
+}
+
+fn clear_runtime_pid(pid: i64) {
+    if let Ok(mut store) = game_runtime_starts().lock() {
+        store.remove(&pid);
+    }
+}
+
+fn detect_active_game_pid() -> Option<i64> {
+    let pids = if let Ok(store) = game_runtime_starts().lock() {
+        store.keys().copied().collect::<Vec<_>>()
+    } else {
+        Vec::new()
+    };
+
+    let mut active = None;
+    let mut stale = Vec::new();
+    for pid in pids {
+        match query_process_memory_kb(pid) {
+            Ok(Some(_)) => {
+                active = Some(pid);
+                break;
+            }
+            _ => stale.push(pid),
+        }
+    }
+
+    if !stale.is_empty() {
+        if let Ok(mut store) = game_runtime_starts().lock() {
+            for pid in stale {
+                store.remove(&pid);
+            }
+        }
+    }
+
+    active
 }
 
 fn resolve_launch_plan_blocking(
@@ -568,7 +871,8 @@ fn resolve_launch_plan_blocking(
 
     let refs: Vec<&str> = command.iter().map(String::as_str).collect();
     let output = run_java_core(Some(window), &refs)?;
-    serde_json::from_str::<LaunchPlan>(&output).map_err(|e| format!("Invalid launch plan output: {e}"))
+    serde_json::from_str::<LaunchPlan>(&output)
+        .map_err(|e| format!("Invalid launch plan output: {e}"))
 }
 
 fn prefer_java_with_console(executable: &str) -> String {
@@ -627,6 +931,173 @@ fn normalize_game_command_tokens(command: Vec<String>) -> Vec<String> {
     normalized
 }
 
+fn resolve_version_runtime_dir(game_dir: &Path, version_id: &str) -> Result<PathBuf, String> {
+    let version = version_id.trim();
+    if version.is_empty() {
+        return Err("Version id is empty".to_string());
+    }
+    let runtime_dir = game_dir.join("versions").join(version);
+    fs::create_dir_all(&runtime_dir).map_err(|e| {
+        format!(
+            "Failed to create isolated runtime directory {}: {e}",
+            runtime_dir.display()
+        )
+    })?;
+    Ok(runtime_dir)
+}
+
+fn resolve_instance_section_dir(
+    game_dir: &Path,
+    version_id: &str,
+    section: &str,
+) -> Result<PathBuf, String> {
+    let normalized = match section.trim().to_lowercase().as_str() {
+        "saves" => "saves",
+        "mods" => "mods",
+        "resourcepacks" => "resourcepacks",
+        other => {
+            return Err(format!(
+                "Unsupported instance section '{other}'. Expected saves/mods/resourcepacks"
+            ))
+        }
+    };
+    Ok(resolve_version_runtime_dir(game_dir, version_id)?.join(normalized))
+}
+
+#[tauri::command]
+fn list_instance_section_entries(
+    game_dir: String,
+    version_id: String,
+    section: String,
+) -> Result<Vec<InstanceSectionEntry>, String> {
+    let game_dir_path = resolve_game_dir_path(&game_dir)?;
+    let section_dir = resolve_instance_section_dir(&game_dir_path, &version_id, &section)?;
+    if !section_dir.exists() {
+        return Ok(Vec::new());
+    }
+
+    let read_dir = fs::read_dir(&section_dir).map_err(|e| {
+        format!(
+            "Failed to read instance section directory {}: {e}",
+            section_dir.display()
+        )
+    })?;
+    let mut entries = Vec::new();
+    for item in read_dir {
+        let item = item.map_err(|e| {
+            format!(
+                "Failed reading an entry in section directory {}: {e}",
+                section_dir.display()
+            )
+        })?;
+        let metadata = item.metadata().map_err(|e| {
+            format!(
+                "Failed reading metadata in section directory {}: {e}",
+                section_dir.display()
+            )
+        })?;
+        entries.push(InstanceSectionEntry {
+            name: item.file_name().to_string_lossy().to_string(),
+            is_dir: metadata.is_dir(),
+        });
+    }
+
+    entries.sort_by(|left, right| match (left.is_dir, right.is_dir) {
+        (true, false) => std::cmp::Ordering::Less,
+        (false, true) => std::cmp::Ordering::Greater,
+        _ => left.name.to_lowercase().cmp(&right.name.to_lowercase()),
+    });
+    Ok(entries)
+}
+
+#[tauri::command]
+fn open_instance_section(
+    game_dir: String,
+    version_id: String,
+    section: String,
+) -> Result<(), String> {
+    let game_dir_path = resolve_game_dir_path(&game_dir)?;
+    let section_dir = resolve_instance_section_dir(&game_dir_path, &version_id, &section)?;
+    fs::create_dir_all(&section_dir).map_err(|e| {
+        format!(
+            "Failed to create instance section directory {}: {e}",
+            section_dir.display()
+        )
+    })?;
+    open_path_in_explorer(&section_dir)
+}
+
+fn open_path_in_explorer(path: &Path) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        let status = Command::new("explorer")
+            .arg(path)
+            .status()
+            .map_err(|e| format!("Failed to open folder with explorer: {e}"))?;
+        if status.success() {
+            return Ok(());
+        }
+        return Err(format!("Explorer returned non-zero status: {status}"));
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let status = Command::new("open")
+            .arg(path)
+            .status()
+            .map_err(|e| format!("Failed to open folder with open: {e}"))?;
+        if status.success() {
+            return Ok(());
+        }
+        return Err(format!("open returned non-zero status: {status}"));
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        let status = Command::new("xdg-open")
+            .arg(path)
+            .status()
+            .map_err(|e| format!("Failed to open folder with xdg-open: {e}"))?;
+        if status.success() {
+            return Ok(());
+        }
+        return Err(format!("xdg-open returned non-zero status: {status}"));
+    }
+}
+
+fn rewrite_launch_game_dir_argument(command: &mut Vec<String>, runtime_dir: &Path) {
+    let runtime_value = runtime_dir.to_string_lossy().to_string();
+    let mut replaced = false;
+    let mut i = 1;
+    while i < command.len() {
+        let token = &command[i];
+        if (token == "--gameDir" || token == "--game-dir") && i + 1 < command.len() {
+            command[i + 1] = runtime_value.clone();
+            replaced = true;
+            i += 2;
+            continue;
+        }
+        if token.starts_with("--gameDir=") {
+            command[i] = format!("--gameDir={runtime_value}");
+            replaced = true;
+            i += 1;
+            continue;
+        }
+        if token.starts_with("--game-dir=") {
+            command[i] = format!("--game-dir={runtime_value}");
+            replaced = true;
+            i += 1;
+            continue;
+        }
+        i += 1;
+    }
+
+    if !replaced {
+        command.push("--gameDir".to_string());
+        command.push(runtime_value);
+    }
+}
+
 fn format_quoted_command(executable: &str, args: &[String]) -> String {
     let mut parts = Vec::with_capacity(args.len() + 1);
     parts.push(quote_arg(executable));
@@ -660,13 +1131,29 @@ fn spawn_game_process(
 }
 
 fn resolve_game_dir_path(game_dir: &str) -> Result<PathBuf, String> {
-    let path = PathBuf::from(game_dir);
+    let path = PathBuf::from(game_dir.trim());
     if path.is_absolute() {
         return Ok(path);
     }
     env::current_dir()
         .map(|cwd| cwd.join(path))
         .map_err(|e| format!("Failed resolving game dir: {e}"))
+}
+
+fn default_game_dir_path() -> Result<PathBuf, String> {
+    if cfg!(windows) {
+        if let Some(appdata) = env::var_os("APPDATA") {
+            return Ok(PathBuf::from(appdata).join("FPSMaster"));
+        }
+    }
+
+    if let Some(home) = env::var_os("HOME") {
+        return Ok(PathBuf::from(home).join(".fpsmaster"));
+    }
+
+    env::current_dir()
+        .map(|cwd| cwd.join(".fpsmaster"))
+        .map_err(|e| format!("Failed resolving default game dir: {e}"))
 }
 
 fn query_process_memory_kb(pid: i64) -> Result<Option<u64>, String> {
@@ -780,7 +1267,11 @@ fn parse_csv_line(line: &str) -> Vec<String> {
     fields
 }
 
-fn build_platform_command(executable: &str, args: &[String], current_dir: Option<&Path>) -> Command {
+fn build_platform_command(
+    executable: &str,
+    args: &[String],
+    current_dir: Option<&Path>,
+) -> Command {
     if cfg!(windows) {
         let mut command = Command::new("cmd");
         command.arg("/C");
@@ -861,6 +1352,9 @@ async fn install_fabric(
     loader_version: String,
     ipc_session: Option<String>,
 ) -> Result<FabricInstallResult, String> {
+    let game_dir = resolve_game_dir_path(&game_dir)?
+        .to_string_lossy()
+        .to_string();
     let mut command = vec![
         "install-fabric".to_string(),
         "--game-dir".to_string(),
@@ -907,6 +1401,9 @@ async fn install_forge(
     java_path: Option<String>,
     ipc_session: Option<String>,
 ) -> Result<ForgeInstallResult, String> {
+    let game_dir = resolve_game_dir_path(&game_dir)?
+        .to_string_lossy()
+        .to_string();
     let java_exe = java_path.unwrap_or_else(|| "java".to_string());
     let mut command = vec![
         "install-forge".to_string(),
@@ -928,7 +1425,10 @@ async fn install_forge(
         .map_err(|e| format!("Invalid java-core output: {e}"))
 }
 
-async fn run_java_core_async(window: Option<tauri::Window>, args: Vec<String>) -> Result<String, String> {
+async fn run_java_core_async(
+    window: Option<tauri::Window>,
+    args: Vec<String>,
+) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let refs: Vec<&str> = args.iter().map(String::as_str).collect();
         run_java_core(window.as_ref(), &refs)
@@ -971,13 +1471,25 @@ fn run_java_core(window: Option<&tauri::Window>, args: &[&str]) -> Result<String
     let stdout_buf_clone = Arc::clone(&stdout_buf);
     let window_for_stdout = window.cloned();
     let stdout_reader_handle = thread::spawn(move || -> Result<(), String> {
-        pump_core_stream(stdout, stdout_buf_clone, window_for_stdout, "core-log", "stdout")
+        pump_core_stream(
+            stdout,
+            stdout_buf_clone,
+            window_for_stdout,
+            "core-log",
+            "stdout",
+        )
     });
 
     let stderr_buf_clone = Arc::clone(&stderr_buf);
     let window_for_stderr = window.cloned();
     let stderr_reader_handle = thread::spawn(move || -> Result<(), String> {
-        pump_core_stream(stderr, stderr_buf_clone, window_for_stderr, "core-log", "stderr")
+        pump_core_stream(
+            stderr,
+            stderr_buf_clone,
+            window_for_stderr,
+            "core-log",
+            "stderr",
+        )
     });
 
     let status = child
@@ -1007,14 +1519,99 @@ fn run_java_core(window: Option<&tauri::Window>, args: &[&str]) -> Result<String
         .to_string();
 
     if !status.success() {
+        if let Some(ipc_error) = extract_install_ipc_error(&stderr_text) {
+            return Err(ipc_error);
+        }
+        let concise = summarize_command_failure(&stdout_text, &stderr_text);
         return Err(format!(
-            "java-core command failed. shell={}; command={command_preview}; stdout={stdout_text}; stderr={stderr_text}",
-            if cfg!(windows) { "cmd /C" } else { "direct" }
+            "java-core command failed. shell={}; command={command_preview}; error={concise}",
+            if cfg!(windows) { "cmd /C" } else { "direct" },
         ));
     }
 
     emit_log(window, "info", "java-core command completed");
     Ok(stdout_text)
+}
+
+fn extract_install_ipc_error(stderr_text: &str) -> Option<String> {
+    for line in stderr_text.lines().rev() {
+        let Some(payload) = line.strip_prefix("[ipc]") else {
+            continue;
+        };
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(payload.trim()) else {
+            continue;
+        };
+        if value.get("channel").and_then(|v| v.as_str()) != Some("install") {
+            continue;
+        }
+        if value.get("event").and_then(|v| v.as_str()) != Some("error") {
+            continue;
+        }
+        if let Some(error) = value.get("error").and_then(|v| v.as_str()) {
+            let trimmed = error.trim();
+            if !trimmed.is_empty() {
+                return Some(trimmed.to_string());
+            }
+        }
+        if let Some(message) = value.get("message").and_then(|v| v.as_str()) {
+            let trimmed = message.trim();
+            if !trimmed.is_empty() {
+                return Some(trimmed.to_string());
+            }
+        }
+    }
+    None
+}
+
+fn summarize_command_failure(stdout: &str, stderr: &str) -> String {
+    let mut candidates: Vec<String> = Vec::new();
+    if !stderr.trim().is_empty() {
+        candidates.extend(stderr.lines().filter_map(normalize_error_line));
+    }
+    if !stdout.trim().is_empty() {
+        candidates.extend(stdout.lines().filter_map(normalize_error_line));
+    }
+
+    for candidate in candidates.iter().rev() {
+        if is_useful_error_line(candidate) {
+            return candidate.clone();
+        }
+    }
+
+    candidates
+        .into_iter()
+        .rev()
+        .find(|line| !line.is_empty())
+        .unwrap_or_else(|| "Unknown java-core failure".to_string())
+}
+
+fn normalize_error_line(line: &str) -> Option<String> {
+    let trimmed = line.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if trimmed.starts_with("[ipc]") {
+        return None;
+    }
+    if trimmed.starts_with("[launcher-core]") {
+        if let Some(idx) = trimmed.rfind(']') {
+            let msg = trimmed[idx + 1..].trim();
+            if !msg.is_empty() {
+                return Some(msg.to_string());
+            }
+        }
+    }
+    Some(trimmed.to_string())
+}
+
+fn is_useful_error_line(line: &str) -> bool {
+    let lower = line.to_lowercase();
+    lower.contains("download failed")
+        || lower.contains("sha1 mismatch")
+        || lower.contains("connection reset")
+        || lower.contains("exception")
+        || lower.contains("failed")
+        || lower.contains("error")
 }
 
 fn start_core_latest_log_tailer(
@@ -1101,7 +1698,9 @@ fn pump_core_stream<R: Read>(
 
     loop {
         buffer.clear();
-        let read = reader.read_until(b'\n', &mut buffer).map_err(|e| e.to_string())?;
+        let read = reader
+            .read_until(b'\n', &mut buffer)
+            .map_err(|e| e.to_string())?;
         if read == 0 {
             break;
         }
@@ -1196,7 +1795,13 @@ fn strip_windows_verbatim_prefix(path: &Path) -> PathBuf {
     path.to_path_buf()
 }
 
-fn adoptium_download_url(major: i32) -> String {
+#[derive(Debug, Clone)]
+struct JdkDownloadSource {
+    name: String,
+    url: String,
+}
+
+fn jdk_download_sources(major: i32) -> Vec<JdkDownloadSource> {
     let os = if cfg!(windows) {
         "windows"
     } else if cfg!(target_os = "macos") {
@@ -1217,22 +1822,59 @@ fn adoptium_download_url(major: i32) -> String {
         }
     };
 
-    let package = if cfg!(windows) { "jdk" } else { "jre" };
-    format!(
-        "https://api.adoptium.net/v3/binary/latest/{major}/ga/{os}/{arch}/{package}/hotspot/normal/eclipse"
-    )
+    let package = "jdk";
+    let archive_ext = if cfg!(windows) { "zip" } else { "tar.gz" };
+    let mut sources = vec![
+        JdkDownloadSource {
+            name: "Eclipse Temurin (Adoptium)".to_string(),
+            url: format!(
+                "https://api.adoptium.net/v3/binary/latest/{major}/ga/{os}/{arch}/{package}/hotspot/normal/eclipse"
+            ),
+        },
+        JdkDownloadSource {
+            name: "Amazon Corretto".to_string(),
+            url: format!(
+                "https://corretto.aws/downloads/latest/amazon-corretto-{major}-{arch}-{os}-{package}.{archive_ext}"
+            ),
+        },
+    ];
+
+    if major >= 11 {
+        let microsoft_os = if cfg!(windows) {
+            "windows"
+        } else if cfg!(target_os = "macos") {
+            "macOS"
+        } else {
+            "linux"
+        };
+        let microsoft_arch = if arch == "x64" { "x64" } else { "aarch64" };
+        let microsoft_ext = if cfg!(windows) { "zip" } else { "tar.gz" };
+        sources.push(JdkDownloadSource {
+            name: "Microsoft Build of OpenJDK".to_string(),
+            url: format!(
+                "https://aka.ms/download-jdk/microsoft-jdk-{major}-{microsoft_os}-{microsoft_arch}.{microsoft_ext}"
+            ),
+        });
+    }
+
+    sources
 }
 
 fn download_file_blocking(
     window: Option<&tauri::Window>,
+    source_name: &str,
     url: &str,
     target: &Path,
 ) -> Result<(), String> {
+    const JDK_DOWNLOAD_USER_AGENT: &str =
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) FPSMasterLauncher/0.1 (+https://github.com/fpsmaster)";
+
     if let Some(parent) = target.parent() {
         fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
 
     let client = reqwest::blocking::Client::builder()
+        .user_agent(JDK_DOWNLOAD_USER_AGENT)
         .connect_timeout(std::time::Duration::from_secs(30))
         .timeout(std::time::Duration::from_secs(60 * 30))
         .redirect(reqwest::redirect::Policy::limited(10))
@@ -1244,6 +1886,8 @@ fn download_file_blocking(
         let tmp = target.with_extension("download");
         let mut response = match client
             .get(url)
+            .header(reqwest::header::USER_AGENT, JDK_DOWNLOAD_USER_AGENT)
+            .header(reqwest::header::ACCEPT, "*/*")
             .header(reqwest::header::ACCEPT_ENCODING, "identity")
             .send()
         {
@@ -1253,7 +1897,9 @@ fn download_file_blocking(
                 emit_log(
                     window,
                     "stderr",
-                    &format!("JDK download attempt {attempt}/3 request failed: {last_error}"),
+                    &format!(
+                        "JDK download ({source_name}) attempt {attempt}/3 request failed: {last_error}"
+                    ),
                 );
                 continue;
             }
@@ -1264,7 +1910,7 @@ fn download_file_blocking(
             emit_log(
                 window,
                 "stderr",
-                &format!("JDK download attempt {attempt}/3 failed: {last_error}"),
+                &format!("JDK download ({source_name}) attempt {attempt}/3 failed: {last_error}"),
             );
             continue;
         }
@@ -1287,7 +1933,11 @@ fn download_file_blocking(
                 Ok(value) => value,
                 Err(err) => {
                     last_error = err;
-                    emit_log(window, "stderr", &format!("JDK download {last_error}"));
+                    emit_log(
+                        window,
+                        "stderr",
+                        &format!("JDK download ({source_name}) {last_error}"),
+                    );
                     let _ = fs::remove_file(&tmp);
                     break;
                 }
@@ -1325,6 +1975,11 @@ fn download_file_blocking(
         }
     }
 
+    emit_log(
+        window,
+        "stderr",
+        &format!("JDK download ({source_name}) failed after 3 attempts: {last_error}"),
+    );
     Err(last_error)
 }
 
@@ -1396,7 +2051,13 @@ fn main() {
             poll_ui_logs,
             poll_game_runtime,
             is_version_installed,
-            show_main_window
+            list_installed_versions,
+            rename_version_profile,
+            list_instance_section_entries,
+            open_instance_section,
+            get_default_game_dir,
+            show_main_window,
+            terminate_game_process
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

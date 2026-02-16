@@ -11,5 +11,7 @@ tauri-app/dist/
 # Rust
 tauri-app/src-tauri/target/
 
-# Runtime data
-.minecraft/
+# Reference
+reference
+
+.idea
