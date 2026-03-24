@@ -3,25 +3,14 @@ import { createPortal } from "react-dom";
 import { useMemo, useState } from "react";
 import Button from "../components/Button";
 import Card from "../components/Card";
-import { NEWS_ITEMS, RECOMMENDED_SERVERS } from "../constants";
-import { useI18n, type TranslationKey } from "../i18n";
-import type { Instance } from "../types";
+import { RECOMMENDED_SERVERS } from "../constants";
+import { useI18n } from "../i18n";
+import type { Instance, NewsItem } from "../types";
 import { resolveInstanceIconPath } from "../utils/launcher";
-
-const NEWS_TITLE_KEYS: TranslationKey[] = [
-  "home.news.0.title",
-  "home.news.1.title",
-  "home.news.2.title"
-];
-
-const NEWS_SUMMARY_KEYS: TranslationKey[] = [
-  "home.news.0.summary",
-  "home.news.1.summary",
-  "home.news.2.summary"
-];
 
 type HomePageProps = {
   availableInstances: Instance[];
+  launcherNews: NewsItem[];
   current: Instance | null;
   busy: boolean;
   launching: boolean;
@@ -33,6 +22,7 @@ type HomePageProps = {
 
 export default function HomePage({
   availableInstances,
+  launcherNews,
   current,
   busy,
   launching,
@@ -81,16 +71,16 @@ export default function HomePage({
               </button>
             </div>
             <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
-              {NEWS_ITEMS.map((news, index) => (
-                <Card as="article" key={news.title} variant="soft" className="group rounded-xl p-4">
+              {launcherNews.map((news) => (
+                <Card as="article" key={news.id ?? news.title} variant="soft" className="group rounded-xl p-4">
                   <div className="mb-2 inline-flex items-center rounded-md border border-[var(--border-subtle)] bg-[var(--bg-elevated)] px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-[var(--text-muted)]">
-                    {t("home.news.tag")}
+                    {news.pinned ? t("home.news.pinnedTag") : t("home.news.tag")}
                   </div>
                   <h3 className="text-base font-semibold leading-tight text-[var(--text-primary)] transition-colors group-hover:text-[var(--mc-grass)]">
-                    {t(NEWS_TITLE_KEYS[index] ?? "home.news.0.title") || news.title}
+                    {news.title}
                   </h3>
                   <p className="mt-1.5 text-sm leading-6 text-[var(--text-secondary)]">
-                    {t(NEWS_SUMMARY_KEYS[index] ?? "home.news.0.summary") || news.summary}
+                    {news.summary}
                   </p>
                 </Card>
               ))}

@@ -11,6 +11,7 @@ import Sidebar from "./components/Sidebar";
 import {
   DEFAULT_SETTINGS,
   LAUNCHER_API_BASE_URL,
+  NEWS_ITEMS,
   PRESET_INSTANCES,
   STORAGE_KEYS,
   resolvePresetVersionId
@@ -38,6 +39,7 @@ import type {
   Instance,
   LauncherLoginResult,
   LauncherModsInstallResult,
+  NewsItem,
   LauncherUser,
   LauncherVersion,
   LauncherVersionType,
@@ -106,6 +108,7 @@ function Launcher() {
   const [settings, setSettings] = useState<Settings>(loadSettings);
   const [launcherAuth, setLauncherAuth] = useState<LauncherAuthState | null>(loadLauncherAuthState);
   const [launcherVersions, setLauncherVersions] = useState<LauncherVersionMap>(EMPTY_LAUNCHER_VERSIONS);
+  const [launcherNews, setLauncherNews] = useState<NewsItem[]>(() => [...NEWS_ITEMS]);
   const [launcherAuthLoading, setLauncherAuthLoading] = useState(false);
   const [launcherVersionLoading, setLauncherVersionLoading] = useState(false);
   const [defaultGameDir, setDefaultGameDir] = useState(() => DEFAULT_SETTINGS.gameDir);
@@ -191,6 +194,10 @@ function Launcher() {
     }
     void refreshLauncherVersions(true);
   }, [launcherAuth?.token]);
+
+  useEffect(() => {
+    void refreshLauncherNews(true);
+  }, []);
 
   useEffect(() => {
     applyTheme(settings.themeMode, settings.themeAccent, settings.customAccentHex);
@@ -436,6 +443,28 @@ function Launcher() {
       return { map: null, error: errorText };
     } finally {
       setLauncherVersionLoading(false);
+    }
+  }
+
+  async function refreshLauncherNews(silent = false): Promise<void> {
+    try {
+      const items = await invoke<NewsItem[]>("launcher_list_news", {
+        baseUrl: LAUNCHER_API_BASE_URL,
+        limit: 4
+      });
+      if (items.length > 0) {
+        setLauncherNews(items);
+        if (!silent) {
+          setStatus(t("app.status.loadedLauncherNews", { count: items.length }));
+        }
+      } else {
+        setLauncherNews([...NEWS_ITEMS]);
+      }
+    } catch (error) {
+      setLauncherNews([...NEWS_ITEMS]);
+      if (!silent) {
+        setStatus(t("app.status.failed", { error: formatLaunchError(error) }));
+      }
     }
   }
 
@@ -983,6 +1012,7 @@ function Launcher() {
       return (
         <HomePage
           availableInstances={instances}
+          launcherNews={launcherNews}
           current={current}
           busy={busy}
           launching={launching}

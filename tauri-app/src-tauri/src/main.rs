@@ -109,6 +109,17 @@ struct LauncherVersion {
     updated_at: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct LauncherNewsItem {
+    id: String,
+    title: String,
+    summary: String,
+    #[serde(rename = "publishedAt", default)]
+    published_at: Option<String>,
+    #[serde(default)]
+    pinned: bool,
+}
+
 #[derive(Debug, Clone, Serialize)]
 struct LauncherModsInstallResult {
     #[serde(rename = "targetDir")]
@@ -682,6 +693,42 @@ async fn launcher_list_available_versions(
     })
     .await
     .map_err(|e| format!("Failed to join launcher versions task: {e}"))?
+}
+
+#[tauri::command]
+async fn launcher_list_news(
+    base_url: String,
+    limit: Option<u32>,
+) -> Result<Vec<LauncherNewsItem>, String> {
+    tauri::async_runtime::spawn_blocking(move || launcher_list_news_blocking(base_url, limit))
+        .await
+        .map_err(|e| format!("Failed to join launcher news task: {e}"))?
+}
+
+fn launcher_list_news_blocking(
+    base_url: String,
+    limit: Option<u32>,
+) -> Result<Vec<LauncherNewsItem>, String> {
+    let normalized_base = normalize_api_base_url(&base_url)?;
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(20))
+        .build()
+        .map_err(|e| format!("Failed to build HTTP client: {e}"))?;
+
+    let mut url = reqwest::Url::parse(&format!("{normalized_base}/api/v1/launcher/news"))
+        .map_err(|e| format!("Invalid launcher news endpoint URL: {e}"))?;
+    url.query_pairs_mut()
+        .append_pair("limit", &limit.unwrap_or(4).clamp(1, 12).to_string());
+
+    let response = client
+        .get(url)
+        .send()
+        .map_err(|e| format!("Launcher news request failed: {e}"))?;
+    let status = response.status();
+    let text = response
+        .text()
+        .map_err(|e| format!("Failed to read launcher news response: {e}"))?;
+    parse_launcher_news_response(status, &text)
 }
 
 fn launcher_list_available_versions_blocking(
@@ -2310,6 +2357,27 @@ fn parse_launcher_versions_response(
     extract_launcher_versions(&value).ok_or_else(|| "versions list response missing data".to_string())
 }
 
+fn parse_launcher_news_response(
+    status: reqwest::StatusCode,
+    body: &str,
+) -> Result<Vec<LauncherNewsItem>, String> {
+    if let Ok(items) = parse_api_envelope::<Vec<LauncherNewsItem>>(status, body, "launcher news") {
+        return Ok(items);
+    }
+
+    let value: serde_json::Value = serde_json::from_str(body)
+        .map_err(|e| format!("Invalid launcher news response JSON: {e}"))?;
+
+    if !status.is_success() {
+        return Err(
+            extract_api_error_message(body)
+                .unwrap_or_else(|| format!("launcher news failed with HTTP {}", status.as_u16())),
+        );
+    }
+
+    extract_launcher_news(&value).ok_or_else(|| "launcher news response missing data".to_string())
+}
+
 fn parse_api_envelope<T: for<'de> Deserialize<'de>>(
     status: reqwest::StatusCode,
     body: &str,
@@ -2368,6 +2436,22 @@ fn extract_launcher_versions(value: &serde_json::Value) -> Option<Vec<LauncherVe
     if let Some(object) = value.as_object() {
         for key in ["data", "items", "list", "results", "records"] {
             if let Some(found) = object.get(key).and_then(extract_launcher_versions) {
+                return Some(found);
+            }
+        }
+    }
+
+    None
+}
+
+fn extract_launcher_news(value: &serde_json::Value) -> Option<Vec<LauncherNewsItem>> {
+    if let Ok(items) = serde_json::from_value::<Vec<LauncherNewsItem>>(value.clone()) {
+        return Some(items);
+    }
+
+    if let Some(object) = value.as_object() {
+        for key in ["data", "items", "list", "results", "records"] {
+            if let Some(found) = object.get(key).and_then(extract_launcher_news) {
                 return Some(found);
             }
         }
@@ -2714,6 +2798,7 @@ fn main() {
             ensure_jdk,
             launcher_login,
             launcher_list_available_versions,
+            launcher_list_news,
             install_launcher_version_mods,
             list_vanilla_versions,
             install_vanilla,

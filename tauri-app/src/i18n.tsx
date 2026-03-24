@@ -13,6 +13,7 @@ const translations = {
     "app.status.loadedVersions": "Loaded {count} versions",
     "app.status.loadingLauncherVersions": "Syncing launcher versions...",
     "app.status.loadedLauncherVersions": "Synced {count} launcher versions",
+    "app.status.loadedLauncherNews": "Loaded {count} launcher news items",
     "app.status.autoInstallMods": "Syncing preset mods: {name}...",
     "app.status.autoInstallModsDone": "Preset mods synced: {count} files",
     "app.status.autoInstallModsUpToDate": "Preset mods already up to date",
@@ -83,6 +84,7 @@ const translations = {
     "home.instancePickerClose": "Close",
 
     "home.news.tag": "Update",
+    "home.news.pinnedTag": "Pinned",
     "home.news.source": "FPSMaster News",
     "home.news.0.title": "New Launcher Release",
     "home.news.0.summary":
@@ -274,6 +276,7 @@ const translations = {
     "app.status.loadedVersions": "已加载 {count} 个版本",
     "app.status.loadingLauncherVersions": "正在同步启动器版本...",
     "app.status.loadedLauncherVersions": "已同步 {count} 个启动器版本",
+    "app.status.loadedLauncherNews": "已加载 {count} 条启动器公告",
     "app.status.autoInstallMods": "正在同步预设模组：{name}...",
     "app.status.autoInstallModsDone": "预设模组同步完成：{count} 个文件",
     "app.status.autoInstallModsUpToDate": "预设模组已是最新",
@@ -344,6 +347,7 @@ const translations = {
     "home.instancePickerClose": "关闭",
 
     "home.news.tag": "更新",
+    "home.news.pinnedTag": "置顶",
     "home.news.source": "FPSMaster 资讯",
     "home.news.0.title": "全新启动器发布",
     "home.news.0.summary": "基于现代技术栈开发的FPSMaster启动器已发布，提供便捷快速的启动体验。",

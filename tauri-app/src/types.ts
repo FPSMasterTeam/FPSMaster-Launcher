@@ -45,8 +45,11 @@ export type Settings = {
 };
 
 export type NewsItem = {
+  id?: string;
   title: string;
   summary: string;
+  pinned?: boolean;
+  publishedAt?: string | null;
 };
 
 export type ServerItem = {
