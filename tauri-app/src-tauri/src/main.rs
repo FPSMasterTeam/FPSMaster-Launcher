@@ -100,6 +100,8 @@ struct LauncherVersion {
     #[serde(rename = "downloadUrl")]
     download_url: String,
     #[serde(default)]
+    checksum: Option<String>,
+    #[serde(default)]
     recommended: bool,
     #[serde(default)]
     changelog: Option<String>,
@@ -137,6 +139,8 @@ struct LauncherModsInstallResult {
 struct LauncherModsInstallMarker {
     #[serde(rename = "versionTag")]
     version_tag: String,
+    #[serde(default)]
+    checksum: Option<String>,
     #[serde(rename = "downloadUrl")]
     download_url: String,
     #[serde(rename = "installedAtEpochSec")]
@@ -150,6 +154,7 @@ struct LauncherPackageState {
     up_to_date: bool,
     #[serde(rename = "versionTag")]
     version_tag: Option<String>,
+    checksum: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -797,6 +802,7 @@ async fn install_launcher_version_mods(
     version_id: String,
     download_url: String,
     version_tag: Option<String>,
+    checksum: Option<String>,
     clean_existing: Option<bool>,
 ) -> Result<LauncherModsInstallResult, String> {
     tauri::async_runtime::spawn_blocking(move || {
@@ -805,6 +811,7 @@ async fn install_launcher_version_mods(
             version_id,
             download_url,
             version_tag,
+            checksum,
             clean_existing,
         )
     })
@@ -817,9 +824,17 @@ async fn get_launcher_package_state(
     game_dir: String,
     version_id: String,
     expected_version_tag: Option<String>,
+    expected_checksum: Option<String>,
+    expected_download_url: Option<String>,
 ) -> Result<LauncherPackageState, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        get_launcher_package_state_blocking(game_dir, version_id, expected_version_tag)
+        get_launcher_package_state_blocking(
+            game_dir,
+            version_id,
+            expected_version_tag,
+            expected_checksum,
+            expected_download_url,
+        )
     })
     .await
     .map_err(|e| format!("Failed to join launcher package state task: {e}"))?
@@ -830,6 +845,7 @@ fn install_launcher_version_mods_blocking(
     version_id: String,
     download_url: String,
     version_tag: Option<String>,
+    checksum: Option<String>,
     clean_existing: Option<bool>,
 ) -> Result<LauncherModsInstallResult, String> {
     let game_dir_path = resolve_game_dir_path(&game_dir)?;
@@ -847,7 +863,12 @@ fn install_launcher_version_mods_blocking(
         .unwrap_or_else(|| normalized_url.clone());
 
     let marker_path = mods_dir.join(".fpsmaster-launcher-mods.json");
-    if is_mods_marker_up_to_date(&marker_path, &normalized_tag)?
+    if is_mods_marker_up_to_date(
+        &marker_path,
+        &normalized_tag,
+        checksum.as_deref(),
+        Some(normalized_url.as_str()),
+    )?
         && mods_dir_has_payload(&mods_dir, &marker_path)?
     {
         return Ok(LauncherModsInstallResult {
@@ -880,6 +901,9 @@ fn install_launcher_version_mods_blocking(
 
     let marker = LauncherModsInstallMarker {
         version_tag: normalized_tag.clone(),
+        checksum: checksum
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty()),
         download_url: normalized_url,
         installed_at_epoch_sec: now_epoch_seconds(),
     };
@@ -904,14 +928,35 @@ fn get_launcher_package_state_blocking(
     game_dir: String,
     version_id: String,
     expected_version_tag: Option<String>,
+    expected_checksum: Option<String>,
+    expected_download_url: Option<String>,
 ) -> Result<LauncherPackageState, String> {
     let game_dir_path = resolve_game_dir_path(&game_dir)?;
     let mods_dir = resolve_version_runtime_dir(&game_dir_path, &version_id)?.join("mods");
     let marker_path = mods_dir.join(".fpsmaster-launcher-mods.json");
-    let version_tag = read_mods_marker_version_tag(&marker_path)?;
+    let marker = read_mods_marker(&marker_path)?;
+    let version_tag = marker.as_ref().map(|value| value.version_tag.clone());
+    let checksum = marker.as_ref().and_then(|value| value.checksum.clone());
     let installed = version_tag.is_some() && mods_dir_has_payload(&mods_dir, &marker_path)?;
-    let up_to_date = match (&version_tag, expected_version_tag.as_ref()) {
-        (Some(installed_tag), Some(expected_tag)) => installed_tag.trim() == expected_tag.trim(),
+    let up_to_date = match (marker.as_ref(), expected_version_tag.as_ref()) {
+        (Some(installed_marker), Some(expected_tag)) => {
+            let version_matches = installed_marker.version_tag.trim() == expected_tag.trim();
+            let checksum_matches = match (
+                installed_marker.checksum.as_deref(),
+                expected_checksum.as_deref(),
+            ) {
+                (Some(installed_checksum), Some(expected_checksum_value)) => {
+                    installed_checksum.trim() == expected_checksum_value.trim()
+                }
+                (_, None) => true,
+                _ => false,
+            };
+            let url_matches = match expected_download_url.as_deref() {
+                Some(expected_url) => installed_marker.download_url.trim() == expected_url.trim(),
+                None => true,
+            };
+            version_matches && checksum_matches && url_matches
+        }
         (Some(_), None) => true,
         _ => false,
     };
@@ -919,6 +964,7 @@ fn get_launcher_package_state_blocking(
         installed,
         up_to_date: installed && up_to_date,
         version_tag,
+        checksum,
     })
 }
 
@@ -2623,12 +2669,34 @@ fn now_epoch_millis() -> u128 {
         .as_millis()
 }
 
-fn is_mods_marker_up_to_date(marker_path: &Path, version_tag: &str) -> Result<bool, String> {
-    let installed_tag = read_mods_marker_version_tag(marker_path)?;
-    Ok(matches!(installed_tag, Some(value) if value.trim() == version_tag.trim()))
+fn is_mods_marker_up_to_date(
+    marker_path: &Path,
+    version_tag: &str,
+    expected_checksum: Option<&str>,
+    expected_download_url: Option<&str>,
+) -> Result<bool, String> {
+    let marker = match read_mods_marker(marker_path)? {
+        Some(value) => value,
+        None => return Ok(false),
+    };
+    if marker.version_tag.trim() != version_tag.trim() {
+        return Ok(false);
+    }
+    if let Some(expected_checksum_value) = expected_checksum {
+        let installed_checksum = marker.checksum.as_deref().unwrap_or("").trim();
+        if installed_checksum != expected_checksum_value.trim() {
+            return Ok(false);
+        }
+    }
+    if let Some(expected_url) = expected_download_url {
+        if marker.download_url.trim() != expected_url.trim() {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
 
-fn read_mods_marker_version_tag(marker_path: &Path) -> Result<Option<String>, String> {
+fn read_mods_marker(marker_path: &Path) -> Result<Option<LauncherModsInstallMarker>, String> {
     if !marker_path.exists() {
         return Ok(None);
     }
@@ -2640,11 +2708,10 @@ fn read_mods_marker_version_tag(marker_path: &Path) -> Result<Option<String>, St
         Ok(value) => value,
         Err(_) => return Ok(None),
     };
-    let normalized = marker.version_tag.trim().to_string();
-    if normalized.is_empty() {
+    if marker.version_tag.trim().is_empty() {
         return Ok(None);
     }
-    Ok(Some(normalized))
+    Ok(Some(marker))
 }
 
 fn mods_dir_has_payload(mods_dir: &Path, marker_path: &Path) -> Result<bool, String> {

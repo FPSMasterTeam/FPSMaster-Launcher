@@ -159,6 +159,7 @@ export type LauncherVersion = {
   versionType: LauncherVersionType;
   versionName: string;
   downloadUrl: string;
+  checksum?: string | null;
   recommended?: boolean;
   changelog?: string | null;
   commitHash?: string | null;
@@ -177,6 +178,7 @@ export type LauncherPackageState = {
   installed: boolean;
   upToDate: boolean;
   versionTag: string | null;
+  checksum?: string | null;
 };
 
 export type PresetPackageStatus = {

@@ -489,7 +489,9 @@ function Launcher() {
             const state = await invoke<LauncherPackageState>("get_launcher_package_state", {
               gameDir: settings.gameDir,
               versionId: instance.versionId,
-              expectedVersionTag: expected.versionName
+              expectedVersionTag: expected.versionName,
+              expectedChecksum: expected.checksum,
+              expectedDownloadUrl: expected.downloadUrl
             });
             const mapped: PresetPackageStatus = !state.installed
               ? { state: "missing", versionTag: null }
@@ -604,6 +606,7 @@ function Launcher() {
       gameDir: settings.gameDir,
       versionId: instance.versionId,
       downloadUrl: targetVersion.downloadUrl,
+      checksum: targetVersion.checksum,
       versionTag: targetVersion.versionName,
       cleanExisting: true
     });
