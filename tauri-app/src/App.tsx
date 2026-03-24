@@ -39,6 +39,7 @@ import type {
   Instance,
   LauncherLoginResult,
   LauncherModsInstallResult,
+  LauncherPackageState,
   NewsItem,
   LauncherUser,
   LauncherVersion,
@@ -48,6 +49,7 @@ import type {
   LaunchExecutionResult,
   Loader,
   Page,
+  PresetPackageStatus,
   Settings,
   UiLogPollResult
 } from "./types";
@@ -109,6 +111,7 @@ function Launcher() {
   const [launcherAuth, setLauncherAuth] = useState<LauncherAuthState | null>(loadLauncherAuthState);
   const [launcherVersions, setLauncherVersions] = useState<LauncherVersionMap>(EMPTY_LAUNCHER_VERSIONS);
   const [launcherNews, setLauncherNews] = useState<NewsItem[]>(() => [...NEWS_ITEMS]);
+  const [presetPackageStatuses, setPresetPackageStatuses] = useState<Record<string, PresetPackageStatus>>({});
   const [launcherAuthLoading, setLauncherAuthLoading] = useState(false);
   const [launcherVersionLoading, setLauncherVersionLoading] = useState(false);
   const [defaultGameDir, setDefaultGameDir] = useState(() => DEFAULT_SETTINGS.gameDir);
@@ -190,6 +193,7 @@ function Launcher() {
   useEffect(() => {
     if (!launcherAuth?.token) {
       setLauncherVersions(EMPTY_LAUNCHER_VERSIONS);
+      setPresetPackageStatuses({});
       return;
     }
     void refreshLauncherVersions(true);
@@ -434,6 +438,7 @@ function Launcher() {
       });
       const map = pickLatestLauncherVersions(entries);
       setLauncherVersions(map);
+      void refreshPresetPackageStatuses(map);
       if (!silent) {
         const count = entries.length;
         setStatus(t("app.status.loadedLauncherVersions", { count }));
@@ -466,6 +471,38 @@ function Launcher() {
         // Keep sync best-effort to avoid blocking login flow.
       }
     }
+  }
+
+  async function refreshPresetPackageStatuses(
+    versionMapOverride?: LauncherVersionMap | null
+  ): Promise<void> {
+    const targetMap = versionMapOverride ?? launcherVersions;
+    const nextEntries = await Promise.all(
+      instances
+        .filter((item) => item.preset && item.launcherVersionType)
+        .map(async (instance) => {
+          const expected = targetMap[instance.launcherVersionType!];
+          if (!expected) {
+            return [instance.id, { state: "missing", versionTag: null } satisfies PresetPackageStatus] as const;
+          }
+          try {
+            const state = await invoke<LauncherPackageState>("get_launcher_package_state", {
+              gameDir: settings.gameDir,
+              versionId: instance.versionId,
+              expectedVersionTag: expected.versionName
+            });
+            const mapped: PresetPackageStatus = !state.installed
+              ? { state: "missing", versionTag: null }
+              : state.upToDate
+                ? { state: "ready", versionTag: state.versionTag }
+                : { state: "update-available", versionTag: expected.versionName };
+            return [instance.id, mapped] as const;
+          } catch {
+            return [instance.id, { state: "checking", versionTag: null } satisfies PresetPackageStatus] as const;
+          }
+        })
+    );
+    setPresetPackageStatuses(Object.fromEntries(nextEntries));
   }
 
   async function refreshLauncherNews(silent = false): Promise<void> {
@@ -531,6 +568,7 @@ function Launcher() {
   function logoutLauncherAccount() {
     setLauncherAuth(null);
     setLauncherVersions(EMPTY_LAUNCHER_VERSIONS);
+    setPresetPackageStatuses({});
     setStatus(t("login.tip.signInToContinue"));
   }
 
@@ -570,9 +608,17 @@ function Launcher() {
       cleanExisting: true
     });
     if (result.skipped) {
+      setPresetPackageStatuses((prev) => ({
+        ...prev,
+        [instance.id]: { state: "ready", versionTag: targetVersion.versionName }
+      }));
       setStatus(t("app.status.autoInstallModsUpToDate"));
       return;
     }
+    setPresetPackageStatuses((prev) => ({
+      ...prev,
+      [instance.id]: { state: "ready", versionTag: targetVersion.versionName }
+    }));
     setStatus(t("app.status.autoInstallModsDone", { count: result.installedFiles }));
   }
 
@@ -1062,6 +1108,7 @@ function Launcher() {
           launchingInstanceId={launchingInstanceId}
           launchProgressPercent={launchProgressPercent}
           launchProgressText={launchProgressText}
+          presetPackageStatuses={presetPackageStatuses}
           onDelete={removeInstance}
           onGoInstall={() => setPage("install")}
           onLaunchInstance={async (id) => {

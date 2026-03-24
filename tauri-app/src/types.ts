@@ -172,3 +172,14 @@ export type LauncherModsInstallResult = {
   skipped: boolean;
   versionTag: string;
 };
+
+export type LauncherPackageState = {
+  installed: boolean;
+  upToDate: boolean;
+  versionTag: string | null;
+};
+
+export type PresetPackageStatus = {
+  state: "checking" | "missing" | "ready" | "update-available";
+  versionTag: string | null;
+};

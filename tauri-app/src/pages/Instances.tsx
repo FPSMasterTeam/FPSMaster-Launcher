@@ -3,7 +3,7 @@ import { useMemo, useState } from "react";
 import Button from "../components/Button";
 import Card from "../components/Card";
 import { useI18n } from "../i18n";
-import type { Instance } from "../types";
+import type { Instance, PresetPackageStatus } from "../types";
 import { resolveInstanceIconPath } from "../utils/launcher";
 
 type InstancesPageProps = {
@@ -12,6 +12,7 @@ type InstancesPageProps = {
   launchingInstanceId: string | null;
   launchProgressPercent: number | null;
   launchProgressText: string;
+  presetPackageStatuses: Record<string, PresetPackageStatus | undefined>;
   onDelete: (id: string) => void;
   onGoInstall: () => void;
   onLaunchInstance: (id: string) => void;
@@ -24,6 +25,7 @@ export default function InstancesPage({
   launchingInstanceId,
   launchProgressPercent,
   launchProgressText,
+  presetPackageStatuses,
   onDelete,
   onGoInstall,
   onLaunchInstance,
@@ -78,6 +80,7 @@ export default function InstancesPage({
       <section className="grid grid-cols-1 gap-4 pb-20 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
         {filteredInstances.map((instance) => {
           const icon = resolveInstanceIconPath(instance);
+          const presetStatus = presetPackageStatuses[instance.id];
           const loaderTone =
             instance.loader === "forge"
               ? "text-amber-400 border-amber-500/35 bg-amber-500/8"
@@ -117,6 +120,17 @@ export default function InstancesPage({
                     {instance.baseVersion}
                     {instance.loaderVersion ? `  |  loader ${instance.loaderVersion}` : ""}
                   </p>
+                  {instance.preset && presetStatus && (
+                    <p className="mt-1 truncate text-[11px] text-[var(--text-muted)]">
+                      {presetStatus.state === "ready"
+                        ? t("instances.packageReady", { version: presetStatus.versionTag ?? "-" })
+                        : presetStatus.state === "update-available"
+                          ? t("instances.packageUpdateAvailable", { version: presetStatus.versionTag ?? "-" })
+                          : presetStatus.state === "checking"
+                            ? t("instances.packageChecking")
+                            : t("instances.packageMissing")}
+                    </p>
+                  )}
                 </div>
               </div>
 

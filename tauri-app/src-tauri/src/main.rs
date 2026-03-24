@@ -144,6 +144,15 @@ struct LauncherModsInstallMarker {
 }
 
 #[derive(Debug, Clone, Serialize)]
+struct LauncherPackageState {
+    installed: bool,
+    #[serde(rename = "upToDate")]
+    up_to_date: bool,
+    #[serde(rename = "versionTag")]
+    version_tag: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
 struct CoreLogEvent {
     level: String,
     message: String,
@@ -803,6 +812,19 @@ async fn install_launcher_version_mods(
     .map_err(|e| format!("Failed to join launcher mods install task: {e}"))?
 }
 
+#[tauri::command]
+async fn get_launcher_package_state(
+    game_dir: String,
+    version_id: String,
+    expected_version_tag: Option<String>,
+) -> Result<LauncherPackageState, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        get_launcher_package_state_blocking(game_dir, version_id, expected_version_tag)
+    })
+    .await
+    .map_err(|e| format!("Failed to join launcher package state task: {e}"))?
+}
+
 fn install_launcher_version_mods_blocking(
     game_dir: String,
     version_id: String,
@@ -875,6 +897,28 @@ fn install_launcher_version_mods_blocking(
         installed_files,
         skipped: false,
         version_tag: normalized_tag,
+    })
+}
+
+fn get_launcher_package_state_blocking(
+    game_dir: String,
+    version_id: String,
+    expected_version_tag: Option<String>,
+) -> Result<LauncherPackageState, String> {
+    let game_dir_path = resolve_game_dir_path(&game_dir)?;
+    let mods_dir = resolve_version_runtime_dir(&game_dir_path, &version_id)?.join("mods");
+    let marker_path = mods_dir.join(".fpsmaster-launcher-mods.json");
+    let version_tag = read_mods_marker_version_tag(&marker_path)?;
+    let installed = version_tag.is_some() && mods_dir_has_payload(&mods_dir, &marker_path)?;
+    let up_to_date = match (&version_tag, expected_version_tag.as_ref()) {
+        (Some(installed_tag), Some(expected_tag)) => installed_tag.trim() == expected_tag.trim(),
+        (Some(_), None) => true,
+        _ => false,
+    };
+    Ok(LauncherPackageState {
+        installed,
+        up_to_date: installed && up_to_date,
+        version_tag,
     })
 }
 
@@ -2580,18 +2624,27 @@ fn now_epoch_millis() -> u128 {
 }
 
 fn is_mods_marker_up_to_date(marker_path: &Path, version_tag: &str) -> Result<bool, String> {
+    let installed_tag = read_mods_marker_version_tag(marker_path)?;
+    Ok(matches!(installed_tag, Some(value) if value.trim() == version_tag.trim()))
+}
+
+fn read_mods_marker_version_tag(marker_path: &Path) -> Result<Option<String>, String> {
     if !marker_path.exists() {
-        return Ok(false);
+        return Ok(None);
     }
     let content = match fs::read_to_string(marker_path) {
         Ok(text) => text,
-        Err(_) => return Ok(false),
+        Err(_) => return Ok(None),
     };
     let marker = match serde_json::from_str::<LauncherModsInstallMarker>(&content) {
         Ok(value) => value,
-        Err(_) => return Ok(false),
+        Err(_) => return Ok(None),
     };
-    Ok(marker.version_tag.trim() == version_tag.trim())
+    let normalized = marker.version_tag.trim().to_string();
+    if normalized.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(normalized))
 }
 
 fn mods_dir_has_payload(mods_dir: &Path, marker_path: &Path) -> Result<bool, String> {
@@ -2801,6 +2854,7 @@ fn main() {
             launcher_login,
             launcher_list_available_versions,
             launcher_list_news,
+            get_launcher_package_state,
             install_launcher_version_mods,
             list_vanilla_versions,
             install_vanilla,
