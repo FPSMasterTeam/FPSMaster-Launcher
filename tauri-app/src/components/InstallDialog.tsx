@@ -12,17 +12,19 @@ export default function InstallDialog({ dialog, onClose }: InstallDialogProps) {
 
   return (
     <section className="modalOverlay">
-      <Card variant="strong" className="w-full max-w-[760px] max-h-[88vh] overflow-auto rounded-[var(--radius-xl)] p-4">
+      <Card variant="strong" className="w-full max-w-[780px] max-h-[88vh] overflow-auto rounded-3xl p-5 md:p-6" interactive={false}>
         <div className="panelHead">
           <h2>{t("dialog.installing", { version: dialog.versionId })}</h2>
           <span className="mutedPill">{t("dialog.session", { id: dialog.sessionId.slice(-6) })}</span>
         </div>
         <p className="minorHint">{t("dialog.hint")}</p>
+
         <InstallPhaseView phase={dialog.vanilla} />
         {dialog.loaderPhase && <InstallPhaseView phase={dialog.loaderPhase} />}
         {dialog.errorText !== "" && <pre className="errorBox">{dialog.errorText}</pre>}
+
         <div className="modalActions">
-          <button className="primaryAction" disabled={!dialog.canClose} onClick={onClose}>
+          <button className="primaryAction" disabled={!dialog.canClose} onClick={onClose} type="button">
             {t("dialog.confirm")}
           </button>
         </div>
@@ -33,18 +35,13 @@ export default function InstallDialog({ dialog, onClose }: InstallDialogProps) {
 
 function InstallPhaseView({ phase }: { phase: InstallPhaseState }) {
   const { t } = useI18n();
-  const percent =
-    phase.total > 0
-      ? Math.min(100, Math.floor((phase.current / phase.total) * 100))
-      : phase.status === "done"
-        ? 100
-        : 0;
+  const percent = phase.total > 0 ? Math.min(100, Math.floor((phase.current / phase.total) * 100)) : phase.status === "done" ? 100 : 0;
 
   const stage = translateStage(phase.stage, t);
   const status = translateStatus(phase.status, t);
 
   return (
-    <Card as="article" variant="soft" className="mt-3 rounded-[var(--radius-md)] p-3">
+    <Card as="article" variant="soft" className="mt-3 rounded-2xl p-4" interactive={false}>
       <div className="phaseHeadRow">
         <p className="phaseTitle">{phase.title}</p>
         <p className={`phaseStatus ${phase.status}`}>{status}</p>
@@ -66,10 +63,7 @@ function InstallPhaseView({ phase }: { phase: InstallPhaseState }) {
   );
 }
 
-function translateStatus(
-  status: InstallPhaseState["status"],
-  t: ReturnType<typeof useI18n>["t"]
-): string {
+function translateStatus(status: InstallPhaseState["status"], t: ReturnType<typeof useI18n>["t"]): string {
   if (status === "done") return t("dialog.status.done");
   if (status === "running") return t("dialog.status.running");
   if (status === "error") return t("dialog.status.error");

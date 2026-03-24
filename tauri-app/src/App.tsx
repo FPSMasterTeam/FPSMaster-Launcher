@@ -8,7 +8,13 @@ import Button from "./components/Button";
 import Card from "./components/Card";
 import InstallDialog from "./components/InstallDialog";
 import Sidebar from "./components/Sidebar";
-import { DEFAULT_SETTINGS, PRESET_INSTANCES, STORAGE_KEYS, resolvePresetVersionId } from "./constants";
+import {
+  DEFAULT_SETTINGS,
+  LAUNCHER_API_BASE_URL,
+  PRESET_INSTANCES,
+  STORAGE_KEYS,
+  resolvePresetVersionId
+} from "./constants";
 import {
   createTranslator,
   I18nProvider,
@@ -18,6 +24,7 @@ import HomePage from "./pages/Home";
 import InstanceSettingsPage from "./pages/InstanceSettings";
 import InstallPage from "./pages/Install";
 import InstancesPage from "./pages/Instances";
+import LoginPage from "./pages/Login";
 import MonitorPage from "./pages/Monitor";
 import SettingsPage from "./pages/Settings";
 import type {
@@ -29,6 +36,11 @@ import type {
   InstallResult,
   InstallPhaseState,
   Instance,
+  LauncherLoginResult,
+  LauncherModsInstallResult,
+  LauncherUser,
+  LauncherVersion,
+  LauncherVersionType,
   JdkEnsureResult,
   Locale,
   LaunchExecutionResult,
@@ -51,10 +63,22 @@ import {
   resolveInstallVersion
 } from "./utils/launcher";
 
+type LauncherAuthState = {
+  token: string;
+  user: LauncherUser;
+};
+
+type LauncherVersionMap = Record<LauncherVersionType, LauncherVersion | null>;
+
+const EMPTY_LAUNCHER_VERSIONS: LauncherVersionMap = {
+  EDGE: null,
+  NOVA: null
+};
+
 export function App() {
   useEffect(() => {
     const settings = loadSettings();
-    applyTheme(settings.themeMode, settings.themeAccent);
+    applyTheme(settings.themeMode, settings.themeAccent, settings.customAccentHex);
   }, []);
 
   const params = new URLSearchParams(window.location.search);
@@ -80,6 +104,10 @@ function Launcher() {
     localStorage.getItem(STORAGE_KEYS.selected) ?? PRESET_INSTANCES[0].id
   );
   const [settings, setSettings] = useState<Settings>(loadSettings);
+  const [launcherAuth, setLauncherAuth] = useState<LauncherAuthState | null>(loadLauncherAuthState);
+  const [launcherVersions, setLauncherVersions] = useState<LauncherVersionMap>(EMPTY_LAUNCHER_VERSIONS);
+  const [launcherAuthLoading, setLauncherAuthLoading] = useState(false);
+  const [launcherVersionLoading, setLauncherVersionLoading] = useState(false);
   const [defaultGameDir, setDefaultGameDir] = useState(() => DEFAULT_SETTINGS.gameDir);
   const [busy, setBusy] = useState(false);
   const [catalogLoading, setCatalogLoading] = useState(false);
@@ -124,6 +152,7 @@ function Launcher() {
   const activeBackgroundUrl =
     settings.backgroundSource === "web-random" ? settings.backgroundWebUrl : settings.backgroundImage;
   const snapshots = useMemo(() => catalog.filter(isSnapshot), [catalog]);
+  const authenticated = Boolean(launcherAuth?.token?.trim());
   const launching = busy && launchingInstanceId !== null;
   const installDisabled =
     busy ||
@@ -148,8 +177,24 @@ function Launcher() {
   }, [settings]);
 
   useEffect(() => {
-    applyTheme(settings.themeMode, settings.themeAccent);
-  }, [settings.themeMode, settings.themeAccent]);
+    if (launcherAuth) {
+      localStorage.setItem(STORAGE_KEYS.launcherAuth, JSON.stringify(launcherAuth));
+      return;
+    }
+    localStorage.removeItem(STORAGE_KEYS.launcherAuth);
+  }, [launcherAuth]);
+
+  useEffect(() => {
+    if (!launcherAuth?.token) {
+      setLauncherVersions(EMPTY_LAUNCHER_VERSIONS);
+      return;
+    }
+    void refreshLauncherVersions(true);
+  }, [launcherAuth?.token]);
+
+  useEffect(() => {
+    applyTheme(settings.themeMode, settings.themeAccent, settings.customAccentHex);
+  }, [settings.themeMode, settings.themeAccent, settings.customAccentHex]);
 
   useEffect(() => {
     if (current) localStorage.setItem(STORAGE_KEYS.selected, current.id);
@@ -338,6 +383,140 @@ function Launcher() {
     });
   }
 
+  function pickLatestLauncherVersions(entries: LauncherVersion[]): LauncherVersionMap {
+    const out: LauncherVersionMap = { EDGE: null, NOVA: null };
+    const scoreOf = (item: LauncherVersion): number => {
+      const raw = item.updatedAt ?? item.createdAt ?? "";
+      const parsed = Date.parse(raw);
+      return Number.isFinite(parsed) ? parsed : Number.NEGATIVE_INFINITY;
+    };
+
+    for (const item of entries) {
+      if (item.versionType !== "EDGE" && item.versionType !== "NOVA") continue;
+      const current = out[item.versionType];
+      if (!current || scoreOf(item) > scoreOf(current)) {
+        out[item.versionType] = item;
+      }
+    }
+    return out;
+  }
+
+  async function refreshLauncherVersions(
+    silent = false,
+    tokenOverride?: string
+  ): Promise<{ map: LauncherVersionMap | null; error: string | null }> {
+    const token = (tokenOverride ?? launcherAuth?.token ?? "").trim();
+    if (!token) {
+      setLauncherVersions(EMPTY_LAUNCHER_VERSIONS);
+      return { map: null, error: t("app.status.authRequiredForPreset") };
+    }
+
+    const baseUrl = LAUNCHER_API_BASE_URL;
+    if (!silent) {
+      setStatus(t("app.status.loadingLauncherVersions"));
+    }
+    setLauncherVersionLoading(true);
+    try {
+      const entries = await invoke<LauncherVersion[]>("launcher_list_available_versions", {
+        baseUrl,
+        token
+      });
+      const map = pickLatestLauncherVersions(entries);
+      setLauncherVersions(map);
+      if (!silent) {
+        const count = entries.length;
+        setStatus(t("app.status.loadedLauncherVersions", { count }));
+      }
+      return { map, error: null };
+    } catch (error) {
+      const errorText = formatLaunchError(error);
+      if (!silent) {
+        setStatus(t("app.status.failed", { error: errorText }));
+      }
+      return { map: null, error: errorText };
+    } finally {
+      setLauncherVersionLoading(false);
+    }
+  }
+
+  async function loginLauncherAccount(
+    usernameOrEmail: string,
+    password: string
+  ): Promise<string | null> {
+    const identity = usernameOrEmail.trim();
+    if (!identity || !password) {
+      return t("login.required");
+    }
+
+    setLauncherAuthLoading(true);
+    try {
+      const result = await invoke<LauncherLoginResult>("launcher_login", {
+        baseUrl: LAUNCHER_API_BASE_URL,
+        usernameOrEmail: identity,
+        password
+      });
+      const normalizedToken = normalizeStoredToken(result.token);
+      if (!normalizedToken) {
+        return "登录异常: 未能读取到有效 token";
+      }
+      setLauncherAuth({
+        token: normalizedToken,
+        user: result.user ?? {}
+      });
+      const refresh = await refreshLauncherVersions(false, normalizedToken);
+      return refresh.error;
+    } catch (error) {
+      const errorText = normalizeLoginError(error, t);
+      setStatus(t("app.status.failed", { error: errorText }));
+      return errorText;
+    } finally {
+      setLauncherAuthLoading(false);
+    }
+  }
+
+  function logoutLauncherAccount() {
+    setLauncherAuth(null);
+    setLauncherVersions(EMPTY_LAUNCHER_VERSIONS);
+    setStatus(t("login.tip.signInToContinue"));
+  }
+
+  async function ensurePresetModsReady(instance: Instance) {
+    if (!instance.preset || !instance.launcherVersionType) return;
+
+    const token = launcherAuth?.token?.trim() ?? "";
+    if (!token) {
+      setStatus(t("app.status.authRequiredForPreset"));
+      return;
+    }
+
+    let targetVersion = launcherVersions[instance.launcherVersionType];
+    if (!targetVersion) {
+      const refresh = await refreshLauncherVersions(true, token);
+      if (refresh.error) {
+        throw new Error(refresh.error);
+      }
+      targetVersion = refresh.map?.[instance.launcherVersionType] ?? null;
+    }
+
+    if (!targetVersion) {
+      return;
+    }
+
+    setStatus(t("app.status.autoInstallMods", { name: instance.name }));
+    const result = await invoke<LauncherModsInstallResult>("install_launcher_version_mods", {
+      gameDir: settings.gameDir,
+      versionId: instance.versionId,
+      downloadUrl: targetVersion.downloadUrl,
+      versionTag: targetVersion.versionName,
+      cleanExisting: true
+    });
+    if (result.skipped) {
+      setStatus(t("app.status.autoInstallModsUpToDate"));
+      return;
+    }
+    setStatus(t("app.status.autoInstallModsDone", { count: result.installedFiles }));
+  }
+
   async function ensureInstanceReadyForLaunch(instance: Instance): Promise<Instance> {
     let workingInstance = instance;
     const presetVersionId = instance.preset ? resolvePresetVersionId(instance.id) : null;
@@ -368,6 +547,7 @@ function Launcher() {
         versionId: workingInstance.versionId
       });
       if (installed) {
+        await ensurePresetModsReady(workingInstance);
         return workingInstance;
       }
     }
@@ -443,6 +623,7 @@ function Launcher() {
     setInstances((prev) =>
       prev.map((item) => (item.id === updatedInstance.id ? updatedInstance : item))
     );
+    await ensurePresetModsReady(updatedInstance);
     setStatus(t("app.status.autoInstallCompleted", { name: updatedInstance.name }));
     return updatedInstance;
   }
@@ -885,13 +1066,14 @@ function Launcher() {
         onChange={updateSettings}
         onClampMemory={updateMemory}
         onReset={() =>
-          setSettings({
-            ...DEFAULT_SETTINGS,
-            gameDir: defaultGameDir,
-            language: settings.language,
-            themeMode: settings.themeMode,
-            themeAccent: settings.themeAccent
-          })
+            setSettings({
+              ...DEFAULT_SETTINGS,
+              gameDir: defaultGameDir,
+              language: settings.language,
+              themeMode: settings.themeMode,
+              themeAccent: settings.themeAccent,
+              customAccentHex: settings.customAccentHex
+            })
         }
       />
     );
@@ -917,7 +1099,7 @@ function Launcher() {
         setStatus(createTranslator(locale)("app.status.ready"));
       }}
     >
-      <div className="relative flex h-screen w-screen overflow-hidden bg-[var(--bg-primary)] text-[var(--text-primary)] select-none pixel-pattern linear-backdrop">
+      <div className="launcher-shell relative flex h-screen w-screen overflow-hidden bg-[var(--bg-primary)] text-[var(--text-primary)] select-none pixel-pattern linear-backdrop">
         {activeBackgroundUrl && (
           <div className="pointer-events-none absolute inset-0 z-0 overflow-hidden">
             <div
@@ -933,19 +1115,22 @@ function Launcher() {
           </div>
         )}
         <div
-          className="fixed left-0 right-0 top-0 z-50 flex h-10 items-center justify-between border-b border-[var(--border-subtle)] bg-[var(--bg-secondary)]/72 px-4 backdrop-blur-xl"
+          className="fixed left-0 right-0 top-0 z-50 flex h-10 items-center justify-between border-b border-[var(--border-subtle)] bg-[var(--bg-secondary)]/86 px-3 backdrop-blur-xl"
           data-tauri-drag-region
         >
-          <div className="flex min-w-0 flex-1 items-center gap-3" data-tauri-drag-region>
-            <AppLogo size={24} className="rounded-md" />
-            <span className="text-sm font-semibold tracking-wide text-[var(--text-secondary)] truncate">
+          <div
+            className={`flex min-w-0 flex-1 items-center ${authenticated ? "gap-2" : "gap-3"}`}
+            data-tauri-drag-region
+          >
+            {!authenticated && <AppLogo size={24} className="rounded-md" />}
+            <span className="truncate text-sm font-semibold tracking-wide text-[var(--text-secondary)]">
               {t("app.name")}
             </span>
           </div>
           <div className="flex h-full items-center gap-0.5 window-no-drag" data-no-drag="true">
             <button
               type="button"
-              className="h-full px-4 text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-soft)] hover:shadow-[inset_0_0_0_1px_var(--border-medium),0_0_16px_rgba(114,131,255,0.16)] transition-all duration-150 window-no-drag"
+              className="h-full px-4 text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-soft)] hover:shadow-[inset_0_0_0_1px_var(--border-medium),0_0_16px_rgba(var(--accent-rgb),0.16)] transition-all duration-150 window-no-drag"
               data-no-drag="true"
               onClick={() => withTitlebarGuard(() => getCurrentWindow().minimize())}
             >
@@ -953,7 +1138,7 @@ function Launcher() {
             </button>
             <button
               type="button"
-              className="h-full px-4 text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-soft)] hover:shadow-[inset_0_0_0_1px_var(--border-medium),0_0_16px_rgba(114,131,255,0.16)] transition-all duration-150 window-no-drag"
+              className="h-full px-4 text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-soft)] hover:shadow-[inset_0_0_0_1px_var(--border-medium),0_0_16px_rgba(var(--accent-rgb),0.16)] transition-all duration-150 window-no-drag"
               data-no-drag="true"
               onClick={() => withTitlebarGuard(() => getCurrentWindow().toggleMaximize())}
             >
@@ -970,30 +1155,42 @@ function Launcher() {
           </div>
         </div>
 
-        <div className="relative z-10 flex h-full w-full flex-1 pt-10">
-          <Sidebar
-            currentPage={page}
-            collapsed={effectiveSidebarCollapsed}
-            canToggleCollapse={!compactLayout}
-            onToggleCollapse={() => setSidebarCollapsed((value) => !value)}
-            setPage={setPage}
-          />
+        {authenticated ? (
+          <div className="relative z-10 flex h-full w-full flex-1 pt-10">
+            <Sidebar
+              currentPage={page}
+              collapsed={effectiveSidebarCollapsed}
+              canToggleCollapse={!compactLayout}
+              user={launcherAuth?.user ?? null}
+              onToggleCollapse={() => setSidebarCollapsed((value) => !value)}
+              setPage={setPage}
+            />
 
-          <main className="relative flex-1 overflow-hidden bg-transparent">
-            <div className="pointer-events-none absolute -right-32 -top-24 h-[420px] w-[420px] rounded-full bg-[var(--mc-grass)]/8 blur-[110px] opacity-45" />
-            <div className="pointer-events-none absolute -bottom-32 -left-24 h-[360px] w-[360px] rounded-full bg-[var(--mc-grass)]/6 blur-[105px] opacity-35" />
+            <main className="relative flex-1 overflow-hidden border-l border-[var(--border-subtle)] bg-[var(--bg-secondary)]/34">
+              <div className="pointer-events-none absolute -right-32 -top-24 h-[420px] w-[420px] rounded-full bg-[var(--mc-grass)]/8 blur-[110px] opacity-45" />
+              <div className="pointer-events-none absolute -bottom-32 -left-24 h-[360px] w-[360px] rounded-full bg-[var(--mc-grass)]/6 blur-[105px] opacity-35" />
 
-            <div key={page} className="relative z-10 h-full page-transition">
-              {renderPage()}
+              <div key={page} className="relative z-10 h-full page-transition">
+                {renderPage()}
+              </div>
+            </main>
+          </div>
+        ) : (
+          <main className="relative z-10 flex h-full w-full flex-1 items-center justify-center px-4 pb-4 pt-10">
+            <div className="w-full max-w-[520px]">
+              <LoginPage
+                loading={launcherAuthLoading}
+                onSubmit={loginLauncherAccount}
+              />
             </div>
           </main>
-        </div>
+        )}
 
-        {installDialog && installDialog.open && (
+        {authenticated && installDialog && installDialog.open && (
           <InstallDialog dialog={installDialog} onClose={closeInstallDialog} />
         )}
 
-        {launchError && (
+        {authenticated && launchError && (
           <div className="fixed inset-0 z-[95] flex items-center justify-center bg-[var(--bg-primary)]/68 p-6 backdrop-blur-md">
             <Card variant="frost" className="w-full max-w-lg rounded-2xl p-6">
               <h3 className="text-xl font-semibold text-[var(--accent-danger)]">
@@ -1023,6 +1220,66 @@ function formatLaunchError(error: unknown): string {
     return raw.slice("Error: ".length).trim();
   }
   return raw.trim();
+}
+
+function normalizeLoginError(
+  error: unknown,
+  t: ReturnType<typeof createTranslator>
+): string {
+  let text = formatLaunchError(error);
+  text = text.replace(/^login request failed:\s*/i, "").trim();
+  text = text.replace(/^login failed with http \d+:\s*/i, "").trim();
+  text = text.replace(/^login failed:\s*/i, "").trim();
+
+  const maybeJson = text.match(/(\{[\s\S]*\}|\[[\s\S]*\])$/);
+  if (maybeJson) {
+    const parsed = tryExtractMessageFromJson(maybeJson[1]);
+    if (parsed) {
+      return parsed;
+    }
+  }
+
+  if (text === "") {
+    return t("login.failed");
+  }
+  return text;
+}
+
+function tryExtractMessageFromJson(raw: string): string | null {
+  try {
+    const value = JSON.parse(raw) as unknown;
+    return findMessageInUnknown(value);
+  } catch {
+    return null;
+  }
+}
+
+function findMessageInUnknown(value: unknown): string | null {
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    return trimmed === "" ? null : trimmed;
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const found = findMessageInUnknown(item);
+      if (found) return found;
+    }
+    return null;
+  }
+  if (value && typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    for (const key of ["message", "error", "detail", "msg", "reason"]) {
+      const candidate = record[key];
+      if (typeof candidate === "string" && candidate.trim() !== "") {
+        return candidate.trim();
+      }
+    }
+    for (const nested of Object.values(record)) {
+      const found = findMessageInUnknown(nested);
+      if (found) return found;
+    }
+  }
+  return null;
 }
 
 function parseLaunchProgressLog(message: string): { percent?: number; text: string } | null {
@@ -1081,6 +1338,33 @@ async function openMonitor(pid: number, versionId: string, cursor: number, local
       reject(new Error(String((event as { payload?: unknown }).payload ?? "create monitor failed")));
     });
   });
+}
+
+function loadLauncherAuthState(): LauncherAuthState | null {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEYS.launcherAuth);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<LauncherAuthState>;
+    const token = normalizeStoredToken(parsed?.token);
+    if (!parsed || !token) {
+      return null;
+    }
+    return {
+      token,
+      user: (parsed.user as LauncherUser | undefined) ?? {}
+    };
+  } catch {
+    return null;
+  }
+}
+
+function normalizeStoredToken(raw: unknown): string | null {
+  if (typeof raw !== "string") return null;
+  let token = raw.trim().replace(/^"+|"+$/g, "").trim();
+  if (token.toLowerCase().startsWith("bearer ")) {
+    token = token.slice(7).trim();
+  }
+  return token || null;
 }
 
 function readStoredLocale(): Locale | null {

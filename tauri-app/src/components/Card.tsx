@@ -32,10 +32,10 @@ export default function Card<T extends ElementType = "div">({
   function handleMouseMove(event: MouseEvent<HTMLElement>) {
     if (interactive) {
       const rect = event.currentTarget.getBoundingClientRect();
-      const x = ((event.clientX - rect.left) / Math.max(1, rect.width)) * 100;
-      const y = ((event.clientY - rect.top) / Math.max(1, rect.height)) * 100;
-      event.currentTarget.style.setProperty("--card-halo-x", `${x}%`);
-      event.currentTarget.style.setProperty("--card-halo-y", `${y}%`);
+      const x = Math.min(Math.max(0, event.clientX - rect.left), Math.max(0, rect.width));
+      const y = Math.min(Math.max(0, event.clientY - rect.top), Math.max(0, rect.height));
+      event.currentTarget.style.setProperty("--card-halo-x", `${x}px`);
+      event.currentTarget.style.setProperty("--card-halo-y", `${y}px`);
     }
     (onMouseMove as ((event: MouseEvent<HTMLElement>) => void) | undefined)?.(event);
   }

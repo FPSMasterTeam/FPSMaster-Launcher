@@ -3,8 +3,11 @@ import type { Instance, NewsItem, ServerItem, Settings } from "./types";
 export const STORAGE_KEYS = {
   instances: "fpsmaster.instances",
   settings: "fpsmaster.settings",
-  selected: "fpsmaster.selected"
+  selected: "fpsmaster.selected",
+  launcherAuth: "fpsmaster.launcherAuth"
 } as const;
+
+export const LAUNCHER_API_BASE_URL = "https://api.fpsmaster.top";
 
 export const NEWS_ITEMS: readonly NewsItem[] = [
   {
@@ -36,6 +39,7 @@ export const DEFAULT_SETTINGS: Settings = {
   language: "en-US",
   themeMode: "dark",
   themeAccent: "emerald",
+  customAccentHex: "#25b87a",
   backgroundSource: "local",
   backgroundImage: "",
   backgroundWebUrl: "",
@@ -50,6 +54,7 @@ export const PRESET_INSTANCES: readonly Instance[] = [
     versionId: "FPSMaster-Edge",
     baseVersion: "1.8.9",
     loader: "forge",
+    launcherVersionType: "EDGE",
     iconPath: "/instance-icons/edge.png",
     preset: true
   },
@@ -59,6 +64,7 @@ export const PRESET_INSTANCES: readonly Instance[] = [
     versionId: "FPSMaster-Nova",
     baseVersion: "1.20.1",
     loader: "fabric",
+    launcherVersionType: "NOVA",
     iconPath: "/instance-icons/nova.png",
     preset: true
   }

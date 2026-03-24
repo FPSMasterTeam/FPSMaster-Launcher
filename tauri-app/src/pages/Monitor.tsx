@@ -14,10 +14,7 @@ type MonitorPageProps = {
 export default function MonitorPage({ params }: MonitorPageProps) {
   const { t } = useI18n();
   const visualSettings = useMemo(() => loadSettings(), []);
-  const activeBackgroundUrl =
-    visualSettings.backgroundSource === "web-random"
-      ? visualSettings.backgroundWebUrl
-      : visualSettings.backgroundImage;
+  const activeBackgroundUrl = visualSettings.backgroundSource === "web-random" ? visualSettings.backgroundWebUrl : visualSettings.backgroundImage;
   const pid = parseIntSafe(params.get("pid"), 0);
   const startedAt = parseIntSafe(params.get("startedAt"), Date.now());
   const initialCursor = parseIntSafe(params.get("cursor"), 0);
@@ -85,13 +82,9 @@ export default function MonitorPage({ params }: MonitorPageProps) {
     };
   }, [pid, t]);
 
-  const uptimeMs =
-    stats?.running === false
-      ? null
-      : (stats?.elapsedMs ?? Math.max(0, tick - startedAt));
+  const uptimeMs = stats?.running === false ? null : stats?.elapsedMs ?? Math.max(0, tick - startedAt);
   const uptime = uptimeMs === null ? "N/A" : formatDuration(uptimeMs);
-  const memory =
-    stats?.memoryMb === null || stats?.memoryMb === undefined ? "N/A" : `${stats.memoryMb} MB`;
+  const memory = stats?.memoryMb === null || stats?.memoryMb === undefined ? "N/A" : `${stats.memoryMb} MB`;
 
   async function backToLauncher() {
     await invoke("show_main_window");
@@ -130,7 +123,7 @@ export default function MonitorPage({ params }: MonitorPageProps) {
   }
 
   return (
-    <div className="appWindow monitorWindow relative overflow-hidden linear-backdrop">
+    <div className="appWindow relative overflow-hidden linear-backdrop">
       {activeBackgroundUrl && (
         <div className="pointer-events-none absolute inset-0 z-0 overflow-hidden">
           <div
@@ -148,73 +141,57 @@ export default function MonitorPage({ params }: MonitorPageProps) {
       <div className="relative z-10">
         <TitleBar title={`${t("app.name")} Runtime ${version}`} subtitle={t("monitor.subtitle")} />
       </div>
-      <main className="monitorShell relative z-10">
-        <Card as="section" variant="frost" className="monitorTopBar">
-          <div className="monitorTitle">
-            <p className="brandTag">{t("monitor.brandTag")}</p>
-            <h1>
-              {t("app.name")} {version}
-            </h1>
-          </div>
-          <div className="monitorActions">
-            <button className="ghostButton" onClick={() => setLogs([])}>
-              {t("monitor.clearLogs")}
-            </button>
-            <button
-              className="ghostButton danger"
-              onClick={() => setConfirmAction("stop")}
-              disabled={stopping || !(stats?.running ?? true)}
-            >
-              {t("monitor.endGame")}
-            </button>
-            <button className="primaryAction" onClick={() => setConfirmAction("back")} disabled={stopping}>
-              {t("monitor.backLauncher")}
-            </button>
+
+      <main className="relative z-10 flex min-h-0 flex-1 flex-col gap-3 p-3 md:p-4">
+        <Card as="section" variant="frost" className="rounded-xl p-3.5 md:p-4" interactive={false}>
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-[0.16em] text-[var(--text-muted)]">{t("monitor.brandTag")}</p>
+              <h1 className="mt-1 text-2xl font-semibold text-[var(--text-primary)] md:text-3xl">{`${t("app.name")} ${version}`}</h1>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <button className="ghostButton" onClick={() => setLogs([])} type="button">
+                {t("monitor.clearLogs")}
+              </button>
+              <button className="ghostButton danger" onClick={() => setConfirmAction("stop")} disabled={stopping || !(stats?.running ?? true)} type="button">
+                {t("monitor.endGame")}
+              </button>
+              <button className="primaryAction" onClick={() => setConfirmAction("back")} disabled={stopping} type="button">
+                {t("monitor.backLauncher")}
+              </button>
+            </div>
           </div>
         </Card>
-        <section className="monitorStats">
-          <Card variant="soft" className="rounded-[var(--radius-lg)] p-3">
-            <p className="statLabel">{t("monitor.pid")}</p>
-            <p className="statValue">{pid > 0 ? pid : "N/A"}</p>
-          </Card>
-          <Card variant="soft" className="rounded-[var(--radius-lg)] p-3">
-            <p className="statLabel">{t("monitor.status")}</p>
-            <p className="statValue">{stats?.running ? t("monitor.running") : t("monitor.exited")}</p>
-          </Card>
-          <Card variant="soft" className="rounded-[var(--radius-lg)] p-3">
-            <p className="statLabel">{t("monitor.memory")}</p>
-            <p className="statValue">{memory}</p>
-          </Card>
-          <Card variant="soft" className="rounded-[var(--radius-lg)] p-3">
-            <p className="statLabel">{t("monitor.uptime")}</p>
-            <p className="statValue">{uptime}</p>
-          </Card>
+
+        <section className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+          <StatCard label={t("monitor.pid")} value={pid > 0 ? pid : "N/A"} />
+          <StatCard label={t("monitor.status")} value={stats?.running ? t("monitor.running") : t("monitor.exited")} />
+          <StatCard label={t("monitor.memory")} value={memory} />
+          <StatCard label={t("monitor.uptime")} value={uptime} />
         </section>
-        <Card as="section" variant="frost" className="monitorLogPanel rounded-[var(--radius-xl)] p-4">
-          <div className="panelHead">
-            <h2>{t("monitor.consoleOutput")}</h2>
+
+        <Card as="section" variant="frost" className="flex min-h-0 flex-1 flex-col rounded-xl p-3.5" interactive={false}>
+          <div className="mb-3 flex items-center justify-between gap-2">
+            <h2 className="text-base font-semibold text-[var(--text-primary)]">{t("monitor.consoleOutput")}</h2>
             <span className="mutedPill">{status}</span>
           </div>
-          <pre className="logBox monitorLogBox">{logs.join("\n")}</pre>
+          <pre className="logBox h-full min-h-0 max-h-none">{logs.join("\n")}</pre>
         </Card>
       </main>
+
       {confirmAction && (
         <section className="modalOverlay">
-          <Card variant="strong" className="w-full max-w-[760px] max-h-[88vh] overflow-auto rounded-[var(--radius-xl)] p-4">
+          <Card variant="strong" className="w-full max-w-[680px] rounded-xl p-4" interactive={false}>
             <div className="panelHead">
               <h2>{t("monitor.confirmTitle")}</h2>
               <span className="mutedPill">{pid > 0 ? `pid=${pid}` : "pid=N/A"}</span>
             </div>
             <p className="minorHint">{t("monitor.confirmMessage")}</p>
             <div className="modalActions">
-              <button
-                className="ghostButton"
-                onClick={() => setConfirmAction(null)}
-                disabled={stopping}
-              >
+              <button className="ghostButton" onClick={() => setConfirmAction(null)} disabled={stopping} type="button">
                 {t("monitor.cancel")}
               </button>
-              <button className="primaryAction" onClick={() => void confirmAndExecute()} disabled={stopping}>
+              <button className="primaryAction" onClick={() => void confirmAndExecute()} disabled={stopping} type="button">
                 {confirmAction === "back" ? t("monitor.confirmBack") : t("monitor.confirmStop")}
               </button>
             </div>
@@ -222,5 +199,14 @@ export default function MonitorPage({ params }: MonitorPageProps) {
         </section>
       )}
     </div>
+  );
+}
+
+function StatCard({ label, value }: { label: string; value: string | number }) {
+  return (
+    <Card variant="soft" className="rounded-2xl p-3" interactive={false}>
+      <p className="text-xs uppercase tracking-wide text-[var(--text-muted)]">{label}</p>
+      <p className="mt-1 text-lg font-semibold text-[var(--text-primary)]">{value}</p>
+    </Card>
   );
 }

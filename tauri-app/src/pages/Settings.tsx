@@ -10,7 +10,7 @@ import {
   Save,
   Trash2
 } from "lucide-react";
-import { type ChangeEvent, useMemo, useRef, useState } from "react";
+import { type ChangeEvent, type KeyboardEvent, type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import Button from "../components/Button";
 import Card from "../components/Card";
@@ -24,16 +24,12 @@ type SettingsPageProps = {
   onReset: () => void;
 };
 
-export default function SettingsPage({
-  settings,
-  onChange,
-  onClampMemory,
-  onReset
-}: SettingsPageProps) {
+export default function SettingsPage({ settings, onChange, onClampMemory, onReset }: SettingsPageProps) {
   const { locale, setLocale, t } = useI18n();
   const [hardwareAcceleration, setHardwareAcceleration] = useState(true);
   const [showGameOutput, setShowGameOutput] = useState(false);
   const [backgroundError, setBackgroundError] = useState("");
+  const [customAccentDraft, setCustomAccentDraft] = useState(settings.customAccentHex);
   const backgroundInputRef = useRef<HTMLInputElement>(null);
 
   const chartData = useMemo(
@@ -52,13 +48,18 @@ export default function SettingsPage({
 
   const themeModes: ThemeMode[] = ["dark", "light"];
   const accentOptions: Array<{ id: ThemeAccent; swatch: string }> = [
-    { id: "emerald", swatch: "bg-[#5f6fff]" },
-    { id: "cyan", swatch: "bg-[#2b7fff]" },
-    { id: "violet", swatch: "bg-[#7b61ff]" },
-    { id: "sunset", swatch: "bg-[#e06c51]" }
+    { id: "emerald", swatch: "#25b87a" },
+    { id: "cyan", swatch: "#2b7fff" },
+    { id: "violet", swatch: "#7b61ff" },
+    { id: "sunset", swatch: "#e06c51" },
+    { id: "rose", swatch: "#e4578f" },
+    { id: "amber", swatch: "#e2a62a" },
+    { id: "sky", swatch: "#23a3d8" },
+    { id: "lime", swatch: "#77c043" },
+    { id: "custom", swatch: settings.customAccentHex }
   ];
-  const activeBackgroundUrl =
-    settings.backgroundSource === "web-random" ? settings.backgroundWebUrl : settings.backgroundImage;
+
+  const activeBackgroundUrl = settings.backgroundSource === "web-random" ? settings.backgroundWebUrl : settings.backgroundImage;
   const hasBackground = activeBackgroundUrl.trim() !== "";
 
   async function handleBackgroundFile(event: ChangeEvent<HTMLInputElement>) {
@@ -95,44 +96,60 @@ export default function SettingsPage({
   }
 
   function refreshRandomWebBackground() {
+    onChange({ ...settings, backgroundSource: "web-random", backgroundWebUrl: buildRandomBackgroundUrl() });
+  }
+
+  useEffect(() => {
+    setCustomAccentDraft(settings.customAccentHex);
+  }, [settings.customAccentHex]);
+
+  function applyCustomAccent(hex: string) {
+    const normalized = normalizeHexColor(hex);
+    if (!normalized) return;
     onChange({
       ...settings,
-      backgroundSource: "web-random",
-      backgroundWebUrl: buildRandomBackgroundUrl()
+      themeAccent: "custom",
+      customAccentHex: normalized
     });
+    setCustomAccentDraft(normalized);
+  }
+
+  function commitCustomAccentDraft() {
+    applyCustomAccent(customAccentDraft);
+  }
+
+  function onCustomAccentKeyDown(event: KeyboardEvent<HTMLInputElement>) {
+    if (event.key !== "Enter") return;
+    event.preventDefault();
+    commitCustomAccentDraft();
   }
 
   return (
-    <div className="h-full overflow-y-auto p-8">
-      <div className="mb-8">
-        <h1 className="text-3xl font-bold tracking-tight text-[var(--text-primary)]">{t("settings.title")}</h1>
+    <div className="h-full overflow-y-auto p-4 md:p-5 xl:p-6">
+      <header className="mb-6">
+        <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[var(--text-muted)]">{t("nav.settings")}</p>
+        <h1 className="mt-2 text-3xl font-semibold tracking-tight text-[var(--text-primary)]">{t("settings.title")}</h1>
         <p className="mt-1 text-[var(--text-secondary)]">{t("settings.subtitle")}</p>
-      </div>
+      </header>
 
-      <div className="grid grid-cols-1 gap-6 xl:grid-cols-2">
-        <Card as="section" variant="frost" className="rounded-2xl p-6">
-          <div className="mb-6 flex items-center gap-3">
-            <div className="flex h-9 w-9 items-center justify-center rounded-xl border border-[var(--border-medium)] bg-[var(--bg-elevated)]">
-              <Cpu size={18} className="text-[var(--mc-grass)]" />
-            </div>
-            <div>
-              <h2 className="text-base font-semibold text-[var(--text-primary)]">{t("settings.javaMemory")}</h2>
-              <p className="text-xs text-[var(--text-muted)]">{t("settings.runtimeConfig")}</p>
-            </div>
-          </div>
+      <div className="grid grid-cols-1 gap-6 xl:grid-cols-[minmax(0,1.1fr)_minmax(0,0.9fr)]">
+        <Card as="section" variant="frost" className="rounded-xl p-4 md:p-5">
+          <SectionTitle icon={<Cpu size={18} className="text-[var(--mc-grass)]" />} title={t("settings.javaMemory")} subtitle={t("settings.runtimeConfig")} />
 
           <div className="space-y-5">
-            <FieldLabel>{t("settings.gameDirectory")}</FieldLabel>
-            <div className="flex gap-2">
-              <input
-                type="text"
-                value={settings.gameDir}
-                onChange={(event) => onChange({ ...settings, gameDir: event.target.value })}
-                className="flex-1 rounded-xl border border-[var(--border-medium)] bg-[var(--bg-secondary)] px-4 py-2.5 text-sm text-[var(--text-primary)] focus:border-[var(--mc-grass)]/45 focus:outline-none"
-              />
-              <Button variant="secondary" size="md" className="!px-3">
-                <Folder size={18} />
-              </Button>
+            <div>
+              <FieldLabel>{t("settings.gameDirectory")}</FieldLabel>
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  value={settings.gameDir}
+                  onChange={(event) => onChange({ ...settings, gameDir: event.target.value })}
+                  className="flex-1 rounded-xl border border-[var(--border-medium)] bg-[var(--bg-secondary)] px-4 py-2.5 text-sm text-[var(--text-primary)] focus:border-[var(--mc-grass)]/45 focus:outline-none"
+                />
+                <Button variant="secondary" size="md" className="!px-3" aria-label={t("settings.open")}>
+                  <Folder size={18} />
+                </Button>
+              </div>
             </div>
 
             <div>
@@ -148,9 +165,7 @@ export default function SettingsPage({
             <div>
               <div className="mb-2 flex items-center justify-between">
                 <FieldLabel>{t("settings.heapAllocation")}</FieldLabel>
-                <span className="font-mono text-sm font-semibold text-[var(--mc-grass)]">
-                  {settings.maxMemoryMb} MB
-                </span>
+                <span className="font-mono text-sm font-semibold text-[var(--mc-grass)]">{settings.maxMemoryMb} MB</span>
               </div>
               <input
                 type="range"
@@ -167,12 +182,12 @@ export default function SettingsPage({
               </div>
             </div>
 
-            <Card variant="soft" className="h-44 rounded-xl p-2">
+            <Card variant="soft" className="h-44 rounded-2xl p-2" interactive={false}>
               <ResponsiveContainer width="100%" height="100%">
                 <AreaChart data={chartData}>
                   <defs>
-                    <linearGradient id="colorUv" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="5%" stopColor="var(--mc-grass)" stopOpacity={0.18} />
+                    <linearGradient id="settingsMemoryGradient" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="5%" stopColor="var(--mc-grass)" stopOpacity={0.22} />
                       <stop offset="95%" stopColor="var(--mc-grass)" stopOpacity={0.01} />
                     </linearGradient>
                   </defs>
@@ -187,14 +202,7 @@ export default function SettingsPage({
                     }}
                     itemStyle={{ color: "var(--text-primary)", fontSize: "12px", fontFamily: "Manrope, sans-serif" }}
                   />
-                  <Area
-                    type="monotone"
-                    dataKey="uv"
-                    stroke="var(--mc-grass)"
-                    strokeWidth={1.8}
-                    fillOpacity={1}
-                    fill="url(#colorUv)"
-                  />
+                  <Area type="monotone" dataKey="uv" stroke="var(--mc-grass)" strokeWidth={1.8} fillOpacity={1} fill="url(#settingsMemoryGradient)" />
                 </AreaChart>
               </ResponsiveContainer>
             </Card>
@@ -222,7 +230,7 @@ export default function SettingsPage({
                     key={mode}
                     type="button"
                     onClick={() => onChange({ ...settings, themeMode: mode })}
-                    className={`rounded-lg border px-3 py-2 text-sm font-medium transition-colors ${
+                    className={`min-h-11 rounded-xl border px-3 py-2 text-sm font-medium transition-colors ${
                       settings.themeMode === mode
                         ? "border-[var(--mc-grass)]/55 bg-[var(--mc-grass)]/12 text-[var(--text-primary)]"
                         : "border-[var(--border-medium)] bg-[var(--bg-secondary)] text-[var(--text-secondary)] hover:border-[var(--border-strong)]"
@@ -239,52 +247,63 @@ export default function SettingsPage({
                 <Palette size={14} />
                 {t("settings.themeAccent")}
               </label>
-              <div className="grid grid-cols-2 gap-2">
+              <div className="grid grid-cols-3 gap-2">
                 {accentOptions.map((accent) => (
                   <button
                     key={accent.id}
                     type="button"
                     onClick={() => onChange({ ...settings, themeAccent: accent.id })}
-                    className={`rounded-lg border p-2 text-left transition-colors ${
+                    className={`rounded-xl border p-2 text-left transition-colors ${
                       settings.themeAccent === accent.id
                         ? "border-[var(--mc-grass)]/55 bg-[var(--surface-soft)]"
                         : "border-[var(--border-medium)] bg-[var(--bg-secondary)] hover:border-[var(--border-strong)]"
                     }`}
                   >
-                    <div className={`h-5 w-full rounded-md ${accent.swatch}`} />
-                    <p className="mt-1 text-xs font-medium text-[var(--text-secondary)]">
-                      {t(`settings.accent.${accent.id}` as const)}
-                    </p>
+                    <div className="h-5 w-full rounded-md" style={{ backgroundColor: accent.id === "custom" ? settings.customAccentHex : accent.swatch }} />
+                    <p className="mt-1 text-xs font-medium text-[var(--text-secondary)]">{t(`settings.accent.${accent.id}` as const)}</p>
                   </button>
                 ))}
               </div>
+              {settings.themeAccent === "custom" && (
+                <div className="mt-3 grid grid-cols-[64px_minmax(0,1fr)] gap-2">
+                  <input
+                    type="color"
+                    value={settings.customAccentHex}
+                    onChange={(event) => applyCustomAccent(event.target.value)}
+                    className="h-11 w-full cursor-pointer rounded-lg border border-[var(--border-medium)] bg-[var(--bg-secondary)] p-1"
+                    aria-label={t("settings.customAccent")}
+                  />
+                  <div>
+                    <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-[var(--text-muted)]">
+                      {t("settings.customAccentHex")}
+                    </label>
+                    <input
+                      type="text"
+                      value={customAccentDraft}
+                      onChange={(event) => setCustomAccentDraft(event.target.value)}
+                      onBlur={commitCustomAccentDraft}
+                      onKeyDown={onCustomAccentKeyDown}
+                      className="h-11 w-full rounded-xl border border-[var(--border-medium)] bg-[var(--bg-secondary)] px-3 text-sm text-[var(--text-primary)] focus:border-[var(--mc-grass)]/45 focus:outline-none"
+                    />
+                  </div>
+                </div>
+              )}
+              {settings.themeAccent === "custom" && (
+                <p className="mt-2 text-xs text-[var(--text-muted)]">{t("settings.customAccentHint")}</p>
+              )}
             </div>
           </div>
         </Card>
 
         <div className="space-y-6">
-          <Card as="section" variant="soft" className="rounded-2xl p-6">
-            <div className="mb-5 flex items-center gap-3">
-              <div className="flex h-9 w-9 items-center justify-center rounded-xl border border-[var(--border-medium)] bg-[var(--bg-elevated)]">
-                <Monitor size={18} className="text-[var(--mc-grass)]" />
-              </div>
-              <div>
-                <h2 className="text-base font-semibold text-[var(--text-primary)]">{t("settings.general")}</h2>
-                <p className="text-xs text-[var(--text-muted)]">{t("settings.behaviorAppearance")}</p>
-              </div>
-            </div>
-
+          <Card as="section" variant="soft" className="rounded-xl p-4 md:p-5">
+            <SectionTitle icon={<Monitor size={18} className="text-[var(--mc-grass)]" />} title={t("settings.general")} subtitle={t("settings.behaviorAppearance")} />
             <div className="space-y-3">
               <ToggleRow
                 title={t("settings.keepOpen")}
                 subtitle={t("settings.keepOpenDesc")}
                 enabled={!settings.hideMainOnLaunch}
-                onToggle={() =>
-                  onChange({
-                    ...settings,
-                    hideMainOnLaunch: !settings.hideMainOnLaunch
-                  })
-                }
+                onToggle={() => onChange({ ...settings, hideMainOnLaunch: !settings.hideMainOnLaunch })}
               />
               <ToggleRow
                 title={t("settings.hardwareAcceleration")}
@@ -301,16 +320,8 @@ export default function SettingsPage({
             </div>
           </Card>
 
-          <Card as="section" variant="strong" className="rounded-2xl p-6">
-            <div className="mb-5 flex items-center gap-3">
-              <div className="flex h-9 w-9 items-center justify-center rounded-xl border border-[var(--border-medium)] bg-[var(--bg-elevated)]">
-                <HardDrive size={18} className="text-[var(--text-secondary)]" />
-              </div>
-              <div>
-                <h2 className="text-base font-semibold text-[var(--text-primary)]">{t("settings.storage")}</h2>
-                <p className="text-xs text-[var(--text-muted)]">{t("settings.dataAssets")}</p>
-              </div>
-            </div>
+          <Card as="section" variant="strong" className="rounded-xl p-4 md:p-5">
+            <SectionTitle icon={<HardDrive size={18} className="text-[var(--text-secondary)]" />} title={t("settings.storage")} subtitle={t("settings.dataAssets")} />
             <div className="flex gap-2">
               <input
                 type="text"
@@ -324,18 +335,8 @@ export default function SettingsPage({
             </div>
           </Card>
 
-          <Card as="section" variant="frost" className="rounded-2xl p-6">
-            <div className="mb-5 flex items-center gap-3">
-              <div className="flex h-9 w-9 items-center justify-center rounded-xl border border-[var(--border-medium)] bg-[var(--bg-elevated)]">
-                <ImagePlus size={18} className="text-[var(--mc-grass)]" />
-              </div>
-              <div>
-                <h2 className="text-base font-semibold text-[var(--text-primary)]">
-                  {t("settings.background")}
-                </h2>
-                <p className="text-xs text-[var(--text-muted)]">{t("settings.backgroundDesc")}</p>
-              </div>
-            </div>
+          <Card as="section" variant="frost" className="rounded-xl p-4 md:p-5">
+            <SectionTitle icon={<ImagePlus size={18} className="text-[var(--mc-grass)]" />} title={t("settings.background")} subtitle={t("settings.backgroundDesc")} />
 
             <div className="space-y-4">
               <div>
@@ -344,7 +345,7 @@ export default function SettingsPage({
                   <button
                     type="button"
                     onClick={() => switchBackgroundSource("local")}
-                    className={`rounded-lg border px-3 py-2 text-sm font-medium transition-colors ${
+                    className={`min-h-11 rounded-xl border px-3 py-2 text-sm font-medium transition-colors ${
                       settings.backgroundSource === "local"
                         ? "border-[var(--mc-grass)]/55 bg-[var(--mc-grass)]/12 text-[var(--text-primary)]"
                         : "border-[var(--border-medium)] bg-[var(--bg-secondary)] text-[var(--text-secondary)] hover:border-[var(--border-strong)]"
@@ -355,7 +356,7 @@ export default function SettingsPage({
                   <button
                     type="button"
                     onClick={() => switchBackgroundSource("web-random")}
-                    className={`rounded-lg border px-3 py-2 text-sm font-medium transition-colors ${
+                    className={`min-h-11 rounded-xl border px-3 py-2 text-sm font-medium transition-colors ${
                       settings.backgroundSource === "web-random"
                         ? "border-[var(--mc-grass)]/55 bg-[var(--mc-grass)]/12 text-[var(--text-primary)]"
                         : "border-[var(--border-medium)] bg-[var(--bg-secondary)] text-[var(--text-secondary)] hover:border-[var(--border-strong)]"
@@ -366,44 +367,23 @@ export default function SettingsPage({
                 </div>
               </div>
 
-              <Card variant="soft" className="overflow-hidden rounded-xl">
+              <Card variant="soft" className="overflow-hidden rounded-2xl" interactive={false}>
                 {hasBackground ? (
-                  <div
-                    className="h-28 w-full bg-cover bg-center bg-no-repeat"
-                    style={{ backgroundImage: `url("${activeBackgroundUrl}")` }}
-                  />
+                  <div className="h-28 w-full bg-cover bg-center bg-no-repeat" style={{ backgroundImage: `url("${activeBackgroundUrl}")` }} />
                 ) : (
-                  <div className="flex h-28 items-center justify-center text-sm text-[var(--text-muted)]">
-                    {t("settings.backgroundNoImage")}
-                  </div>
+                  <div className="flex h-28 items-center justify-center text-sm text-[var(--text-muted)]">{t("settings.backgroundNoImage")}</div>
                 )}
               </Card>
 
-              <input
-                ref={backgroundInputRef}
-                type="file"
-                accept="image/*"
-                className="hidden"
-                onChange={(event) => void handleBackgroundFile(event)}
-              />
+              <input ref={backgroundInputRef} type="file" accept="image/*" className="hidden" onChange={(event) => void handleBackgroundFile(event)} />
               <div className="flex gap-2">
                 {settings.backgroundSource === "local" ? (
-                  <Button
-                    variant="secondary"
-                    size="sm"
-                    className="flex-1 gap-2"
-                    onClick={() => backgroundInputRef.current?.click()}
-                  >
+                  <Button variant="secondary" size="sm" className="flex-1 gap-2" onClick={() => backgroundInputRef.current?.click()}>
                     <ImagePlus size={14} />
                     {t("settings.backgroundUpload")}
                   </Button>
                 ) : (
-                  <Button
-                    variant="secondary"
-                    size="sm"
-                    className="flex-1 gap-2"
-                    onClick={refreshRandomWebBackground}
-                  >
+                  <Button variant="secondary" size="sm" className="flex-1 gap-2" onClick={refreshRandomWebBackground}>
                     <Globe size={14} />
                     {t("settings.backgroundRefreshWeb")}
                   </Button>
@@ -429,9 +409,7 @@ export default function SettingsPage({
               <div>
                 <div className="mb-1 flex items-center justify-between">
                   <FieldLabel>{t("settings.backgroundOpacity")}</FieldLabel>
-                  <span className="text-xs font-semibold text-[var(--text-secondary)]">
-                    {settings.backgroundOpacity}%
-                  </span>
+                  <span className="text-xs font-semibold text-[var(--text-secondary)]">{settings.backgroundOpacity}%</span>
                 </div>
                 <input
                   type="range"
@@ -440,12 +418,7 @@ export default function SettingsPage({
                   step="1"
                   value={settings.backgroundOpacity}
                   disabled={!hasBackground}
-                  onChange={(event) =>
-                    onChange({
-                      ...settings,
-                      backgroundOpacity: Math.max(0, Math.min(100, Number(event.target.value) || 0))
-                    })
-                  }
+                  onChange={(event) => onChange({ ...settings, backgroundOpacity: Math.max(0, Math.min(100, Number(event.target.value) || 0)) })}
                   className="h-2 w-full cursor-pointer appearance-none rounded-lg bg-[var(--bg-secondary)] accent-[var(--mc-grass)] disabled:cursor-not-allowed disabled:opacity-50"
                 />
               </div>
@@ -453,9 +426,7 @@ export default function SettingsPage({
               <div>
                 <div className="mb-1 flex items-center justify-between">
                   <FieldLabel>{t("settings.backgroundBlur")}</FieldLabel>
-                  <span className="text-xs font-semibold text-[var(--text-secondary)]">
-                    {settings.backgroundBlur}px
-                  </span>
+                  <span className="text-xs font-semibold text-[var(--text-secondary)]">{settings.backgroundBlur}px</span>
                 </div>
                 <input
                   type="range"
@@ -464,20 +435,13 @@ export default function SettingsPage({
                   step="1"
                   value={settings.backgroundBlur}
                   disabled={!hasBackground}
-                  onChange={(event) =>
-                    onChange({
-                      ...settings,
-                      backgroundBlur: Math.max(0, Math.min(32, Number(event.target.value) || 0))
-                    })
-                  }
+                  onChange={(event) => onChange({ ...settings, backgroundBlur: Math.max(0, Math.min(32, Number(event.target.value) || 0)) })}
                   className="h-2 w-full cursor-pointer appearance-none rounded-lg bg-[var(--bg-secondary)] accent-[var(--mc-grass)] disabled:cursor-not-allowed disabled:opacity-50"
                 />
               </div>
 
-              <p className="text-xs text-[var(--text-muted)]">
-                {settings.backgroundSource === "web-random"
-                  ? t("settings.backgroundWebHint")
-                  : t("settings.backgroundHint")}
+              <p className="text-xs leading-5 text-[var(--text-muted)]">
+                {settings.backgroundSource === "web-random" ? t("settings.backgroundWebHint") : t("settings.backgroundHint")}
               </p>
               {backgroundError && <p className="text-xs text-[var(--accent-danger)]">{backgroundError}</p>}
             </div>
@@ -485,24 +449,32 @@ export default function SettingsPage({
         </div>
       </div>
 
-      <div className="mt-8 flex justify-end gap-4 border-t border-[var(--border-subtle)] pt-6">
+      <footer className="mt-8 flex flex-wrap justify-end gap-3 border-t border-[var(--border-subtle)] pt-6">
         <Button variant="ghost" className="gap-2" onClick={onReset}>
           <RefreshCw size={16} /> {t("settings.resetDefaults")}
         </Button>
         <Button variant="primary" className="gap-2 px-8">
           <Save size={16} /> {t("settings.savedAuto")}
         </Button>
+      </footer>
+    </div>
+  );
+}
+
+function SectionTitle({ icon, title, subtitle }: { icon: ReactNode; title: string; subtitle: string }) {
+  return (
+    <div className="mb-5 flex items-center gap-3">
+      <div className="flex h-10 w-10 items-center justify-center rounded-xl border border-[var(--border-medium)] bg-[var(--bg-elevated)]">{icon}</div>
+      <div>
+        <h2 className="text-base font-semibold text-[var(--text-primary)]">{title}</h2>
+        <p className="text-xs text-[var(--text-muted)]">{subtitle}</p>
       </div>
     </div>
   );
 }
 
 function FieldLabel({ children }: { children: string }) {
-  return (
-    <label className="mb-2 block text-xs font-semibold uppercase tracking-wide text-[var(--text-muted)]">
-      {children}
-    </label>
-  );
+  return <label className="mb-2 block text-xs font-semibold uppercase tracking-wide text-[var(--text-muted)]">{children}</label>;
 }
 
 function ToggleRow({
@@ -518,7 +490,7 @@ function ToggleRow({
 }) {
   return (
     <button
-      className="flex w-full items-center justify-between rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-secondary)] p-4 text-left transition-colors hover:border-[var(--border-medium)]"
+      className="flex min-h-12 w-full items-center justify-between rounded-2xl border border-[var(--border-subtle)] bg-[var(--bg-secondary)] p-4 text-left transition-colors hover:border-[var(--border-medium)]"
       onClick={onToggle}
       type="button"
     >
@@ -526,18 +498,8 @@ function ToggleRow({
         <h4 className="text-sm font-semibold text-[var(--text-primary)]">{title}</h4>
         <p className="text-xs text-[var(--text-muted)]">{subtitle}</p>
       </div>
-      <div
-        className={`relative h-6 w-11 rounded-full border transition-colors ${
-          enabled
-            ? "border-[var(--mc-grass)]/60 bg-[var(--mc-grass)]/20"
-            : "border-[var(--border-medium)] bg-[var(--bg-elevated)]"
-        }`}
-      >
-        <div
-          className={`absolute bottom-1 top-1 w-4 rounded-full transition-all ${
-            enabled ? "right-1 bg-[var(--mc-grass)]" : "left-1 bg-[var(--text-muted)]"
-          }`}
-        />
+      <div className={`relative h-6 w-11 rounded-full border transition-colors ${enabled ? "border-[var(--mc-grass)]/60 bg-[var(--mc-grass)]/20" : "border-[var(--border-medium)] bg-[var(--bg-elevated)]"}`}>
+        <div className={`absolute bottom-1 top-1 w-4 rounded-full transition-all ${enabled ? "right-1 bg-[var(--mc-grass)]" : "left-1 bg-[var(--text-muted)]"}`} />
       </div>
     </button>
   );
@@ -560,4 +522,16 @@ function readFileAsDataUrl(file: File): Promise<string> {
 
 function buildRandomBackgroundUrl(): string {
   return `https://picsum.photos/1920/1080?random=${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+}
+
+function normalizeHexColor(input: string): string | null {
+  const value = input.trim();
+  if (/^#[0-9a-fA-F]{6}$/.test(value)) {
+    return value.toLowerCase();
+  }
+  if (/^#[0-9a-fA-F]{3}$/.test(value)) {
+    const [r, g, b] = value.slice(1).split("");
+    return `#${r}${r}${g}${g}${b}${b}`.toLowerCase();
+  }
+  return null;
 }

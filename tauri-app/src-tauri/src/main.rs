@@ -6,7 +6,7 @@ use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use std::{env, fs};
 use tauri::{Emitter, Manager};
 
@@ -66,6 +66,68 @@ struct ForgeInstallResult {
     profile_json_path: String,
     #[serde(rename = "installerUrl")]
     installer_url: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct ApiEnvelope<T> {
+    success: bool,
+    message: Option<String>,
+    data: Option<T>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct LauncherLoginRequest {
+    #[serde(rename = "usernameOrEmail")]
+    username_or_email: String,
+    password: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct LauncherLoginResult {
+    token: String,
+    user: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct LauncherVersion {
+    #[serde(default)]
+    id: Option<serde_json::Value>,
+    channel: String,
+    #[serde(rename = "versionType")]
+    version_type: String,
+    #[serde(rename = "versionName")]
+    version_name: String,
+    #[serde(rename = "downloadUrl")]
+    download_url: String,
+    #[serde(default)]
+    changelog: Option<String>,
+    #[serde(rename = "commitHash", default)]
+    commit_hash: Option<String>,
+    #[serde(rename = "createdAt", default)]
+    created_at: Option<String>,
+    #[serde(rename = "updatedAt", default)]
+    updated_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct LauncherModsInstallResult {
+    #[serde(rename = "targetDir")]
+    target_dir: String,
+    #[serde(rename = "installedFiles")]
+    installed_files: usize,
+    skipped: bool,
+    #[serde(rename = "versionTag")]
+    version_tag: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct LauncherModsInstallMarker {
+    #[serde(rename = "versionTag")]
+    version_tag: String,
+    #[serde(rename = "downloadUrl")]
+    download_url: String,
+    #[serde(rename = "installedAtEpochSec")]
+    installed_at_epoch_sec: u64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -564,6 +626,206 @@ fn ensure_jdk_blocking(
         major_version: major,
         java_path: java_path.to_string_lossy().to_string(),
         cached: false,
+    })
+}
+
+#[tauri::command]
+async fn launcher_login(
+    base_url: String,
+    username_or_email: String,
+    password: String,
+) -> Result<LauncherLoginResult, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        launcher_login_blocking(base_url, username_or_email, password)
+    })
+    .await
+    .map_err(|e| format!("Failed to join launcher login task: {e}"))?
+}
+
+fn launcher_login_blocking(
+    base_url: String,
+    username_or_email: String,
+    password: String,
+) -> Result<LauncherLoginResult, String> {
+    let endpoint = format!(
+        "{}/api/v1/auth/login",
+        normalize_api_base_url(&base_url)?
+    );
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(20))
+        .build()
+        .map_err(|e| format!("Failed to build HTTP client: {e}"))?;
+    let payload = LauncherLoginRequest {
+        username_or_email: username_or_email.trim().to_string(),
+        password,
+    };
+    let response = client
+        .post(endpoint)
+        .json(&payload)
+        .send()
+        .map_err(|e| format!("Login request failed: {e}"))?;
+    let status = response.status();
+    let text = response
+        .text()
+        .map_err(|e| format!("Failed to read login response: {e}"))?;
+    parse_launcher_login_response(status, &text)
+}
+
+#[tauri::command]
+async fn launcher_list_available_versions(
+    base_url: String,
+    token: String,
+    version_type: Option<String>,
+) -> Result<Vec<LauncherVersion>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        launcher_list_available_versions_blocking(base_url, token, version_type)
+    })
+    .await
+    .map_err(|e| format!("Failed to join launcher versions task: {e}"))?
+}
+
+fn launcher_list_available_versions_blocking(
+    base_url: String,
+    token: String,
+    version_type: Option<String>,
+) -> Result<Vec<LauncherVersion>, String> {
+    let normalized_base = normalize_api_base_url(&base_url)?;
+    let normalized_token = token.trim().to_string();
+    if normalized_token.is_empty() {
+        return Err("Token is required".to_string());
+    }
+    let types: Vec<String> = if let Some(input) = version_type {
+        let item = input.trim().to_uppercase();
+        if item.is_empty() {
+            vec!["EDGE".to_string(), "NOVA".to_string()]
+        } else {
+            vec![item]
+        }
+    } else {
+        vec!["EDGE".to_string(), "NOVA".to_string()]
+    };
+
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(20))
+        .build()
+        .map_err(|e| format!("Failed to build HTTP client: {e}"))?;
+
+    let mut merged = Vec::new();
+    for version_type_item in types {
+        let mut url = reqwest::Url::parse(&format!(
+            "{normalized_base}/api/v1/launcher/versions/available"
+        ))
+        .map_err(|e| format!("Invalid versions endpoint URL: {e}"))?;
+        url.query_pairs_mut()
+            .append_pair("versionType", &version_type_item);
+        let response = client
+            .get(url)
+            .bearer_auth(&normalized_token)
+            .send()
+            .map_err(|e| format!("Versions request failed: {e}"))?;
+        let status = response.status();
+        let text = response
+            .text()
+            .map_err(|e| format!("Failed to read versions response: {e}"))?;
+        let mut items = parse_launcher_versions_response(status, &text)?;
+        merged.append(&mut items);
+    }
+    Ok(merged)
+}
+
+#[tauri::command]
+async fn install_launcher_version_mods(
+    game_dir: String,
+    version_id: String,
+    download_url: String,
+    version_tag: Option<String>,
+    clean_existing: Option<bool>,
+) -> Result<LauncherModsInstallResult, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        install_launcher_version_mods_blocking(
+            game_dir,
+            version_id,
+            download_url,
+            version_tag,
+            clean_existing,
+        )
+    })
+    .await
+    .map_err(|e| format!("Failed to join launcher mods install task: {e}"))?
+}
+
+fn install_launcher_version_mods_blocking(
+    game_dir: String,
+    version_id: String,
+    download_url: String,
+    version_tag: Option<String>,
+    clean_existing: Option<bool>,
+) -> Result<LauncherModsInstallResult, String> {
+    let game_dir_path = resolve_game_dir_path(&game_dir)?;
+    let mods_dir = resolve_version_runtime_dir(&game_dir_path, &version_id)?.join("mods");
+    fs::create_dir_all(&mods_dir)
+        .map_err(|e| format!("Failed to create mods directory {}: {e}", mods_dir.display()))?;
+
+    let normalized_url = download_url.trim().to_string();
+    if normalized_url.is_empty() {
+        return Err("downloadUrl is empty".to_string());
+    }
+    let normalized_tag = version_tag
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| normalized_url.clone());
+
+    let marker_path = mods_dir.join(".fpsmaster-launcher-mods.json");
+    if is_mods_marker_up_to_date(&marker_path, &normalized_tag)?
+        && mods_dir_has_payload(&mods_dir, &marker_path)?
+    {
+        return Ok(LauncherModsInstallResult {
+            target_dir: mods_dir.to_string_lossy().to_string(),
+            installed_files: 0,
+            skipped: true,
+            version_tag: normalized_tag,
+        });
+    }
+
+    if clean_existing.unwrap_or(true) {
+        clear_directory_contents(&mods_dir)?;
+    }
+
+    let archive_path = env::temp_dir().join(format!(
+        "fpsmaster-launcher-mods-{}-{}.zip",
+        std::process::id(),
+        now_epoch_millis()
+    ));
+    let download_result =
+        download_file_blocking(None, "launcher-mods", &normalized_url, &archive_path);
+    if let Err(err) = download_result {
+        let _ = fs::remove_file(&archive_path);
+        return Err(format!("Failed to download launcher package: {err}"));
+    }
+
+    let extract_result = extract_launcher_mod_archive(&archive_path, &mods_dir);
+    let _ = fs::remove_file(&archive_path);
+    let installed_files = extract_result?;
+
+    let marker = LauncherModsInstallMarker {
+        version_tag: normalized_tag.clone(),
+        download_url: normalized_url,
+        installed_at_epoch_sec: now_epoch_seconds(),
+    };
+    let marker_content = serde_json::to_string_pretty(&marker)
+        .map_err(|e| format!("Failed to serialize mods marker: {e}"))?;
+    fs::write(&marker_path, format!("{marker_content}\n")).map_err(|e| {
+        format!(
+            "Failed to write mods marker {}: {e}",
+            marker_path.to_string_lossy()
+        )
+    })?;
+
+    Ok(LauncherModsInstallResult {
+        target_dir: mods_dir.to_string_lossy().to_string(),
+        installed_files,
+        skipped: false,
+        version_tag: normalized_tag,
     })
 }
 
@@ -1983,6 +2245,416 @@ fn download_file_blocking(
     Err(last_error)
 }
 
+fn normalize_api_base_url(base_url: &str) -> Result<String, String> {
+    let trimmed = base_url.trim().trim_end_matches('/');
+    if trimmed.is_empty() {
+        return Err("API base URL is empty".to_string());
+    }
+    Ok(trimmed.to_string())
+}
+
+fn parse_launcher_login_response(
+    status: reqwest::StatusCode,
+    body: &str,
+) -> Result<LauncherLoginResult, String> {
+    if let Ok(result) = parse_api_envelope::<LauncherLoginResult>(status, body, "login") {
+        return Ok(LauncherLoginResult {
+            token: normalize_auth_token(&result.token)
+                .ok_or_else(|| "登录异常: 未能读取到有效 token".to_string())?,
+            user: normalize_login_user_payload(result.user),
+        });
+    }
+
+    let value: serde_json::Value =
+        serde_json::from_str(body).map_err(|e| format!("Invalid login response JSON: {e}"))?;
+
+    if !status.is_success() {
+        return Err(
+            extract_api_error_message(body)
+                .unwrap_or_else(|| format!("login failed with HTTP {}", status.as_u16())),
+        );
+    }
+
+    let container = login_payload_container(&value);
+    let token = extract_login_token(container)
+        .or_else(|| extract_login_token(&value))
+        .ok_or_else(|| "登录异常: 未能读取到有效 token".to_string())?;
+    let user = extract_login_user(container)
+        .or_else(|| extract_login_user(&value))
+        .unwrap_or_else(|| serde_json::Value::Object(serde_json::Map::new()));
+
+    Ok(LauncherLoginResult {
+        token,
+        user: normalize_login_user_payload(user),
+    })
+}
+
+fn parse_launcher_versions_response(
+    status: reqwest::StatusCode,
+    body: &str,
+) -> Result<Vec<LauncherVersion>, String> {
+    if let Ok(items) = parse_api_envelope::<Vec<LauncherVersion>>(status, body, "versions list") {
+        return Ok(items);
+    }
+
+    let value: serde_json::Value = serde_json::from_str(body)
+        .map_err(|e| format!("Invalid versions list response JSON: {e}"))?;
+
+    if !status.is_success() {
+        return Err(
+            extract_api_error_message(body)
+                .unwrap_or_else(|| format!("versions list failed with HTTP {}", status.as_u16())),
+        );
+    }
+
+    extract_launcher_versions(&value).ok_or_else(|| "versions list response missing data".to_string())
+}
+
+fn parse_api_envelope<T: for<'de> Deserialize<'de>>(
+    status: reqwest::StatusCode,
+    body: &str,
+    context: &str,
+) -> Result<T, String> {
+    match serde_json::from_str::<ApiEnvelope<T>>(body) {
+        Ok(payload) => {
+            if !status.is_success() || !payload.success {
+                let message = payload
+                    .message
+                    .and_then(|value| {
+                        let trimmed = value.trim();
+                        if trimmed.is_empty() {
+                            None
+                        } else {
+                            Some(trimmed.to_string())
+                        }
+                    })
+                    .or_else(|| extract_api_error_message(body))
+                    .unwrap_or_else(|| format!("{context} failed with HTTP {}", status.as_u16()));
+                return Err(message);
+            }
+            payload
+                .data
+                .ok_or_else(|| format!("{context} response missing data"))
+        }
+        Err(err) => {
+            if let Some(message) = extract_api_error_message(body) {
+                return Err(message);
+            }
+            if status.is_success() {
+                return Err(format!("Invalid {context} response JSON: {err}"));
+            }
+            let compact = body.trim();
+            if compact.is_empty() {
+                return Err(format!("{context} failed with HTTP {}", status.as_u16()));
+            }
+            Err(format!(
+                "{context} failed with HTTP {}: {}",
+                status.as_u16(),
+                compact
+            ))
+        }
+    }
+}
+
+fn login_payload_container<'a>(value: &'a serde_json::Value) -> &'a serde_json::Value {
+    value.get("data").unwrap_or(value)
+}
+
+fn extract_launcher_versions(value: &serde_json::Value) -> Option<Vec<LauncherVersion>> {
+    if let Ok(items) = serde_json::from_value::<Vec<LauncherVersion>>(value.clone()) {
+        return Some(items);
+    }
+
+    if let Some(object) = value.as_object() {
+        for key in ["data", "items", "list", "results", "records"] {
+            if let Some(found) = object.get(key).and_then(extract_launcher_versions) {
+                return Some(found);
+            }
+        }
+    }
+
+    None
+}
+
+fn extract_login_token(value: &serde_json::Value) -> Option<String> {
+    if let Some(object) = value.as_object() {
+        for key in ["token", "accessToken", "jwt", "jwtToken", "authToken"] {
+            if let Some(normalized) = object.get(key).and_then(value_as_normalized_token) {
+                return Some(normalized);
+            }
+        }
+
+        for key in ["auth", "result", "payload"] {
+            if let Some(found) = object.get(key).and_then(extract_login_token) {
+                return Some(found);
+            }
+        }
+    }
+    None
+}
+
+fn extract_login_user(value: &serde_json::Value) -> Option<serde_json::Value> {
+    if let Some(object) = value.as_object() {
+        for key in ["user", "currentUser", "profile", "me"] {
+            if let Some(candidate) = object.get(key) {
+                return Some(candidate.clone());
+            }
+        }
+    }
+    None
+}
+
+fn value_as_normalized_token(value: &serde_json::Value) -> Option<String> {
+    match value {
+        serde_json::Value::String(text) => normalize_auth_token(text),
+        serde_json::Value::Object(object) => {
+            for key in ["value", "token", "accessToken", "jwt"] {
+                if let Some(found) = object.get(key).and_then(value_as_normalized_token) {
+                    return Some(found);
+                }
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+fn normalize_auth_token(raw: &str) -> Option<String> {
+    let mut token = raw.trim().trim_matches('"').trim().to_string();
+    if token.to_ascii_lowercase().starts_with("bearer ") {
+        token = token[7..].trim().to_string();
+    }
+    if token.is_empty() {
+        None
+    } else {
+        Some(token)
+    }
+}
+
+fn normalize_login_user_payload(value: serde_json::Value) -> serde_json::Value {
+    if value.is_object() {
+        value
+    } else {
+        serde_json::Value::Object(serde_json::Map::new())
+    }
+}
+
+fn extract_api_error_message(body: &str) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_str(body).ok()?;
+    find_error_message_in_value(&value)
+}
+
+fn find_error_message_in_value(value: &serde_json::Value) -> Option<String> {
+    if let Some(text) = value.as_str() {
+        let trimmed = text.trim();
+        if !trimmed.is_empty() {
+            return Some(trimmed.to_string());
+        }
+    }
+
+    if let Some(object) = value.as_object() {
+        for key in ["message", "error", "detail", "msg", "reason"] {
+            if let Some(candidate) = object.get(key).and_then(|item| item.as_str()) {
+                let trimmed = candidate.trim();
+                if !trimmed.is_empty() {
+                    return Some(trimmed.to_string());
+                }
+            }
+        }
+        for nested in object.values() {
+            if let Some(found) = find_error_message_in_value(nested) {
+                return Some(found);
+            }
+        }
+    }
+
+    if let Some(array) = value.as_array() {
+        for item in array {
+            if let Some(found) = find_error_message_in_value(item) {
+                return Some(found);
+            }
+        }
+    }
+
+    None
+}
+
+fn now_epoch_seconds() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_else(|_| Duration::from_secs(0))
+        .as_secs()
+}
+
+fn now_epoch_millis() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_else(|_| Duration::from_secs(0))
+        .as_millis()
+}
+
+fn is_mods_marker_up_to_date(marker_path: &Path, version_tag: &str) -> Result<bool, String> {
+    if !marker_path.exists() {
+        return Ok(false);
+    }
+    let content = match fs::read_to_string(marker_path) {
+        Ok(text) => text,
+        Err(_) => return Ok(false),
+    };
+    let marker = match serde_json::from_str::<LauncherModsInstallMarker>(&content) {
+        Ok(value) => value,
+        Err(_) => return Ok(false),
+    };
+    Ok(marker.version_tag.trim() == version_tag.trim())
+}
+
+fn mods_dir_has_payload(mods_dir: &Path, marker_path: &Path) -> Result<bool, String> {
+    let read_dir = fs::read_dir(mods_dir).map_err(|e| {
+        format!(
+            "Failed to inspect mods directory {}: {e}",
+            mods_dir.to_string_lossy()
+        )
+    })?;
+    for entry in read_dir {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let path = entry.path();
+        if path == marker_path {
+            continue;
+        }
+        return Ok(true);
+    }
+    Ok(false)
+}
+
+fn clear_directory_contents(dir: &Path) -> Result<(), String> {
+    if !dir.exists() {
+        return Ok(());
+    }
+    for entry in fs::read_dir(dir).map_err(|e| e.to_string())? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let path = entry.path();
+        if path.is_dir() {
+            fs::remove_dir_all(&path)
+                .map_err(|e| format!("Failed removing directory {}: {e}", path.display()))?;
+        } else {
+            fs::remove_file(&path)
+                .map_err(|e| format!("Failed removing file {}: {e}", path.display()))?;
+        }
+    }
+    Ok(())
+}
+
+fn extract_launcher_mod_archive(archive: &Path, mods_dir: &Path) -> Result<usize, String> {
+    let file = fs::File::open(archive)
+        .map_err(|e| format!("Failed to open launcher archive {}: {e}", archive.display()))?;
+    let mut zip_archive = zip::ZipArchive::new(file)
+        .map_err(|e| format!("Invalid launcher zip archive {}: {e}", archive.display()))?;
+
+    let mut has_mods_paths = false;
+    for i in 0..zip_archive.len() {
+        let entry = zip_archive.by_index(i).map_err(|e| e.to_string())?;
+        if entry.name().ends_with('/') {
+            continue;
+        }
+        if let Some(path) = entry.enclosed_name() {
+            if path_contains_mods_component(&path) {
+                has_mods_paths = true;
+                break;
+            }
+        }
+    }
+
+    let mut installed_files = 0_usize;
+    for i in 0..zip_archive.len() {
+        let mut entry = zip_archive.by_index(i).map_err(|e| e.to_string())?;
+        if entry.name().ends_with('/') {
+            continue;
+        }
+        let enclosed = match entry.enclosed_name() {
+            Some(path) => path.to_path_buf(),
+            None => continue,
+        };
+
+        let relative_path = if has_mods_paths {
+            match trim_to_mods_relative_path(&enclosed) {
+                Some(path) => path,
+                None => continue,
+            }
+        } else {
+            match enclosed.file_name() {
+                Some(file_name) => PathBuf::from(file_name),
+                None => continue,
+            }
+        };
+
+        if relative_path.as_os_str().is_empty() {
+            continue;
+        }
+
+        let out_path = mods_dir.join(&relative_path);
+        if let Some(parent) = out_path.parent() {
+            fs::create_dir_all(parent).map_err(|e| {
+                format!(
+                    "Failed to create mod output directory {}: {e}",
+                    parent.to_string_lossy()
+                )
+            })?;
+        }
+
+        let mut out_file = fs::File::create(&out_path).map_err(|e| {
+            format!(
+                "Failed to create mod output file {}: {e}",
+                out_path.to_string_lossy()
+            )
+        })?;
+        std::io::copy(&mut entry, &mut out_file).map_err(|e| {
+            format!(
+                "Failed to write mod output file {}: {e}",
+                out_path.to_string_lossy()
+            )
+        })?;
+        installed_files += 1;
+    }
+
+    if installed_files == 0 {
+        return Err("Launcher package does not contain any mod files".to_string());
+    }
+    Ok(installed_files)
+}
+
+fn path_contains_mods_component(path: &Path) -> bool {
+    for component in path.components() {
+        if let std::path::Component::Normal(part) = component {
+            if part.to_string_lossy().eq_ignore_ascii_case("mods") {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn trim_to_mods_relative_path(path: &Path) -> Option<PathBuf> {
+    let mut found_mods = false;
+    let mut relative = PathBuf::new();
+    for component in path.components() {
+        let std::path::Component::Normal(part) = component else {
+            continue;
+        };
+        let as_text = part.to_string_lossy();
+        if !found_mods && as_text.eq_ignore_ascii_case("mods") {
+            found_mods = true;
+            continue;
+        }
+        if found_mods {
+            relative.push(part);
+        }
+    }
+    if !found_mods || relative.as_os_str().is_empty() {
+        return None;
+    }
+    Some(relative)
+}
+
 fn extract_zip(archive: &Path, dest: &Path) -> Result<(), String> {
     let file = fs::File::open(archive).map_err(|e| e.to_string())?;
     let mut zip_archive = zip::ZipArchive::new(file).map_err(|e| e.to_string())?;
@@ -2040,6 +2712,9 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             ensure_jdk,
+            launcher_login,
+            launcher_list_available_versions,
+            install_launcher_version_mods,
             list_vanilla_versions,
             install_vanilla,
             build_vanilla_launch_plan,

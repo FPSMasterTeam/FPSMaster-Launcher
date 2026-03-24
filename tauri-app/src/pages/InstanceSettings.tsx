@@ -119,8 +119,8 @@ export default function InstanceSettingsPage({ instance, gameDir, onBack }: Inst
 
   if (!instance) {
     return (
-      <div className="h-full overflow-y-auto p-8">
-        <Card variant="frost" className="max-w-xl rounded-2xl p-6">
+      <div className="h-full overflow-y-auto p-4 md:p-5 xl:p-6">
+        <Card variant="frost" className="max-w-xl rounded-xl p-5">
           <h1 className="text-2xl font-semibold text-[var(--text-primary)]">{t("instanceFiles.title")}</h1>
           <p className="mt-2 text-sm text-[var(--text-secondary)]">{t("instanceFiles.noInstance")}</p>
           <div className="mt-5">
@@ -135,34 +135,27 @@ export default function InstanceSettingsPage({ instance, gameDir, onBack }: Inst
   }
 
   return (
-    <div className="h-full overflow-y-auto p-8">
-      <div className="mb-6 flex flex-wrap items-start justify-between gap-4">
+    <div className="h-full overflow-y-auto p-4 md:p-5 xl:p-6">
+      <header className="mb-6 grid gap-4 md:grid-cols-[minmax(0,1fr)_auto] md:items-start">
         <div>
-          <h1 className="text-3xl font-bold tracking-tight text-[var(--text-primary)]">
-            {t("instanceFiles.title")}
-          </h1>
-          <p className="mt-1 text-[var(--text-secondary)]">
-            {t("instanceFiles.subtitle", { name: instance.name })}
-          </p>
+          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[var(--text-muted)]">{t("instanceFiles.title")}</p>
+          <h1 className="mt-2 text-3xl font-semibold tracking-tight text-[var(--text-primary)]">{instance.name}</h1>
+          <p className="mt-1 text-[var(--text-secondary)]">{t("instanceFiles.subtitle", { name: instance.name })}</p>
           <p className="mt-1 text-xs text-[var(--text-muted)]">{instance.versionId}</p>
         </div>
         <Button variant="secondary" size="sm" className="gap-2" onClick={onBack}>
           <ArrowLeft size={14} />
           {t("instanceFiles.back")}
         </Button>
-      </div>
+      </header>
 
-      <div className="grid grid-cols-1 gap-4 pb-20 lg:grid-cols-3">
+      <div className="grid grid-cols-1 gap-4 pb-20 xl:grid-cols-3">
         {SECTIONS.map((section) => {
           const state = sections[section];
           return (
-            <Card key={section} as="section" variant="frost" className="flex min-h-[320px] flex-col rounded-2xl p-4">
+            <Card key={section} as="section" variant="frost" className="flex min-h-[320px] flex-col rounded-xl p-4">
               <div className="mb-3 flex items-start justify-between gap-2">
-                <div>
-                  <h2 className="text-lg font-semibold text-[var(--text-primary)]">
-                    {sectionLabel(section)}
-                  </h2>
-                </div>
+                <h2 className="text-lg font-semibold text-[var(--text-primary)]">{sectionLabel(section)}</h2>
                 <div className="flex items-center gap-2">
                   <Button
                     variant="outline"
@@ -184,22 +177,15 @@ export default function InstanceSettingsPage({ instance, gameDir, onBack }: Inst
               {state.loading ? (
                 <p className="text-sm text-[var(--text-secondary)]">{t("instanceFiles.loading")}</p>
               ) : state.error ? (
-                <p className="text-sm text-[var(--accent-danger)] break-all">{state.error}</p>
+                <p className="break-all text-sm text-[var(--accent-danger)]">{state.error}</p>
               ) : state.entries.length === 0 ? (
                 <p className="text-sm text-[var(--text-muted)]">{t("instanceFiles.empty")}</p>
               ) : (
                 <div className="min-h-0 flex-1 overflow-y-auto">
                   <ul className="space-y-2">
                     {state.entries.map((entry) => (
-                      <li
-                        key={entry.name}
-                        className="flex items-center gap-2 rounded-lg border border-[var(--border-subtle)] bg-[var(--surface-soft)] px-2.5 py-2"
-                      >
-                        {entry.isDir ? (
-                          <Folder size={14} className="shrink-0 text-[var(--mc-grass)]" />
-                        ) : (
-                          <File size={14} className="shrink-0 text-[var(--text-muted)]" />
-                        )}
+                      <li key={entry.name} className="flex min-h-11 items-center gap-2 rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-soft)] px-2.5 py-2">
+                        {entry.isDir ? <Folder size={14} className="shrink-0 text-[var(--mc-grass)]" /> : <File size={14} className="shrink-0 text-[var(--text-muted)]" />}
                         <span className="truncate text-xs text-[var(--text-secondary)]">{entry.name}</span>
                       </li>
                     ))}

@@ -44,20 +44,17 @@ export default function InstancesPage({
   }, [instances, searchQuery]);
 
   return (
-    <div className="h-full overflow-y-auto p-8">
-      <div className="mb-8 flex items-center justify-between">
+    <div className="h-full overflow-y-auto p-4 md:p-5 xl:p-6">
+      <header className="mb-6 grid gap-4 md:grid-cols-[minmax(0,1fr)_auto] md:items-center">
         <div>
-          <h1 className="text-3xl font-bold tracking-tight text-[var(--text-primary)]">
+          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[var(--text-muted)]">{t("nav.myGames")}</p>
+          <h1 className="mt-2 text-3xl font-semibold tracking-tight text-[var(--text-primary)]">
             {t("instances.title")}
           </h1>
           <p className="mt-1 text-[var(--text-secondary)]">{t("instances.subtitle")}</p>
         </div>
         <div className="flex items-center gap-3">
-          <Card
-            as="span"
-            variant="frost"
-            className="hidden rounded-full px-3 py-1.5 text-xs text-[var(--text-secondary)] md:inline-flex"
-          >
+          <Card as="span" variant="frost" className="inline-flex rounded-full px-3 py-1.5 text-xs text-[var(--text-secondary)]">
             {filteredInstances.length}
           </Card>
           <Button variant="primary" size="lg" className="gap-2" onClick={onGoInstall}>
@@ -65,25 +62,20 @@ export default function InstancesPage({
             {t("instances.createInstall")}
           </Button>
         </div>
-      </div>
+      </header>
 
-      <div className="mb-6">
-        <Card as="label" variant="soft" className="relative block rounded-xl">
-          <Search
-            className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 text-[var(--text-muted)]"
-            size={18}
-          />
-          <input
-            type="text"
-            placeholder={t("instances.searchPlaceholder")}
-            value={searchQuery}
-            onChange={(event) => setSearchQuery(event.target.value)}
-            className="w-full rounded-xl border border-[var(--border-medium)] bg-transparent py-3 pl-11 pr-4 text-[var(--text-primary)] transition-colors focus:border-[var(--mc-grass)]/45 focus:outline-none"
-          />
-        </Card>
-      </div>
+      <Card as="label" variant="soft" className="relative mb-5 block rounded-2xl px-3 py-2">
+        <Search className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 text-[var(--text-muted)]" size={18} />
+        <input
+          type="text"
+          placeholder={t("instances.searchPlaceholder")}
+          value={searchQuery}
+          onChange={(event) => setSearchQuery(event.target.value)}
+          className="w-full rounded-xl border border-[var(--border-medium)] bg-transparent py-3 pl-11 pr-4 text-[var(--text-primary)] transition-colors focus:border-[var(--mc-grass)]/45 focus:outline-none"
+        />
+      </Card>
 
-      <div className="grid grid-cols-1 gap-4 pb-20 md:grid-cols-2 xl:grid-cols-3">
+      <section className="grid grid-cols-1 gap-4 pb-20 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
         {filteredInstances.map((instance) => {
           const icon = resolveInstanceIconPath(instance);
           const loaderTone =
@@ -94,18 +86,11 @@ export default function InstancesPage({
                 : "text-[var(--text-secondary)] border-[var(--border-medium)] bg-[var(--bg-elevated)]";
 
           return (
-            <Card
-              as="article"
-              key={instance.id}
-              variant="frost"
-              className="flex flex-col rounded-2xl p-5"
-            >
-              <div className="mb-5 flex items-start gap-4">
+            <Card as="article" key={instance.id} variant="frost" className="flex min-h-[272px] flex-col rounded-2xl p-4 md:p-5">
+              <div className="mb-4 flex items-start gap-4">
                 <div className="relative shrink-0">
                   <div className="h-12 w-12 overflow-hidden rounded-xl border border-[var(--border-medium)] bg-[var(--bg-elevated)] shadow-[inset_0_1px_0_rgba(255,255,255,0.06)]">
-                    {icon ? (
-                      <img src={icon} alt={instance.name} className="h-full w-full object-cover" />
-                    ) : null}
+                    {icon ? <img src={icon} alt={instance.name} className="h-full w-full object-cover" /> : null}
                   </div>
                   {instance.preset && (
                     <div className="absolute -bottom-1 -right-1 rounded-md border border-[var(--border-subtle)] bg-[var(--bg-secondary)] px-1.5 py-0.5 text-[10px] font-semibold text-[var(--text-secondary)]">
@@ -115,16 +100,10 @@ export default function InstancesPage({
                 </div>
 
                 <div className="min-w-0 flex-1">
-                  <h3 className="truncate text-base font-semibold text-[var(--text-primary)]">
-                    {instance.name}
-                  </h3>
-                  <p className="mt-1 truncate font-mono text-xs text-[var(--text-muted)]">
-                    {instance.versionId}
-                  </p>
+                  <h3 className="truncate text-base font-semibold text-[var(--text-primary)]">{instance.name}</h3>
+                  <p className="mt-1 truncate font-mono text-xs text-[var(--text-muted)]">{instance.versionId}</p>
                   <div className="mt-2 flex flex-wrap gap-2">
-                    <span
-                      className={`rounded-md border px-2 py-0.5 text-[10px] font-semibold uppercase ${loaderTone}`}
-                    >
+                    <span className={`rounded-md border px-2 py-0.5 text-[10px] font-semibold uppercase ${loaderTone}`}>
                       {instance.loader}
                     </span>
                     {instance.preset && (
@@ -133,13 +112,13 @@ export default function InstancesPage({
                       </span>
                     )}
                   </div>
+                  <p className="mt-2 truncate text-xs text-[var(--text-secondary)]">
+                    <span className="text-[var(--text-muted)]">{t("instances.base")}: </span>
+                    {instance.baseVersion}
+                    {instance.loaderVersion ? `  |  loader ${instance.loaderVersion}` : ""}
+                  </p>
                 </div>
               </div>
-
-              <p className="mb-5 text-xs text-[var(--text-muted)]">
-                {t("instances.base")}: {instance.baseVersion}
-                {instance.loaderVersion ? `  |  loader ${instance.loaderVersion}` : ""}
-              </p>
 
               <div className="mt-auto">
                 <div className="grid grid-cols-3 gap-2">
@@ -181,15 +160,13 @@ export default function InstancesPage({
                   </Button>
                 </div>
                 {busy && launchingInstanceId === instance.id && (
-                  <p className="mt-1.5 text-[11px] text-[var(--text-muted)] truncate">
-                    {launchProgressText || t("launch.progress.preparing")}
-                  </p>
+                  <p className="mt-1.5 truncate text-[11px] text-[var(--text-muted)]">{launchProgressText || t("launch.progress.preparing")}</p>
                 )}
               </div>
             </Card>
           );
         })}
-      </div>
+      </section>
     </div>
   );
 }

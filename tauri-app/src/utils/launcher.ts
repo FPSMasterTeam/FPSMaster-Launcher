@@ -79,6 +79,7 @@ export function loadSettings(): Settings {
     const language = parseLocale(parsed.language);
     const themeMode = parseThemeMode(parsed.themeMode);
     const themeAccent = parseThemeAccent(parsed.themeAccent);
+    const customAccentHex = parseCustomAccentHex(parsed.customAccentHex);
     const backgroundSource = parseBackgroundSource(parsed.backgroundSource);
     return {
       gameDir:
@@ -100,6 +101,7 @@ export function loadSettings(): Settings {
       language,
       themeMode,
       themeAccent,
+      customAccentHex,
       backgroundSource,
       backgroundImage:
         typeof parsed.backgroundImage === "string" ? parsed.backgroundImage : DEFAULT_SETTINGS.backgroundImage,
@@ -139,10 +141,28 @@ function parseThemeMode(input: unknown): ThemeMode {
 }
 
 function parseThemeAccent(input: unknown): ThemeAccent {
-  if (input === "emerald" || input === "cyan" || input === "violet" || input === "sunset") {
+  if (
+    input === "emerald" ||
+    input === "cyan" ||
+    input === "violet" ||
+    input === "sunset" ||
+    input === "rose" ||
+    input === "amber" ||
+    input === "sky" ||
+    input === "lime" ||
+    input === "custom"
+  ) {
     return input;
   }
   return DEFAULT_SETTINGS.themeAccent;
+}
+
+function parseCustomAccentHex(input: unknown): string {
+  if (typeof input !== "string") {
+    return DEFAULT_SETTINGS.customAccentHex;
+  }
+  const normalized = normalizeHexColor(input);
+  return normalized ?? DEFAULT_SETTINGS.customAccentHex;
 }
 
 function parseBackgroundSource(input: unknown): BackgroundSource {
@@ -152,11 +172,80 @@ function parseBackgroundSource(input: unknown): BackgroundSource {
   return DEFAULT_SETTINGS.backgroundSource;
 }
 
-export function applyTheme(mode: ThemeMode, accent: ThemeAccent) {
+export function applyTheme(mode: ThemeMode, accent: ThemeAccent, customAccentHex: string) {
   if (typeof document === "undefined") return;
   const root = document.documentElement;
   root.setAttribute("data-theme", mode);
   root.setAttribute("data-accent", accent);
+
+  if (accent !== "custom") {
+    root.style.removeProperty("--custom-accent");
+    root.style.removeProperty("--custom-accent-dark");
+    root.style.removeProperty("--custom-diamond");
+    root.style.removeProperty("--custom-emerald");
+    root.style.removeProperty("--custom-gold");
+    root.style.removeProperty("--custom-accent-rgb");
+    return;
+  }
+
+  const normalized = normalizeHexColor(customAccentHex) ?? DEFAULT_SETTINGS.customAccentHex;
+  const rgb = hexToRgb(normalized);
+  if (!rgb) {
+    return;
+  }
+  const dark = tintRgb(rgb, 0.8);
+  const diamond = tintRgb(rgb, 1.22);
+  const emerald = tintRgb(rgb, 1.08);
+  const gold = tintRgb(rgb, 1.34);
+
+  root.style.setProperty("--custom-accent", rgbToHex(rgb));
+  root.style.setProperty("--custom-accent-dark", rgbToHex(dark));
+  root.style.setProperty("--custom-diamond", rgbToHex(diamond));
+  root.style.setProperty("--custom-emerald", rgbToHex(emerald));
+  root.style.setProperty("--custom-gold", rgbToHex(gold));
+  root.style.setProperty("--custom-accent-rgb", `${rgb.r}, ${rgb.g}, ${rgb.b}`);
+}
+
+function normalizeHexColor(input: string): string | null {
+  const value = input.trim();
+  if (/^#[0-9a-fA-F]{6}$/.test(value)) {
+    return value.toLowerCase();
+  }
+  if (/^#[0-9a-fA-F]{3}$/.test(value)) {
+    const [r, g, b] = value.slice(1).split("");
+    return `#${r}${r}${g}${g}${b}${b}`.toLowerCase();
+  }
+  return null;
+}
+
+function hexToRgb(hex: string): { r: number; g: number; b: number } | null {
+  const normalized = normalizeHexColor(hex);
+  if (!normalized) return null;
+  const raw = normalized.slice(1);
+  const r = Number.parseInt(raw.slice(0, 2), 16);
+  const g = Number.parseInt(raw.slice(2, 4), 16);
+  const b = Number.parseInt(raw.slice(4, 6), 16);
+  if (!Number.isFinite(r) || !Number.isFinite(g) || !Number.isFinite(b)) {
+    return null;
+  }
+  return { r, g, b };
+}
+
+function rgbToHex(color: { r: number; g: number; b: number }): string {
+  const toHex = (value: number) => value.toString(16).padStart(2, "0");
+  return `#${toHex(color.r)}${toHex(color.g)}${toHex(color.b)}`;
+}
+
+function tintRgb(color: { r: number; g: number; b: number }, factor: number): { r: number; g: number; b: number } {
+  return {
+    r: clampChannel(Math.round(color.r * factor)),
+    g: clampChannel(Math.round(color.g * factor)),
+    b: clampChannel(Math.round(color.b * factor))
+  };
+}
+
+function clampChannel(value: number): number {
+  return Math.min(255, Math.max(0, value));
 }
 
 function defaults(): Instance[] {

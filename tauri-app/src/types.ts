@@ -3,8 +3,18 @@ export type Loader = "vanilla" | "forge" | "fabric";
 export type PhaseStatus = "pending" | "running" | "done" | "error";
 export type Locale = "en-US" | "zh-CN";
 export type ThemeMode = "dark" | "light";
-export type ThemeAccent = "emerald" | "cyan" | "violet" | "sunset";
+export type ThemeAccent =
+  | "emerald"
+  | "cyan"
+  | "violet"
+  | "sunset"
+  | "rose"
+  | "amber"
+  | "sky"
+  | "lime"
+  | "custom";
 export type BackgroundSource = "local" | "web-random";
+export type LauncherVersionType = "EDGE" | "NOVA";
 
 export type Instance = {
   id: string;
@@ -13,6 +23,7 @@ export type Instance = {
   baseVersion: string;
   loader: Loader;
   loaderVersion?: string;
+  launcherVersionType?: LauncherVersionType;
   iconPath?: string;
   preset: boolean;
 };
@@ -25,6 +36,7 @@ export type Settings = {
   language: Locale;
   themeMode: ThemeMode;
   themeAccent: ThemeAccent;
+  customAccentHex: string;
   backgroundSource: BackgroundSource;
   backgroundImage: string;
   backgroundWebUrl: string;
@@ -116,4 +128,43 @@ export type InstallDialogState = {
 export type InstanceSectionEntry = {
   name: string;
   isDir: boolean;
+};
+
+export type LauncherUser = {
+  id?: string;
+  username?: string;
+  email?: string;
+  role?: string;
+  level?: number | string;
+  userLevel?: number | string;
+  membershipLevel?: number | string;
+  emailVerified?: boolean;
+  banned?: boolean;
+  walletBalance?: string;
+  customTitle?: string;
+  membershipExpiresAt?: string | null;
+};
+
+export type LauncherLoginResult = {
+  token: string;
+  user: LauncherUser;
+};
+
+export type LauncherVersion = {
+  id?: unknown;
+  channel: string;
+  versionType: LauncherVersionType;
+  versionName: string;
+  downloadUrl: string;
+  changelog?: string | null;
+  commitHash?: string | null;
+  createdAt?: string | null;
+  updatedAt?: string | null;
+};
+
+export type LauncherModsInstallResult = {
+  targetDir: string;
+  installedFiles: number;
+  skipped: boolean;
+  versionTag: string;
 };
