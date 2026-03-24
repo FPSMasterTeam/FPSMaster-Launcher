@@ -45,6 +45,7 @@ import type {
   LauncherVersion,
   LauncherVersionType,
   JdkEnsureResult,
+  LauncherDashboard,
   Locale,
   LaunchExecutionResult,
   Loader,
@@ -111,6 +112,7 @@ function Launcher() {
   const [launcherAuth, setLauncherAuth] = useState<LauncherAuthState | null>(loadLauncherAuthState);
   const [launcherVersions, setLauncherVersions] = useState<LauncherVersionMap>(EMPTY_LAUNCHER_VERSIONS);
   const [launcherNews, setLauncherNews] = useState<NewsItem[]>(() => [...NEWS_ITEMS]);
+  const [launcherDashboard, setLauncherDashboard] = useState<LauncherDashboard | null>(null);
   const [presetPackageStatuses, setPresetPackageStatuses] = useState<Record<string, PresetPackageStatus>>({});
   const [launcherAuthLoading, setLauncherAuthLoading] = useState(false);
   const [launcherVersionLoading, setLauncherVersionLoading] = useState(false);
@@ -193,10 +195,12 @@ function Launcher() {
   useEffect(() => {
     if (!launcherAuth?.token) {
       setLauncherVersions(EMPTY_LAUNCHER_VERSIONS);
+      setLauncherDashboard(null);
       setPresetPackageStatuses({});
       return;
     }
     void refreshLauncherVersions(true);
+    void refreshLauncherDashboard(true);
   }, [launcherAuth?.token]);
 
   useEffect(() => {
@@ -529,6 +533,41 @@ function Launcher() {
     }
   }
 
+  async function refreshLauncherDashboard(silent = false, tokenOverride?: string): Promise<void> {
+    const token = (tokenOverride ?? launcherAuth?.token ?? "").trim();
+    if (!token) {
+      setLauncherDashboard(null);
+      return;
+    }
+
+    try {
+      const item = await invoke<LauncherDashboard>("launcher_get_dashboard", {
+        baseUrl: LAUNCHER_API_BASE_URL,
+        token
+      });
+      setLauncherDashboard(item);
+      setLauncherAuth((prev) =>
+        prev
+          ? {
+              ...prev,
+              user: {
+                ...prev.user,
+                ...item.user
+              }
+            }
+          : prev
+      );
+      if (!silent) {
+        setStatus(t("app.status.ready"));
+      }
+    } catch (error) {
+      setLauncherDashboard(null);
+      if (!silent) {
+        setStatus(t("app.status.failed", { error: formatLaunchError(error) }));
+      }
+    }
+  }
+
   async function loginLauncherAccount(
     usernameOrEmail: string,
     password: string
@@ -553,6 +592,7 @@ function Launcher() {
         token: normalizedToken,
         user: result.user ?? {}
       });
+      void refreshLauncherDashboard(true, normalizedToken);
       const refresh = await refreshLauncherVersions(false, normalizedToken);
       if (!refresh.error && refresh.map) {
         void syncPresetLauncherPackages(refresh.map);
@@ -570,6 +610,7 @@ function Launcher() {
   function logoutLauncherAccount() {
     setLauncherAuth(null);
     setLauncherVersions(EMPTY_LAUNCHER_VERSIONS);
+    setLauncherDashboard(null);
     setPresetPackageStatuses({});
     setStatus(t("login.tip.signInToContinue"));
   }
@@ -1113,6 +1154,7 @@ function Launcher() {
         <HomePage
           availableInstances={instances}
           launcherNews={launcherNews}
+          launcherDashboard={launcherDashboard}
           current={current}
           busy={busy}
           launching={launching}

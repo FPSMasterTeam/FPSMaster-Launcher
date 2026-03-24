@@ -124,6 +124,50 @@ struct LauncherNewsItem {
     pinned: bool,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct LauncherWeeklyPlaytimePoint {
+    date: String,
+    #[serde(rename = "playSeconds")]
+    play_seconds: i64,
+    #[serde(rename = "playMinutes")]
+    play_minutes: i64,
+    #[serde(rename = "playHours")]
+    play_hours: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct LauncherWeeklyPlaytime {
+    points: Vec<LauncherWeeklyPlaytimePoint>,
+    #[serde(rename = "totalSeconds")]
+    total_seconds: i64,
+    #[serde(rename = "totalMinutes")]
+    total_minutes: i64,
+    #[serde(rename = "totalHours")]
+    total_hours: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct LauncherUserStats {
+    #[serde(rename = "totalActivities")]
+    total_activities: i64,
+    #[serde(rename = "playSessionCount")]
+    play_session_count: i64,
+    #[serde(rename = "totalPlaySeconds")]
+    total_play_seconds: i64,
+    #[serde(rename = "totalPlayHours")]
+    total_play_hours: f64,
+    #[serde(rename = "latestActivityAt", default)]
+    latest_activity_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct LauncherDashboard {
+    user: serde_json::Value,
+    stats: LauncherUserStats,
+    #[serde(rename = "weeklyPlaytime")]
+    weekly_playtime: LauncherWeeklyPlaytime,
+}
+
 #[derive(Debug, Clone, Serialize)]
 struct LauncherModsInstallResult {
     #[serde(rename = "targetDir")]
@@ -721,6 +765,13 @@ async fn launcher_list_news(
         .map_err(|e| format!("Failed to join launcher news task: {e}"))?
 }
 
+#[tauri::command]
+async fn launcher_get_dashboard(base_url: String, token: String) -> Result<LauncherDashboard, String> {
+    tauri::async_runtime::spawn_blocking(move || launcher_get_dashboard_blocking(base_url, token))
+        .await
+        .map_err(|e| format!("Failed to join launcher dashboard task: {e}"))?
+}
+
 fn launcher_list_news_blocking(
     base_url: String,
     limit: Option<u32>,
@@ -745,6 +796,35 @@ fn launcher_list_news_blocking(
         .text()
         .map_err(|e| format!("Failed to read launcher news response: {e}"))?;
     parse_launcher_news_response(status, &text)
+}
+
+fn launcher_get_dashboard_blocking(
+    base_url: String,
+    token: String,
+) -> Result<LauncherDashboard, String> {
+    let normalized_base = normalize_api_base_url(&base_url)?;
+    let normalized_token = token.trim().to_string();
+    if normalized_token.is_empty() {
+        return Err("Token is required".to_string());
+    }
+
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(20))
+        .build()
+        .map_err(|e| format!("Failed to build HTTP client: {e}"))?;
+
+    let url = reqwest::Url::parse(&format!("{normalized_base}/api/v1/launcher/dashboard"))
+        .map_err(|e| format!("Invalid launcher dashboard endpoint URL: {e}"))?;
+    let response = client
+        .get(url)
+        .bearer_auth(&normalized_token)
+        .send()
+        .map_err(|e| format!("Launcher dashboard request failed: {e}"))?;
+    let status = response.status();
+    let text = response
+        .text()
+        .map_err(|e| format!("Failed to read launcher dashboard response: {e}"))?;
+    parse_launcher_dashboard_response(status, &text)
 }
 
 fn launcher_list_available_versions_blocking(
@@ -2470,6 +2550,28 @@ fn parse_launcher_news_response(
     extract_launcher_news(&value).ok_or_else(|| "launcher news response missing data".to_string())
 }
 
+fn parse_launcher_dashboard_response(
+    status: reqwest::StatusCode,
+    body: &str,
+) -> Result<LauncherDashboard, String> {
+    if let Ok(item) = parse_api_envelope::<LauncherDashboard>(status, body, "launcher dashboard") {
+        return Ok(item);
+    }
+
+    let value: serde_json::Value = serde_json::from_str(body)
+        .map_err(|e| format!("Invalid launcher dashboard response JSON: {e}"))?;
+
+    if !status.is_success() {
+        return Err(
+            extract_api_error_message(body)
+                .unwrap_or_else(|| format!("launcher dashboard failed with HTTP {}", status.as_u16())),
+        );
+    }
+
+    serde_json::from_value::<LauncherDashboard>(value)
+        .map_err(|e| format!("launcher dashboard response missing data: {e}"))
+}
+
 fn parse_api_envelope<T: for<'de> Deserialize<'de>>(
     status: reqwest::StatusCode,
     body: &str,
@@ -2921,6 +3023,7 @@ fn main() {
             launcher_login,
             launcher_list_available_versions,
             launcher_list_news,
+            launcher_get_dashboard,
             get_launcher_package_state,
             install_launcher_version_mods,
             list_vanilla_versions,

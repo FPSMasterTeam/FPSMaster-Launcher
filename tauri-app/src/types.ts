@@ -141,10 +141,13 @@ export type LauncherUser = {
   level?: number | string;
   userLevel?: number | string;
   membershipLevel?: number | string;
+  experience?: number;
+  nextLevelNeed?: number;
   emailVerified?: boolean;
   banned?: boolean;
   walletBalance?: string;
   customTitle?: string;
+  avatarUrl?: string;
   membershipExpiresAt?: string | null;
 };
 
@@ -184,4 +187,32 @@ export type LauncherPackageState = {
 export type PresetPackageStatus = {
   state: "checking" | "missing" | "ready" | "update-available";
   versionTag: string | null;
+};
+
+export type DailyPlaytimePoint = {
+  date: string;
+  playSeconds: number;
+  playMinutes: number;
+  playHours: number;
+};
+
+export type WeeklyPlaytime = {
+  points: DailyPlaytimePoint[];
+  totalSeconds: number;
+  totalMinutes: number;
+  totalHours: number;
+};
+
+export type LauncherUserStats = {
+  totalActivities: number;
+  playSessionCount: number;
+  totalPlaySeconds: number;
+  totalPlayHours: number;
+  latestActivityAt?: string | null;
+};
+
+export type LauncherDashboard = {
+  user: LauncherUser;
+  stats: LauncherUserStats;
+  weeklyPlaytime: WeeklyPlaytime;
 };
