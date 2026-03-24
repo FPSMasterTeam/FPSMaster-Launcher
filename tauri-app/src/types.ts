@@ -159,6 +159,7 @@ export type LauncherVersion = {
   versionType: LauncherVersionType;
   versionName: string;
   downloadUrl: string;
+  recommended?: boolean;
   changelog?: string | null;
   commitHash?: string | null;
   createdAt?: string | null;

@@ -100,6 +100,8 @@ struct LauncherVersion {
     #[serde(rename = "downloadUrl")]
     download_url: String,
     #[serde(default)]
+    recommended: bool,
+    #[serde(default)]
     changelog: Option<String>,
     #[serde(rename = "commitHash", default)]
     commit_hash: Option<String>,

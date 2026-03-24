@@ -401,7 +401,11 @@ function Launcher() {
     for (const item of entries) {
       if (item.versionType !== "EDGE" && item.versionType !== "NOVA") continue;
       const current = out[item.versionType];
-      if (!current || scoreOf(item) > scoreOf(current)) {
+      const shouldReplace =
+        !current ||
+        (item.recommended && !current.recommended) ||
+        (item.recommended === current.recommended && scoreOf(item) > scoreOf(current));
+      if (shouldReplace) {
         out[item.versionType] = item;
       }
     }
@@ -443,6 +447,24 @@ function Launcher() {
       return { map: null, error: errorText };
     } finally {
       setLauncherVersionLoading(false);
+    }
+  }
+
+  async function syncPresetLauncherPackages(versionMap?: LauncherVersionMap | null): Promise<void> {
+    const targetMap = versionMap ?? launcherVersions;
+    const presetInstances = instances.filter(
+      (item) => item.preset && item.launcherVersionType && targetMap[item.launcherVersionType]
+    );
+    if (presetInstances.length === 0) {
+      return;
+    }
+
+    for (const instance of presetInstances) {
+      try {
+        await ensurePresetModsReady(instance, targetMap);
+      } catch {
+        // Keep sync best-effort to avoid blocking login flow.
+      }
     }
   }
 
@@ -493,6 +515,9 @@ function Launcher() {
         user: result.user ?? {}
       });
       const refresh = await refreshLauncherVersions(false, normalizedToken);
+      if (!refresh.error && refresh.map) {
+        void syncPresetLauncherPackages(refresh.map);
+      }
       return refresh.error;
     } catch (error) {
       const errorText = normalizeLoginError(error, t);
@@ -509,7 +534,10 @@ function Launcher() {
     setStatus(t("login.tip.signInToContinue"));
   }
 
-  async function ensurePresetModsReady(instance: Instance) {
+  async function ensurePresetModsReady(
+    instance: Instance,
+    versionMapOverride?: LauncherVersionMap | null
+  ) {
     if (!instance.preset || !instance.launcherVersionType) return;
 
     const token = launcherAuth?.token?.trim() ?? "";
@@ -518,7 +546,9 @@ function Launcher() {
       return;
     }
 
-    let targetVersion = launcherVersions[instance.launcherVersionType];
+    let targetVersion =
+      versionMapOverride?.[instance.launcherVersionType] ??
+      launcherVersions[instance.launcherVersionType];
     if (!targetVersion) {
       const refresh = await refreshLauncherVersions(true, token);
       if (refresh.error) {
