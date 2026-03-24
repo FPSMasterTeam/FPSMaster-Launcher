@@ -1,11 +1,11 @@
-import { Calendar, Check, ChevronRight, Play, Search, Users, X } from "lucide-react";
+import { Calendar, Check, ChevronRight, Download, Play, Search, Users, X } from "lucide-react";
 import { createPortal } from "react-dom";
 import { useMemo, useState } from "react";
 import Button from "../components/Button";
 import Card from "../components/Card";
 import { RECOMMENDED_SERVERS } from "../constants";
 import { useI18n } from "../i18n";
-import type { Instance, NewsItem } from "../types";
+import type { Instance, NewsItem, PresetPackageStatus } from "../types";
 import { resolveInstanceIconPath } from "../utils/launcher";
 
 type HomePageProps = {
@@ -16,8 +16,10 @@ type HomePageProps = {
   launching: boolean;
   launchProgressPercent: number | null;
   launchProgressText: string;
+  presetPackageStatus?: PresetPackageStatus;
   onSelect: (id: string) => void;
   onLaunch: () => void;
+  onSyncPresetPackage: () => void;
 };
 
 export default function HomePage({
@@ -28,8 +30,10 @@ export default function HomePage({
   launching,
   launchProgressPercent,
   launchProgressText,
+  presetPackageStatus,
   onSelect,
-  onLaunch
+  onLaunch,
+  onSyncPresetPackage
 }: HomePageProps) {
   const { t } = useI18n();
   const selectedInstance = current ?? availableInstances[0] ?? null;
@@ -87,35 +91,72 @@ export default function HomePage({
             </div>
           </div>
 
-          <Card variant="frost" className="rounded-xl p-3.5 md:p-4">
-            <h2 className="mb-2 flex items-center gap-2 text-sm font-semibold text-[var(--text-primary)]">
-              <Users size={16} className="text-[var(--mc-grass)]" />
-              {t("home.topServers")}
-            </h2>
-            <div className="space-y-1.5">
-              {RECOMMENDED_SERVERS.map((server) => (
-                <button
-                  key={server.address}
-                  className="linear-float flex min-h-11 w-full cursor-pointer items-center rounded-lg border border-transparent px-2.5 py-2 text-left transition-all duration-[var(--duration-normal)] hover:border-[var(--border-subtle)] hover:bg-[var(--surface-soft)]"
-                  type="button"
-                >
-                  <div className="h-8 w-8 overflow-hidden rounded-md border border-[var(--border-subtle)] bg-[var(--bg-elevated)]">
-                    {server.iconPath ? <img src={server.iconPath} alt={server.name} className="h-full w-full object-cover" /> : null}
+          <div className="space-y-4">
+            {selectedInstance?.preset && (
+              <Card variant="frost" className="rounded-xl p-3.5 md:p-4">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <h2 className="flex items-center gap-2 text-sm font-semibold text-[var(--text-primary)]">
+                      <Download size={16} className="text-[var(--mc-grass)]" />
+                      {t("home.presetPackageTitle")}
+                    </h2>
+                    <p className="mt-1 text-xs text-[var(--text-secondary)]">{selectedInstance.name}</p>
                   </div>
-                  <div className="ml-2.5 min-w-0 flex-1">
-                    <p className="truncate text-sm font-semibold text-[var(--text-primary)]">{server.name}</p>
-                    <p className="truncate text-[11px] text-[var(--text-muted)]">{server.address}</p>
-                  </div>
-                  <span className="rounded-md border border-[var(--border-medium)] bg-[var(--bg-elevated)] px-2 py-0.5 text-[10px] font-semibold uppercase text-[var(--text-secondary)]">
-                    {server.mode}
-                  </span>
-                </button>
-              ))}
-            </div>
-            <button className="mt-1.5 flex w-full items-center justify-center gap-1 rounded-lg px-2 py-1.5 text-xs font-medium text-[var(--text-muted)] transition-colors hover:text-[var(--text-primary)]" type="button">
-              {t("home.moreServers")} <ChevronRight size={12} />
-            </button>
-          </Card>
+                  <Button
+                    variant={
+                      presetPackageStatus?.state === "update-available" || presetPackageStatus?.state === "missing"
+                        ? "secondary"
+                        : "outline"
+                    }
+                    size="sm"
+                    onClick={onSyncPresetPackage}
+                    disabled={busy}
+                  >
+                    {t("instances.syncPackage")}
+                  </Button>
+                </div>
+                <p className="mt-3 text-sm text-[var(--text-secondary)]">
+                  {presetPackageStatus?.state === "ready"
+                    ? t("instances.packageReady", { version: presetPackageStatus.versionTag ?? "-" })
+                    : presetPackageStatus?.state === "update-available"
+                      ? t("instances.packageUpdateAvailable", { version: presetPackageStatus.versionTag ?? "-" })
+                      : presetPackageStatus?.state === "checking"
+                        ? t("instances.packageChecking")
+                        : t("instances.packageMissing")}
+                </p>
+              </Card>
+            )}
+
+            <Card variant="frost" className="rounded-xl p-3.5 md:p-4">
+              <h2 className="mb-2 flex items-center gap-2 text-sm font-semibold text-[var(--text-primary)]">
+                <Users size={16} className="text-[var(--mc-grass)]" />
+                {t("home.topServers")}
+              </h2>
+              <div className="space-y-1.5">
+                {RECOMMENDED_SERVERS.map((server) => (
+                  <button
+                    key={server.address}
+                    className="linear-float flex min-h-11 w-full cursor-pointer items-center rounded-lg border border-transparent px-2.5 py-2 text-left transition-all duration-[var(--duration-normal)] hover:border-[var(--border-subtle)] hover:bg-[var(--surface-soft)]"
+                    type="button"
+                  >
+                    <div className="h-8 w-8 overflow-hidden rounded-md border border-[var(--border-subtle)] bg-[var(--bg-elevated)]">
+                      {server.iconPath ? <img src={server.iconPath} alt={server.name} className="h-full w-full object-cover" /> : null}
+                    </div>
+                    <div className="ml-2.5 min-w-0 flex-1">
+                      <p className="truncate text-sm font-semibold text-[var(--text-primary)]">{server.name}</p>
+                      <p className="truncate text-[11px] text-[var(--text-muted)]">{server.address}</p>
+                    </div>
+                    <span className="rounded-md border border-[var(--border-medium)] bg-[var(--bg-elevated)] px-2 py-0.5 text-[10px] font-semibold uppercase text-[var(--text-secondary)]">
+                      {server.mode}
+                    </span>
+                  </button>
+                ))}
+              </div>
+              <button className="mt-1.5 flex w-full items-center justify-center gap-1 rounded-lg px-2 py-1.5 text-xs font-medium text-[var(--text-muted)] transition-colors hover:text-[var(--text-primary)]" type="button">
+                {t("home.moreServers")} <ChevronRight size={12} />
+              </button>
+            </Card>
+          </div>
         </section>
       </div>
 

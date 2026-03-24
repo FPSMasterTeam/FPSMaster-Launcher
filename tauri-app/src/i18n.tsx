@@ -50,6 +50,7 @@ const translations = {
 
     "home.welcomeBack": "Welcome Back",
     "home.dashboardReady": "Your gaming dashboard is ready.",
+    "home.presetPackageTitle": "Preset Package",
     "home.status": "Status",
     "home.latestNews": "Latest News",
     "home.viewAll": "View All",
@@ -318,6 +319,7 @@ const translations = {
 
     "home.welcomeBack": "欢迎回来",
     "home.dashboardReady": "你的游戏面板已准备就绪。",
+    "home.presetPackageTitle": "预设客户端包",
     "home.status": "状态",
     "home.latestNews": "最新资讯",
     "home.viewAll": "查看全部",

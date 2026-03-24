@@ -1115,8 +1115,14 @@ function Launcher() {
           launching={launching}
           launchProgressPercent={launchProgressPercent}
           launchProgressText={launchProgressText}
+          presetPackageStatus={current ? presetPackageStatuses[current.id] : undefined}
           onSelect={setSelected}
           onLaunch={launch}
+          onSyncPresetPackage={() => {
+            if (current) {
+              void syncPresetPackage(current.id);
+            }
+          }}
         />
       );
     }
