@@ -4,7 +4,8 @@ export const STORAGE_KEYS = {
   instances: "fpsmaster.instances",
   settings: "fpsmaster.settings",
   selected: "fpsmaster.selected",
-  launcherAuth: "fpsmaster.launcherAuth"
+  launcherAuth: "fpsmaster.launcherAuth",
+  launcherSessionId: "fpsmaster.launcherSessionId"
 } as const;
 
 export const LAUNCHER_API_BASE_URL = "https://api.fpsmaster.top";

@@ -216,3 +216,12 @@ export type LauncherDashboard = {
   stats: LauncherUserStats;
   weeklyPlaytime: WeeklyPlaytime;
 };
+
+export type TelemetryOnlineSummary = {
+  online: number;
+  total: number;
+  launcher: number;
+  edge: number;
+  nova: number;
+  generic: number;
+};

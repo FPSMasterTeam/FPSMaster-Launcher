@@ -52,6 +52,7 @@ import type {
   Page,
   PresetPackageStatus,
   Settings,
+  TelemetryOnlineSummary,
   UiLogPollResult
 } from "./types";
 import {
@@ -113,6 +114,7 @@ function Launcher() {
   const [launcherVersions, setLauncherVersions] = useState<LauncherVersionMap>(EMPTY_LAUNCHER_VERSIONS);
   const [launcherNews, setLauncherNews] = useState<NewsItem[]>(() => [...NEWS_ITEMS]);
   const [launcherDashboard, setLauncherDashboard] = useState<LauncherDashboard | null>(null);
+  const [launcherOnlineCount, setLauncherOnlineCount] = useState<number | null>(null);
   const [presetPackageStatuses, setPresetPackageStatuses] = useState<Record<string, PresetPackageStatus>>({});
   const [launcherAuthLoading, setLauncherAuthLoading] = useState(false);
   const [launcherVersionLoading, setLauncherVersionLoading] = useState(false);
@@ -140,6 +142,7 @@ function Launcher() {
 
   const [installDialog, setInstallDialog] = useState<InstallDialogState | null>(null);
   const [titlebarBusy, setTitlebarBusy] = useState(false);
+  const launcherSessionIdRef = useRef(loadOrCreateLauncherSessionId());
 
   const logCursorRef = useRef<number | null>(null);
   const pollingRef = useRef(false);
@@ -196,12 +199,51 @@ function Launcher() {
     if (!launcherAuth?.token) {
       setLauncherVersions(EMPTY_LAUNCHER_VERSIONS);
       setLauncherDashboard(null);
+      setLauncherOnlineCount(null);
       setPresetPackageStatuses({});
       return;
     }
     void refreshLauncherVersions(true);
     void refreshLauncherDashboard(true);
   }, [launcherAuth?.token]);
+
+  useEffect(() => {
+    const token = launcherAuth?.token?.trim();
+    if (!token) {
+      setLauncherOnlineCount(null);
+      return;
+    }
+
+    let active = true;
+    const runHeartbeat = async () => {
+      try {
+        await postLauncherHeartbeat(token);
+      } catch {
+      }
+    };
+    const loadOnline = async () => {
+      try {
+        const summary = await fetchTelemetryOnlineSummary();
+        if (active) {
+          setLauncherOnlineCount(summary.launcher);
+        }
+      } catch {
+        if (active) {
+          setLauncherOnlineCount(null);
+        }
+      }
+    };
+
+    void runHeartbeat();
+    void loadOnline();
+    const heartbeatTimer = window.setInterval(() => void runHeartbeat(), 90_000);
+    const onlineTimer = window.setInterval(() => void loadOnline(), 90_000);
+    return () => {
+      active = false;
+      window.clearInterval(heartbeatTimer);
+      window.clearInterval(onlineTimer);
+    };
+  }, [launcherAuth?.token, launcherAuth?.user?.username]);
 
   useEffect(() => {
     void refreshLauncherNews(true);
@@ -566,6 +608,40 @@ function Launcher() {
         setStatus(t("app.status.failed", { error: formatLaunchError(error) }));
       }
     }
+  }
+
+  async function postLauncherHeartbeat(token: string): Promise<void> {
+    const response = await fetch(`${LAUNCHER_API_BASE_URL}/api/v1/telemetry/heartbeat`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`
+      },
+      body: JSON.stringify({
+        clientName: "fpsmaster-launcher",
+        clientKind: "LAUNCHER",
+        sessionId: launcherSessionIdRef.current,
+        username: launcherAuth?.user?.username ?? settings.playerName,
+        playerUuid: launcherAuth?.user?.id ?? null
+      })
+    });
+
+    if (!response.ok) {
+      throw new Error(`heartbeat failed with HTTP ${response.status}`);
+    }
+  }
+
+  async function fetchTelemetryOnlineSummary(): Promise<TelemetryOnlineSummary> {
+    const response = await fetch(`${LAUNCHER_API_BASE_URL}/api/v1/telemetry/online?clientKind=LAUNCHER`);
+    const raw = (await response.json()) as {
+      success?: boolean;
+      message?: string;
+      data?: TelemetryOnlineSummary;
+    };
+    if (!response.ok || raw.success === false || !raw.data) {
+      throw new Error(raw.message || `online summary failed with HTTP ${response.status}`);
+    }
+    return raw.data;
   }
 
   async function loginLauncherAccount(
@@ -1155,6 +1231,7 @@ function Launcher() {
           availableInstances={instances}
           launcherNews={launcherNews}
           launcherDashboard={launcherDashboard}
+          launcherOnlineCount={launcherOnlineCount}
           current={current}
           busy={busy}
           launching={launching}
@@ -1535,6 +1612,20 @@ function loadLauncherAuthState(): LauncherAuthState | null {
     };
   } catch {
     return null;
+  }
+}
+
+function loadOrCreateLauncherSessionId(): string {
+  try {
+    const existing = localStorage.getItem(STORAGE_KEYS.launcherSessionId)?.trim();
+    if (existing) {
+      return existing;
+    }
+    const created = createSessionId();
+    localStorage.setItem(STORAGE_KEYS.launcherSessionId, created);
+    return created;
+  } catch {
+    return createSessionId();
   }
 }
 

@@ -13,6 +13,7 @@ type HomePageProps = {
   availableInstances: Instance[];
   launcherNews: NewsItem[];
   launcherDashboard: LauncherDashboard | null;
+  launcherOnlineCount: number | null;
   current: Instance | null;
   busy: boolean;
   launching: boolean;
@@ -28,6 +29,7 @@ export default function HomePage({
   availableInstances,
   launcherNews,
   launcherDashboard,
+  launcherOnlineCount,
   current,
   busy,
   launching,
@@ -78,7 +80,14 @@ export default function HomePage({
     <div className="flex h-full flex-col overflow-hidden">
       <div className="flex-1 overflow-y-auto p-4 md:p-5 xl:p-6">
         <section className="mb-5">
-          <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[var(--text-muted)]">FPSMaster Launcher</p>
+          <div className="flex flex-wrap items-center gap-2">
+            <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[var(--text-muted)]">FPSMaster Launcher</p>
+            {typeof launcherOnlineCount === "number" && (
+              <span className="rounded-md border border-[var(--mc-grass)]/35 bg-[var(--mc-grass)]/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-[var(--mc-grass)]">
+                {t("home.onlineTag", { count: launcherOnlineCount })}
+              </span>
+            )}
+          </div>
           <h1 className="mt-1 text-2xl font-semibold tracking-tight text-[var(--text-primary)] md:text-3xl">{t("home.welcomeBack")}</h1>
           <p className="mt-1 text-sm text-[var(--text-secondary)] md:text-[15px]">{t("home.dashboardReady")}</p>
         </section>
