@@ -1071,6 +1071,27 @@ function Launcher() {
     setInstallDialog(null);
   }
 
+  async function syncPresetPackage(instanceId: string) {
+    const target = instances.find((item) => item.id === instanceId);
+    if (!target || !target.preset) {
+      return;
+    }
+    setPresetPackageStatuses((prev) => ({
+      ...prev,
+      [instanceId]: {
+        state: "checking",
+        versionTag: prev[instanceId]?.versionTag ?? null
+      }
+    }));
+    try {
+      await ensurePresetModsReady(target);
+      await refreshPresetPackageStatuses();
+    } catch (error) {
+      setStatus(t("app.status.failed", { error: formatLaunchError(error) }));
+      await refreshPresetPackageStatuses();
+    }
+  }
+
   function updateSettings(next: Settings) {
     setSettings(next);
   }
@@ -1121,6 +1142,7 @@ function Launcher() {
             setSelected(id);
             setPage("instance-settings");
           }}
+          onSyncPresetPackage={syncPresetPackage}
         />
       );
     }

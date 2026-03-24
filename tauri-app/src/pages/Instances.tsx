@@ -1,4 +1,4 @@
-import { Plus, Search, Settings, Play, Trash2 } from "lucide-react";
+import { Download, Plus, Search, Settings, Play, Trash2 } from "lucide-react";
 import { useMemo, useState } from "react";
 import Button from "../components/Button";
 import Card from "../components/Card";
@@ -17,6 +17,7 @@ type InstancesPageProps = {
   onGoInstall: () => void;
   onLaunchInstance: (id: string) => void;
   onOpenInstanceSettings: (id: string) => void;
+  onSyncPresetPackage: (id: string) => void;
 };
 
 export default function InstancesPage({
@@ -29,7 +30,8 @@ export default function InstancesPage({
   onDelete,
   onGoInstall,
   onLaunchInstance,
-  onOpenInstanceSettings
+  onOpenInstanceSettings,
+  onSyncPresetPackage
 }: InstancesPageProps) {
   const { t } = useI18n();
   const [searchQuery, setSearchQuery] = useState("");
@@ -135,7 +137,7 @@ export default function InstancesPage({
               </div>
 
               <div className="mt-auto">
-                <div className="grid grid-cols-3 gap-2">
+                <div className={`grid gap-2 ${instance.preset ? "grid-cols-4" : "grid-cols-3"}`}>
                   <Button
                     variant="primary"
                     size="sm"
@@ -161,6 +163,23 @@ export default function InstancesPage({
                     <Settings size={13} />
                     {t("instances.settings")}
                   </Button>
+                  {instance.preset && (
+                    <Button
+                      variant={
+                        presetStatus?.state === "update-available" || presetStatus?.state === "missing"
+                          ? "secondary"
+                          : "outline"
+                      }
+                      size="sm"
+                      className="w-full gap-1"
+                      fullWidth
+                      onClick={() => onSyncPresetPackage(instance.id)}
+                      disabled={busy}
+                    >
+                      <Download size={13} />
+                      {t("instances.syncPackage")}
+                    </Button>
+                  )}
                   <Button
                     variant="danger"
                     size="sm"
