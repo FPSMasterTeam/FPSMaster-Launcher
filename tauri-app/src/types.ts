@@ -33,6 +33,8 @@ export type Settings = {
   playerName: string;
   maxMemoryMb: number;
   hideMainOnLaunch: boolean;
+  minimizeToTray: boolean;
+  launchOnStartup: boolean;
   language: Locale;
   themeMode: ThemeMode;
   themeAccent: ThemeAccent;

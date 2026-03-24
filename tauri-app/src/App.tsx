@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { listen } from "@tauri-apps/api/event";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Minus, Square, X } from "lucide-react";
 import AppLogo from "./components/AppLogo";
@@ -142,6 +143,7 @@ function Launcher() {
 
   const [installDialog, setInstallDialog] = useState<InstallDialogState | null>(null);
   const [titlebarBusy, setTitlebarBusy] = useState(false);
+  const [windowVisible, setWindowVisible] = useState(true);
   const launcherSessionIdRef = useRef(loadOrCreateLauncherSessionId());
 
   const logCursorRef = useRef<number | null>(null);
@@ -246,6 +248,36 @@ function Launcher() {
   }, [launcherAuth?.token, launcherAuth?.user?.username]);
 
   useEffect(() => {
+    let disposed = false;
+    let unlistenVisible: (() => void) | undefined;
+    let unlistenHidden: (() => void) | undefined;
+
+    const bind = async () => {
+      try {
+        const currentWindow = getCurrentWindow();
+        const visible = await currentWindow.isVisible();
+        if (!disposed) {
+          setWindowVisible(visible);
+        }
+        unlistenVisible = await listen("tauri://window-shown", () => setWindowVisible(true));
+        unlistenHidden = await listen("tauri://window-hidden", () => setWindowVisible(false));
+      } catch {
+      }
+    };
+
+    void bind();
+    return () => {
+      disposed = true;
+      if (unlistenVisible) {
+        unlistenVisible();
+      }
+      if (unlistenHidden) {
+        unlistenHidden();
+      }
+    };
+  }, []);
+
+  useEffect(() => {
     void refreshLauncherNews(true);
   }, []);
 
@@ -293,6 +325,9 @@ function Launcher() {
   }, [page, loader, installVersion]);
 
   useEffect(() => {
+    if (!windowVisible) {
+      return;
+    }
     let active = true;
     const poll = async () => {
       if (!active || pollingRef.current) return;
@@ -330,10 +365,11 @@ function Launcher() {
       active = false;
       window.clearInterval(timer);
     };
-  }, []);
+  }, [windowVisible]);
 
   useEffect(() => {
     if (activeGamePid === null || activeGamePid <= 0) return;
+    if (!windowVisible) return;
     let active = true;
     const probe = async () => {
       try {
@@ -354,7 +390,15 @@ function Launcher() {
       active = false;
       window.clearInterval(timer);
     };
-  }, [activeGamePid]);
+  }, [activeGamePid, windowVisible]);
+
+  useEffect(() => {
+    void syncAutostart(settings.launchOnStartup);
+  }, [settings.launchOnStartup]);
+
+  useEffect(() => {
+    void syncTrayBehavior(settings.minimizeToTray);
+  }, [settings.minimizeToTray]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -1348,6 +1392,14 @@ function Launcher() {
     }
   }
 
+  async function closeLauncherWindow() {
+    if (settings.minimizeToTray) {
+      await invoke("hide_main_window");
+      return;
+    }
+    await getCurrentWindow().close();
+  }
+
   return (
     <I18nProvider
       locale={settings.language}
@@ -1405,7 +1457,7 @@ function Launcher() {
               type="button"
               className="h-full px-4 text-[var(--text-muted)] hover:text-[var(--accent-danger)] hover:bg-[var(--accent-danger)]/10 hover:shadow-[inset_0_0_0_1px_var(--accent-danger)] transition-all duration-150 window-no-drag"
               data-no-drag="true"
-              onClick={() => withTitlebarGuard(() => getCurrentWindow().close())}
+              onClick={() => withTitlebarGuard(closeLauncherWindow)}
             >
               <X size={13} />
             </button>
@@ -1566,6 +1618,20 @@ function parseLaunchProgressLog(message: string): { percent?: number; text: stri
 
 async function ensureJdk(gameDir: string, versionId: string): Promise<JdkEnsureResult> {
   return invoke<JdkEnsureResult>("ensure_jdk", { gameDir, versionId });
+}
+
+async function syncAutostart(enabled: boolean): Promise<void> {
+  try {
+    await invoke("set_launch_on_startup", { enabled });
+  } catch {
+  }
+}
+
+async function syncTrayBehavior(minimizeToTray: boolean): Promise<void> {
+  try {
+    await invoke("configure_tray_behavior", { minimizeToTray });
+  } catch {
+  }
 }
 
 async function openMonitor(pid: number, versionId: string, cursor: number, locale: Locale) {

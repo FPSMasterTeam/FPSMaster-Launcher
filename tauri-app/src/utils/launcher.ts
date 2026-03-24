@@ -98,6 +98,14 @@ export function loadSettings(): Settings {
         typeof parsed.hideMainOnLaunch === "boolean"
           ? parsed.hideMainOnLaunch
           : DEFAULT_SETTINGS.hideMainOnLaunch,
+      minimizeToTray:
+        typeof parsed.minimizeToTray === "boolean"
+          ? parsed.minimizeToTray
+          : DEFAULT_SETTINGS.minimizeToTray,
+      launchOnStartup:
+        typeof parsed.launchOnStartup === "boolean"
+          ? parsed.launchOnStartup
+          : DEFAULT_SETTINGS.launchOnStartup,
       language,
       themeMode,
       themeAccent,

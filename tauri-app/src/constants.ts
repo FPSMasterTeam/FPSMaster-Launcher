@@ -37,6 +37,8 @@ export const DEFAULT_SETTINGS: Settings = {
   playerName: "Player",
   maxMemoryMb: 4096,
   hideMainOnLaunch: true,
+  minimizeToTray: true,
+  launchOnStartup: true,
   language: "en-US",
   themeMode: "dark",
   themeAccent: "emerald",

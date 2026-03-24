@@ -8,7 +8,13 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use std::{env, fs};
-use tauri::{Emitter, Manager};
+use tauri::image::Image;
+use tauri::menu::{Menu, MenuItem};
+use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+use tauri::{AppHandle, Emitter, Manager, WebviewWindow, WindowEvent};
+use tauri_plugin_autostart::ManagerExt;
+#[cfg(target_os = "macos")]
+use tauri_plugin_autostart::MacosLauncher;
 
 #[derive(Debug, Serialize, Deserialize)]
 struct InstallResult {
@@ -255,6 +261,9 @@ struct UiLogStore {
 
 static UI_LOG_STORE: OnceLock<Mutex<UiLogStore>> = OnceLock::new();
 static GAME_RUNTIME_STARTS: OnceLock<Mutex<HashMap<i64, std::time::Instant>>> = OnceLock::new();
+const TRAY_SHOW_ID: &str = "tray_show";
+const TRAY_HIDE_ID: &str = "tray_hide";
+const TRAY_QUIT_ID: &str = "tray_quit";
 
 #[derive(Debug, Serialize)]
 struct GameRuntimeStats {
@@ -293,6 +302,56 @@ fn push_ui_log(source: &str, level: &str, message: &str) {
         store.entries.push_back(entry);
         while store.entries.len() > 8000 {
             let _ = store.entries.pop_front();
+        }
+    }
+}
+
+fn main_window(app: &AppHandle) -> Result<WebviewWindow, String> {
+    app.get_webview_window("main")
+        .ok_or_else(|| "Main window not found".to_string())
+}
+
+fn hide_main_window_internal(app: &AppHandle) -> Result<(), String> {
+    let window = main_window(app)?;
+    window
+        .hide()
+        .map_err(|e| format!("Failed to hide main window: {e}"))?;
+    Ok(())
+}
+
+fn show_main_window_internal(app: &AppHandle) -> Result<(), String> {
+    let window = main_window(app)?;
+    if window
+        .is_minimized()
+        .map_err(|e| format!("Failed to inspect minimized state: {e}"))?
+    {
+        window
+            .unminimize()
+            .map_err(|e| format!("Failed to unminimize main window: {e}"))?;
+    }
+    window
+        .show()
+        .map_err(|e| format!("Failed to show main window: {e}"))?;
+    window
+        .set_focus()
+        .map_err(|e| format!("Failed to focus main window: {e}"))?;
+    Ok(())
+}
+
+fn should_minimize_to_tray(app: &AppHandle) -> bool {
+    app.state::<LauncherRuntimeState>()
+        .minimize_to_tray
+        .load(Ordering::Relaxed)
+}
+
+struct LauncherRuntimeState {
+    minimize_to_tray: AtomicBool,
+}
+
+impl Default for LauncherRuntimeState {
+    fn default() -> Self {
+        Self {
+            minimize_to_tray: AtomicBool::new(true),
         }
     }
 }
@@ -349,15 +408,85 @@ fn poll_game_runtime(pid: i64) -> Result<GameRuntimeStats, String> {
 
 #[tauri::command]
 fn show_main_window(app: tauri::AppHandle) -> Result<(), String> {
-    let window = app
-        .get_webview_window("main")
-        .ok_or_else(|| "Main window not found".to_string())?;
-    window
-        .show()
-        .map_err(|e| format!("Failed to show main window: {e}"))?;
-    window
-        .set_focus()
-        .map_err(|e| format!("Failed to focus main window: {e}"))?;
+    show_main_window_internal(&app)
+}
+
+#[tauri::command]
+fn hide_main_window(app: tauri::AppHandle) -> Result<(), String> {
+    hide_main_window_internal(&app)
+}
+
+#[tauri::command]
+fn configure_tray_behavior(app: tauri::AppHandle, minimize_to_tray: bool) {
+    app.state::<LauncherRuntimeState>()
+        .minimize_to_tray
+        .store(minimize_to_tray, Ordering::Relaxed);
+}
+
+#[tauri::command]
+fn set_launch_on_startup(app: tauri::AppHandle, enabled: bool) -> Result<(), String> {
+    if enabled {
+        app.autolaunch()
+            .enable()
+            .map_err(|e| format!("Failed to enable autostart: {e}"))?;
+    } else {
+        app.autolaunch()
+            .disable()
+            .map_err(|e| format!("Failed to disable autostart: {e}"))?;
+    }
+    Ok(())
+}
+
+fn create_tray(app: &AppHandle) -> Result<(), String> {
+    let show_item = MenuItem::with_id(app, TRAY_SHOW_ID, "Open Launcher", true, None::<&str>)
+        .map_err(|e| format!("Failed to create tray show item: {e}"))?;
+    let hide_item = MenuItem::with_id(app, TRAY_HIDE_ID, "Hide Launcher", true, None::<&str>)
+        .map_err(|e| format!("Failed to create tray hide item: {e}"))?;
+    let quit_item = MenuItem::with_id(app, TRAY_QUIT_ID, "Quit", true, None::<&str>)
+        .map_err(|e| format!("Failed to create tray quit item: {e}"))?;
+    let menu = Menu::with_items(app, &[&show_item, &hide_item, &quit_item])
+        .map_err(|e| format!("Failed to create tray menu: {e}"))?;
+
+    let icon = Image::from_path(app.path().resolve("icons/icon.ico", tauri::path::BaseDirectory::Resource)
+        .map_err(|e| format!("Failed to resolve tray icon path: {e}"))?)
+        .map_err(|e| format!("Failed to load tray icon: {e}"))?;
+
+    TrayIconBuilder::with_id("main-tray")
+        .icon(icon)
+        .menu(&menu)
+        .show_menu_on_left_click(false)
+        .on_menu_event(|app, event| match event.id().as_ref() {
+            TRAY_SHOW_ID => {
+                let _ = show_main_window_internal(app);
+            }
+            TRAY_HIDE_ID => {
+                let _ = hide_main_window_internal(app);
+            }
+            TRAY_QUIT_ID => {
+                app.exit(0);
+            }
+            _ => {}
+        })
+        .on_tray_icon_event(|tray, event| {
+            if let TrayIconEvent::Click {
+                button: MouseButton::Left,
+                button_state: MouseButtonState::Up,
+                ..
+            } = event
+            {
+                let app = tray.app_handle();
+                if let Ok(window) = main_window(app) {
+                    let is_visible = window.is_visible().unwrap_or(false);
+                    if is_visible {
+                        let _ = hide_main_window_internal(app);
+                    } else {
+                        let _ = show_main_window_internal(app);
+                    }
+                }
+            }
+        })
+        .build(app)
+        .map_err(|e| format!("Failed to build tray icon: {e}"))?;
     Ok(())
 }
 
@@ -3014,8 +3143,31 @@ fn locate_java_binary(runtime_root: &Path) -> Option<PathBuf> {
 
 fn main() {
     tauri::Builder::default()
+        .manage(LauncherRuntimeState::default())
+        .plugin({
+            #[cfg(target_os = "macos")]
+            {
+                tauri_plugin_autostart::init(MacosLauncher::LaunchAgent, None)
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                tauri_plugin_autostart::init(Default::default(), None)
+            }
+        })
         .setup(|app| {
             let _ = app.path().app_data_dir();
+            create_tray(&app.handle())?;
+            if let Some(window) = app.get_webview_window("main") {
+                let app_handle = app.handle().clone();
+                window.on_window_event(move |event| {
+                    if let WindowEvent::CloseRequested { api, .. } = event {
+                        if should_minimize_to_tray(&app_handle) {
+                            api.prevent_close();
+                            let _ = hide_main_window_internal(&app_handle);
+                        }
+                    }
+                });
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -3043,6 +3195,9 @@ fn main() {
             open_instance_section,
             get_default_game_dir,
             show_main_window,
+            hide_main_window,
+            configure_tray_behavior,
+            set_launch_on_startup,
             terminate_game_process
         ])
         .run(tauri::generate_context!())

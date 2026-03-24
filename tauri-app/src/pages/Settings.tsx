@@ -306,6 +306,18 @@ export default function SettingsPage({ settings, onChange, onClampMemory, onRese
                 onToggle={() => onChange({ ...settings, hideMainOnLaunch: !settings.hideMainOnLaunch })}
               />
               <ToggleRow
+                title={t("settings.minimizeToTray")}
+                subtitle={t("settings.minimizeToTrayDesc")}
+                enabled={settings.minimizeToTray}
+                onToggle={() => onChange({ ...settings, minimizeToTray: !settings.minimizeToTray })}
+              />
+              <ToggleRow
+                title={t("settings.launchOnStartup")}
+                subtitle={t("settings.launchOnStartupDesc")}
+                enabled={settings.launchOnStartup}
+                onToggle={() => onChange({ ...settings, launchOnStartup: !settings.launchOnStartup })}
+              />
+              <ToggleRow
                 title={t("settings.hardwareAcceleration")}
                 subtitle={t("settings.hardwareAccelerationDesc")}
                 enabled={hardwareAcceleration}
