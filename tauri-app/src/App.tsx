@@ -31,6 +31,7 @@ import MonitorPage from "./pages/Monitor";
 import ContentPage from "./pages/Content";
 import SettingsPage from "./pages/Settings";
 import type {
+  DownloadedLauncherUpdate,
   FabricInstallResult,
   ForgeInstallResult,
   GameRuntimeStats,
@@ -42,6 +43,7 @@ import type {
   InstanceExportResult,
   InstanceImportResult,
   InstanceRepairResult,
+  LauncherAppUpdateInfo,
   LauncherLoginResult,
   LauncherModsInstallResult,
   LauncherPackageState,
@@ -122,7 +124,11 @@ function Launcher() {
   const [launcherVersions, setLauncherVersions] = useState<LauncherVersionMap>(EMPTY_LAUNCHER_VERSIONS);
   const [launcherNews, setLauncherNews] = useState<NewsItem[]>(() => [...NEWS_ITEMS]);
   const [launcherDashboard, setLauncherDashboard] = useState<LauncherDashboard | null>(null);
-  const [launcherOnlineCount, setLauncherOnlineCount] = useState<number | null>(null);
+  const [launcherOnlineSummary, setLauncherOnlineSummary] = useState<TelemetryOnlineSummary | null>(null);
+  const [launcherAppUpdate, setLauncherAppUpdate] = useState<LauncherAppUpdateInfo | null>(null);
+  const [launcherAppUpdateChecking, setLauncherAppUpdateChecking] = useState(false);
+  const [launcherAppUpdateDownloading, setLauncherAppUpdateDownloading] = useState(false);
+  const [launcherAppUpdateDownload, setLauncherAppUpdateDownload] = useState<DownloadedLauncherUpdate | null>(null);
   const [presetPackageStatuses, setPresetPackageStatuses] = useState<Record<string, PresetPackageStatus>>({});
   const [launcherAuthLoading, setLauncherAuthLoading] = useState(false);
   const [launcherVersionLoading, setLauncherVersionLoading] = useState(false);
@@ -160,6 +166,12 @@ function Launcher() {
   const launchingInstanceRef = useRef<string | null>(null);
 
   const t = useMemo(() => createTranslator(settings.language), [settings.language]);
+  const launcherAppUpdateAvailable = useMemo(
+    () =>
+      launcherAppUpdate !== null &&
+      compareMajor(launcherAppUpdate.version, CURRENT_LAUNCHER_VERSION) > 0,
+    [launcherAppUpdate]
+  );
 
   const current = useMemo(
     () => instances.find((item) => item.id === selected) ?? instances[0] ?? null,
@@ -209,7 +221,7 @@ function Launcher() {
     if (!launcherAuth?.token) {
       setLauncherVersions(EMPTY_LAUNCHER_VERSIONS);
       setLauncherDashboard(null);
-      setLauncherOnlineCount(null);
+      setLauncherOnlineSummary(null);
       setPresetPackageStatuses({});
       if (!backgroundMode) {
         void refreshLauncherHome(true);
@@ -226,7 +238,7 @@ function Launcher() {
   useEffect(() => {
     const token = launcherAuth?.token?.trim();
     if (!token) {
-      setLauncherOnlineCount(null);
+      setLauncherOnlineSummary(null);
       return;
     }
 
@@ -241,11 +253,11 @@ function Launcher() {
       try {
         const summary = await fetchTelemetryOnlineSummary();
         if (active) {
-          setLauncherOnlineCount(summary.launcher);
+          setLauncherOnlineSummary(summary);
         }
       } catch {
         if (active) {
-          setLauncherOnlineCount(null);
+          setLauncherOnlineSummary(null);
         }
       }
     };
@@ -297,6 +309,10 @@ function Launcher() {
     }
     void refreshLauncherHome(true);
   }, [backgroundMode, launcherAuth?.token]);
+
+  useEffect(() => {
+    void refreshLauncherAppUpdate(true);
+  }, []);
 
   useEffect(() => {
     applyTheme(settings.themeMode, settings.themeAccent, settings.customAccentHex);
@@ -649,7 +665,7 @@ function Launcher() {
       } else {
         setLauncherNews([...NEWS_ITEMS]);
       }
-      setLauncherOnlineCount(payload.online?.launcher ?? null);
+      setLauncherOnlineSummary(payload.online ?? null);
       if (payload.dashboard) {
         setLauncherDashboard(payload.dashboard);
         setLauncherAuth((prev) =>
@@ -672,7 +688,7 @@ function Launcher() {
     } catch (error) {
       if (!token) {
         setLauncherNews([...NEWS_ITEMS]);
-        setLauncherOnlineCount(null);
+        setLauncherOnlineSummary(null);
       }
       if (!silent) {
         setStatus(t("app.status.failed", { error: formatLaunchError(error) }));
@@ -734,6 +750,63 @@ function Launcher() {
       if (!silent) {
         setStatus(t("app.status.failed", { error: formatLaunchError(error) }));
       }
+    }
+  }
+
+  async function refreshLauncherAppUpdate(silent = false): Promise<void> {
+    setLauncherAppUpdateChecking(true);
+    try {
+      const info = await invoke<LauncherAppUpdateInfo>("launcher_get_app_update", {
+        baseUrl: LAUNCHER_API_BASE_URL
+      });
+      setLauncherAppUpdate(info);
+      setLauncherAppUpdateDownload((prev) =>
+        prev?.version === info.version ? prev : null
+      );
+      if (!silent) {
+        setStatus(
+          compareMajor(info.version, CURRENT_LAUNCHER_VERSION) > 0
+            ? t("settings.launcherUpdateAvailable", { version: info.version })
+            : t("settings.launcherUpToDate")
+        );
+      }
+    } catch (error) {
+      const errorText = formatLaunchError(error);
+      if (isLauncherAppUpdateMissing(errorText)) {
+        setLauncherAppUpdate(null);
+        setLauncherAppUpdateDownload(null);
+        if (!silent) {
+          setStatus(t("settings.launcherUpdateNotConfigured"));
+        }
+      } else if (!silent) {
+        setStatus(t("app.status.failed", { error: errorText }));
+      }
+    } finally {
+      setLauncherAppUpdateChecking(false);
+    }
+  }
+
+  async function installLauncherAppUpdate(): Promise<void> {
+    if (!launcherAppUpdate || !launcherAppUpdateAvailable) {
+      return;
+    }
+
+    setLauncherAppUpdateDownloading(true);
+    try {
+      setStatus(t("settings.launcherUpdateDownloading", { version: launcherAppUpdate.version }));
+      const download = await invoke<DownloadedLauncherUpdate>("download_launcher_app_update", {
+        downloadUrl: launcherAppUpdate.downloadUrl,
+        version: launcherAppUpdate.version,
+        checksum: launcherAppUpdate.checksum
+      });
+      setLauncherAppUpdateDownload(download);
+      await invoke("open_downloaded_file", { filePath: download.filePath });
+      setStatus(t("settings.launcherUpdateInstallerOpened", { file: download.fileName }));
+      await invoke("quit_launcher_app");
+    } catch (error) {
+      setStatus(t("app.status.failed", { error: formatLaunchError(error) }));
+    } finally {
+      setLauncherAppUpdateDownloading(false);
     }
   }
 
@@ -1534,7 +1607,7 @@ function Launcher() {
           availableInstances={instances}
           launcherNews={launcherNews}
           launcherDashboard={launcherDashboard}
-          launcherOnlineCount={launcherOnlineCount}
+          launcherOnlineSummary={launcherOnlineSummary}
           current={current}
           busy={busy}
           launching={launching}
@@ -1646,6 +1719,14 @@ function Launcher() {
     return (
       <SettingsPage
         settings={settings}
+        launcherCurrentVersion={CURRENT_LAUNCHER_VERSION}
+        launcherUpdate={launcherAppUpdate}
+        launcherUpdateAvailable={launcherAppUpdateAvailable}
+        launcherUpdateChecking={launcherAppUpdateChecking}
+        launcherUpdateDownloading={launcherAppUpdateDownloading}
+        launcherUpdateDownload={launcherAppUpdateDownload}
+        onRefreshLauncherUpdate={() => void refreshLauncherAppUpdate(false)}
+        onInstallLauncherUpdate={() => void installLauncherAppUpdate()}
         onChange={updateSettings}
         onClampMemory={updateMemory}
         onReset={() =>
@@ -1660,9 +1741,18 @@ function Launcher() {
         }
       />
     );
-  }
+}
 
-  async function withTitlebarGuard(action: () => Promise<void>) {
+function isLauncherAppUpdateMissing(message: string): boolean {
+  const normalized = message.toLowerCase();
+  return (
+    normalized.includes("launcher app update config not found") ||
+    normalized.includes("http 404") ||
+    normalized.includes("not configured")
+  );
+}
+
+async function withTitlebarGuard(action: () => Promise<void>) {
     if (titlebarBusy) return;
     setTitlebarBusy(true);
     try {

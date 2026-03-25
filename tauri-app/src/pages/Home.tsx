@@ -6,14 +6,14 @@ import Button from "../components/Button";
 import Card from "../components/Card";
 import { RECOMMENDED_SERVERS } from "../constants";
 import { useI18n } from "../i18n";
-import type { Instance, LauncherDashboard, NewsItem, PresetPackageStatus } from "../types";
+import type { Instance, LauncherDashboard, NewsItem, PresetPackageStatus, TelemetryOnlineSummary } from "../types";
 import { resolveInstanceIconPath } from "../utils/launcher";
 
 type HomePageProps = {
   availableInstances: Instance[];
   launcherNews: NewsItem[];
   launcherDashboard: LauncherDashboard | null;
-  launcherOnlineCount: number | null;
+  launcherOnlineSummary: TelemetryOnlineSummary | null;
   current: Instance | null;
   busy: boolean;
   launching: boolean;
@@ -29,7 +29,7 @@ export default function HomePage({
   availableInstances,
   launcherNews,
   launcherDashboard,
-  launcherOnlineCount,
+  launcherOnlineSummary,
   current,
   busy,
   launching,
@@ -45,6 +45,7 @@ export default function HomePage({
   const selectedInstanceIcon = selectedInstance ? resolveInstanceIconPath(selectedInstance) : null;
   const [pickerOpen, setPickerOpen] = useState(false);
   const [pickerQuery, setPickerQuery] = useState("");
+  const [activeNews, setActiveNews] = useState<NewsItem | null>(null);
 
   const filteredInstances = useMemo(() => {
     const keyword = pickerQuery.trim().toLowerCase();
@@ -79,6 +80,16 @@ export default function HomePage({
   const presetStatusTone = presetPackageStatus ? resolvePresetStatusTone(presetPackageStatus.state) : "";
   const presetChangelog = presetPackageStatus?.changelog ? summarizeChangelog(presetPackageStatus.changelog) : null;
   const selectedLoaderLabel = selectedInstance ? loaderLabel(selectedInstance.loader, t) : null;
+  const launcherOnlineCount = launcherOnlineSummary?.launcher ?? null;
+  const onlineBadges = launcherOnlineSummary
+    ? [
+        t("home.online.total", { count: launcherOnlineSummary.total }),
+        t("home.online.launcher", { count: launcherOnlineSummary.launcher }),
+        t("home.online.edge", { count: launcherOnlineSummary.edge }),
+        t("home.online.nova", { count: launcherOnlineSummary.nova })
+      ]
+    : [];
+  const activeNewsContent = (activeNews?.content ?? activeNews?.summary ?? "").trim();
 
   return (
     <div className="flex h-full flex-col overflow-hidden">
@@ -91,6 +102,14 @@ export default function HomePage({
                 {t("home.onlineTag", { count: launcherOnlineCount })}
               </span>
             )}
+            {onlineBadges.slice(0, 3).map((badge) => (
+              <span
+                key={badge}
+                className="rounded-md border border-[var(--border-subtle)] bg-[var(--bg-elevated)] px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-[var(--text-secondary)]"
+              >
+                {badge}
+              </span>
+            ))}
           </div>
           <h1 className="mt-1 text-2xl font-semibold tracking-tight text-[var(--text-primary)] md:text-3xl">{t("home.welcomeBack")}</h1>
           <p className="mt-1 text-sm text-[var(--text-secondary)] md:text-[15px]">{t("home.dashboardReady")}</p>
@@ -178,14 +197,24 @@ export default function HomePage({
                 <Calendar size={16} className="text-[var(--mc-grass)]" />
                 {t("home.latestNews")}
               </h2>
-              <button className="text-xs text-[var(--text-muted)] transition-colors hover:text-[var(--text-primary)]" type="button">
+              <button
+                className="text-xs text-[var(--text-muted)] transition-colors hover:text-[var(--text-primary)]"
+                type="button"
+                onClick={() => setActiveNews(launcherNews[0] ?? null)}
+              >
                 {t("home.viewAll")}
               </button>
             </div>
             {launcherNews.length > 0 ? (
               <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
                 {launcherNews.map((news) => (
-                  <Card as="article" key={news.id ?? news.title} variant="soft" className="group rounded-xl p-4">
+                  <button
+                    key={news.id ?? news.title}
+                    type="button"
+                    className="text-left"
+                    onClick={() => setActiveNews(news)}
+                  >
+                    <Card as="article" variant="soft" className="group h-full rounded-xl p-4">
                     <div className="mb-2 flex flex-wrap items-center gap-2">
                       <div className="inline-flex items-center rounded-md border border-[var(--border-subtle)] bg-[var(--bg-elevated)] px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-[var(--text-muted)]">
                         {news.pinned ? t("home.news.pinnedTag") : t("home.news.tag")}
@@ -202,7 +231,9 @@ export default function HomePage({
                     <p className="mt-1.5 text-sm leading-6 text-[var(--text-secondary)]">
                       {news.summary}
                     </p>
-                  </Card>
+                    <p className="mt-3 text-xs font-medium text-[var(--mc-grass)]">{t("home.news.open")}</p>
+                    </Card>
+                  </button>
                 ))}
               </div>
             ) : (
@@ -432,6 +463,47 @@ export default function HomePage({
               <div className="mt-3 flex items-center justify-end gap-3">
                 <Button variant="ghost" size="sm" onClick={() => setPickerOpen(false)}>
                   {t("home.instancePickerClose")}
+                </Button>
+              </div>
+            </Card>
+          </div>,
+          document.body
+        )}
+
+      {activeNews &&
+        typeof document !== "undefined" &&
+        createPortal(
+          <div className="fixed inset-0 z-[92] flex items-center justify-center bg-[var(--bg-primary)]/72 p-4 backdrop-blur-xl">
+            <Card variant="strong" className="flex h-[78vh] w-full max-w-3xl min-h-[380px] max-h-[760px] flex-col rounded-2xl p-4 md:p-5" interactive={false}>
+              <div className="mb-3 flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[var(--text-muted)]">{t("home.news.dialogTitle")}</p>
+                  <h3 className="mt-1 text-xl font-semibold text-[var(--text-primary)]">{activeNews.title}</h3>
+                  <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-[var(--text-muted)]">
+                    {activeNews.publishedAt && <span>{new Date(activeNews.publishedAt).toLocaleString()}</span>}
+                    {activeNews.author && <span>{t("home.news.author")} · {activeNews.author}</span>}
+                    {activeNews.category && <span>{activeNews.category}</span>}
+                  </div>
+                </div>
+                <button
+                  className="min-h-10 rounded-lg border border-[var(--border-subtle)] bg-[var(--surface-soft)] p-2 text-[var(--text-secondary)] transition-colors hover:text-[var(--text-primary)]"
+                  onClick={() => setActiveNews(null)}
+                  type="button"
+                  aria-label={t("home.news.dialogClose")}
+                >
+                  <X size={16} />
+                </button>
+              </div>
+
+              <div className="min-h-0 flex-1 overflow-y-auto rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-soft)] p-4">
+                <p className="text-sm leading-7 whitespace-pre-wrap text-[var(--text-secondary)]">
+                  {activeNewsContent || t("home.news.dialogEmpty")}
+                </p>
+              </div>
+
+              <div className="mt-3 flex items-center justify-end">
+                <Button variant="ghost" size="sm" onClick={() => setActiveNews(null)}>
+                  {t("home.news.dialogClose")}
                 </Button>
               </div>
             </Card>

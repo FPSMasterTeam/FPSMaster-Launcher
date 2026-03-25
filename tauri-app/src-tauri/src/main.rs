@@ -136,6 +136,12 @@ struct LauncherNewsItem {
     id: String,
     title: String,
     summary: String,
+    #[serde(default)]
+    content: Option<String>,
+    #[serde(default)]
+    author: Option<String>,
+    #[serde(default)]
+    category: Option<String>,
     #[serde(rename = "publishedAt", default)]
     published_at: Option<String>,
     #[serde(default)]
@@ -201,6 +207,32 @@ struct LauncherHomePayload {
     news: Vec<LauncherNewsItem>,
     online: TelemetryOnlineSummary,
     dashboard: Option<LauncherDashboard>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct LauncherAppUpdateInfo {
+    version: String,
+    #[serde(rename = "downloadUrl")]
+    download_url: String,
+    #[serde(default)]
+    notes: Option<String>,
+    #[serde(rename = "publishedAt", default)]
+    published_at: Option<String>,
+    mandatory: bool,
+    #[serde(default)]
+    checksum: Option<String>,
+    #[serde(rename = "fileSize", default)]
+    file_size: Option<u64>,
+    target: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct DownloadedLauncherUpdate {
+    version: String,
+    #[serde(rename = "fileName")]
+    file_name: String,
+    #[serde(rename = "filePath")]
+    file_path: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1619,6 +1651,43 @@ async fn launcher_get_home(
         .map_err(|e| format!("Failed to join launcher home task: {e}"))?
 }
 
+#[tauri::command]
+async fn launcher_get_app_update(
+    base_url: String,
+) -> Result<LauncherAppUpdateInfo, String> {
+    tauri::async_runtime::spawn_blocking(move || launcher_get_app_update_blocking(base_url))
+        .await
+        .map_err(|e| format!("Failed to join launcher app update task: {e}"))?
+}
+
+#[tauri::command]
+async fn download_launcher_app_update(
+    app: tauri::AppHandle,
+    download_url: String,
+    version: String,
+    checksum: Option<String>,
+) -> Result<DownloadedLauncherUpdate, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        download_launcher_app_update_blocking(&app, download_url, version, checksum)
+    })
+    .await
+    .map_err(|e| format!("Failed to join launcher app download task: {e}"))?
+}
+
+#[tauri::command]
+fn open_downloaded_file(file_path: String) -> Result<(), String> {
+    let path = PathBuf::from(file_path.trim());
+    if path.as_os_str().is_empty() {
+        return Err("Downloaded file path is empty".to_string());
+    }
+    open_file_with_system(&path)
+}
+
+#[tauri::command]
+fn quit_launcher_app(app: tauri::AppHandle) {
+    app.exit(0);
+}
+
 fn launcher_list_news_blocking(
     base_url: String,
     limit: Option<u32>,
@@ -1701,6 +1770,70 @@ fn launcher_get_home_blocking(
         .text()
         .map_err(|e| format!("Failed to read launcher home response: {e}"))?;
     parse_launcher_home_response(status, &text)
+}
+
+fn launcher_get_app_update_blocking(
+    base_url: String,
+) -> Result<LauncherAppUpdateInfo, String> {
+    let normalized_base = normalize_api_base_url(&base_url)?;
+    let client = build_blocking_http_client()?;
+    let mut url = reqwest::Url::parse(&format!("{normalized_base}/api/v1/launcher/app-update"))
+        .map_err(|e| format!("Invalid launcher app update endpoint URL: {e}"))?;
+    url.query_pairs_mut()
+        .append_pair("target", &current_launcher_update_target());
+
+    let response = client
+        .get(url)
+        .send()
+        .map_err(|e| format!("Launcher app update request failed: {e}"))?;
+    let status = response.status();
+    let text = response
+        .text()
+        .map_err(|e| format!("Failed to read launcher app update response: {e}"))?;
+    parse_launcher_app_update_response(status, &text)
+}
+
+fn download_launcher_app_update_blocking(
+    app: &tauri::AppHandle,
+    download_url: String,
+    version: String,
+    checksum: Option<String>,
+) -> Result<DownloadedLauncherUpdate, String> {
+    let normalized_download_url = download_url.trim().to_string();
+    if normalized_download_url.is_empty() {
+        return Err("Launcher update download URL is empty".to_string());
+    }
+    let normalized_version = version.trim().to_string();
+    if normalized_version.is_empty() {
+        return Err("Launcher update version is empty".to_string());
+    }
+
+    let client = build_blocking_http_client()?;
+    let file_name = infer_download_file_name(&normalized_download_url, &normalized_version);
+    let updates_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("Failed to resolve app data directory: {e}"))?
+        .join("updates");
+    fs::create_dir_all(&updates_dir)
+        .map_err(|e| format!("Failed to create launcher update directory {}: {e}", updates_dir.display()))?;
+    let target_path = updates_dir.join(&file_name);
+    download_file_quiet_blocking(&client, &normalized_download_url, &target_path)
+        .map_err(|e| format!("Failed to download launcher installer: {e}"))?;
+
+    if let Some(expected_checksum) = checksum
+        .map(|item| item.trim().to_string())
+        .filter(|item| !item.is_empty())
+    {
+        verify_file_sha256(&target_path, &expected_checksum)
+            .map_err(|e| format!("Launcher installer checksum mismatch: {e}"))?;
+    }
+
+    Ok(DownloadedLauncherUpdate {
+        version: normalized_version,
+        file_name,
+        file_path: target_path.to_string_lossy().to_string(),
+    })
 }
 
 fn launcher_list_available_versions_blocking(
@@ -5094,6 +5227,44 @@ fn open_path_in_explorer(path: &Path) -> Result<(), String> {
     }
 }
 
+fn open_file_with_system(path: &Path) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        let status = Command::new("cmd")
+            .args(["/C", "start", "", &path.to_string_lossy()])
+            .status()
+            .map_err(|e| format!("Failed to open file with start: {e}"))?;
+        if status.success() {
+            return Ok(());
+        }
+        return Err(format!("start returned non-zero status: {status}"));
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let status = Command::new("open")
+            .arg(path)
+            .status()
+            .map_err(|e| format!("Failed to open file with open: {e}"))?;
+        if status.success() {
+            return Ok(());
+        }
+        return Err(format!("open returned non-zero status: {status}"));
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        let status = Command::new("xdg-open")
+            .arg(path)
+            .status()
+            .map_err(|e| format!("Failed to open file with xdg-open: {e}"))?;
+        if status.success() {
+            return Ok(());
+        }
+        return Err(format!("xdg-open returned non-zero status: {status}"));
+    }
+}
+
 fn rewrite_launch_game_dir_argument(command: &mut Vec<String>, runtime_dir: &Path) {
     let runtime_value = runtime_dir.to_string_lossy().to_string();
     let mut replaced = false;
@@ -6101,6 +6272,39 @@ fn normalize_api_base_url(base_url: &str) -> Result<String, String> {
     Ok(trimmed.to_string())
 }
 
+fn current_launcher_update_target() -> String {
+    let os = if cfg!(target_os = "windows") {
+        "windows"
+    } else if cfg!(target_os = "macos") {
+        "macos"
+    } else {
+        "linux"
+    };
+    let arch = if cfg!(target_arch = "x86_64") {
+        "x86_64"
+    } else if cfg!(target_arch = "aarch64") {
+        "aarch64"
+    } else if cfg!(target_arch = "x86") {
+        "x86"
+    } else {
+        "unknown"
+    };
+    format!("{os}-{arch}")
+}
+
+fn infer_download_file_name(download_url: &str, version: &str) -> String {
+    let fallback = format!("fpsmaster-launcher-{}", sanitize_file_name(version));
+    match reqwest::Url::parse(download_url) {
+        Ok(url) => url
+            .path_segments()
+            .and_then(|segments| segments.last())
+            .map(sanitize_file_name)
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or(fallback),
+        Err(_) => fallback,
+    }
+}
+
 fn parse_launcher_login_response(
     status: reqwest::StatusCode,
     body: &str,
@@ -6213,6 +6417,27 @@ fn parse_launcher_home_response(
 
     serde_json::from_value::<LauncherHomePayload>(value)
         .map_err(|e| format!("launcher home response missing data: {e}"))
+}
+
+fn parse_launcher_app_update_response(
+    status: reqwest::StatusCode,
+    body: &str,
+) -> Result<LauncherAppUpdateInfo, String> {
+    if let Ok(item) = parse_api_envelope::<LauncherAppUpdateInfo>(status, body, "launcher app update") {
+        return Ok(item);
+    }
+
+    let value: serde_json::Value = serde_json::from_str(body)
+        .map_err(|e| format!("Invalid launcher app update response JSON: {e}"))?;
+
+    if !status.is_success() {
+        return Err(extract_api_error_message(body).unwrap_or_else(|| {
+            format!("launcher app update failed with HTTP {}", status.as_u16())
+        }));
+    }
+
+    serde_json::from_value::<LauncherAppUpdateInfo>(value)
+        .map_err(|e| format!("launcher app update response missing data: {e}"))
 }
 
 fn parse_api_envelope<T: for<'de> Deserialize<'de>>(
@@ -6713,6 +6938,10 @@ fn main() {
             launcher_list_news,
             launcher_get_dashboard,
             launcher_get_home,
+            launcher_get_app_update,
+            download_launcher_app_update,
+            open_downloaded_file,
+            quit_launcher_app,
             modrinth_search_projects,
             install_modrinth_project,
             curseforge_search_projects,
@@ -6745,6 +6974,7 @@ fn main() {
             get_default_game_dir,
             show_main_window,
             hide_main_window,
+            quit_launcher_app,
             configure_tray_behavior,
             set_launch_on_startup,
             terminate_game_process

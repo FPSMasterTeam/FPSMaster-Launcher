@@ -1,5 +1,6 @@
 import {
   Cpu,
+  Download,
   Folder,
   Globe,
   HardDrive,
@@ -15,16 +16,44 @@ import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YA
 import Button from "../components/Button";
 import Card from "../components/Card";
 import { LOCALE_OPTIONS, useI18n } from "../i18n";
-import type { BackgroundSource, Settings, ThemeAccent, ThemeMode } from "../types";
+import type {
+  BackgroundSource,
+  DownloadedLauncherUpdate,
+  LauncherAppUpdateInfo,
+  Settings,
+  ThemeAccent,
+  ThemeMode
+} from "../types";
 
 type SettingsPageProps = {
   settings: Settings;
+  launcherCurrentVersion: string;
+  launcherUpdate: LauncherAppUpdateInfo | null;
+  launcherUpdateAvailable: boolean;
+  launcherUpdateChecking: boolean;
+  launcherUpdateDownloading: boolean;
+  launcherUpdateDownload: DownloadedLauncherUpdate | null;
+  onRefreshLauncherUpdate: () => void;
+  onInstallLauncherUpdate: () => void;
   onChange: (next: Settings) => void;
   onClampMemory: (input: string) => void;
   onReset: () => void;
 };
 
-export default function SettingsPage({ settings, onChange, onClampMemory, onReset }: SettingsPageProps) {
+export default function SettingsPage({
+  settings,
+  launcherCurrentVersion,
+  launcherUpdate,
+  launcherUpdateAvailable,
+  launcherUpdateChecking,
+  launcherUpdateDownloading,
+  launcherUpdateDownload,
+  onRefreshLauncherUpdate,
+  onInstallLauncherUpdate,
+  onChange,
+  onClampMemory,
+  onReset
+}: SettingsPageProps) {
   const { locale, setLocale, t } = useI18n();
   const [hardwareAcceleration, setHardwareAcceleration] = useState(true);
   const [showGameOutput, setShowGameOutput] = useState(false);
@@ -349,6 +378,100 @@ export default function SettingsPage({ settings, onChange, onClampMemory, onRese
 
           <Card as="section" variant="strong" className="rounded-xl p-4 md:p-5">
             <SectionTitle
+              icon={<Download size={18} className="text-[var(--mc-grass)]" />}
+              title={t("settings.launcherUpdates")}
+              subtitle={t("settings.launcherUpdatesDesc")}
+            />
+            <div className="space-y-4">
+              <div className="grid grid-cols-2 gap-2">
+                <InfoTile label={t("settings.launcherCurrentVersion")} value={launcherCurrentVersion} />
+                <InfoTile
+                  label={t("settings.launcherLatestVersion")}
+                  value={launcherUpdate?.version ?? "--"}
+                  tone={launcherUpdateAvailable ? "highlight" : "default"}
+                />
+              </div>
+
+              {launcherUpdate && (
+                <div className="grid grid-cols-2 gap-2">
+                  <InfoTile label={t("settings.launcherUpdateTarget")} value={launcherUpdate.target} />
+                  <InfoTile
+                    label={t("settings.launcherUpdatePublishedAt")}
+                    value={formatPublishedAt(launcherUpdate.publishedAt, t("settings.launcherUpdateUnknownDate"))}
+                  />
+                </div>
+              )}
+
+              <div className="rounded-2xl border border-[var(--border-subtle)] bg-[var(--bg-secondary)] p-4">
+                <p className="text-sm font-semibold text-[var(--text-primary)]">
+                  {launcherUpdate
+                    ? launcherUpdateAvailable
+                      ? t("settings.launcherUpdateAvailable", { version: launcherUpdate.version })
+                      : t("settings.launcherUpToDate")
+                    : t("settings.launcherUpdateNotConfigured")}
+                </p>
+                <p className="mt-1 text-xs leading-5 text-[var(--text-muted)]">
+                  {launcherUpdate
+                    ? launcherUpdateAvailable
+                      ? launcherUpdate.mandatory
+                        ? t("settings.launcherUpdateMandatory")
+                        : t("settings.launcherUpdateOptional")
+                      : t("settings.launcherUpdateCurrentHint")
+                    : t("settings.launcherUpdateConfigHint")}
+                </p>
+                {launcherUpdate?.notes && (
+                  <p className="mt-3 whitespace-pre-wrap text-xs leading-6 text-[var(--text-secondary)]">
+                    {launcherUpdate.notes.trim()}
+                  </p>
+                )}
+                {launcherUpdate && (launcherUpdate.fileSize || launcherUpdate.checksum) && (
+                  <div className="mt-3 flex flex-wrap gap-2 text-[11px] text-[var(--text-muted)]">
+                    {launcherUpdate.fileSize ? (
+                      <span className="rounded-md border border-[var(--border-subtle)] bg-[var(--surface-soft)] px-2 py-1">
+                        {t("settings.launcherUpdateSize", { size: formatFileSize(launcherUpdate.fileSize) })}
+                      </span>
+                    ) : null}
+                    {launcherUpdate.checksum ? (
+                      <span className="rounded-md border border-[var(--border-subtle)] bg-[var(--surface-soft)] px-2 py-1">
+                        SHA-256: {launcherUpdate.checksum}
+                      </span>
+                    ) : null}
+                  </div>
+                )}
+                {launcherUpdateDownload && (
+                  <p className="mt-3 text-xs text-[var(--text-secondary)]">
+                    {t("settings.launcherUpdateDownloaded", { file: launcherUpdateDownload.fileName })}
+                  </p>
+                )}
+              </div>
+
+              <div className="flex flex-wrap gap-2">
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  className="gap-2"
+                  disabled={launcherUpdateChecking || launcherUpdateDownloading}
+                  onClick={onRefreshLauncherUpdate}
+                >
+                  <RefreshCw size={14} />
+                  {launcherUpdateChecking ? t("settings.launcherUpdateChecking") : t("settings.launcherUpdateCheck")}
+                </Button>
+                <Button
+                  variant="primary"
+                  size="sm"
+                  className="gap-2"
+                  disabled={!launcherUpdateAvailable || launcherUpdateDownloading}
+                  onClick={onInstallLauncherUpdate}
+                >
+                  <Download size={14} />
+                  {launcherUpdateDownloading ? t("settings.launcherUpdatePreparing") : t("settings.launcherUpdateInstall")}
+                </Button>
+              </div>
+            </div>
+          </Card>
+
+          <Card as="section" variant="strong" className="rounded-xl p-4 md:p-5">
+            <SectionTitle
               icon={<Globe size={18} className="text-[var(--mc-grass)]" />}
               title={t("settings.contentSources")}
               subtitle={t("settings.contentSourcesDesc")}
@@ -508,6 +631,23 @@ function FieldLabel({ children }: { children: string }) {
   return <label className="mb-2 block text-xs font-semibold uppercase tracking-wide text-[var(--text-muted)]">{children}</label>;
 }
 
+function InfoTile({
+  label,
+  value,
+  tone = "default"
+}: {
+  label: string;
+  value: string;
+  tone?: "default" | "highlight";
+}) {
+  return (
+    <div className={`rounded-xl border px-3 py-2 ${tone === "highlight" ? "border-[var(--mc-grass)]/35 bg-[var(--mc-grass)]/10" : "border-[var(--border-subtle)] bg-[var(--surface-soft)]"}`}>
+      <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--text-muted)]">{label}</p>
+      <p className="mt-1 truncate text-sm font-semibold text-[var(--text-primary)]">{value}</p>
+    </div>
+  );
+}
+
 function ToggleRow({
   title,
   subtitle,
@@ -553,6 +693,31 @@ function readFileAsDataUrl(file: File): Promise<string> {
 
 function buildRandomBackgroundUrl(): string {
   return `https://picsum.photos/1920/1080?random=${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+}
+
+function formatFileSize(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes <= 0) {
+    return "--";
+  }
+  const units = ["B", "KB", "MB", "GB"];
+  let value = bytes;
+  let index = 0;
+  while (value >= 1024 && index < units.length - 1) {
+    value /= 1024;
+    index += 1;
+  }
+  return `${value >= 100 || index === 0 ? value.toFixed(0) : value.toFixed(1)} ${units[index]}`;
+}
+
+function formatPublishedAt(value: string | null | undefined, fallback: string): string {
+  if (!value) {
+    return fallback;
+  }
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    return fallback;
+  }
+  return parsed.toLocaleDateString();
 }
 
 function normalizeHexColor(input: string): string | null {

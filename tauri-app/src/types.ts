@@ -59,6 +59,9 @@ export type NewsItem = {
   id?: string;
   title: string;
   summary: string;
+  content?: string | null;
+  author?: string | null;
+  category?: string | null;
   pinned?: boolean;
   publishedAt?: string | null;
 };
@@ -334,6 +337,23 @@ export type TelemetryOnlineSummary = {
   edge: number;
   nova: number;
   generic: number;
+};
+
+export type LauncherAppUpdateInfo = {
+  version: string;
+  downloadUrl: string;
+  notes?: string | null;
+  publishedAt?: string | null;
+  mandatory: boolean;
+  checksum?: string | null;
+  fileSize?: number | null;
+  target: string;
+};
+
+export type DownloadedLauncherUpdate = {
+  version: string;
+  fileName: string;
+  filePath: string;
 };
 
 export type LauncherHomePayload = {
