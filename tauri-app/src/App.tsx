@@ -165,6 +165,7 @@ function Launcher() {
   const [titlebarBusy, setTitlebarBusy] = useState(false);
   const [windowVisible, setWindowVisible] = useState(false);
   const launcherSessionIdRef = useRef(loadOrCreateLauncherSessionId());
+  const launcherAuthTokenRef = useRef<string | null>(launcherAuth?.token?.trim() ?? null);
 
   const logCursorRef = useRef<number | null>(null);
   const pollingRef = useRef(false);
@@ -238,9 +239,26 @@ function Launcher() {
     if (backgroundMode) {
       return;
     }
+    void cacheLauncherTelemetrySession();
     void refreshLauncherVersions(true);
     void refreshLauncherHome(true, launcherAuth.token);
   }, [launcherAuth?.token, backgroundMode]);
+
+  useEffect(() => {
+    const currentToken = launcherAuth?.token?.trim() ?? null;
+    const previousToken = launcherAuthTokenRef.current;
+
+    if (!currentToken) {
+      if (previousToken) {
+        void flushLauncherTelemetrySession();
+      }
+      launcherAuthTokenRef.current = null;
+      return;
+    }
+
+    void cacheLauncherTelemetrySession();
+    launcherAuthTokenRef.current = currentToken;
+  }, [launcherAuth?.token, launcherAuth?.user?.id, launcherAuth?.user?.username, settings.playerName]);
 
   useEffect(() => {
     const token = launcherAuth?.token?.trim();
@@ -252,6 +270,7 @@ function Launcher() {
     let active = true;
     const runHeartbeat = async () => {
       try {
+        await cacheLauncherTelemetrySession();
         await postLauncherHeartbeat(token);
       } catch {
       }
@@ -837,6 +856,7 @@ function Launcher() {
       setLauncherAppUpdateDownload(download);
       await invoke("open_downloaded_file", { filePath: download.filePath });
       setStatus(t("settings.launcherUpdateInstallerOpened", { file: download.fileName }));
+      await flushLauncherTelemetrySession();
       await invoke("quit_launcher_app");
     } catch (error) {
       setStatus(t("app.status.failed", { error: formatLaunchError(error) }));
@@ -864,6 +884,36 @@ function Launcher() {
     if (!response.ok) {
       throw new Error(`heartbeat failed with HTTP ${response.status}`);
     }
+  }
+
+  async function cacheLauncherTelemetrySession(
+    sessionUser?: { id?: string | null; username?: string | null }
+  ): Promise<void> {
+    try {
+      await invoke("launcher_cache_telemetry_session", {
+        session: buildLauncherTelemetrySession(sessionUser)
+      });
+    } catch {
+    }
+  }
+
+  async function flushLauncherTelemetrySession(): Promise<void> {
+    try {
+      await invoke("launcher_offline_telemetry_session");
+    } catch {
+    }
+  }
+
+  function buildLauncherTelemetrySession(sessionUser?: { id?: string | null; username?: string | null }) {
+    const user = sessionUser ?? launcherAuth?.user ?? null;
+    return {
+      baseUrl: LAUNCHER_API_BASE_URL,
+      clientName: "fpsmaster-launcher",
+      clientKind: "LAUNCHER",
+      sessionId: launcherSessionIdRef.current,
+      username: user?.username ?? settings.playerName,
+      playerUuid: user?.id ?? null
+    };
   }
 
   async function fetchTelemetryOnlineSummary(): Promise<TelemetryOnlineSummary> {
@@ -903,6 +953,10 @@ function Launcher() {
         token: normalizedToken,
         user: result.user ?? {}
       });
+      void cacheLauncherTelemetrySession({
+        username: result.user?.username,
+        id: result.user?.id ?? null
+      });
       void refreshLauncherHome(true, normalizedToken);
       const refresh = await refreshLauncherVersions(false, normalizedToken);
       if (!refresh.error && refresh.map) {
@@ -919,6 +973,7 @@ function Launcher() {
   }
 
   function logoutLauncherAccount() {
+    void flushLauncherTelemetrySession();
     setLauncherAuth(null);
     setLauncherVersions(EMPTY_LAUNCHER_VERSIONS);
     setLauncherDashboard(null);

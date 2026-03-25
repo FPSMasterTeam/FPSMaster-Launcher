@@ -249,6 +249,15 @@ struct LauncherModsInstallResult {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+struct LauncherInstalledFileRecord {
+    path: String,
+    #[serde(default)]
+    size: Option<u64>,
+    #[serde(default)]
+    checksum: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct LauncherModsInstallMarker {
     #[serde(rename = "versionTag")]
     version_tag: String,
@@ -258,6 +267,8 @@ struct LauncherModsInstallMarker {
     manifest_url: Option<String>,
     #[serde(rename = "downloadUrl")]
     download_url: String,
+    #[serde(default)]
+    files: Vec<LauncherInstalledFileRecord>,
     #[serde(rename = "installedAtEpochSec")]
     installed_at_epoch_sec: u64,
 }
@@ -633,7 +644,6 @@ static GAME_RUNTIME_STARTS: OnceLock<Mutex<HashMap<i64, std::time::Instant>>> = 
 const TRAY_SHOW_ID: &str = "tray_show";
 const TRAY_HIDE_ID: &str = "tray_hide";
 const TRAY_QUIT_ID: &str = "tray_quit";
-
 #[derive(Debug, Serialize)]
 struct GameRuntimeStats {
     pid: i64,
@@ -719,12 +729,101 @@ fn is_autostart_launch() -> bool {
 
 struct LauncherRuntimeState {
     minimize_to_tray: AtomicBool,
+    telemetry_session: Mutex<Option<LauncherTelemetrySession>>,
 }
 
 impl Default for LauncherRuntimeState {
     fn default() -> Self {
         Self {
             minimize_to_tray: AtomicBool::new(true),
+            telemetry_session: Mutex::new(None),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct LauncherTelemetrySession {
+    #[serde(rename = "baseUrl")]
+    base_url: String,
+    #[serde(rename = "clientName")]
+    client_name: String,
+    #[serde(rename = "clientKind")]
+    client_kind: String,
+    #[serde(rename = "sessionId")]
+    session_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    username: Option<String>,
+    #[serde(rename = "playerUuid", skip_serializing_if = "Option::is_none")]
+    player_uuid: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct LauncherTelemetryOfflineRequest {
+    #[serde(rename = "clientName")]
+    client_name: String,
+    #[serde(rename = "clientKind")]
+    client_kind: String,
+    #[serde(rename = "sessionId")]
+    session_id: String,
+}
+
+impl From<&LauncherTelemetrySession> for LauncherTelemetryOfflineRequest {
+    fn from(value: &LauncherTelemetrySession) -> Self {
+        Self {
+            client_name: value.client_name.clone(),
+            client_kind: value.client_kind.clone(),
+            session_id: value.session_id.clone(),
+        }
+    }
+}
+
+fn cache_launcher_telemetry_session(app: &AppHandle, session: LauncherTelemetrySession) {
+    if let Ok(mut guard) = app
+        .state::<LauncherRuntimeState>()
+        .telemetry_session
+        .lock()
+    {
+        *guard = Some(session);
+    }
+}
+
+fn take_launcher_telemetry_session(app: &AppHandle) -> Option<LauncherTelemetrySession> {
+    app.state::<LauncherRuntimeState>()
+        .telemetry_session
+        .lock()
+        .ok()
+        .and_then(|mut guard| guard.take())
+}
+
+fn post_launcher_telemetry_offline(session: &LauncherTelemetrySession) -> Result<(), String> {
+    let client = reqwest::blocking::Client::builder()
+        .connect_timeout(Duration::from_secs(2))
+        .timeout(Duration::from_secs(3))
+        .build()
+        .map_err(|e| format!("Failed to build telemetry HTTP client: {e}"))?;
+    let normalized_base = normalize_api_base_url(&session.base_url)?;
+    let url = reqwest::Url::parse(&format!("{normalized_base}/api/v1/telemetry/offline"))
+        .map_err(|e| format!("Invalid telemetry offline endpoint URL: {e}"))?;
+    let payload = LauncherTelemetryOfflineRequest::from(session);
+    let response = client
+        .post(url)
+        .json(&payload)
+        .send()
+        .map_err(|e| format!("Failed to submit launcher telemetry offline request: {e}"))?;
+    if response.status().is_success() {
+        Ok(())
+    } else {
+        Err(format!(
+            "Launcher telemetry offline request failed with HTTP {}",
+            response.status()
+        ))
+    }
+}
+
+fn flush_launcher_telemetry_session(app: &AppHandle) {
+    if let Some(session) = take_launcher_telemetry_session(app) {
+        if let Err(err) = post_launcher_telemetry_offline(&session) {
+            push_ui_log("launcher", "warn", &err);
         }
     }
 }
@@ -837,6 +936,7 @@ fn create_tray(app: &AppHandle) -> Result<(), String> {
                 let _ = hide_main_window_internal(app);
             }
             TRAY_QUIT_ID => {
+                flush_launcher_telemetry_session(app);
                 app.exit(0);
             }
             _ => {}
@@ -1685,7 +1785,21 @@ fn open_downloaded_file(file_path: String) -> Result<(), String> {
 
 #[tauri::command]
 fn quit_launcher_app(app: tauri::AppHandle) {
+    flush_launcher_telemetry_session(&app);
     app.exit(0);
+}
+
+#[tauri::command]
+fn launcher_cache_telemetry_session(
+    app: tauri::AppHandle,
+    session: LauncherTelemetrySession,
+) {
+    cache_launcher_telemetry_session(&app, session);
+}
+
+#[tauri::command]
+fn launcher_offline_telemetry_session(app: tauri::AppHandle) {
+    flush_launcher_telemetry_session(&app);
 }
 
 fn launcher_list_news_blocking(
@@ -2731,7 +2845,7 @@ fn install_launcher_version_mods_blocking(
         checksum.as_deref(),
         normalized_manifest_url.as_deref(),
         Some(normalized_url.as_str()),
-    )? && mods_dir_has_payload(&mods_dir, &marker_path)?
+    )? && validate_installed_launcher_package(&mods_dir, &marker_path, None)?
     {
         return Ok(LauncherModsInstallResult {
             target_dir: mods_dir.to_string_lossy().to_string(),
@@ -2782,6 +2896,7 @@ fn install_launcher_version_mods_blocking(
             .filter(|value| !value.is_empty()),
         manifest_url: normalized_manifest_url,
         download_url: normalized_url,
+        files: installed_files.clone(),
         installed_at_epoch_sec: now_epoch_seconds(),
     };
     let marker_content = serde_json::to_string_pretty(&marker)
@@ -2795,7 +2910,7 @@ fn install_launcher_version_mods_blocking(
 
     Ok(LauncherModsInstallResult {
         target_dir: mods_dir.to_string_lossy().to_string(),
-        installed_files,
+        installed_files: installed_files.len(),
         skipped: false,
         version_tag: normalized_tag,
         manifest_url: marker.manifest_url.clone(),
@@ -2817,7 +2932,8 @@ fn get_launcher_package_state_blocking(
     let version_tag = marker.as_ref().map(|value| value.version_tag.clone());
     let checksum = marker.as_ref().and_then(|value| value.checksum.clone());
     let manifest_url = marker.as_ref().and_then(|value| value.manifest_url.clone());
-    let installed = version_tag.is_some() && mods_dir_has_payload(&mods_dir, &marker_path)?;
+    let installed = version_tag.is_some()
+        && validate_installed_launcher_package(&mods_dir, &marker_path, marker.as_ref())?;
     let up_to_date = match (marker.as_ref(), expected_version_tag.as_ref()) {
         (Some(installed_marker), Some(expected_tag)) => {
             let version_matches = installed_marker.version_tag.trim() == expected_tag.trim();
@@ -2864,7 +2980,7 @@ fn install_launcher_manifest_package(
     expected_version_tag: &str,
     mods_dir: &Path,
     clean_existing: bool,
-) -> Result<usize, String> {
+) -> Result<Vec<LauncherInstalledFileRecord>, String> {
     let manifest = fetch_launcher_package_manifest(manifest_url)?;
     if let Some(manifest_version_tag) = manifest
         .version_tag
@@ -2937,10 +3053,10 @@ fn install_manifest_files_into_stage(
     manifest_url: &str,
     manifest: &LauncherPackageManifest,
     stage_dir: &Path,
-) -> Result<usize, String> {
+) -> Result<Vec<LauncherInstalledFileRecord>, String> {
     let client = build_blocking_http_client()?;
     let base_url = resolve_manifest_base_url(manifest_url, manifest.base_url.as_deref())?;
-    let mut installed_files = 0_usize;
+    let mut installed_files = Vec::new();
 
     for entry in &manifest.files {
         let relative_path = normalize_manifest_relative_path(&entry.path)?;
@@ -2990,10 +3106,13 @@ fn install_manifest_files_into_stage(
             })?;
         }
 
-        installed_files += 1;
+        installed_files.push(build_launcher_installed_file_record(
+            &target_path,
+            &relative_path,
+        )?);
     }
 
-    if installed_files == 0 {
+    if installed_files.is_empty() {
         return Err("Launcher manifest does not contain any downloadable files".to_string());
     }
     Ok(installed_files)
@@ -6694,6 +6813,62 @@ fn read_mods_marker(marker_path: &Path) -> Result<Option<LauncherModsInstallMark
     Ok(Some(marker))
 }
 
+fn validate_installed_launcher_package(
+    mods_dir: &Path,
+    marker_path: &Path,
+    marker_override: Option<&LauncherModsInstallMarker>,
+) -> Result<bool, String> {
+    let owned_marker;
+    let marker = if let Some(value) = marker_override {
+        value
+    } else {
+        owned_marker = match read_mods_marker(marker_path)? {
+            Some(value) => value,
+            None => return Ok(false),
+        };
+        &owned_marker
+    };
+
+    if marker.files.is_empty() {
+        return mods_dir_has_payload(mods_dir, marker_path);
+    }
+
+    for file in &marker.files {
+        let relative_path = normalize_manifest_relative_path(&file.path)?;
+        let target_path = mods_dir.join(&relative_path);
+        let metadata = match fs::metadata(&target_path) {
+            Ok(value) if value.is_file() => value,
+            _ => return Ok(false),
+        };
+        if let Some(expected_size) = file.size {
+            if metadata.len() != expected_size {
+                return Ok(false);
+            }
+        }
+        if let Some(expected_checksum) = file.checksum.as_deref() {
+            if let Err(_) = verify_file_sha256(&target_path, expected_checksum) {
+                return Ok(false);
+            }
+        }
+    }
+
+    Ok(true)
+}
+
+fn build_launcher_installed_file_record(
+    path: &Path,
+    relative_path: &Path,
+) -> Result<LauncherInstalledFileRecord, String> {
+    let metadata = fs::metadata(path)
+        .map_err(|e| format!("Failed to inspect installed launcher file {}: {e}", path.display()))?;
+    let checksum = compute_file_sha256_hex(path)?;
+    Ok(LauncherInstalledFileRecord {
+        path: relative_path.to_string_lossy().replace('\\', "/"),
+        size: Some(metadata.len()),
+        checksum: Some(checksum),
+    })
+}
+
 fn mods_dir_has_payload(mods_dir: &Path, marker_path: &Path) -> Result<bool, String> {
     if !mods_dir.exists() {
         return Ok(false);
@@ -6733,7 +6908,10 @@ fn clear_directory_contents(dir: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn extract_launcher_mod_archive(archive: &Path, mods_dir: &Path) -> Result<usize, String> {
+fn extract_launcher_mod_archive(
+    archive: &Path,
+    mods_dir: &Path,
+) -> Result<Vec<LauncherInstalledFileRecord>, String> {
     let file = fs::File::open(archive)
         .map_err(|e| format!("Failed to open launcher archive {}: {e}", archive.display()))?;
     let mut zip_archive = zip::ZipArchive::new(file)
@@ -6753,7 +6931,7 @@ fn extract_launcher_mod_archive(archive: &Path, mods_dir: &Path) -> Result<usize
         }
     }
 
-    let mut installed_files = 0_usize;
+    let mut installed_files = Vec::new();
     for i in 0..zip_archive.len() {
         let mut entry = zip_archive.by_index(i).map_err(|e| e.to_string())?;
         if entry.name().ends_with('/') {
@@ -6802,10 +6980,13 @@ fn extract_launcher_mod_archive(archive: &Path, mods_dir: &Path) -> Result<usize
                 out_path.to_string_lossy()
             )
         })?;
-        installed_files += 1;
+        installed_files.push(build_launcher_installed_file_record(
+            &out_path,
+            &relative_path,
+        )?);
     }
 
-    if installed_files == 0 {
+    if installed_files.is_empty() {
         return Err("Launcher package does not contain any mod files".to_string());
     }
     Ok(installed_files)
@@ -6925,6 +7106,8 @@ fn main() {
                         if should_minimize_to_tray(&app_handle) {
                             api.prevent_close();
                             let _ = hide_main_window_internal(&app_handle);
+                        } else {
+                            flush_launcher_telemetry_session(&app_handle);
                         }
                     }
                 });
@@ -6942,6 +7125,8 @@ fn main() {
             download_launcher_app_update,
             open_downloaded_file,
             quit_launcher_app,
+            launcher_cache_telemetry_session,
+            launcher_offline_telemetry_session,
             modrinth_search_projects,
             install_modrinth_project,
             curseforge_search_projects,
