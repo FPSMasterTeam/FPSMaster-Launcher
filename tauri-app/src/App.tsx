@@ -1775,6 +1775,9 @@ function Launcher() {
           launcherNews={launcherNews}
           launcherDashboard={launcherDashboard}
           launcherOnlineSummary={launcherOnlineSummary}
+          recommendedVersion={
+            current?.launcherVersionType ? launcherVersions[current.launcherVersionType] : null
+          }
           current={current}
           busy={busy}
           launching={launching}
@@ -1796,6 +1799,7 @@ function Launcher() {
       return (
         <InstancesPage
           instances={instances}
+          launcherVersions={launcherVersions}
           busy={busy}
           launchingInstanceId={launchingInstanceId}
           launchProgressPercent={launchProgressPercent}

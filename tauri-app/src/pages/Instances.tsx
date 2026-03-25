@@ -3,11 +3,12 @@ import { type ChangeEvent, useMemo, useRef, useState } from "react";
 import Button from "../components/Button";
 import Card from "../components/Card";
 import { useI18n } from "../i18n";
-import type { Instance, PresetPackageStatus } from "../types";
+import type { Instance, LauncherVersion, PresetPackageStatus } from "../types";
 import { resolveInstanceIconPath } from "../utils/launcher";
 
 type InstancesPageProps = {
   instances: Instance[];
+  launcherVersions: Record<"EDGE" | "NOVA", LauncherVersion | null>;
   busy: boolean;
   launchingInstanceId: string | null;
   launchProgressPercent: number | null;
@@ -25,6 +26,7 @@ type InstancesPageProps = {
 
 export default function InstancesPage({
   instances,
+  launcherVersions,
   busy,
   launchingInstanceId,
   launchProgressPercent,
@@ -107,6 +109,9 @@ export default function InstancesPage({
         {filteredInstances.map((instance) => {
           const icon = resolveInstanceIconPath(instance);
           const presetStatus = presetPackageStatuses[instance.id];
+          const recommendedVersion = instance.launcherVersionType
+            ? launcherVersions[instance.launcherVersionType]
+            : null;
           const loaderTone =
             instance.loader === "forge"
               ? "text-amber-400 border-amber-500/35 bg-amber-500/8"
@@ -169,6 +174,18 @@ export default function InstancesPage({
                       <p className="line-clamp-2 text-[11px] leading-5 text-[var(--text-muted)]">
                         {describePresetPackageStatus(presetStatus, t)}
                       </p>
+                      {recommendedVersion && (
+                        <div className="grid grid-cols-2 gap-2 pt-1">
+                          <MiniMeta
+                            label={t("instances.packageChannel")}
+                            value={recommendedVersion.channel || "-"}
+                          />
+                          <MiniMeta
+                            label={t("instances.packagePublishedAt")}
+                            value={formatDate(recommendedVersion.createdAt)}
+                          />
+                        </div>
+                      )}
                     </div>
                   )}
                 </div>
@@ -268,6 +285,26 @@ export default function InstancesPage({
       </section>
     </div>
   );
+}
+
+function MiniMeta({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-lg border border-[var(--border-subtle)] bg-[var(--bg-elevated)] px-2.5 py-2">
+      <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--text-muted)]">{label}</p>
+      <p className="mt-1 truncate text-[11px] font-medium text-[var(--text-secondary)]">{value}</p>
+    </div>
+  );
+}
+
+function formatDate(raw?: string | null): string {
+  if (!raw) {
+    return "-";
+  }
+  const value = new Date(raw);
+  if (Number.isNaN(value.getTime())) {
+    return "-";
+  }
+  return value.toLocaleDateString();
 }
 
 function handleImportChange(

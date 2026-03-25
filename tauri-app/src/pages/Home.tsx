@@ -6,7 +6,7 @@ import Button from "../components/Button";
 import Card from "../components/Card";
 import { RECOMMENDED_SERVERS } from "../constants";
 import { useI18n } from "../i18n";
-import type { Instance, LauncherDashboard, NewsItem, PresetPackageStatus, TelemetryOnlineSummary } from "../types";
+import type { Instance, LauncherDashboard, LauncherVersion, NewsItem, PresetPackageStatus, TelemetryOnlineSummary } from "../types";
 import { resolveInstanceIconPath } from "../utils/launcher";
 
 type HomePageProps = {
@@ -14,6 +14,7 @@ type HomePageProps = {
   launcherNews: NewsItem[];
   launcherDashboard: LauncherDashboard | null;
   launcherOnlineSummary: TelemetryOnlineSummary | null;
+  recommendedVersion: LauncherVersion | null;
   current: Instance | null;
   busy: boolean;
   launching: boolean;
@@ -30,6 +31,7 @@ export default function HomePage({
   launcherNews,
   launcherDashboard,
   launcherOnlineSummary,
+  recommendedVersion,
   current,
   busy,
   launching,
@@ -79,6 +81,10 @@ export default function HomePage({
   const presetStatusText = presetPackageStatus ? describePresetPackageStatus(presetPackageStatus, t) : null;
   const presetStatusTone = presetPackageStatus ? resolvePresetStatusTone(presetPackageStatus.state) : "";
   const presetChangelog = presetPackageStatus?.changelog ? summarizeChangelog(presetPackageStatus.changelog) : null;
+  const recommendedVersionDate = recommendedVersion?.createdAt
+    ? new Date(recommendedVersion.createdAt).toLocaleDateString()
+    : null;
+  const recommendedVersionChannel = recommendedVersion?.channel?.trim() || "--";
   const selectedLoaderLabel = selectedInstance ? loaderLabel(selectedInstance.loader, t) : null;
   const launcherOnlineCount = launcherOnlineSummary?.launcher ?? null;
   const onlineBadges = launcherOnlineSummary
@@ -289,6 +295,22 @@ export default function HomePage({
                         value={presetPackageStatus.targetVersionTag ?? presetPackageStatus.versionTag ?? "-"}
                       />
                     </div>
+                    {recommendedVersion && (
+                      <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+                        <PresetMeta
+                          label={t("instances.packageChannel")}
+                          value={recommendedVersionChannel}
+                        />
+                        <PresetMeta
+                          label={t("instances.packagePublishedAt")}
+                          value={recommendedVersionDate ?? "-"}
+                        />
+                        <PresetMeta
+                          label={t("instances.packageRecommendedVersion")}
+                          value={recommendedVersion.versionName}
+                        />
+                      </div>
+                    )}
                     {presetChangelog && (
                       <div className="rounded-lg border border-[var(--border-subtle)] bg-[var(--surface-soft)] px-3 py-2">
                         <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--text-muted)]">
