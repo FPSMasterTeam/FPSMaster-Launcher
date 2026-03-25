@@ -102,10 +102,24 @@ struct LauncherVersion {
     version_type: String,
     #[serde(rename = "versionName")]
     version_name: String,
+    #[serde(rename = "artifactSourceType", default)]
+    artifact_source_type: Option<String>,
     #[serde(rename = "downloadUrl")]
     download_url: String,
+    #[serde(rename = "fileBucket", default)]
+    file_bucket: Option<String>,
+    #[serde(rename = "fileKey", default)]
+    file_key: Option<String>,
+    #[serde(rename = "fileSize", default)]
+    file_size: Option<i64>,
     #[serde(default)]
     checksum: Option<String>,
+    #[serde(rename = "manifestUrl", default)]
+    manifest_url: Option<String>,
+    #[serde(rename = "minLauncherVersion", default)]
+    min_launcher_version: Option<String>,
+    #[serde(default)]
+    enabled: Option<bool>,
     #[serde(default)]
     recommended: bool,
     #[serde(default)]
@@ -114,8 +128,6 @@ struct LauncherVersion {
     commit_hash: Option<String>,
     #[serde(rename = "createdAt", default)]
     created_at: Option<String>,
-    #[serde(rename = "updatedAt", default)]
-    updated_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -171,6 +183,23 @@ struct LauncherDashboard {
     stats: LauncherUserStats,
     #[serde(rename = "weeklyPlaytime")]
     weekly_playtime: LauncherWeeklyPlaytime,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct TelemetryOnlineSummary {
+    online: i64,
+    total: i64,
+    launcher: i64,
+    edge: i64,
+    nova: i64,
+    generic: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct LauncherHomePayload {
+    news: Vec<LauncherNewsItem>,
+    online: TelemetryOnlineSummary,
+    dashboard: Option<LauncherDashboard>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -901,6 +930,13 @@ async fn launcher_get_dashboard(base_url: String, token: String) -> Result<Launc
         .map_err(|e| format!("Failed to join launcher dashboard task: {e}"))?
 }
 
+#[tauri::command]
+async fn launcher_get_home(base_url: String, token: Option<String>) -> Result<LauncherHomePayload, String> {
+    tauri::async_runtime::spawn_blocking(move || launcher_get_home_blocking(base_url, token))
+        .await
+        .map_err(|e| format!("Failed to join launcher home task: {e}"))?
+}
+
 fn launcher_list_news_blocking(
     base_url: String,
     limit: Option<u32>,
@@ -954,6 +990,32 @@ fn launcher_get_dashboard_blocking(
         .text()
         .map_err(|e| format!("Failed to read launcher dashboard response: {e}"))?;
     parse_launcher_dashboard_response(status, &text)
+}
+
+fn launcher_get_home_blocking(
+    base_url: String,
+    token: Option<String>,
+) -> Result<LauncherHomePayload, String> {
+    let normalized_base = normalize_api_base_url(&base_url)?;
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(20))
+        .build()
+        .map_err(|e| format!("Failed to build HTTP client: {e}"))?;
+
+    let url = reqwest::Url::parse(&format!("{normalized_base}/api/v1/launcher/home"))
+        .map_err(|e| format!("Invalid launcher home endpoint URL: {e}"))?;
+    let mut request = client.get(url);
+    if let Some(value) = token.map(|item| item.trim().to_string()).filter(|item| !item.is_empty()) {
+        request = request.bearer_auth(value);
+    }
+    let response = request
+        .send()
+        .map_err(|e| format!("Launcher home request failed: {e}"))?;
+    let status = response.status();
+    let text = response
+        .text()
+        .map_err(|e| format!("Failed to read launcher home response: {e}"))?;
+    parse_launcher_home_response(status, &text)
 }
 
 fn launcher_list_available_versions_blocking(
@@ -2701,6 +2763,28 @@ fn parse_launcher_dashboard_response(
         .map_err(|e| format!("launcher dashboard response missing data: {e}"))
 }
 
+fn parse_launcher_home_response(
+    status: reqwest::StatusCode,
+    body: &str,
+) -> Result<LauncherHomePayload, String> {
+    if let Ok(item) = parse_api_envelope::<LauncherHomePayload>(status, body, "launcher home") {
+        return Ok(item);
+    }
+
+    let value: serde_json::Value = serde_json::from_str(body)
+        .map_err(|e| format!("Invalid launcher home response JSON: {e}"))?;
+
+    if !status.is_success() {
+        return Err(
+            extract_api_error_message(body)
+                .unwrap_or_else(|| format!("launcher home failed with HTTP {}", status.as_u16())),
+        );
+    }
+
+    serde_json::from_value::<LauncherHomePayload>(value)
+        .map_err(|e| format!("launcher home response missing data: {e}"))
+}
+
 fn parse_api_envelope<T: for<'de> Deserialize<'de>>(
     status: reqwest::StatusCode,
     body: &str,
@@ -3176,6 +3260,7 @@ fn main() {
             launcher_list_available_versions,
             launcher_list_news,
             launcher_get_dashboard,
+            launcher_get_home,
             get_launcher_package_state,
             install_launcher_version_mods,
             list_vanilla_versions,

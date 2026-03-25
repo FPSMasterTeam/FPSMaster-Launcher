@@ -18,6 +18,7 @@ const translations = {
     "app.status.autoInstallModsDone": "Preset mods synced: {count} files",
     "app.status.autoInstallModsUpToDate": "Preset mods already up to date",
     "app.status.authRequiredForPreset": "Preset mods require launcher login first",
+    "app.status.launcherUpgradeRequired": "Launcher update required. Minimum version: {required}",
     "app.status.failed": "Failed: {error}",
     "app.status.missingAutoInstall":
       "Missing {versionId}, auto installing {baseVersion} ({loader})...",
@@ -302,6 +303,7 @@ const translations = {
     "app.status.autoInstallModsDone": "预设模组同步完成：{count} 个文件",
     "app.status.autoInstallModsUpToDate": "预设模组已是最新",
     "app.status.authRequiredForPreset": "请先登录启动器账号以同步预设模组",
+    "app.status.launcherUpgradeRequired": "当前启动器版本过低，至少需要 {required}",
     "app.status.failed": "失败：{error}",
     "app.status.missingAutoInstall":
       "缺少 {versionId}，正在自动安装 {baseVersion}（{loader}）...",

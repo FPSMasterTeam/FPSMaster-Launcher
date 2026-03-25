@@ -163,13 +163,19 @@ export type LauncherVersion = {
   channel: string;
   versionType: LauncherVersionType;
   versionName: string;
+  artifactSourceType?: string | null;
   downloadUrl: string;
+  fileBucket?: string | null;
+  fileKey?: string | null;
+  fileSize?: number | null;
   checksum?: string | null;
+  manifestUrl?: string | null;
+  minLauncherVersion?: string | null;
+  enabled?: boolean;
   recommended?: boolean;
   changelog?: string | null;
   commitHash?: string | null;
   createdAt?: string | null;
-  updatedAt?: string | null;
 };
 
 export type LauncherModsInstallResult = {
@@ -226,4 +232,10 @@ export type TelemetryOnlineSummary = {
   edge: number;
   nova: number;
   generic: number;
+};
+
+export type LauncherHomePayload = {
+  news: NewsItem[];
+  online: TelemetryOnlineSummary;
+  dashboard?: LauncherDashboard | null;
 };

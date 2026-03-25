@@ -47,6 +47,7 @@ import type {
   LauncherVersionType,
   JdkEnsureResult,
   LauncherDashboard,
+  LauncherHomePayload,
   Locale,
   LaunchExecutionResult,
   Loader,
@@ -76,6 +77,8 @@ type LauncherAuthState = {
 };
 
 type LauncherVersionMap = Record<LauncherVersionType, LauncherVersion | null>;
+
+const CURRENT_LAUNCHER_VERSION = "0.2.0";
 
 const EMPTY_LAUNCHER_VERSIONS: LauncherVersionMap = {
   EDGE: null,
@@ -203,10 +206,11 @@ function Launcher() {
       setLauncherDashboard(null);
       setLauncherOnlineCount(null);
       setPresetPackageStatuses({});
+      void refreshLauncherHome(true);
       return;
     }
     void refreshLauncherVersions(true);
-    void refreshLauncherDashboard(true);
+    void refreshLauncherHome(true, launcherAuth.token);
   }, [launcherAuth?.token]);
 
   useEffect(() => {
@@ -278,7 +282,7 @@ function Launcher() {
   }, []);
 
   useEffect(() => {
-    void refreshLauncherNews(true);
+    void refreshLauncherHome(true);
   }, []);
 
   useEffect(() => {
@@ -487,13 +491,14 @@ function Launcher() {
   function pickLatestLauncherVersions(entries: LauncherVersion[]): LauncherVersionMap {
     const out: LauncherVersionMap = { EDGE: null, NOVA: null };
     const scoreOf = (item: LauncherVersion): number => {
-      const raw = item.updatedAt ?? item.createdAt ?? "";
+      const raw = item.createdAt ?? "";
       const parsed = Date.parse(raw);
       return Number.isFinite(parsed) ? parsed : Number.NEGATIVE_INFINITY;
     };
 
     for (const item of entries) {
       if (item.versionType !== "EDGE" && item.versionType !== "NOVA") continue;
+      if (!isLauncherVersionCompatible(item.minLauncherVersion)) continue;
       const current = out[item.versionType];
       const shouldReplace =
         !current ||
@@ -595,6 +600,49 @@ function Launcher() {
         })
     );
     setPresetPackageStatuses(Object.fromEntries(nextEntries));
+  }
+
+  async function refreshLauncherHome(silent = false, tokenOverride?: string): Promise<void> {
+    const token = (tokenOverride ?? launcherAuth?.token ?? "").trim();
+    try {
+      const payload = await invoke<LauncherHomePayload>("launcher_get_home", {
+        baseUrl: LAUNCHER_API_BASE_URL,
+        token: token || null
+      });
+      if (payload.news.length > 0) {
+        setLauncherNews(payload.news);
+      } else {
+        setLauncherNews([...NEWS_ITEMS]);
+      }
+      setLauncherOnlineCount(payload.online?.launcher ?? null);
+      if (payload.dashboard) {
+        setLauncherDashboard(payload.dashboard);
+        setLauncherAuth((prev) =>
+          prev
+            ? {
+                ...prev,
+                user: {
+                  ...prev.user,
+                  ...payload.dashboard?.user
+                }
+              }
+            : prev
+        );
+      } else if (!token) {
+        setLauncherDashboard(null);
+      }
+      if (!silent) {
+        setStatus(t("app.status.ready"));
+      }
+    } catch (error) {
+      if (!token) {
+        setLauncherNews([...NEWS_ITEMS]);
+        setLauncherOnlineCount(null);
+      }
+      if (!silent) {
+        setStatus(t("app.status.failed", { error: formatLaunchError(error) }));
+      }
+    }
   }
 
   async function refreshLauncherNews(silent = false): Promise<void> {
@@ -712,7 +760,7 @@ function Launcher() {
         token: normalizedToken,
         user: result.user ?? {}
       });
-      void refreshLauncherDashboard(true, normalizedToken);
+      void refreshLauncherHome(true, normalizedToken);
       const refresh = await refreshLauncherVersions(false, normalizedToken);
       if (!refresh.error && refresh.map) {
         void syncPresetLauncherPackages(refresh.map);
@@ -759,6 +807,15 @@ function Launcher() {
     }
 
     if (!targetVersion) {
+      return;
+    }
+
+    if (!isLauncherVersionCompatible(targetVersion.minLauncherVersion)) {
+      setStatus(
+        t("app.status.launcherUpgradeRequired", {
+          required: targetVersion.minLauncherVersion ?? "-"
+        })
+      );
       return;
     }
 
@@ -1520,6 +1577,37 @@ function Launcher() {
       </div>
     </I18nProvider>
   );
+}
+
+function isLauncherVersionCompatible(minLauncherVersion?: null | string): boolean {
+  const required = (minLauncherVersion ?? "").trim();
+  if (!required) {
+    return true;
+  }
+  return compareSemanticVersion(CURRENT_LAUNCHER_VERSION, required) >= 0;
+}
+
+function compareSemanticVersion(current: string, required: string): number {
+  const currentParts = normalizeSemanticVersion(current);
+  const requiredParts = normalizeSemanticVersion(required);
+  const maxLength = Math.max(currentParts.length, requiredParts.length, 3);
+  for (let index = 0; index < maxLength; index += 1) {
+    const left = currentParts[index] ?? 0;
+    const right = requiredParts[index] ?? 0;
+    if (left > right) return 1;
+    if (left < right) return -1;
+  }
+  return 0;
+}
+
+function normalizeSemanticVersion(input: string): number[] {
+  return input
+    .trim()
+    .split(".")
+    .map((part) => {
+      const match = part.match(/\d+/);
+      return match ? Number.parseInt(match[0], 10) : 0;
+    });
 }
 
 function formatLaunchError(error: unknown): string {
