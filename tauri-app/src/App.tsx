@@ -1775,6 +1775,10 @@ function Launcher() {
           launcherNews={launcherNews}
           launcherDashboard={launcherDashboard}
           launcherOnlineSummary={launcherOnlineSummary}
+          launcherUpdate={launcherAppUpdate}
+          launcherUpdateAvailable={launcherAppUpdateAvailable}
+          launcherUpdateDownloading={launcherAppUpdateDownloading}
+          launcherUpdateDownload={launcherAppUpdateDownload}
           recommendedVersion={
             current?.launcherVersionType ? launcherVersions[current.launcherVersionType] : null
           }
@@ -1791,6 +1795,7 @@ function Launcher() {
               void syncPresetPackage(current.id);
             }
           }}
+          onOpenSettings={() => setPage("settings")}
         />
       );
     }

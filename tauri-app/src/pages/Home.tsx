@@ -1,4 +1,4 @@
-import { Calendar, Check, ChevronRight, Download, Play, Search, Users, X } from "lucide-react";
+import { AlertTriangle, Calendar, Check, ChevronRight, Download, Play, Search, Users, X } from "lucide-react";
 import { createPortal } from "react-dom";
 import { type ReactNode, useMemo, useState } from "react";
 import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
@@ -6,7 +6,16 @@ import Button from "../components/Button";
 import Card from "../components/Card";
 import { RECOMMENDED_SERVERS } from "../constants";
 import { useI18n } from "../i18n";
-import type { Instance, LauncherDashboard, LauncherVersion, NewsItem, PresetPackageStatus, TelemetryOnlineSummary } from "../types";
+import type {
+  DownloadedLauncherUpdate,
+  Instance,
+  LauncherAppUpdateInfo,
+  LauncherDashboard,
+  LauncherVersion,
+  NewsItem,
+  PresetPackageStatus,
+  TelemetryOnlineSummary
+} from "../types";
 import { resolveInstanceIconPath } from "../utils/launcher";
 
 type HomePageProps = {
@@ -14,6 +23,10 @@ type HomePageProps = {
   launcherNews: NewsItem[];
   launcherDashboard: LauncherDashboard | null;
   launcherOnlineSummary: TelemetryOnlineSummary | null;
+  launcherUpdate: LauncherAppUpdateInfo | null;
+  launcherUpdateAvailable: boolean;
+  launcherUpdateDownloading: boolean;
+  launcherUpdateDownload: DownloadedLauncherUpdate | null;
   recommendedVersion: LauncherVersion | null;
   current: Instance | null;
   busy: boolean;
@@ -24,6 +37,7 @@ type HomePageProps = {
   onSelect: (id: string) => void;
   onLaunch: () => void;
   onSyncPresetPackage: () => void;
+  onOpenSettings: () => void;
 };
 
 export default function HomePage({
@@ -31,6 +45,10 @@ export default function HomePage({
   launcherNews,
   launcherDashboard,
   launcherOnlineSummary,
+  launcherUpdate,
+  launcherUpdateAvailable,
+  launcherUpdateDownloading,
+  launcherUpdateDownload,
   recommendedVersion,
   current,
   busy,
@@ -40,7 +58,8 @@ export default function HomePage({
   presetPackageStatus,
   onSelect,
   onLaunch,
-  onSyncPresetPackage
+  onSyncPresetPackage,
+  onOpenSettings
 }: HomePageProps) {
   const { t } = useI18n();
   const selectedInstance = current ?? availableInstances[0] ?? null;
@@ -85,6 +104,9 @@ export default function HomePage({
     ? new Date(recommendedVersion.createdAt).toLocaleDateString()
     : null;
   const recommendedVersionChannel = recommendedVersion?.channel?.trim() || "--";
+  const launcherUpdateDate = launcherUpdate?.publishedAt
+    ? new Date(launcherUpdate.publishedAt).toLocaleDateString()
+    : null;
   const selectedLoaderLabel = selectedInstance ? loaderLabel(selectedInstance.loader, t) : null;
   const launcherOnlineCount = launcherOnlineSummary?.launcher ?? null;
   const onlineBadges = launcherOnlineSummary
@@ -120,6 +142,41 @@ export default function HomePage({
           <h1 className="mt-1 text-2xl font-semibold tracking-tight text-[var(--text-primary)] md:text-3xl">{t("home.welcomeBack")}</h1>
           <p className="mt-1 text-sm text-[var(--text-secondary)] md:text-[15px]">{t("home.dashboardReady")}</p>
         </section>
+
+        {launcherUpdate && launcherUpdateAvailable && (
+          <section className="mb-4">
+            <Card variant="frost" className="rounded-xl border border-amber-500/25 bg-amber-500/8 p-4 md:p-5">
+              <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2 text-sm font-semibold text-[var(--text-primary)]">
+                    <AlertTriangle size={16} className="text-amber-300" />
+                    {launcherUpdate.mandatory
+                      ? t("home.launcherUpdate.requiredTitle")
+                      : t("home.launcherUpdate.availableTitle")}
+                  </div>
+                  <p className="mt-1 text-sm text-[var(--text-secondary)]">
+                    {t("home.launcherUpdate.summary", { version: launcherUpdate.version })}
+                  </p>
+                  <div className="mt-2 flex flex-wrap gap-2 text-[11px] text-[var(--text-muted)]">
+                    <span>{t("settings.launcherUpdateTarget")}: {launcherUpdate.target}</span>
+                    <span>{t("instances.packagePublishedAt")}: {launcherUpdateDate ?? "-"}</span>
+                    {launcherUpdateDownload && <span>{t("settings.launcherUpdateDownloaded", { file: launcherUpdateDownload.fileName })}</span>}
+                  </div>
+                </div>
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  disabled={launcherUpdateDownloading}
+                  onClick={onOpenSettings}
+                >
+                  {launcherUpdate.mandatory
+                    ? t("home.launcherUpdate.requiredAction")
+                    : t("home.launcherUpdate.availableAction")}
+                </Button>
+              </div>
+            </Card>
+          </section>
+        )}
 
         <section className="grid grid-cols-1 gap-4 xl:grid-cols-[minmax(0,1.35fr)_minmax(280px,0.92fr)]">
           <div>
