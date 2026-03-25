@@ -35,6 +35,8 @@ import type {
   FabricInstallResult,
   ForgeInstallResult,
   GameRuntimeStats,
+  InstalledContentItem,
+  InstalledContentUpdate,
   InstallDialogState,
   InstallIpcEvent,
   InstallResult,
@@ -85,6 +87,11 @@ type LauncherAuthState = {
 type LauncherVersionMap = Record<LauncherVersionType, LauncherVersion | null>;
 
 const CURRENT_LAUNCHER_VERSION = "0.2.0";
+const LAUNCHER_HEARTBEAT_INTERVAL_MS = 90_000;
+const LAUNCHER_BACKGROUND_HEARTBEAT_INTERVAL_MS = 120_000;
+const LAUNCHER_ONLINE_REFRESH_INTERVAL_MS = 90_000;
+const LAUNCHER_HEARTBEAT_JITTER_MS = 12_000;
+const LAUNCHER_ONLINE_REFRESH_JITTER_MS = 8_000;
 
 const EMPTY_LAUNCHER_VERSIONS: LauncherVersionMap = {
   EDGE: null,
@@ -250,6 +257,9 @@ function Launcher() {
       }
     };
     const loadOnline = async () => {
+      if (backgroundMode) {
+        return;
+      }
       try {
         const summary = await fetchTelemetryOnlineSummary();
         if (active) {
@@ -262,16 +272,41 @@ function Launcher() {
       }
     };
 
+    let heartbeatTimer: number | null = null;
+    let onlineTimer: number | null = null;
+    const scheduleHeartbeat = () => {
+      heartbeatTimer = window.setTimeout(async () => {
+        await runHeartbeat();
+        if (active) {
+          scheduleHeartbeat();
+        }
+      }, nextRecurringDelay(backgroundMode ? LAUNCHER_BACKGROUND_HEARTBEAT_INTERVAL_MS : LAUNCHER_HEARTBEAT_INTERVAL_MS, LAUNCHER_HEARTBEAT_JITTER_MS));
+    };
+    const scheduleOnlineRefresh = () => {
+      onlineTimer = window.setTimeout(async () => {
+        await loadOnline();
+        if (active && !backgroundMode) {
+          scheduleOnlineRefresh();
+        }
+      }, nextRecurringDelay(LAUNCHER_ONLINE_REFRESH_INTERVAL_MS, LAUNCHER_ONLINE_REFRESH_JITTER_MS));
+    };
+
     void runHeartbeat();
-    void loadOnline();
-    const heartbeatTimer = window.setInterval(() => void runHeartbeat(), 90_000);
-    const onlineTimer = window.setInterval(() => void loadOnline(), 90_000);
+    scheduleHeartbeat();
+    if (!backgroundMode) {
+      void loadOnline();
+      scheduleOnlineRefresh();
+    }
     return () => {
       active = false;
-      window.clearInterval(heartbeatTimer);
-      window.clearInterval(onlineTimer);
+      if (heartbeatTimer !== null) {
+        window.clearTimeout(heartbeatTimer);
+      }
+      if (onlineTimer !== null) {
+        window.clearTimeout(onlineTimer);
+      }
     };
-  }, [launcherAuth?.token, launcherAuth?.user?.username]);
+  }, [launcherAuth?.token, launcherAuth?.user?.username, backgroundMode]);
 
   useEffect(() => {
     let disposed = false;
@@ -992,6 +1027,81 @@ function Launcher() {
     }
   }
 
+  async function collectInstanceContentUpdateState(instance: Instance): Promise<{
+    items: InstalledContentItem[];
+    updates: InstalledContentUpdate[];
+  }> {
+    const items = await invoke<InstalledContentItem[]>("list_installed_content", {
+      gameDir: settings.gameDir,
+      versionId: instance.versionId
+    });
+    if (items.length === 0) {
+      return { items, updates: [] };
+    }
+
+    const updates = await invoke<InstalledContentUpdate[]>("check_installed_content_updates", {
+      gameDir: settings.gameDir,
+      versionId: instance.versionId,
+      gameVersion: instance.baseVersion,
+      loader: instance.loader,
+      apiKey: settings.curseforgeApiKey
+    });
+    return { items, updates };
+  }
+
+  async function ensureManagedContentUpToDate(instance: Instance): Promise<void> {
+    const { items, updates } = await collectInstanceContentUpdateState(instance);
+    if (items.length === 0 || updates.length === 0) {
+      return;
+    }
+
+    const updateMap = new Map(
+      updates.map((item) => [`${item.source}:${item.contentType}:${item.projectId}`, item] as const)
+    );
+    const pendingItems = items.filter((item) => {
+      const needsUpdate =
+        updateMap.get(`${item.source}:${item.contentType}:${item.projectId}`)?.status === "update-available";
+      if (!needsUpdate || item.source === "local") {
+        return false;
+      }
+      if (item.source === "curseforge" && !settings.curseforgeApiKey.trim()) {
+        return false;
+      }
+      return true;
+    });
+    if (pendingItems.length === 0) {
+      return;
+    }
+
+    setStatus(t("app.status.autoUpdatingContent", { name: instance.name, count: pendingItems.length }));
+    for (const item of pendingItems) {
+      if (item.source === "curseforge") {
+        await invoke("install_curseforge_project", {
+          gameDir: settings.gameDir,
+          versionId: instance.versionId,
+          projectId: item.projectId,
+          projectTitle: item.projectTitle,
+          projectType: item.contentType,
+          gameVersion: instance.baseVersion,
+          loader: instance.loader,
+          apiKey: settings.curseforgeApiKey
+        });
+        continue;
+      }
+
+      await invoke("install_modrinth_project", {
+        gameDir: settings.gameDir,
+        versionId: instance.versionId,
+        projectId: item.projectId,
+        projectTitle: item.projectTitle,
+        projectType: item.contentType,
+        gameVersion: instance.baseVersion,
+        loader: instance.loader
+      });
+    }
+    setStatus(t("app.status.autoUpdatedContent", { name: instance.name, count: pendingItems.length }));
+  }
+
   async function ensureInstanceReadyForLaunch(instance: Instance): Promise<Instance> {
     let workingInstance = instance;
     const presetVersionId = instance.preset ? resolvePresetVersionId(instance.id) : null;
@@ -1023,6 +1133,7 @@ function Launcher() {
       });
       if (installed) {
         await ensurePresetModsReady(workingInstance);
+        await ensureManagedContentUpToDate(workingInstance);
         return workingInstance;
       }
     }
@@ -1099,6 +1210,7 @@ function Launcher() {
       prev.map((item) => (item.id === updatedInstance.id ? updatedInstance : item))
     );
     await ensurePresetModsReady(updatedInstance);
+    await ensureManagedContentUpToDate(updatedInstance);
     setStatus(t("app.status.autoInstallCompleted", { name: updatedInstance.name }));
     return updatedInstance;
   }
@@ -1750,6 +1862,14 @@ function isLauncherAppUpdateMissing(message: string): boolean {
     normalized.includes("http 404") ||
     normalized.includes("not configured")
   );
+}
+
+function nextRecurringDelay(baseMs: number, jitterMs: number): number {
+  if (jitterMs <= 0) {
+    return baseMs;
+  }
+  const offset = Math.round((Math.random() * 2 - 1) * jitterMs);
+  return Math.max(30_000, baseMs + offset);
 }
 
 async function withTitlebarGuard(action: () => Promise<void>) {
