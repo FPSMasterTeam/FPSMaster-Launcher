@@ -8,7 +8,6 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use std::{env, fs};
-use tauri::image::Image;
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Emitter, Manager, WebviewWindow, WindowEvent};
@@ -447,9 +446,10 @@ fn create_tray(app: &AppHandle) -> Result<(), String> {
     let menu = Menu::with_items(app, &[&show_item, &hide_item, &quit_item])
         .map_err(|e| format!("Failed to create tray menu: {e}"))?;
 
-    let icon = Image::from_path(app.path().resolve("icons/icon.ico", tauri::path::BaseDirectory::Resource)
-        .map_err(|e| format!("Failed to resolve tray icon path: {e}"))?)
-        .map_err(|e| format!("Failed to load tray icon: {e}"))?;
+    let icon = app
+        .default_window_icon()
+        .cloned()
+        .ok_or_else(|| "Failed to load tray icon: default window icon is missing".to_string())?;
 
     TrayIconBuilder::with_id("main-tray")
         .icon(icon)
