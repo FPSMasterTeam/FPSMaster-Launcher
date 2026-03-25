@@ -6,7 +6,13 @@ import Card from "../components/Card";
 import { useI18n } from "../i18n";
 import type { Instance, InstanceSectionEntry } from "../types";
 
-type InstanceSection = "saves" | "mods" | "resourcepacks" | "shaderpacks";
+type InstanceSection =
+  | "saves"
+  | "mods"
+  | "resourcepacks"
+  | "shaderpacks"
+  | "logs"
+  | "crash-reports";
 
 type SectionState = {
   entries: InstanceSectionEntry[];
@@ -20,14 +26,23 @@ type InstanceSettingsPageProps = {
   onBack: () => void;
 };
 
-const SECTIONS: readonly InstanceSection[] = ["saves", "mods", "resourcepacks", "shaderpacks"];
+const SECTIONS: readonly InstanceSection[] = [
+  "saves",
+  "mods",
+  "resourcepacks",
+  "shaderpacks",
+  "logs",
+  "crash-reports"
+];
 
 function emptySectionState(): Record<InstanceSection, SectionState> {
   return {
     saves: { entries: [], loading: false, error: null },
     mods: { entries: [], loading: false, error: null },
     resourcepacks: { entries: [], loading: false, error: null },
-    shaderpacks: { entries: [], loading: false, error: null }
+    shaderpacks: { entries: [], loading: false, error: null },
+    logs: { entries: [], loading: false, error: null },
+    "crash-reports": { entries: [], loading: false, error: null }
   };
 }
 
@@ -39,6 +54,8 @@ export default function InstanceSettingsPage({ instance, gameDir, onBack }: Inst
     if (section === "saves") return t("instanceFiles.saves");
     if (section === "mods") return t("instanceFiles.mods");
     if (section === "shaderpacks") return t("instanceFiles.shaderpacks");
+    if (section === "logs") return t("instanceFiles.logs");
+    if (section === "crash-reports") return t("instanceFiles.crashReports");
     return t("instanceFiles.resourcepacks");
   }
 

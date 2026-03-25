@@ -39,6 +39,7 @@ import type {
   InstallResult,
   InstallPhaseState,
   Instance,
+  InstanceExportResult,
   LauncherLoginResult,
   LauncherModsInstallResult,
   LauncherPackageState,
@@ -1360,6 +1361,54 @@ function Launcher() {
     if (selected === id && next.length > 0) setSelected(next[0].id);
   }
 
+  async function duplicateInstance(id: string) {
+    const source = instances.find((entry) => entry.id === id);
+    if (!source) return;
+
+    const duplicatedName = createDuplicatedInstanceName(source.name, instances);
+    const duplicatedVersionId = createDuplicatedVersionId(source.versionId, instances);
+
+    try {
+      await invoke<string>("duplicate_instance_storage", {
+        gameDir: settings.gameDir,
+        sourceVersionId: source.versionId,
+        targetVersionId: duplicatedVersionId
+      });
+      const duplicated: Instance = {
+        ...source,
+        id: `instance-${Date.now()}-${Math.floor(Math.random() * 10000)}`,
+        name: duplicatedName,
+        versionId: duplicatedVersionId,
+        launcherVersionType: source.preset ? undefined : source.launcherVersionType,
+        preset: false
+      };
+      setInstances((prev) => [duplicated, ...prev]);
+      setInstalledVersions((prev) =>
+        prev.includes(duplicatedVersionId) ? prev : [duplicatedVersionId, ...prev]
+      );
+      setSelected(duplicated.id);
+      setStatus(t("app.status.instanceDuplicated", { name: source.name }));
+    } catch (error) {
+      setStatus(t("app.status.failed", { error: formatLaunchError(error) }));
+    }
+  }
+
+  async function exportInstance(id: string) {
+    const source = instances.find((entry) => entry.id === id);
+    if (!source) return;
+
+    try {
+      await invoke<InstanceExportResult>("export_instance_archive", {
+        gameDir: settings.gameDir,
+        versionId: source.versionId,
+        archiveName: source.name
+      });
+      setStatus(t("app.status.instanceExported", { name: source.name }));
+    } catch (error) {
+      setStatus(t("app.status.failed", { error: formatLaunchError(error) }));
+    }
+  }
+
   function closeInstallDialog() {
     if (!installDialog?.canClose) return;
     setInstallDialog(null);
@@ -1435,6 +1484,8 @@ function Launcher() {
           launchProgressText={launchProgressText}
           presetPackageStatuses={presetPackageStatuses}
           onDelete={removeInstance}
+          onDuplicateInstance={duplicateInstance}
+          onExportInstance={exportInstance}
           onGoInstall={() => setPage("install")}
           onLaunchInstance={async (id) => {
             const target = instances.find((item) => item.id === id);
@@ -1912,6 +1963,47 @@ function loaderLabelKey(loader: Loader) {
   if (loader === "forge") return "loader.forge" as const;
   if (loader === "fabric") return "loader.fabric" as const;
   return "loader.vanilla" as const;
+}
+
+function createDuplicatedInstanceName(sourceName: string, instances: Instance[]): string {
+  const existingNames = new Set(instances.map((item) => item.name.trim().toLowerCase()));
+  const baseName = `${sourceName} Copy`;
+  if (!existingNames.has(baseName.trim().toLowerCase())) {
+    return baseName;
+  }
+
+  let index = 2;
+  while (index < 1000) {
+    const candidate = `${baseName} ${index}`;
+    if (!existingNames.has(candidate.trim().toLowerCase())) {
+      return candidate;
+    }
+    index += 1;
+  }
+  return `${baseName} ${Date.now()}`;
+}
+
+function createDuplicatedVersionId(sourceVersionId: string, instances: Instance[]): string {
+  const existingIds = new Set(instances.map((item) => item.versionId.trim().toLowerCase()));
+  const slugBase = slugifyInstanceKey(sourceVersionId);
+  let index = 1;
+  while (index < 1000) {
+    const candidate = `${slugBase}-copy-${index}`;
+    if (!existingIds.has(candidate.toLowerCase())) {
+      return candidate;
+    }
+    index += 1;
+  }
+  return `${slugBase}-copy-${Date.now()}`;
+}
+
+function slugifyInstanceKey(raw: string): string {
+  const normalized = raw
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return normalized || "instance";
 }
 
 function isLegacyDefaultGameDir(value: string): boolean {

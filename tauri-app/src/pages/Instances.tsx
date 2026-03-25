@@ -1,4 +1,4 @@
-import { Download, Plus, Search, Settings, Play, Trash2 } from "lucide-react";
+import { Archive, Copy, Download, Plus, Search, Settings, Play, Trash2 } from "lucide-react";
 import { useMemo, useState } from "react";
 import Button from "../components/Button";
 import Card from "../components/Card";
@@ -14,6 +14,8 @@ type InstancesPageProps = {
   launchProgressText: string;
   presetPackageStatuses: Record<string, PresetPackageStatus | undefined>;
   onDelete: (id: string) => void;
+  onDuplicateInstance: (id: string) => void;
+  onExportInstance: (id: string) => void;
   onGoInstall: () => void;
   onLaunchInstance: (id: string) => void;
   onOpenInstanceSettings: (id: string) => void;
@@ -28,6 +30,8 @@ export default function InstancesPage({
   launchProgressText,
   presetPackageStatuses,
   onDelete,
+  onDuplicateInstance,
+  onExportInstance,
   onGoInstall,
   onLaunchInstance,
   onOpenInstanceSettings,
@@ -176,6 +180,30 @@ export default function InstancesPage({
                   >
                     <Settings size={13} />
                     {t("instances.settings")}
+                  </Button>
+                </div>
+                <div className="mt-2 grid grid-cols-2 gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="w-full gap-1"
+                    fullWidth
+                    onClick={() => onDuplicateInstance(instance.id)}
+                    disabled={busy}
+                  >
+                    <Copy size={13} />
+                    {t("instances.copy")}
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="w-full gap-1"
+                    fullWidth
+                    onClick={() => onExportInstance(instance.id)}
+                    disabled={busy}
+                  >
+                    <Archive size={13} />
+                    {t("instances.export")}
                   </Button>
                 </div>
                 <div className={`mt-2 grid gap-2 ${instance.preset ? "grid-cols-2" : "grid-cols-1"}`}>

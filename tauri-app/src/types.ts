@@ -181,6 +181,10 @@ export type WorldInstallResult = {
   installedAtEpochSec: number;
 };
 
+export type InstanceExportResult = {
+  archivePath: string;
+};
+
 export type InstalledContentItem = {
   source: ContentSource;
   projectId: string;

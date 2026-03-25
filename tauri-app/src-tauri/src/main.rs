@@ -373,6 +373,12 @@ struct WorldInstallResult {
     installed_at_epoch_sec: u64,
 }
 
+#[derive(Debug, Clone, Serialize)]
+struct InstanceExportResult {
+    #[serde(rename = "archivePath")]
+    archive_path: String,
+}
+
 #[derive(Debug, Deserialize)]
 struct ModrinthSearchResponse {
     #[serde(default)]
@@ -895,6 +901,124 @@ fn rename_version_profile(
     rewrite_version_profile_id(&to_json, to_id)?;
 
     Ok(to_id.to_string())
+}
+
+#[tauri::command]
+fn duplicate_instance_storage(
+    game_dir: String,
+    source_version_id: String,
+    target_version_id: String,
+) -> Result<String, String> {
+    let source_id = source_version_id.trim();
+    let target_id = target_version_id.trim();
+    if source_id.is_empty() || target_id.is_empty() {
+        return Err("Version id cannot be empty".to_string());
+    }
+    if source_id == target_id {
+        return Err("Source and target version ids must be different".to_string());
+    }
+
+    let game_dir_path = resolve_game_dir_path(&game_dir)?;
+    let versions_dir = game_dir_path.join("versions");
+    let source_dir = versions_dir.join(source_id);
+    let target_dir = versions_dir.join(target_id);
+    let source_json = source_dir.join(format!("{source_id}.json"));
+    let target_json = target_dir.join(format!("{target_id}.json"));
+
+    if !source_dir.exists() || !source_json.exists() {
+        return Err(format!(
+            "Source instance files are missing: {}",
+            source_dir.display()
+        ));
+    }
+    if target_dir.exists() {
+        return Err(format!(
+            "Target instance version already exists: {}",
+            target_dir.display()
+        ));
+    }
+
+    copy_directory_contents(&source_dir, &target_dir)?;
+    let copied_source_json = target_dir.join(format!("{source_id}.json"));
+    if copied_source_json.exists() {
+        fs::rename(&copied_source_json, &target_json).map_err(|e| {
+            format!(
+                "Failed to rename copied version json from {} to {}: {e}",
+                copied_source_json.display(),
+                target_json.display()
+            )
+        })?;
+    }
+    if !target_json.exists() {
+        return Err(format!(
+            "Copied instance json missing after duplication: {}",
+            target_json.display()
+        ));
+    }
+
+    rewrite_version_profile_id(&target_json, target_id)?;
+    Ok(target_id.to_string())
+}
+
+#[tauri::command]
+fn export_instance_archive(
+    game_dir: String,
+    version_id: String,
+    archive_name: Option<String>,
+) -> Result<InstanceExportResult, String> {
+    let normalized_version_id = version_id.trim();
+    if normalized_version_id.is_empty() {
+        return Err("Version id cannot be empty".to_string());
+    }
+
+    let game_dir_path = resolve_game_dir_path(&game_dir)?;
+    let source_dir = game_dir_path.join("versions").join(normalized_version_id);
+    let source_json = source_dir.join(format!("{normalized_version_id}.json"));
+    if !source_dir.exists() || !source_json.exists() {
+        return Err(format!(
+            "Instance files are missing for export: {}",
+            source_dir.display()
+        ));
+    }
+
+    let export_base_name = archive_name
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| {
+            Path::new(value)
+                .file_stem()
+                .map(|item| item.to_string_lossy().to_string())
+                .unwrap_or_else(|| value.to_string())
+        })
+        .unwrap_or_else(|| normalized_version_id.to_string());
+    let safe_archive_name = sanitize_file_name(&export_base_name)
+        .trim()
+        .trim_matches('.')
+        .to_string();
+    if safe_archive_name.is_empty() {
+        return Err("Archive name cannot be empty".to_string());
+    }
+
+    let exports_dir = game_dir_path.join("exports");
+    fs::create_dir_all(&exports_dir).map_err(|e| {
+        format!(
+            "Failed to create exports directory {}: {e}",
+            exports_dir.display()
+        )
+    })?;
+    let archive_path = exports_dir.join(format!(
+        "{}-{}.zip",
+        safe_archive_name,
+        now_epoch_millis()
+    ));
+
+    write_instance_archive(&source_dir, &archive_path, &safe_archive_name)?;
+    let _ = open_path_in_explorer(&exports_dir);
+
+    Ok(InstanceExportResult {
+        archive_path: archive_path.to_string_lossy().to_string(),
+    })
 }
 
 fn rewrite_version_profile_id(json_path: &Path, version_id: &str) -> Result<(), String> {
@@ -2812,6 +2936,93 @@ fn move_or_copy_directory(source_dir: &Path, target_dir: &Path) -> Result<(), St
     }
 }
 
+fn write_instance_archive(
+    source_dir: &Path,
+    archive_path: &Path,
+    archive_root_name: &str,
+) -> Result<(), String> {
+    let file = fs::File::create(archive_path).map_err(|e| {
+        format!(
+            "Failed to create export archive {}: {e}",
+            archive_path.display()
+        )
+    })?;
+    let mut writer = zip::ZipWriter::new(file);
+    let root_name = sanitize_file_name(archive_root_name);
+    let options = zip::write::SimpleFileOptions::default()
+        .compression_method(zip::CompressionMethod::Deflated);
+
+    writer
+        .add_directory(format!("{root_name}/"), options)
+        .map_err(|e| format!("Failed to initialize export archive: {e}"))?;
+    append_directory_to_zip(&mut writer, source_dir, Path::new(&root_name), options)?;
+    writer
+        .finish()
+        .map_err(|e| format!("Failed to finalize export archive: {e}"))?;
+    Ok(())
+}
+
+fn append_directory_to_zip(
+    writer: &mut zip::ZipWriter<fs::File>,
+    source_dir: &Path,
+    archive_root: &Path,
+    options: zip::write::SimpleFileOptions,
+) -> Result<(), String> {
+    for entry in fs::read_dir(source_dir).map_err(|e| {
+        format!(
+            "Failed to read export source directory {}: {e}",
+            source_dir.display()
+        )
+    })? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let source_path = entry.path();
+        let archive_path = archive_root.join(entry.file_name());
+        let archive_name = zip_archive_path(&archive_path)?;
+
+        if source_path.is_dir() {
+            writer
+                .add_directory(format!("{archive_name}/"), options)
+                .map_err(|e| format!("Failed to add archive directory {archive_name}: {e}"))?;
+            append_directory_to_zip(writer, &source_path, &archive_path, options)?;
+        } else {
+            writer
+                .start_file(archive_name.clone(), options)
+                .map_err(|e| format!("Failed to add archive file {archive_name}: {e}"))?;
+            let mut input = fs::File::open(&source_path).map_err(|e| {
+                format!(
+                    "Failed to open export source file {}: {e}",
+                    source_path.display()
+                )
+            })?;
+            std::io::copy(&mut input, writer).map_err(|e| {
+                format!(
+                    "Failed to write archive file {}: {e}",
+                    source_path.display()
+                )
+            })?;
+        }
+    }
+    Ok(())
+}
+
+fn zip_archive_path(path: &Path) -> Result<String, String> {
+    let mut output = String::new();
+    for component in path.components() {
+        let part = component.as_os_str().to_string_lossy();
+        if part.is_empty() {
+            continue;
+        }
+        if !output.is_empty() {
+            output.push('/');
+        }
+        output.push_str(&part);
+    }
+    if output.is_empty() {
+        return Err("Invalid archive path".to_string());
+    }
+    Ok(output)
+}
+
 fn download_file_quiet_blocking(
     client: &reqwest::blocking::Client,
     url: &str,
@@ -3513,9 +3724,11 @@ fn resolve_instance_section_dir(
         "mods" => "mods",
         "resourcepacks" => "resourcepacks",
         "shaderpacks" => "shaderpacks",
+        "logs" => "logs",
+        "crash-reports" => "crash-reports",
         other => {
             return Err(format!(
-            "Unsupported instance section '{other}'. Expected saves/mods/resourcepacks/shaderpacks"
+            "Unsupported instance section '{other}'. Expected saves/mods/resourcepacks/shaderpacks/logs/crash-reports"
         ))
         }
     };
@@ -5182,6 +5395,8 @@ fn main() {
             is_version_installed,
             list_installed_versions,
             rename_version_profile,
+            duplicate_instance_storage,
+            export_instance_archive,
             list_instance_section_entries,
             open_instance_section,
             get_default_game_dir,
