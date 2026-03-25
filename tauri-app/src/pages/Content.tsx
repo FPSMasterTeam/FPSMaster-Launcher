@@ -7,6 +7,7 @@ import { useI18n } from "../i18n";
 import type {
   ContentProjectType,
   InstalledContentItem,
+  InstalledContentUpdate,
   Instance,
   ModrinthInstallResult,
   ModrinthSearchResult
@@ -37,8 +38,11 @@ export default function ContentPage({
   const [loading, setLoading] = useState(false);
   const [installingProjectId, setInstallingProjectId] = useState<string | null>(null);
   const [uninstallingProjectId, setUninstallingProjectId] = useState<string | null>(null);
+  const [checkingUpdates, setCheckingUpdates] = useState(false);
+  const [batchUpdating, setBatchUpdating] = useState(false);
   const [results, setResults] = useState<ModrinthSearchResult[]>([]);
   const [installedItems, setInstalledItems] = useState<InstalledContentItem[]>([]);
+  const [installedUpdates, setInstalledUpdates] = useState<InstalledContentUpdate[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [lastInstallResult, setLastInstallResult] = useState<ModrinthInstallResult | null>(null);
 
@@ -55,24 +59,69 @@ export default function ContentPage({
     }
     return map;
   }, [installedItems]);
+  const updateMap = useMemo(() => {
+    const map = new Map<string, InstalledContentUpdate>();
+    for (const item of installedUpdates) {
+      map.set(`${item.contentType}:${item.projectId}`, item);
+    }
+    return map;
+  }, [installedUpdates]);
   const filteredInstalledItems = useMemo(
     () => installedItems.filter((item) => item.contentType === contentType),
     [installedItems, contentType]
   );
+  const filteredAvailableUpdateCount = useMemo(
+    () =>
+      filteredInstalledItems.filter(
+        (item) => updateMap.get(`${item.contentType}:${item.projectId}`)?.status === "update-available"
+      ).length,
+    [filteredInstalledItems, updateMap]
+  );
+  const filteredUpdatableItems = useMemo(
+    () =>
+      filteredInstalledItems.filter(
+        (item) => updateMap.get(`${item.contentType}:${item.projectId}`)?.status === "update-available"
+      ),
+    [filteredInstalledItems, updateMap]
+  );
 
-  async function refreshInstalledItems(instance: Instance | null) {
+  async function refreshInstalledState(instance: Instance | null) {
     if (!instance) {
       setInstalledItems([]);
+      setInstalledUpdates([]);
+      setCheckingUpdates(false);
       return;
     }
+
     try {
       const items = await invoke<InstalledContentItem[]>("list_installed_content", {
         gameDir,
         versionId: instance.versionId
       });
       setInstalledItems(items);
+      if (items.length === 0) {
+        setInstalledUpdates([]);
+        return;
+      }
+
+      setCheckingUpdates(true);
+      try {
+        const updates = await invoke<InstalledContentUpdate[]>("check_installed_content_updates", {
+          gameDir,
+          versionId: instance.versionId,
+          gameVersion: instance.baseVersion,
+          loader: instance.loader
+        });
+        setInstalledUpdates(updates);
+      } catch {
+        setInstalledUpdates([]);
+      } finally {
+        setCheckingUpdates(false);
+      }
     } catch {
       setInstalledItems([]);
+      setInstalledUpdates([]);
+      setCheckingUpdates(false);
     }
   }
 
@@ -92,7 +141,7 @@ export default function ContentPage({
     setLastInstallResult(null);
     onStatusChange(t("content.searching"));
     try {
-      await refreshInstalledItems(currentInstance);
+      await refreshInstalledState(currentInstance);
       const items = await invoke<ModrinthSearchResult[]>("modrinth_search_projects", {
         query: trimmedQuery,
         projectType: contentType,
@@ -111,17 +160,29 @@ export default function ContentPage({
     }
   }
 
-  async function installProject(item: ModrinthSearchResult) {
+  async function installProject(item: {
+    projectId: string;
+    projectType: ContentProjectType;
+    title: string;
+  }): Promise<boolean> {
     if (!currentInstance) {
       setError(t("content.noInstance"));
-      return;
+      return false;
     }
 
     const existingItem = installedMap.get(`${item.projectType}:${item.projectId}`);
+    const updateState = updateMap.get(`${item.projectType}:${item.projectId}`);
     setInstallingProjectId(item.projectId);
     setError(null);
     onStatusChange(
-      t(existingItem ? "content.reinstalling" : "content.installing", { title: item.title })
+      t(
+        updateState?.status === "update-available"
+          ? "content.updating"
+          : existingItem
+            ? "content.reinstalling"
+            : "content.installing",
+        { title: item.title }
+      )
     );
     try {
       const result = await invoke<ModrinthInstallResult>("install_modrinth_project", {
@@ -134,17 +195,23 @@ export default function ContentPage({
         loader: currentInstance.loader
       });
       setLastInstallResult(result);
-      await refreshInstalledItems(currentInstance);
+      await refreshInstalledState(currentInstance);
       onStatusChange(
-        t(existingItem ? "content.reinstallDone" : "content.installDone", {
-          title: item.title,
-          file: result.fileName
-        })
+        t(
+          updateState?.status === "update-available"
+            ? "content.updateDone"
+            : existingItem
+              ? "content.reinstallDone"
+              : "content.installDone",
+          { title: item.title, file: result.fileName }
+        )
       );
+      return true;
     } catch (invokeError) {
       const errorText = normalizeError(invokeError);
       setError(errorText);
       onStatusChange(t("app.status.failed", { error: errorText }));
+      return false;
     } finally {
       setInstallingProjectId(null);
     }
@@ -170,7 +237,7 @@ export default function ContentPage({
       if (lastInstallResult?.projectId === item.projectId) {
         setLastInstallResult(null);
       }
-      await refreshInstalledItems(currentInstance);
+      await refreshInstalledState(currentInstance);
       onStatusChange(t("content.uninstallDone", { title: item.projectTitle }));
     } catch (invokeError) {
       const errorText = normalizeError(invokeError);
@@ -181,8 +248,41 @@ export default function ContentPage({
     }
   }
 
+  async function updateAllProjects() {
+    if (!currentInstance || filteredUpdatableItems.length === 0) {
+      return;
+    }
+
+    setBatchUpdating(true);
+    setError(null);
+    try {
+      let completed = 0;
+      for (const item of filteredUpdatableItems) {
+        completed += 1;
+        onStatusChange(
+          t("content.updatingProgress", {
+            title: item.projectTitle,
+            current: completed,
+            total: filteredUpdatableItems.length
+          })
+        );
+        const success = await installProject({
+          projectId: item.projectId,
+          projectType: item.contentType,
+          title: item.projectTitle
+        });
+        if (!success) {
+          return;
+        }
+      }
+      onStatusChange(t("content.updateAllDone", { count: filteredUpdatableItems.length }));
+    } finally {
+      setBatchUpdating(false);
+    }
+  }
+
   useEffect(() => {
-    void refreshInstalledItems(currentInstance);
+    void refreshInstalledState(currentInstance);
   }, [currentInstance?.id, currentInstance?.versionId, gameDir]);
 
   return (
@@ -293,6 +393,14 @@ export default function ContentPage({
           <span className="rounded-md border border-[var(--border-subtle)] bg-[var(--surface-soft)] px-2 py-1">
             {t("content.installedCount", { count: filteredInstalledItems.length })}
           </span>
+          <span className="rounded-md border border-[var(--border-subtle)] bg-[var(--surface-soft)] px-2 py-1">
+            {t("content.updateCount", { count: filteredAvailableUpdateCount })}
+          </span>
+          {checkingUpdates && (
+            <span className="rounded-md border border-cyan-500/35 bg-cyan-500/10 px-2 py-1 text-cyan-300">
+              {t("content.checkingUpdates")}
+            </span>
+          )}
           <span>{t("content.modrinthOnlyNotice")}</span>
         </div>
       </Card>
@@ -335,48 +443,107 @@ export default function ContentPage({
                 {contentTypeLabel(contentType)} · {filteredInstalledItems.length}
               </p>
             </div>
+            <div className="flex items-center gap-2">
+              {checkingUpdates && (
+                <span className="text-xs text-[var(--text-muted)]">{t("content.checkingUpdates")}</span>
+              )}
+              {filteredAvailableUpdateCount > 0 && (
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  className="gap-2"
+                  disabled={busy || batchUpdating || checkingUpdates}
+                  onClick={() => void updateAllProjects()}
+                >
+                  <Download size={14} />
+                  {batchUpdating ? t("content.updatingButton") : t("content.updateAll")}
+                </Button>
+              )}
+            </div>
           </div>
 
           {filteredInstalledItems.length > 0 ? (
             <div className="mt-4 space-y-3">
-              {filteredInstalledItems.map((item) => (
-                <div
-                  key={`${item.contentType}:${item.projectId}`}
-                  className="rounded-2xl border border-[var(--border-subtle)] bg-[var(--surface-soft)] p-4"
-                >
-                  <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
-                    <div className="min-w-0">
-                      <p className="truncate text-sm font-semibold text-[var(--text-primary)]">
-                        {item.projectTitle}
-                      </p>
-                      <p className="mt-1 text-xs text-[var(--text-secondary)]">
-                        {t("content.installedVersion", { version: item.versionNumber })}
-                      </p>
-                      <div className="mt-2 flex flex-wrap gap-1.5">
-                        <MetaBadge>{contentTypeLabel(item.contentType)}</MetaBadge>
-                        <MetaBadge>Modrinth</MetaBadge>
+              {filteredInstalledItems.map((item) => {
+                const updateState = updateMap.get(`${item.contentType}:${item.projectId}`);
+                const canUpdate = updateState?.status === "update-available";
+                return (
+                  <div
+                    key={`${item.contentType}:${item.projectId}`}
+                    className="rounded-2xl border border-[var(--border-subtle)] bg-[var(--surface-soft)] p-4"
+                  >
+                    <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+                      <div className="min-w-0">
+                        <p className="truncate text-sm font-semibold text-[var(--text-primary)]">
+                          {item.projectTitle}
+                        </p>
+                        <p className="mt-1 text-xs text-[var(--text-secondary)]">
+                          {t("content.installedVersion", { version: item.versionNumber })}
+                        </p>
+                        {updateState?.latestVersionNumber && canUpdate && (
+                          <p className="mt-1 text-xs text-[var(--text-muted)]">
+                            {t("content.latestVersion", {
+                              version: updateState.latestVersionNumber
+                            })}
+                          </p>
+                        )}
+                        <div className="mt-2 flex flex-wrap gap-1.5">
+                          <MetaBadge>{contentTypeLabel(item.contentType)}</MetaBadge>
+                          <MetaBadge>Modrinth</MetaBadge>
+                          {renderUpdateStateBadge(updateState, t)}
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-2 gap-2 md:min-w-[236px]">
+                        <Button
+                          variant={canUpdate ? "secondary" : "outline"}
+                          size="sm"
+                          className="gap-2"
+                          disabled={
+                            busy ||
+                            batchUpdating ||
+                            installingProjectId === item.projectId ||
+                            uninstallingProjectId === item.projectId
+                          }
+                          onClick={() =>
+                            void installProject({
+                              projectId: item.projectId,
+                              projectType: item.contentType,
+                              title: item.projectTitle
+                            })
+                          }
+                        >
+                          <Download size={14} />
+                          {installingProjectId === item.projectId
+                            ? canUpdate
+                              ? t("content.updatingButton")
+                              : t("content.installingButton")
+                            : canUpdate
+                              ? t("content.update")
+                              : t("content.reinstall")}
+                        </Button>
+                        <Button
+                          variant="danger"
+                          size="sm"
+                          className="gap-2"
+                          disabled={
+                            busy ||
+                            batchUpdating ||
+                            installingProjectId === item.projectId ||
+                            uninstallingProjectId === item.projectId
+                          }
+                          onClick={() => void uninstallProject(item)}
+                        >
+                          <Trash2 size={14} />
+                          {uninstallingProjectId === item.projectId
+                            ? t("content.uninstallingButton")
+                            : t("content.uninstall")}
+                        </Button>
                       </div>
                     </div>
-
-                    <Button
-                      variant="danger"
-                      size="sm"
-                      className="gap-2 md:min-w-[120px]"
-                      disabled={
-                        busy ||
-                        installingProjectId === item.projectId ||
-                        uninstallingProjectId === item.projectId
-                      }
-                      onClick={() => void uninstallProject(item)}
-                    >
-                      <Trash2 size={14} />
-                      {uninstallingProjectId === item.projectId
-                        ? t("content.uninstallingButton")
-                        : t("content.uninstall")}
-                    </Button>
                   </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           ) : (
             <p className="mt-4 text-sm text-[var(--text-secondary)]">{t("content.installedEmpty")}</p>
@@ -387,9 +554,12 @@ export default function ContentPage({
       <section className="mt-5 grid grid-cols-1 gap-4 pb-20 md:grid-cols-2 xl:grid-cols-3">
         {results.map((item) => {
           const installedItem = installedMap.get(`${item.projectType}:${item.projectId}`);
+          const updateState = updateMap.get(`${item.projectType}:${item.projectId}`);
+          const canUpdate = updateState?.status === "update-available";
           const isInstalled = Boolean(installedItem);
           const actionBusy =
             busy ||
+            batchUpdating ||
             !currentInstance ||
             installingProjectId === item.projectId ||
             uninstallingProjectId === item.projectId;
@@ -419,6 +589,7 @@ export default function ContentPage({
                         {t("content.installedBadge")}
                       </span>
                     )}
+                    {renderUpdateStateBadge(updateState, t)}
                     {(item.displayCategories.length > 0 ? item.displayCategories : item.categories)
                       .slice(0, 4)
                       .map((tag) => (
@@ -445,11 +616,20 @@ export default function ContentPage({
                 />
               </div>
               {installedItem && (
-                <p className="mt-3 line-clamp-2 text-xs leading-5 text-[var(--text-muted)]">
-                  {t("content.installedVersion", {
-                    version: installedItem.versionNumber ?? "-"
-                  })}
-                </p>
+                <div className="mt-3 space-y-1">
+                  <p className="line-clamp-2 text-xs leading-5 text-[var(--text-muted)]">
+                    {t("content.installedVersion", {
+                      version: installedItem.versionNumber ?? "-"
+                    })}
+                  </p>
+                  {updateState?.latestVersionNumber && canUpdate && (
+                    <p className="line-clamp-2 text-xs leading-5 text-[var(--text-muted)]">
+                      {t("content.latestVersion", {
+                        version: updateState.latestVersionNumber
+                      })}
+                    </p>
+                  )}
+                </div>
               )}
 
               <div className="mt-auto pt-4">
@@ -464,8 +644,12 @@ export default function ContentPage({
                     >
                       <Download size={14} />
                       {installingProjectId === item.projectId
-                        ? t("content.installingButton")
-                        : t("content.reinstall")}
+                        ? canUpdate
+                          ? t("content.updatingButton")
+                          : t("content.installingButton")
+                        : canUpdate
+                          ? t("content.update")
+                          : t("content.reinstall")}
                     </Button>
                     <Button
                       variant="danger"
@@ -530,6 +714,38 @@ function loaderLabel(loader: Instance["loader"], t: ReturnType<typeof useI18n>["
   if (loader === "forge") return t("loader.forge");
   if (loader === "fabric") return t("loader.fabric");
   return t("loader.vanilla");
+}
+
+function renderUpdateStateBadge(
+  updateState: InstalledContentUpdate | undefined,
+  t: ReturnType<typeof useI18n>["t"]
+) {
+  if (!updateState) {
+    return null;
+  }
+
+  const appearance =
+    updateState.status === "update-available"
+      ? "border-amber-500/35 bg-amber-500/10 text-amber-300"
+      : updateState.status === "up-to-date"
+        ? "border-[var(--mc-grass)]/35 bg-[var(--mc-grass)]/10 text-[var(--mc-grass)]"
+        : updateState.status === "error"
+          ? "border-[var(--accent-danger)]/35 bg-[var(--accent-danger)]/10 text-[var(--accent-danger)]"
+          : "border-[var(--border-medium)] bg-[var(--bg-elevated)] text-[var(--text-secondary)]";
+  const label =
+    updateState.status === "update-available"
+      ? t("content.updateAvailableBadge")
+      : updateState.status === "up-to-date"
+        ? t("content.upToDateBadge")
+        : updateState.status === "error"
+          ? t("content.errorBadge")
+          : t("content.unavailableBadge");
+
+  return (
+    <span className={`rounded-md border px-2 py-0.5 text-[10px] font-semibold uppercase ${appearance}`}>
+      {label}
+    </span>
+  );
 }
 
 function MetaBadge({ children }: { children: ReactNode }) {

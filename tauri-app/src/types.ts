@@ -17,6 +17,11 @@ export type BackgroundSource = "local" | "web-random";
 export type LauncherVersionType = "EDGE" | "NOVA";
 export type ContentSource = "modrinth";
 export type ContentProjectType = "mod" | "resourcepack" | "shader";
+export type InstalledContentUpdateStatus =
+  | "up-to-date"
+  | "update-available"
+  | "unavailable"
+  | "error";
 
 export type Instance = {
   id: string;
@@ -176,6 +181,21 @@ export type InstalledContentItem = {
   fileName: string;
   installedPath: string;
   installedAtEpochSec: number;
+};
+
+export type InstalledContentUpdate = {
+  source: ContentSource;
+  projectId: string;
+  contentType: ContentProjectType;
+  status: InstalledContentUpdateStatus;
+  updateAvailable: boolean;
+  installedVersionId: string;
+  installedVersionNumber: string;
+  latestVersionId?: string | null;
+  latestVersionNumber?: string | null;
+  changelog?: string | null;
+  error?: string | null;
+  checkedAtEpochSec: number;
 };
 
 export type LauncherUser = {

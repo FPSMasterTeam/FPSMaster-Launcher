@@ -332,6 +332,30 @@ struct InstalledContentItem {
     installed_at_epoch_sec: u64,
 }
 
+#[derive(Debug, Clone, Serialize)]
+struct InstalledContentUpdate {
+    source: String,
+    #[serde(rename = "projectId")]
+    project_id: String,
+    #[serde(rename = "contentType")]
+    content_type: String,
+    status: String,
+    #[serde(rename = "updateAvailable")]
+    update_available: bool,
+    #[serde(rename = "installedVersionId")]
+    installed_version_id: String,
+    #[serde(rename = "installedVersionNumber")]
+    installed_version_number: String,
+    #[serde(rename = "latestVersionId")]
+    latest_version_id: Option<String>,
+    #[serde(rename = "latestVersionNumber")]
+    latest_version_number: Option<String>,
+    changelog: Option<String>,
+    error: Option<String>,
+    #[serde(rename = "checkedAtEpochSec")]
+    checked_at_epoch_sec: u64,
+}
+
 #[derive(Debug, Deserialize)]
 struct ModrinthSearchResponse {
     #[serde(default)]
@@ -1307,6 +1331,20 @@ async fn uninstall_installed_content(
     .map_err(|e| format!("Failed to join uninstall content task: {e}"))?
 }
 
+#[tauri::command]
+async fn check_installed_content_updates(
+    game_dir: String,
+    version_id: String,
+    game_version: String,
+    loader: Option<String>,
+) -> Result<Vec<InstalledContentUpdate>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        check_installed_content_updates_blocking(game_dir, version_id, game_version, loader)
+    })
+    .await
+    .map_err(|e| format!("Failed to join content updates task: {e}"))?
+}
+
 fn modrinth_search_projects_blocking(
     query: String,
     project_type: String,
@@ -1516,6 +1554,37 @@ fn uninstall_installed_content_blocking(
         &normalized_project_id,
         &normalized_content_type,
     )
+}
+
+fn check_installed_content_updates_blocking(
+    game_dir: String,
+    version_id: String,
+    game_version: String,
+    loader: Option<String>,
+) -> Result<Vec<InstalledContentUpdate>, String> {
+    let normalized_game_version = game_version.trim().to_string();
+    if normalized_game_version.is_empty() {
+        return Err("Game version cannot be empty".to_string());
+    }
+
+    let game_dir_path = resolve_game_dir_path(&game_dir)?;
+    let runtime_root = resolve_version_runtime_dir(&game_dir_path, version_id.trim())?;
+    let items = read_installed_content_index(&runtime_root)?;
+    if items.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let client = build_blocking_http_client()?;
+    let mut results = Vec::with_capacity(items.len());
+    for item in items {
+        results.push(check_single_installed_content_update(
+            &client,
+            &item,
+            &normalized_game_version,
+            loader.as_deref(),
+        ));
+    }
+    Ok(results)
 }
 
 #[tauri::command]
@@ -2047,6 +2116,103 @@ fn fetch_modrinth_project_versions(
 
     serde_json::from_str::<Vec<ModrinthProjectVersion>>(&text)
         .map_err(|e| format!("Invalid Modrinth versions response JSON: {e}"))
+}
+
+fn check_single_installed_content_update(
+    client: &reqwest::blocking::Client,
+    item: &InstalledContentItem,
+    game_version: &str,
+    loader: Option<&str>,
+) -> InstalledContentUpdate {
+    let checked_at_epoch_sec = now_epoch_seconds();
+    if !item.source.eq_ignore_ascii_case("modrinth") {
+        return InstalledContentUpdate {
+            source: item.source.clone(),
+            project_id: item.project_id.clone(),
+            content_type: item.content_type.clone(),
+            status: "unavailable".to_string(),
+            update_available: false,
+            installed_version_id: item.version_id.clone(),
+            installed_version_number: item.version_number.clone(),
+            latest_version_id: None,
+            latest_version_number: None,
+            changelog: None,
+            error: Some("Unsupported content source".to_string()),
+            checked_at_epoch_sec,
+        };
+    }
+
+    let versions = match fetch_modrinth_project_versions(
+        client,
+        &item.project_id,
+        &item.content_type,
+        game_version,
+        loader,
+    ) {
+        Ok(value) => value,
+        Err(err) => {
+            return InstalledContentUpdate {
+                source: item.source.clone(),
+                project_id: item.project_id.clone(),
+                content_type: item.content_type.clone(),
+                status: "error".to_string(),
+                update_available: false,
+                installed_version_id: item.version_id.clone(),
+                installed_version_number: item.version_number.clone(),
+                latest_version_id: None,
+                latest_version_number: None,
+                changelog: None,
+                error: Some(err),
+                checked_at_epoch_sec,
+            }
+        }
+    };
+
+    let latest = match choose_best_modrinth_version(versions) {
+        Ok(value) => value,
+        Err(err) => {
+            return InstalledContentUpdate {
+                source: item.source.clone(),
+                project_id: item.project_id.clone(),
+                content_type: item.content_type.clone(),
+                status: "unavailable".to_string(),
+                update_available: false,
+                installed_version_id: item.version_id.clone(),
+                installed_version_number: item.version_number.clone(),
+                latest_version_id: None,
+                latest_version_number: None,
+                changelog: None,
+                error: Some(err),
+                checked_at_epoch_sec,
+            }
+        }
+    };
+
+    let latest_version_number = if latest.version_number.trim().is_empty() {
+        latest.name.clone()
+    } else {
+        latest.version_number.clone()
+    };
+    let update_available = latest.id != item.version_id;
+
+    InstalledContentUpdate {
+        source: item.source.clone(),
+        project_id: item.project_id.clone(),
+        content_type: item.content_type.clone(),
+        status: if update_available {
+            "update-available".to_string()
+        } else {
+            "up-to-date".to_string()
+        },
+        update_available,
+        installed_version_id: item.version_id.clone(),
+        installed_version_number: item.version_number.clone(),
+        latest_version_id: Some(latest.id),
+        latest_version_number: Some(latest_version_number),
+        changelog: latest.changelog,
+        error: None,
+        checked_at_epoch_sec,
+    }
 }
 
 fn build_modrinth_loader_filters(project_type: &str, loader: Option<&str>) -> Vec<String> {
@@ -4709,6 +4875,7 @@ fn main() {
             install_modrinth_project,
             list_installed_content,
             uninstall_installed_content,
+            check_installed_content_updates,
             get_launcher_package_state,
             install_launcher_version_mods,
             list_vanilla_versions,
