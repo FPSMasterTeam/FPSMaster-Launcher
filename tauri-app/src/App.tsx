@@ -40,6 +40,8 @@ import type {
   InstallPhaseState,
   Instance,
   InstanceExportResult,
+  InstanceImportResult,
+  InstanceRepairResult,
   LauncherLoginResult,
   LauncherModsInstallResult,
   LauncherPackageState,
@@ -1409,6 +1411,82 @@ function Launcher() {
     }
   }
 
+  async function importInstance(file: File) {
+    if (!file.name.toLowerCase().endsWith(".zip")) {
+      setStatus(t("app.status.failed", { error: t("instances.importZipRequired") }));
+      return;
+    }
+
+    setBusy(true);
+    setStatus(t("app.status.instanceImporting"));
+    try {
+      const bytes = Array.from(new Uint8Array(await file.arrayBuffer()));
+      const result = await invoke<InstanceImportResult>("import_instance_archive", {
+        gameDir: settings.gameDir,
+        archiveName: file.name,
+        archiveData: bytes
+      });
+      const importedName = createImportedInstanceName(file.name, instances);
+      const imported: Instance = {
+        id: `instance-${Date.now()}-${Math.floor(Math.random() * 10000)}`,
+        name: importedName,
+        versionId: result.versionId,
+        baseVersion: result.baseVersion,
+        loader: result.loader,
+        loaderVersion: result.loaderVersion,
+        preset: false
+      };
+      setInstances((prev) => [imported, ...prev]);
+      setInstalledVersions((prev) =>
+        prev.includes(result.versionId) ? prev : [result.versionId, ...prev]
+      );
+      setSelected(imported.id);
+      setStatus(t("app.status.instanceImported", { name: imported.name }));
+    } catch (error) {
+      setStatus(t("app.status.failed", { error: formatLaunchError(error) }));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function repairInstance(id: string) {
+    const source = instances.find((entry) => entry.id === id);
+    if (!source) return;
+
+    setBusy(true);
+    setStatus(t("app.status.instanceRepairing", { name: source.name }));
+    try {
+      const result = await invoke<InstanceRepairResult>("repair_instance_runtime", {
+        gameDir: settings.gameDir,
+        versionId: source.versionId,
+        loader: source.loader,
+        baseVersion: source.baseVersion,
+        loaderVersion: source.loaderVersion
+      });
+      const repaired: Instance = {
+        ...source,
+        versionId: result.versionId,
+        baseVersion: result.baseVersion,
+        loader: result.loader,
+        loaderVersion: result.loaderVersion
+      };
+      setInstances((prev) =>
+        prev.map((item) => (item.id === repaired.id ? repaired : item))
+      );
+      setInstalledVersions((prev) =>
+        prev.includes(result.versionId) ? prev : [result.versionId, ...prev]
+      );
+      if (repaired.preset) {
+        await ensurePresetModsReady(repaired);
+      }
+      setStatus(t("app.status.instanceRepaired", { name: source.name }));
+    } catch (error) {
+      setStatus(t("app.status.failed", { error: formatLaunchError(error) }));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   function closeInstallDialog() {
     if (!installDialog?.canClose) return;
     setInstallDialog(null);
@@ -1486,6 +1564,7 @@ function Launcher() {
           onDelete={removeInstance}
           onDuplicateInstance={duplicateInstance}
           onExportInstance={exportInstance}
+          onImportInstance={importInstance}
           onGoInstall={() => setPage("install")}
           onLaunchInstance={async (id) => {
             const target = instances.find((item) => item.id === id);
@@ -1507,7 +1586,13 @@ function Launcher() {
         <InstanceSettingsPage
           instance={current}
           gameDir={settings.gameDir}
+          busy={busy}
           onBack={() => setPage("instances")}
+          onRepair={() => {
+            if (current) {
+              void repairInstance(current.id);
+            }
+          }}
         />
       );
     }
@@ -1550,6 +1635,7 @@ function Launcher() {
           instances={instances}
           current={current}
           gameDir={settings.gameDir}
+          curseforgeApiKey={settings.curseforgeApiKey}
           busy={busy}
           onSelectInstance={setSelected}
           onStatusChange={setStatus}
@@ -1981,6 +2067,25 @@ function createDuplicatedInstanceName(sourceName: string, instances: Instance[])
     index += 1;
   }
   return `${baseName} ${Date.now()}`;
+}
+
+function createImportedInstanceName(archiveName: string, instances: Instance[]): string {
+  const archiveStem = archiveName.replace(/\.[^/.]+$/, "").trim();
+  const normalizedBase = archiveStem || "Imported Instance";
+  const existingNames = new Set(instances.map((item) => item.name.trim().toLowerCase()));
+  if (!existingNames.has(normalizedBase.toLowerCase())) {
+    return normalizedBase;
+  }
+
+  let index = 2;
+  while (index < 1000) {
+    const candidate = `${normalizedBase} ${index}`;
+    if (!existingNames.has(candidate.toLowerCase())) {
+      return candidate;
+    }
+    index += 1;
+  }
+  return `${normalizedBase} ${Date.now()}`;
 }
 
 function createDuplicatedVersionId(sourceVersionId: string, instances: Instance[]): string {

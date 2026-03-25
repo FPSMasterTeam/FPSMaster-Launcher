@@ -266,6 +266,7 @@ struct LauncherPackageManifestFile {
 
 #[derive(Debug, Clone, Serialize)]
 struct ModrinthSearchResult {
+    source: String,
     #[serde(rename = "projectId")]
     project_id: String,
     slug: String,
@@ -292,6 +293,7 @@ struct ModrinthSearchResult {
 
 #[derive(Debug, Clone, Serialize)]
 struct ModrinthInstallResult {
+    source: String,
     #[serde(rename = "projectId")]
     project_id: String,
     #[serde(rename = "projectTitle")]
@@ -379,6 +381,38 @@ struct InstanceExportResult {
     archive_path: String,
 }
 
+#[derive(Debug, Clone, Serialize)]
+struct InstanceImportResult {
+    #[serde(rename = "versionId")]
+    version_id: String,
+    #[serde(rename = "baseVersion")]
+    base_version: String,
+    loader: String,
+    #[serde(rename = "loaderVersion")]
+    loader_version: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct InstanceRepairResult {
+    #[serde(rename = "versionId")]
+    version_id: String,
+    #[serde(rename = "baseVersion")]
+    base_version: String,
+    loader: String,
+    #[serde(rename = "loaderVersion")]
+    loader_version: Option<String>,
+    #[serde(rename = "reinstalledFromVersionId")]
+    reinstalled_from_version_id: String,
+}
+
+#[derive(Debug, Clone)]
+struct InstanceProfileMetadata {
+    version_id: String,
+    base_version: String,
+    loader: String,
+    loader_version: Option<String>,
+}
+
 #[derive(Debug, Deserialize)]
 struct ModrinthSearchResponse {
     #[serde(default)]
@@ -443,6 +477,71 @@ struct ModrinthVersionFile {
     size: Option<u64>,
     #[serde(default)]
     hashes: HashMap<String, String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CurseForgeEnvelope<T> {
+    data: T,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct CurseForgeSearchItem {
+    id: u64,
+    #[serde(default)]
+    slug: String,
+    name: String,
+    #[serde(default)]
+    summary: String,
+    #[serde(default)]
+    authors: Vec<CurseForgeAuthor>,
+    #[serde(default)]
+    categories: Vec<CurseForgeCategory>,
+    #[serde(rename = "logo", default)]
+    logo: Option<CurseForgeAsset>,
+    #[serde(rename = "downloadCount", default)]
+    download_count: Option<f64>,
+    #[serde(rename = "latestFilesIndexes", default)]
+    latest_files_indexes: Vec<CurseForgeFileIndex>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct CurseForgeAuthor {
+    name: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct CurseForgeCategory {
+    #[serde(rename = "classId", default)]
+    class_id: Option<u64>,
+    #[serde(default)]
+    name: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct CurseForgeAsset {
+    #[serde(default)]
+    url: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct CurseForgeFileIndex {
+    #[serde(rename = "gameVersion", default)]
+    game_version: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct CurseForgeFile {
+    id: u64,
+    #[serde(rename = "displayName", default)]
+    display_name: String,
+    #[serde(rename = "fileName", default)]
+    file_name: String,
+    #[serde(rename = "downloadUrl", default)]
+    download_url: Option<String>,
+    #[serde(rename = "releaseType", default)]
+    release_type: Option<u32>,
+    #[serde(rename = "fileDate", default)]
+    file_date: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -880,25 +979,7 @@ fn rename_version_profile(
             to_dir.display()
         )
     })?;
-
-    let renamed_from_json = to_dir.join(format!("{from_id}.json"));
-    if renamed_from_json.exists() {
-        fs::rename(&renamed_from_json, &to_json).map_err(|e| {
-            format!(
-                "Failed to rename version json from {} to {}: {e}",
-                renamed_from_json.display(),
-                to_json.display()
-            )
-        })?;
-    }
-    if !to_json.exists() {
-        return Err(format!(
-            "Version json missing after rename, expected {}",
-            to_json.display()
-        ));
-    }
-
-    rewrite_version_profile_id(&to_json, to_id)?;
+    retarget_version_runtime(&to_dir, from_id, to_id)?;
 
     Ok(to_id.to_string())
 }
@@ -923,7 +1004,6 @@ fn duplicate_instance_storage(
     let source_dir = versions_dir.join(source_id);
     let target_dir = versions_dir.join(target_id);
     let source_json = source_dir.join(format!("{source_id}.json"));
-    let target_json = target_dir.join(format!("{target_id}.json"));
 
     if !source_dir.exists() || !source_json.exists() {
         return Err(format!(
@@ -939,24 +1019,7 @@ fn duplicate_instance_storage(
     }
 
     copy_directory_contents(&source_dir, &target_dir)?;
-    let copied_source_json = target_dir.join(format!("{source_id}.json"));
-    if copied_source_json.exists() {
-        fs::rename(&copied_source_json, &target_json).map_err(|e| {
-            format!(
-                "Failed to rename copied version json from {} to {}: {e}",
-                copied_source_json.display(),
-                target_json.display()
-            )
-        })?;
-    }
-    if !target_json.exists() {
-        return Err(format!(
-            "Copied instance json missing after duplication: {}",
-            target_json.display()
-        ));
-    }
-
-    rewrite_version_profile_id(&target_json, target_id)?;
+    retarget_version_runtime(&target_dir, source_id, target_id)?;
     Ok(target_id.to_string())
 }
 
@@ -1021,6 +1084,242 @@ fn export_instance_archive(
     })
 }
 
+fn import_instance_archive_blocking(
+    game_dir: String,
+    archive_name: String,
+    archive_data: Vec<u8>,
+    target_version_id: Option<String>,
+) -> Result<InstanceImportResult, String> {
+    if archive_data.is_empty() {
+        return Err("Instance archive cannot be empty".to_string());
+    }
+
+    let game_dir_path = resolve_game_dir_path(&game_dir)?;
+    let versions_dir = game_dir_path.join("versions");
+    fs::create_dir_all(&versions_dir).map_err(|e| {
+        format!(
+            "Failed to create versions directory {}: {e}",
+            versions_dir.display()
+        )
+    })?;
+
+    let stage_root = env::temp_dir().join(format!(
+        ".fpsmaster-instance-import-{}-{}",
+        std::process::id(),
+        now_epoch_millis()
+    ));
+    if stage_root.exists() {
+        fs::remove_dir_all(&stage_root).map_err(|e| {
+            format!(
+                "Failed to reset instance staging directory {}: {e}",
+                stage_root.display()
+            )
+        })?;
+    }
+    fs::create_dir_all(&stage_root).map_err(|e| {
+        format!(
+            "Failed to create instance staging directory {}: {e}",
+            stage_root.display()
+        )
+    })?;
+
+    let extracted_entries = extract_archive_to_stage(&archive_data, &stage_root, "instance")?;
+    if extracted_entries == 0 {
+        let _ = fs::remove_dir_all(&stage_root);
+        return Err("Instance archive does not contain importable files".to_string());
+    }
+
+    let extracted_root = determine_archive_stage_root(&stage_root, "instance")?;
+    let source_json = find_instance_profile_json(&extracted_root)?;
+    let source_root = source_json
+        .parent()
+        .ok_or_else(|| "Imported instance profile path is invalid".to_string())?
+        .to_path_buf();
+    let metadata = parse_instance_profile_metadata(&source_json)?;
+    let fallback_version_id = archive_file_stem(&archive_name).unwrap_or_else(|| metadata.version_id.clone());
+    let resolved_target_version_id = normalize_version_identifier(
+        target_version_id
+            .as_deref()
+            .unwrap_or(&metadata.version_id)
+            .trim(),
+    )
+    .or_else(|_| normalize_version_identifier(&fallback_version_id))?;
+
+    let target_dir = versions_dir.join(&resolved_target_version_id);
+    if target_dir.exists() {
+        let _ = fs::remove_dir_all(&stage_root);
+        return Err(format!(
+            "Target instance version already exists: {}",
+            target_dir.display()
+        ));
+    }
+
+    move_or_copy_directory(&source_root, &target_dir)?;
+    let _ = fs::remove_dir_all(&stage_root);
+    retarget_version_runtime(&target_dir, &metadata.version_id, &resolved_target_version_id)?;
+
+    Ok(InstanceImportResult {
+        version_id: resolved_target_version_id,
+        base_version: metadata.base_version,
+        loader: metadata.loader,
+        loader_version: metadata.loader_version,
+    })
+}
+
+fn repair_instance_runtime_blocking(
+    window: tauri::Window,
+    game_dir: String,
+    version_id: String,
+    loader: String,
+    base_version: String,
+    loader_version: Option<String>,
+) -> Result<InstanceRepairResult, String> {
+    let normalized_version_id = normalize_version_identifier(version_id.trim())?;
+    let normalized_loader = normalize_loader_kind(&loader)?;
+    let normalized_base_version = base_version.trim().to_string();
+    if normalized_base_version.is_empty() {
+        return Err("Base version cannot be empty".to_string());
+    }
+
+    let game_dir_path = resolve_game_dir_path(&game_dir)?;
+    let versions_dir = game_dir_path.join("versions");
+    fs::create_dir_all(&versions_dir).map_err(|e| {
+        format!(
+            "Failed to create versions directory {}: {e}",
+            versions_dir.display()
+        )
+    })?;
+
+    let vanilla = install_vanilla_blocking_core(Some(&window), &game_dir_path, &normalized_base_version)?;
+    let mut source_version_id = vanilla.version_id;
+    let mut resolved_loader_version = loader_version
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+
+    if normalized_loader == "fabric" {
+        if resolved_loader_version.is_none() {
+            let loader_versions =
+                list_fabric_loaders_blocking_core(Some(&window), &normalized_base_version)?;
+            resolved_loader_version = loader_versions
+                .into_iter()
+                .find(|value| !value.trim().is_empty());
+        }
+        let selected_loader_version = resolved_loader_version
+            .clone()
+            .ok_or_else(|| format!("No fabric loader version available for {}", normalized_base_version))?;
+        let fabric = install_fabric_blocking_core(
+            Some(&window),
+            &game_dir_path,
+            &normalized_base_version,
+            &selected_loader_version,
+        )?;
+        source_version_id = fabric.profile_id;
+    } else if normalized_loader == "forge" {
+        if resolved_loader_version.is_none() {
+            let forge_versions =
+                list_forge_versions_blocking_core(Some(&window), &normalized_base_version)?;
+            resolved_loader_version = forge_versions
+                .into_iter()
+                .find(|value| !value.trim().is_empty());
+        }
+        let selected_loader_version = resolved_loader_version
+            .clone()
+            .ok_or_else(|| format!("No forge version available for {}", normalized_base_version))?;
+        let jdk = ensure_jdk_blocking(
+            window.clone(),
+            strip_windows_verbatim_prefix(&game_dir_path)
+                .to_string_lossy()
+                .to_string(),
+            normalized_base_version.clone(),
+        )?;
+        let forge = install_forge_blocking_core(
+            Some(&window),
+            &game_dir_path,
+            &selected_loader_version,
+            &jdk.java_path,
+        )?;
+        source_version_id = forge.profile_id;
+        resolved_loader_version = Some(forge.forge_version);
+    }
+
+    let source_dir = versions_dir.join(&source_version_id);
+    let source_json = source_dir.join(format!("{source_version_id}.json"));
+    if !source_dir.exists() || !source_json.exists() {
+        return Err(format!(
+            "Freshly installed instance files are missing: {}",
+            source_dir.display()
+        ));
+    }
+
+    let stage_dir = env::temp_dir().join(format!(
+        ".fpsmaster-instance-repair-{}-{}",
+        std::process::id(),
+        now_epoch_millis()
+    ));
+    if stage_dir.exists() {
+        fs::remove_dir_all(&stage_dir).map_err(|e| {
+            format!(
+                "Failed to reset instance repair staging directory {}: {e}",
+                stage_dir.display()
+            )
+        })?;
+    }
+    copy_directory_contents(&source_dir, &stage_dir)?;
+    retarget_version_runtime(&stage_dir, &source_version_id, &normalized_version_id)?;
+
+    let target_dir = versions_dir.join(&normalized_version_id);
+    copy_directory_contents(&stage_dir, &target_dir)?;
+    let _ = fs::remove_dir_all(&stage_dir);
+    if source_version_id != normalized_version_id && source_dir.exists() {
+        let _ = fs::remove_dir_all(&source_dir);
+    }
+
+    Ok(InstanceRepairResult {
+        version_id: normalized_version_id,
+        base_version: normalized_base_version,
+        loader: normalized_loader,
+        loader_version: resolved_loader_version,
+        reinstalled_from_version_id: source_version_id,
+    })
+}
+
+#[tauri::command]
+async fn import_instance_archive(
+    game_dir: String,
+    archive_name: String,
+    archive_data: Vec<u8>,
+    target_version_id: Option<String>,
+) -> Result<InstanceImportResult, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        import_instance_archive_blocking(game_dir, archive_name, archive_data, target_version_id)
+    })
+    .await
+    .map_err(|e| format!("Failed to join instance import task: {e}"))?
+}
+
+#[tauri::command]
+async fn repair_instance_runtime(
+    window: tauri::Window,
+    game_dir: String,
+    version_id: String,
+    loader: String,
+    base_version: String,
+    loader_version: Option<String>,
+) -> Result<InstanceRepairResult, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        repair_instance_runtime_blocking(
+            window,
+            game_dir,
+            version_id,
+            loader,
+            base_version,
+            loader_version,
+        )
+    })
+    .await
+    .map_err(|e| format!("Failed to join instance repair task: {e}"))?
+}
+
 fn rewrite_version_profile_id(json_path: &Path, version_id: &str) -> Result<(), String> {
     let profile_json_text = fs::read_to_string(json_path)
         .map_err(|e| format!("Failed to read profile json {}: {e}", json_path.display()))?;
@@ -1036,6 +1335,54 @@ fn rewrite_version_profile_id(json_path: &Path, version_id: &str) -> Result<(), 
         .map_err(|e| format!("Failed to encode profile json {}: {e}", json_path.display()))?;
     fs::write(json_path, format!("{encoded}\n"))
         .map_err(|e| format!("Failed to write profile json {}: {e}", json_path.display()))?;
+    Ok(())
+}
+
+fn retarget_version_runtime(
+    version_dir: &Path,
+    from_version_id: &str,
+    to_version_id: &str,
+) -> Result<(), String> {
+    let source_json = version_dir.join(format!("{from_version_id}.json"));
+    let target_json = version_dir.join(format!("{to_version_id}.json"));
+    if source_json.exists() && source_json != target_json {
+        fs::rename(&source_json, &target_json).map_err(|e| {
+            format!(
+                "Failed to rename version json from {} to {}: {e}",
+                source_json.display(),
+                target_json.display()
+            )
+        })?;
+    }
+    if !target_json.exists() {
+        return Err(format!(
+            "Version json missing after retarget, expected {}",
+            target_json.display()
+        ));
+    }
+
+    let source_jar = version_dir.join(format!("{from_version_id}.jar"));
+    let target_jar = version_dir.join(format!("{to_version_id}.jar"));
+    if source_jar.exists() && source_jar != target_jar {
+        if target_jar.exists() {
+            fs::remove_file(&source_jar).map_err(|e| {
+                format!(
+                    "Failed to discard duplicate version jar {}: {e}",
+                    source_jar.display()
+                )
+            })?;
+        } else {
+            fs::rename(&source_jar, &target_jar).map_err(|e| {
+                format!(
+                    "Failed to rename version jar from {} to {}: {e}",
+                    source_jar.display(),
+                    target_jar.display()
+                )
+            })?;
+        }
+    }
+
+    rewrite_version_profile_id(&target_json, to_version_id)?;
     Ok(())
 }
 
@@ -1446,6 +1793,56 @@ async fn install_modrinth_project(
 }
 
 #[tauri::command]
+async fn curseforge_search_projects(
+    query: String,
+    project_type: String,
+    game_version: Option<String>,
+    loader: Option<String>,
+    limit: Option<u32>,
+    api_key: String,
+) -> Result<Vec<ModrinthSearchResult>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        curseforge_search_projects_blocking(
+            query,
+            project_type,
+            game_version,
+            loader,
+            limit,
+            api_key,
+        )
+    })
+    .await
+    .map_err(|e| format!("Failed to join CurseForge search task: {e}"))?
+}
+
+#[tauri::command]
+async fn install_curseforge_project(
+    game_dir: String,
+    version_id: String,
+    project_id: String,
+    project_title: String,
+    project_type: String,
+    game_version: String,
+    loader: Option<String>,
+    api_key: String,
+) -> Result<ModrinthInstallResult, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        install_curseforge_project_blocking(
+            game_dir,
+            version_id,
+            project_id,
+            project_title,
+            project_type,
+            game_version,
+            loader,
+            api_key,
+        )
+    })
+    .await
+    .map_err(|e| format!("Failed to join CurseForge install task: {e}"))?
+}
+
+#[tauri::command]
 async fn list_installed_content(
     game_dir: String,
     version_id: String,
@@ -1478,9 +1875,10 @@ async fn check_installed_content_updates(
     version_id: String,
     game_version: String,
     loader: Option<String>,
+    api_key: Option<String>,
 ) -> Result<Vec<InstalledContentUpdate>, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        check_installed_content_updates_blocking(game_dir, version_id, game_version, loader)
+        check_installed_content_updates_blocking(game_dir, version_id, game_version, loader, api_key)
     })
     .await
     .map_err(|e| format!("Failed to join content updates task: {e}"))?
@@ -1670,6 +2068,7 @@ fn install_modrinth_project_blocking(
     )?;
 
     Ok(ModrinthInstallResult {
+        source: "modrinth".to_string(),
         project_id: normalized_project_id,
         project_title: project_title.trim().to_string(),
         content_type: normalized_project_type,
@@ -1682,6 +2081,180 @@ fn install_modrinth_project_blocking(
             .unwrap_or_else(|| runtime_root.to_string_lossy().to_string()),
         installed_path: installed_path.to_string_lossy().to_string(),
         changelog: version.changelog,
+    })
+}
+
+fn curseforge_search_projects_blocking(
+    query: String,
+    project_type: String,
+    game_version: Option<String>,
+    loader: Option<String>,
+    limit: Option<u32>,
+    api_key: String,
+) -> Result<Vec<ModrinthSearchResult>, String> {
+    let normalized_query = query.trim().to_string();
+    if normalized_query.is_empty() {
+        return Err("Search query cannot be empty".to_string());
+    }
+
+    let normalized_project_type = normalize_content_project_type(&project_type)?;
+    if normalized_project_type == "world" {
+        return Err("World search is not available from CurseForge in the current launcher flow".to_string());
+    }
+    let normalized_api_key = normalize_curseforge_api_key(&api_key)?;
+    let client = build_blocking_http_client()?;
+    let class_id = curseforge_class_id_for_project_type(&normalized_project_type)?;
+    let mut url = reqwest::Url::parse("https://api.curseforge.com/v1/mods/search")
+        .map_err(|e| format!("Invalid CurseForge search endpoint URL: {e}"))?;
+    {
+        let mut query_pairs = url.query_pairs_mut();
+        query_pairs.append_pair("gameId", "432");
+        query_pairs.append_pair("classId", &class_id.to_string());
+        query_pairs.append_pair("searchFilter", &normalized_query);
+        query_pairs.append_pair("pageSize", &limit.unwrap_or(18).clamp(1, 50).to_string());
+        if let Some(version) = game_version.as_deref().map(str::trim).filter(|value| !value.is_empty()) {
+            query_pairs.append_pair("gameVersion", version);
+        }
+        if normalized_project_type == "mod" {
+            if let Some(mod_loader_type) = curseforge_mod_loader_type(loader.as_deref()) {
+                query_pairs.append_pair("modLoaderType", &mod_loader_type.to_string());
+            }
+        }
+    }
+
+    let response = client
+        .get(url)
+        .header("x-api-key", normalized_api_key)
+        .send()
+        .map_err(|e| format!("CurseForge search request failed: {e}"))?;
+    let status = response.status();
+    let text = response
+        .text()
+        .map_err(|e| format!("Failed to read CurseForge search response: {e}"))?;
+    if !status.is_success() {
+        return Err(format!(
+            "CurseForge search failed with HTTP {}: {}",
+            status.as_u16(),
+            text.trim()
+        ));
+    }
+
+    let payload = serde_json::from_str::<CurseForgeEnvelope<Vec<CurseForgeSearchItem>>>(&text)
+        .map_err(|e| format!("Invalid CurseForge search response JSON: {e}"))?;
+    Ok(payload
+        .data
+        .into_iter()
+        .map(|item| map_curseforge_search_item(item, &normalized_project_type))
+        .collect())
+}
+
+fn install_curseforge_project_blocking(
+    game_dir: String,
+    version_id: String,
+    project_id: String,
+    project_title: String,
+    project_type: String,
+    game_version: String,
+    loader: Option<String>,
+    api_key: String,
+) -> Result<ModrinthInstallResult, String> {
+    let normalized_project_type = normalize_content_project_type(&project_type)?;
+    if normalized_project_type == "world" {
+        return Err("World downloads must be imported from a ZIP package".to_string());
+    }
+    let normalized_api_key = normalize_curseforge_api_key(&api_key)?;
+    let normalized_project_id = project_id.trim().to_string();
+    if normalized_project_id.is_empty() {
+        return Err("CurseForge project id cannot be empty".to_string());
+    }
+    let normalized_version_id = version_id.trim().to_string();
+    if normalized_version_id.is_empty() {
+        return Err("Version id cannot be empty".to_string());
+    }
+    let normalized_game_version = game_version.trim().to_string();
+    if normalized_game_version.is_empty() {
+        return Err("Game version cannot be empty".to_string());
+    }
+
+    let game_dir_path = resolve_game_dir_path(&game_dir)?;
+    let runtime_root = resolve_version_runtime_dir(&game_dir_path, &normalized_version_id)?;
+    let existing_item = find_installed_content_item(
+        &runtime_root,
+        "curseforge",
+        &normalized_project_id,
+        &normalized_project_type,
+    )?;
+    let client = build_blocking_http_client()?;
+    let files = fetch_curseforge_project_files(
+        &client,
+        &normalized_api_key,
+        &normalized_project_id,
+        &normalized_project_type,
+        &normalized_game_version,
+        loader.as_deref(),
+    )?;
+    let file = choose_best_curseforge_file(files)?;
+    let download_url = file
+        .download_url
+        .clone()
+        .ok_or_else(|| "CurseForge file does not expose a direct download URL".to_string())?;
+
+    let download_path = env::temp_dir().join(format!(
+        "fpsmaster-content-{}-{}-{}",
+        std::process::id(),
+        now_epoch_millis(),
+        sanitize_file_name(&file.file_name)
+    ));
+    download_file_quiet_blocking(&client, &download_url, &download_path)
+        .map_err(|err| format!("Failed to download CurseForge file {}: {err}", file.file_name))?;
+
+    let next_target_path = build_content_target_path(&runtime_root, &normalized_project_type, &file.file_name)?;
+    if let Some(existing) = existing_item.as_ref() {
+        let same_target = resolve_managed_content_path(&runtime_root, &existing.installed_path)?
+            .map(|path| path == next_target_path)
+            .unwrap_or(false);
+        if !same_target {
+            remove_content_install_path(&runtime_root, &existing.installed_path)?;
+        }
+    }
+
+    let installed_path = install_content_file_by_type(
+        &download_path,
+        &runtime_root,
+        &normalized_project_type,
+        &file.file_name,
+    )?;
+    let _ = fs::remove_file(&download_path);
+
+    upsert_installed_content_item(
+        &runtime_root,
+        InstalledContentItem {
+            source: "curseforge".to_string(),
+            project_id: normalized_project_id.clone(),
+            project_title: project_title.trim().to_string(),
+            content_type: normalized_project_type.clone(),
+            version_id: file.id.to_string(),
+            version_number: resolve_curseforge_version_label(&file),
+            file_name: file.file_name.clone(),
+            installed_path: installed_path.to_string_lossy().to_string(),
+            installed_at_epoch_sec: now_epoch_seconds(),
+        },
+    )?;
+
+    Ok(ModrinthInstallResult {
+        source: "curseforge".to_string(),
+        project_id: normalized_project_id,
+        project_title: project_title.trim().to_string(),
+        content_type: normalized_project_type,
+        version_id: file.id.to_string(),
+        version_number: resolve_curseforge_version_label(&file),
+        file_name: file.file_name,
+        target_dir: installed_path
+            .parent()
+            .map(|path| path.to_string_lossy().to_string())
+            .unwrap_or_else(|| runtime_root.to_string_lossy().to_string()),
+        installed_path: installed_path.to_string_lossy().to_string(),
+        changelog: None,
     })
 }
 
@@ -1723,6 +2296,7 @@ fn check_installed_content_updates_blocking(
     version_id: String,
     game_version: String,
     loader: Option<String>,
+    api_key: Option<String>,
 ) -> Result<Vec<InstalledContentUpdate>, String> {
     let normalized_game_version = game_version.trim().to_string();
     if normalized_game_version.is_empty() {
@@ -1744,6 +2318,7 @@ fn check_installed_content_updates_blocking(
             &item,
             &normalized_game_version,
             loader.as_deref(),
+            api_key.as_deref(),
         ));
     }
     Ok(results)
@@ -2271,9 +2846,10 @@ fn normalize_content_project_type(value: &str) -> Result<String, String> {
 fn normalize_content_source(value: &str) -> Result<String, String> {
     match value.trim().to_ascii_lowercase().as_str() {
         "modrinth" => Ok("modrinth".to_string()),
+        "curseforge" => Ok("curseforge".to_string()),
         "local" => Ok("local".to_string()),
         other => Err(format!(
-            "Unsupported content source '{other}'. Expected modrinth/local"
+            "Unsupported content source '{other}'. Expected modrinth/curseforge/local"
         )),
     }
 }
@@ -2307,6 +2883,7 @@ fn build_modrinth_search_facets(
 fn map_modrinth_search_hit(item: ModrinthSearchHit) -> ModrinthSearchResult {
     let latest_game_version = item.versions.first().cloned();
     ModrinthSearchResult {
+        source: "modrinth".to_string(),
         project_id: item.project_id,
         slug: item.slug,
         title: item.title,
@@ -2322,6 +2899,176 @@ fn map_modrinth_search_hit(item: ModrinthSearchHit) -> ModrinthSearchResult {
         client_side: item.client_side,
         server_side: item.server_side,
     }
+}
+
+fn normalize_curseforge_api_key(raw: &str) -> Result<String, String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err("CurseForge API key is empty".to_string());
+    }
+    Ok(trimmed.to_string())
+}
+
+fn curseforge_class_id_for_project_type(project_type: &str) -> Result<u64, String> {
+    match project_type {
+        "mod" => Ok(6),
+        "resourcepack" => Ok(12),
+        "world" => Ok(17),
+        "shader" => Ok(6552),
+        other => Err(format!(
+            "Unsupported CurseForge class for content type '{other}'"
+        )),
+    }
+}
+
+fn curseforge_mod_loader_type(loader: Option<&str>) -> Option<u32> {
+    match loader.map(str::trim).map(|value| value.to_ascii_lowercase()) {
+        Some(value) if value == "forge" => Some(1),
+        Some(value) if value == "fabric" => Some(4),
+        _ => None,
+    }
+}
+
+fn map_curseforge_search_item(
+    item: CurseForgeSearchItem,
+    project_type: &str,
+) -> ModrinthSearchResult {
+    let authors = item
+        .authors
+        .iter()
+        .map(|author| author.name.trim())
+        .filter(|value| !value.is_empty())
+        .collect::<Vec<_>>();
+    let game_versions = item
+        .latest_files_indexes
+        .iter()
+        .filter_map(|entry| entry.game_version.as_ref())
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .collect::<Vec<_>>();
+    let latest_game_version = game_versions.first().cloned();
+    let display_categories = item
+        .categories
+        .iter()
+        .filter(|category| category.class_id != curseforge_class_id_for_project_type(project_type).ok())
+        .map(|category| category.name.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .collect::<Vec<_>>();
+
+    ModrinthSearchResult {
+        source: "curseforge".to_string(),
+        project_id: item.id.to_string(),
+        slug: item.slug,
+        title: item.name,
+        description: item.summary,
+        author: if authors.is_empty() {
+            "Unknown".to_string()
+        } else {
+            authors.join(", ")
+        },
+        icon_url: item.logo.and_then(|logo| logo.url),
+        downloads: item.download_count.unwrap_or(0.0).max(0.0) as u64,
+        categories: item
+            .categories
+            .iter()
+            .map(|category| category.name.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .collect(),
+        display_categories,
+        project_type: project_type.to_string(),
+        latest_game_version,
+        game_versions,
+        client_side: None,
+        server_side: None,
+    }
+}
+
+fn fetch_curseforge_project_files(
+    client: &reqwest::blocking::Client,
+    api_key: &str,
+    project_id: &str,
+    project_type: &str,
+    game_version: &str,
+    loader: Option<&str>,
+) -> Result<Vec<CurseForgeFile>, String> {
+    let mut url = reqwest::Url::parse(&format!(
+        "https://api.curseforge.com/v1/mods/{project_id}/files"
+    ))
+    .map_err(|e| format!("Invalid CurseForge files endpoint URL: {e}"))?;
+    {
+        let mut query_pairs = url.query_pairs_mut();
+        query_pairs.append_pair("gameVersion", game_version.trim());
+        query_pairs.append_pair(
+            "pageSize",
+            if project_type == "mod" { "30" } else { "20" },
+        );
+        if project_type == "mod" {
+            if let Some(mod_loader_type) = curseforge_mod_loader_type(loader) {
+                query_pairs.append_pair("modLoaderType", &mod_loader_type.to_string());
+            }
+        }
+    }
+
+    let response = client
+        .get(url)
+        .header("x-api-key", api_key)
+        .send()
+        .map_err(|e| format!("CurseForge files request failed: {e}"))?;
+    let status = response.status();
+    let text = response
+        .text()
+        .map_err(|e| format!("Failed to read CurseForge files response: {e}"))?;
+    if !status.is_success() {
+        return Err(format!(
+            "CurseForge files failed with HTTP {}: {}",
+            status.as_u16(),
+            text.trim()
+        ));
+    }
+
+    let payload = serde_json::from_str::<CurseForgeEnvelope<Vec<CurseForgeFile>>>(&text)
+        .map_err(|e| format!("Invalid CurseForge files response JSON: {e}"))?;
+    Ok(payload.data)
+}
+
+fn choose_best_curseforge_file(
+    mut files: Vec<CurseForgeFile>,
+) -> Result<CurseForgeFile, String> {
+    if files.is_empty() {
+        return Err("No compatible CurseForge file found for the current instance".to_string());
+    }
+
+    files.sort_by(|left, right| {
+        let left_rank = curseforge_file_rank(left);
+        let right_rank = curseforge_file_rank(right);
+        right_rank.cmp(&left_rank)
+    });
+    files
+        .into_iter()
+        .next()
+        .ok_or_else(|| "No compatible CurseForge file found for the current instance".to_string())
+}
+
+fn curseforge_file_rank(item: &CurseForgeFile) -> (u8, String) {
+    let release_rank = match item.release_type.unwrap_or(3) {
+        1 => 3,
+        2 => 2,
+        3 => 1,
+        _ => 0,
+    };
+    (release_rank, item.file_date.clone().unwrap_or_default())
+}
+
+fn resolve_curseforge_version_label(file: &CurseForgeFile) -> String {
+    let display_name = file.display_name.trim();
+    if !display_name.is_empty() {
+        return display_name.to_string();
+    }
+    let file_name = file.file_name.trim();
+    if !file_name.is_empty() {
+        return file_name.to_string();
+    }
+    format!("File #{}", file.id)
 }
 
 fn fetch_modrinth_project_versions(
@@ -2379,8 +3126,99 @@ fn check_single_installed_content_update(
     item: &InstalledContentItem,
     game_version: &str,
     loader: Option<&str>,
+    api_key: Option<&str>,
 ) -> InstalledContentUpdate {
     let checked_at_epoch_sec = now_epoch_seconds();
+    if item.source.eq_ignore_ascii_case("curseforge") {
+        let normalized_api_key = api_key.unwrap_or("").trim();
+        if normalized_api_key.is_empty() {
+            return InstalledContentUpdate {
+                source: item.source.clone(),
+                project_id: item.project_id.clone(),
+                content_type: item.content_type.clone(),
+                status: "unavailable".to_string(),
+                update_available: false,
+                installed_version_id: item.version_id.clone(),
+                installed_version_number: item.version_number.clone(),
+                latest_version_id: None,
+                latest_version_number: None,
+                changelog: None,
+                error: Some("CurseForge API key is not configured in the launcher environment".to_string()),
+                checked_at_epoch_sec,
+            };
+        }
+
+        let files = match fetch_curseforge_project_files(
+            client,
+            normalized_api_key,
+            &item.project_id,
+            &item.content_type,
+            game_version,
+            loader,
+        ) {
+            Ok(value) => value,
+            Err(err) => {
+                return InstalledContentUpdate {
+                    source: item.source.clone(),
+                    project_id: item.project_id.clone(),
+                    content_type: item.content_type.clone(),
+                    status: "error".to_string(),
+                    update_available: false,
+                    installed_version_id: item.version_id.clone(),
+                    installed_version_number: item.version_number.clone(),
+                    latest_version_id: None,
+                    latest_version_number: None,
+                    changelog: None,
+                    error: Some(err),
+                    checked_at_epoch_sec,
+                }
+            }
+        };
+
+        let latest = match choose_best_curseforge_file(files) {
+            Ok(value) => value,
+            Err(err) => {
+                return InstalledContentUpdate {
+                    source: item.source.clone(),
+                    project_id: item.project_id.clone(),
+                    content_type: item.content_type.clone(),
+                    status: "unavailable".to_string(),
+                    update_available: false,
+                    installed_version_id: item.version_id.clone(),
+                    installed_version_number: item.version_number.clone(),
+                    latest_version_id: None,
+                    latest_version_number: None,
+                    changelog: None,
+                    error: Some(err),
+                    checked_at_epoch_sec,
+                }
+            }
+        };
+
+        let latest_version_id = latest.id.to_string();
+        let latest_version_number = resolve_curseforge_version_label(&latest);
+        let update_available = latest_version_id != item.version_id;
+
+        return InstalledContentUpdate {
+            source: item.source.clone(),
+            project_id: item.project_id.clone(),
+            content_type: item.content_type.clone(),
+            status: if update_available {
+                "update-available".to_string()
+            } else {
+                "up-to-date".to_string()
+            },
+            update_available,
+            installed_version_id: item.version_id.clone(),
+            installed_version_number: item.version_number.clone(),
+            latest_version_id: Some(latest_version_id),
+            latest_version_number: Some(latest_version_number),
+            changelog: None,
+            error: None,
+            checked_at_epoch_sec,
+        };
+    }
+
     if !item.source.eq_ignore_ascii_case("modrinth") {
         return InstalledContentUpdate {
             source: item.source.clone(),
@@ -2816,6 +3654,299 @@ fn slugify_content_key(raw: &str) -> String {
     } else {
         normalized
     }
+}
+
+fn normalize_version_identifier(raw: &str) -> Result<String, String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err("Version id cannot be empty".to_string());
+    }
+
+    let mut output = String::with_capacity(trimmed.len());
+    for ch in trimmed.chars() {
+        if ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-') {
+            output.push(ch);
+        } else {
+            output.push('-');
+        }
+    }
+
+    let normalized = output.trim_matches(['-', '.']).to_string();
+    if normalized.is_empty() {
+        return Err("Version id cannot be empty".to_string());
+    }
+    Ok(normalized)
+}
+
+fn normalize_loader_kind(raw: &str) -> Result<String, String> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "vanilla" => Ok("vanilla".to_string()),
+        "fabric" => Ok("fabric".to_string()),
+        "forge" => Ok("forge".to_string()),
+        other => Err(format!(
+            "Unsupported loader '{other}'. Expected vanilla/fabric/forge"
+        )),
+    }
+}
+
+fn archive_file_stem(raw: &str) -> Option<String> {
+    Path::new(raw)
+        .file_stem()
+        .map(|value| value.to_string_lossy().trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn extract_archive_to_stage(
+    archive_data: &[u8],
+    stage_root: &Path,
+    archive_label: &str,
+) -> Result<usize, String> {
+    let cursor = Cursor::new(archive_data.to_vec());
+    let mut archive = zip::ZipArchive::new(cursor)
+        .map_err(|e| format!("Invalid {archive_label} archive ZIP: {e}"))?;
+    let mut extracted_entries = 0usize;
+
+    for index in 0..archive.len() {
+        let mut entry = archive.by_index(index).map_err(|e| e.to_string())?;
+        let Some(relative_path) = entry.enclosed_name().map(|value| value.to_path_buf()) else {
+            continue;
+        };
+        if relative_path.as_os_str().is_empty() {
+            continue;
+        }
+        if relative_path.components().any(|part| {
+            part.as_os_str()
+                .to_string_lossy()
+                .eq_ignore_ascii_case("__MACOSX")
+        }) {
+            continue;
+        }
+
+        let out_path = stage_root.join(&relative_path);
+        if entry.name().ends_with('/') {
+            fs::create_dir_all(&out_path).map_err(|e| {
+                format!(
+                    "Failed to create extracted {archive_label} directory {}: {e}",
+                    out_path.display()
+                )
+            })?;
+            continue;
+        }
+
+        if let Some(parent) = out_path.parent() {
+            fs::create_dir_all(parent).map_err(|e| {
+                format!(
+                    "Failed to create extracted {archive_label} directory {}: {e}",
+                    parent.display()
+                )
+            })?;
+        }
+
+        let mut output = fs::File::create(&out_path).map_err(|e| {
+            format!(
+                "Failed to create extracted {archive_label} file {}: {e}",
+                out_path.display()
+            )
+        })?;
+        std::io::copy(&mut entry, &mut output).map_err(|e| {
+            format!(
+                "Failed to extract {archive_label} file {}: {e}",
+                out_path.display()
+            )
+        })?;
+        output.flush().map_err(|e| {
+            format!(
+                "Failed to flush extracted {archive_label} file {}: {e}",
+                out_path.display()
+            )
+        })?;
+        extracted_entries += 1;
+    }
+
+    Ok(extracted_entries)
+}
+
+fn determine_archive_stage_root(stage_root: &Path, archive_label: &str) -> Result<PathBuf, String> {
+    let mut child_dirs = Vec::new();
+    let mut child_files = 0usize;
+    for entry in fs::read_dir(stage_root).map_err(|e| {
+        format!(
+            "Failed to inspect extracted {archive_label} directory {}: {e}",
+            stage_root.display()
+        )
+    })? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let path = entry.path();
+        if path.is_dir() {
+            child_dirs.push(path);
+        } else {
+            child_files += 1;
+        }
+    }
+
+    if child_dirs.len() == 1 && child_files == 0 {
+        Ok(child_dirs.remove(0))
+    } else {
+        Ok(stage_root.to_path_buf())
+    }
+}
+
+fn find_instance_profile_json(root_dir: &Path) -> Result<PathBuf, String> {
+    let mut queue = VecDeque::from([root_dir.to_path_buf()]);
+    let mut fallback: Option<PathBuf> = None;
+    while let Some(current) = queue.pop_front() {
+        let entries = fs::read_dir(&current)
+            .map_err(|e| format!("Failed to inspect imported instance directory {}: {e}", current.display()))?;
+        for entry in entries {
+            let entry = entry.map_err(|e| e.to_string())?;
+            let path = entry.path();
+            if path.is_dir() {
+                queue.push_back(path);
+                continue;
+            }
+            if path
+                .extension()
+                .and_then(|value| value.to_str())
+                .map(|value| value.eq_ignore_ascii_case("json"))
+                != Some(true)
+            {
+                continue;
+            }
+            match parse_instance_profile_metadata(&path) {
+                Ok(metadata) => {
+                    let file_stem = path
+                        .file_stem()
+                        .map(|value| value.to_string_lossy().to_string())
+                        .unwrap_or_default();
+                    if file_stem.eq_ignore_ascii_case(&metadata.version_id) {
+                        return Ok(path);
+                    }
+                    if fallback.is_none() {
+                        fallback = Some(path);
+                    }
+                }
+                Err(_) => continue,
+            }
+        }
+    }
+
+    fallback.ok_or_else(|| "No importable instance profile JSON found in archive".to_string())
+}
+
+fn parse_instance_profile_metadata(json_path: &Path) -> Result<InstanceProfileMetadata, String> {
+    let profile_json_text = fs::read_to_string(json_path)
+        .map_err(|e| format!("Failed to read instance profile {}: {e}", json_path.display()))?;
+    let profile_json: serde_json::Value = serde_json::from_str(&profile_json_text)
+        .map_err(|e| format!("Failed to parse instance profile {}: {e}", json_path.display()))?;
+    let object = profile_json
+        .as_object()
+        .ok_or_else(|| format!("Instance profile {} is not a JSON object", json_path.display()))?;
+
+    let version_id = object
+        .get("id")
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| value.to_string())
+        .or_else(|| {
+            json_path
+                .file_stem()
+                .map(|value| value.to_string_lossy().trim().to_string())
+                .filter(|value| !value.is_empty())
+        })
+        .ok_or_else(|| format!("Instance profile {} is missing id", json_path.display()))?;
+
+    let inherits_from = object
+        .get("inheritsFrom")
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| value.to_string());
+
+    let lower_text = profile_json_text.to_ascii_lowercase();
+    let lower_version_id = version_id.to_ascii_lowercase();
+    let loader = if lower_version_id.contains("fabric")
+        || lower_text.contains("net.fabricmc")
+        || lower_text.contains("fabric-loader")
+    {
+        "fabric".to_string()
+    } else if lower_version_id.contains("forge")
+        || lower_text.contains("net.minecraftforge")
+        || lower_text.contains("fmlloader")
+    {
+        "forge".to_string()
+    } else {
+        "vanilla".to_string()
+    };
+
+    let base_version = inherits_from
+        .clone()
+        .or_else(|| detect_base_version_from_profile_id(&version_id, &loader))
+        .unwrap_or_else(|| version_id.clone());
+    let loader_version = detect_loader_version_from_profile_id(&version_id, &loader, &base_version);
+
+    Ok(InstanceProfileMetadata {
+        version_id,
+        base_version,
+        loader,
+        loader_version,
+    })
+}
+
+fn detect_base_version_from_profile_id(version_id: &str, loader: &str) -> Option<String> {
+    if loader == "fabric" {
+        if let Some(rest) = version_id.strip_prefix("fabric-loader-") {
+            if let Some((_, base_version)) = rest.split_once('-') {
+                return Some(base_version.to_string());
+            }
+        }
+    } else if loader == "forge" {
+        if let Some((base_version, _)) = version_id.split_once("-forge-") {
+            return Some(base_version.to_string());
+        }
+        if let Some(rest) = version_id.strip_prefix("forge-") {
+            if let Some((base_version, _)) = rest.split_once('-') {
+                return Some(base_version.to_string());
+            }
+        }
+    }
+    None
+}
+
+fn detect_loader_version_from_profile_id(
+    version_id: &str,
+    loader: &str,
+    base_version: &str,
+) -> Option<String> {
+    if loader == "fabric" {
+        if let Some(rest) = version_id.strip_prefix("fabric-loader-") {
+            let suffix = format!("-{base_version}");
+            if let Some(stripped) = rest.strip_suffix(&suffix) {
+                return Some(stripped.to_string());
+            }
+            if let Some((loader_version, _)) = rest.split_once('-') {
+                return Some(loader_version.to_string());
+            }
+        }
+        return None;
+    }
+
+    if loader == "forge" {
+        if let Some(rest) = version_id.strip_prefix(&format!("{base_version}-forge-")) {
+            return Some(rest.to_string());
+        }
+        if let Some(rest) = version_id.strip_prefix("forge-") {
+            let prefix = format!("{base_version}-");
+            if let Some(stripped) = rest.strip_prefix(&prefix) {
+                return Some(stripped.to_string());
+            }
+            if let Some((_, loader_version)) = rest.split_once('-') {
+                return Some(loader_version.to_string());
+            }
+        }
+    }
+
+    None
 }
 
 fn extract_world_archive_to_stage(
@@ -3366,6 +4497,30 @@ async fn install_vanilla(
         }
     }
     let output = run_java_core_async(Some(window), command).await?;
+    serde_json::from_str::<InstallResult>(&output)
+        .map_err(|e| format!("Invalid java-core output: {e}"))
+}
+
+fn install_vanilla_blocking_core(
+    window: Option<&tauri::Window>,
+    game_dir: &Path,
+    version_id: &str,
+) -> Result<InstallResult, String> {
+    let normalized_version_id = version_id.trim();
+    if normalized_version_id.is_empty() {
+        return Err("Version id cannot be empty".to_string());
+    }
+    let command = vec![
+        "install-vanilla".to_string(),
+        "--game-dir".to_string(),
+        strip_windows_verbatim_prefix(game_dir)
+            .to_string_lossy()
+            .to_string(),
+        "--version".to_string(),
+        normalized_version_id.to_string(),
+    ];
+    let refs: Vec<&str> = command.iter().map(String::as_str).collect();
+    let output = run_java_core(window, &refs)?;
     serde_json::from_str::<InstallResult>(&output)
         .map_err(|e| format!("Invalid java-core output: {e}"))
 }
@@ -4102,15 +5257,24 @@ async fn list_fabric_loaders(
     window: tauri::Window,
     game_version: String,
 ) -> Result<Vec<String>, String> {
-    let output = run_java_core_async(
-        Some(window),
-        vec![
-            "list-fabric-loaders".to_string(),
-            "--game-version".to_string(),
-            game_version,
-        ],
-    )
-    .await?;
+    list_fabric_loaders_blocking_core(Some(&window), game_version.trim())
+}
+
+fn list_fabric_loaders_blocking_core(
+    window: Option<&tauri::Window>,
+    game_version: &str,
+) -> Result<Vec<String>, String> {
+    let normalized_game_version = game_version.trim();
+    if normalized_game_version.is_empty() {
+        return Err("Game version cannot be empty".to_string());
+    }
+    let command = vec![
+        "list-fabric-loaders".to_string(),
+        "--game-version".to_string(),
+        normalized_game_version.to_string(),
+    ];
+    let refs: Vec<&str> = command.iter().map(String::as_str).collect();
+    let output = run_java_core(window, &refs)?;
     serde_json::from_str::<Vec<String>>(&output)
         .map_err(|e| format!("Invalid java-core output: {e}"))
 }
@@ -4146,20 +5310,60 @@ async fn install_fabric(
         .map_err(|e| format!("Invalid java-core output: {e}"))
 }
 
+fn install_fabric_blocking_core(
+    window: Option<&tauri::Window>,
+    game_dir: &Path,
+    game_version: &str,
+    loader_version: &str,
+) -> Result<FabricInstallResult, String> {
+    let normalized_game_version = game_version.trim();
+    if normalized_game_version.is_empty() {
+        return Err("Game version cannot be empty".to_string());
+    }
+    let normalized_loader_version = loader_version.trim();
+    if normalized_loader_version.is_empty() {
+        return Err("Loader version cannot be empty".to_string());
+    }
+    let command = vec![
+        "install-fabric".to_string(),
+        "--game-dir".to_string(),
+        strip_windows_verbatim_prefix(game_dir)
+            .to_string_lossy()
+            .to_string(),
+        "--game-version".to_string(),
+        normalized_game_version.to_string(),
+        "--loader-version".to_string(),
+        normalized_loader_version.to_string(),
+    ];
+    let refs: Vec<&str> = command.iter().map(String::as_str).collect();
+    let output = run_java_core(window, &refs)?;
+    serde_json::from_str::<FabricInstallResult>(&output)
+        .map_err(|e| format!("Invalid java-core output: {e}"))
+}
+
 #[tauri::command]
 async fn list_forge_versions(
     window: tauri::Window,
     game_version: String,
 ) -> Result<Vec<String>, String> {
-    let output = run_java_core_async(
-        Some(window),
-        vec![
-            "list-forge-versions".to_string(),
-            "--game-version".to_string(),
-            game_version,
-        ],
-    )
-    .await?;
+    list_forge_versions_blocking_core(Some(&window), game_version.trim())
+}
+
+fn list_forge_versions_blocking_core(
+    window: Option<&tauri::Window>,
+    game_version: &str,
+) -> Result<Vec<String>, String> {
+    let normalized_game_version = game_version.trim();
+    if normalized_game_version.is_empty() {
+        return Err("Game version cannot be empty".to_string());
+    }
+    let command = vec![
+        "list-forge-versions".to_string(),
+        "--game-version".to_string(),
+        normalized_game_version.to_string(),
+    ];
+    let refs: Vec<&str> = command.iter().map(String::as_str).collect();
+    let output = run_java_core(window, &refs)?;
     serde_json::from_str::<Vec<String>>(&output)
         .map_err(|e| format!("Invalid java-core output: {e}"))
 }
@@ -4172,10 +5376,10 @@ async fn install_forge(
     java_path: Option<String>,
     ipc_session: Option<String>,
 ) -> Result<ForgeInstallResult, String> {
+    let java_exe = java_path.unwrap_or_else(|| "java".to_string());
     let game_dir = resolve_game_dir_path(&game_dir)?
         .to_string_lossy()
         .to_string();
-    let java_exe = java_path.unwrap_or_else(|| "java".to_string());
     let mut command = vec![
         "install-forge".to_string(),
         "--game-dir".to_string(),
@@ -4192,6 +5396,38 @@ async fn install_forge(
         }
     }
     let output = run_java_core_async(Some(window), command).await?;
+    serde_json::from_str::<ForgeInstallResult>(&output)
+        .map_err(|e| format!("Invalid java-core output: {e}"))
+}
+
+fn install_forge_blocking_core(
+    window: Option<&tauri::Window>,
+    game_dir: &Path,
+    forge_version: &str,
+    java_path: &str,
+) -> Result<ForgeInstallResult, String> {
+    let normalized_forge_version = forge_version.trim();
+    if normalized_forge_version.is_empty() {
+        return Err("Forge version cannot be empty".to_string());
+    }
+    let normalized_java = if java_path.trim().is_empty() {
+        "java"
+    } else {
+        java_path.trim()
+    };
+    let command = vec![
+        "install-forge".to_string(),
+        "--game-dir".to_string(),
+        strip_windows_verbatim_prefix(game_dir)
+            .to_string_lossy()
+            .to_string(),
+        "--forge-version".to_string(),
+        normalized_forge_version.to_string(),
+        "--java".to_string(),
+        normalized_java.to_string(),
+    ];
+    let refs: Vec<&str> = command.iter().map(String::as_str).collect();
+    let output = run_java_core(window, &refs)?;
     serde_json::from_str::<ForgeInstallResult>(&output)
         .map_err(|e| format!("Invalid java-core output: {e}"))
 }
@@ -5376,6 +6612,8 @@ fn main() {
             launcher_get_home,
             modrinth_search_projects,
             install_modrinth_project,
+            curseforge_search_projects,
+            install_curseforge_project,
             list_installed_content,
             uninstall_installed_content,
             check_installed_content_updates,
@@ -5397,6 +6635,8 @@ fn main() {
             rename_version_profile,
             duplicate_instance_storage,
             export_instance_archive,
+            import_instance_archive,
+            repair_instance_runtime,
             list_instance_section_entries,
             open_instance_section,
             get_default_game_dir,

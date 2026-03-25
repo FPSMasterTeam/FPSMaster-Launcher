@@ -15,7 +15,8 @@ export type ThemeAccent =
   | "custom";
 export type BackgroundSource = "local" | "web-random";
 export type LauncherVersionType = "EDGE" | "NOVA";
-export type ContentSource = "modrinth" | "local";
+export type ContentSource = "modrinth" | "curseforge" | "local";
+export type OnlineContentSource = Exclude<ContentSource, "local">;
 export type ContentProjectType = "mod" | "resourcepack" | "shader" | "world";
 export type InstalledContentUpdateStatus =
   | "up-to-date"
@@ -51,6 +52,7 @@ export type Settings = {
   backgroundWebUrl: string;
   backgroundOpacity: number;
   backgroundBlur: number;
+  curseforgeApiKey: string;
 };
 
 export type NewsItem = {
@@ -143,6 +145,7 @@ export type InstanceSectionEntry = {
 };
 
 export type ModrinthSearchResult = {
+  source: OnlineContentSource;
   projectId: string;
   slug: string;
   title: string;
@@ -160,6 +163,7 @@ export type ModrinthSearchResult = {
 };
 
 export type ModrinthInstallResult = {
+  source: OnlineContentSource;
   projectId: string;
   projectTitle: string;
   contentType: ContentProjectType;
@@ -183,6 +187,21 @@ export type WorldInstallResult = {
 
 export type InstanceExportResult = {
   archivePath: string;
+};
+
+export type InstanceImportResult = {
+  versionId: string;
+  baseVersion: string;
+  loader: Loader;
+  loaderVersion?: string;
+};
+
+export type InstanceRepairResult = {
+  versionId: string;
+  baseVersion: string;
+  loader: Loader;
+  loaderVersion?: string;
+  reinstalledFromVersionId: string;
 };
 
 export type InstalledContentItem = {

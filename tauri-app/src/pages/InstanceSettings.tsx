@@ -23,7 +23,9 @@ type SectionState = {
 type InstanceSettingsPageProps = {
   instance: Instance | null;
   gameDir: string;
+  busy: boolean;
   onBack: () => void;
+  onRepair: () => void;
 };
 
 const SECTIONS: readonly InstanceSection[] = [
@@ -46,7 +48,13 @@ function emptySectionState(): Record<InstanceSection, SectionState> {
   };
 }
 
-export default function InstanceSettingsPage({ instance, gameDir, onBack }: InstanceSettingsPageProps) {
+export default function InstanceSettingsPage({
+  instance,
+  gameDir,
+  busy,
+  onBack,
+  onRepair
+}: InstanceSettingsPageProps) {
   const { t } = useI18n();
   const [sections, setSections] = useState<Record<InstanceSection, SectionState>>(emptySectionState);
 
@@ -166,10 +174,16 @@ export default function InstanceSettingsPage({ instance, gameDir, onBack }: Inst
             {instance.launcherVersionType && <MetaBadge>{instance.launcherVersionType}</MetaBadge>}
           </div>
         </div>
-        <Button variant="secondary" size="sm" className="gap-2" onClick={onBack}>
-          <ArrowLeft size={14} />
-          {t("instanceFiles.back")}
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button variant="outline" size="sm" className="gap-2" disabled={busy} onClick={onRepair}>
+            <RefreshCw size={14} className={busy ? "animate-spin" : ""} />
+            {t("instanceFiles.repair")}
+          </Button>
+          <Button variant="secondary" size="sm" className="gap-2" onClick={onBack}>
+            <ArrowLeft size={14} />
+            {t("instanceFiles.back")}
+          </Button>
+        </div>
       </header>
 
       <div className="grid grid-cols-1 gap-4 pb-20 xl:grid-cols-3">

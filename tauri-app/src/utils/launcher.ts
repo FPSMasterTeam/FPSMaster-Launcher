@@ -124,7 +124,11 @@ export function loadSettings(): Settings {
       backgroundBlur:
         typeof parsed.backgroundBlur === "number"
           ? clamp(parsed.backgroundBlur, 0, 32)
-          : DEFAULT_SETTINGS.backgroundBlur
+          : DEFAULT_SETTINGS.backgroundBlur,
+      curseforgeApiKey:
+        typeof parsed.curseforgeApiKey === "string"
+          ? parsed.curseforgeApiKey
+          : DEFAULT_SETTINGS.curseforgeApiKey
     };
   } catch {
     return {

@@ -1,5 +1,5 @@
 import { Archive, Copy, Download, Plus, Search, Settings, Play, Trash2 } from "lucide-react";
-import { useMemo, useState } from "react";
+import { type ChangeEvent, useMemo, useRef, useState } from "react";
 import Button from "../components/Button";
 import Card from "../components/Card";
 import { useI18n } from "../i18n";
@@ -16,6 +16,7 @@ type InstancesPageProps = {
   onDelete: (id: string) => void;
   onDuplicateInstance: (id: string) => void;
   onExportInstance: (id: string) => void;
+  onImportInstance: (file: File) => void;
   onGoInstall: () => void;
   onLaunchInstance: (id: string) => void;
   onOpenInstanceSettings: (id: string) => void;
@@ -32,6 +33,7 @@ export default function InstancesPage({
   onDelete,
   onDuplicateInstance,
   onExportInstance,
+  onImportInstance,
   onGoInstall,
   onLaunchInstance,
   onOpenInstanceSettings,
@@ -39,6 +41,7 @@ export default function InstancesPage({
 }: InstancesPageProps) {
   const { t } = useI18n();
   const [searchQuery, setSearchQuery] = useState("");
+  const importInputRef = useRef<HTMLInputElement | null>(null);
 
   const filteredInstances = useMemo(() => {
     const keyword = searchQuery.trim().toLowerCase();
@@ -65,6 +68,23 @@ export default function InstancesPage({
           <Card as="span" variant="frost" className="inline-flex rounded-full px-3 py-1.5 text-xs text-[var(--text-secondary)]">
             {t("instances.count", { count: filteredInstances.length })}
           </Card>
+          <input
+            ref={importInputRef}
+            type="file"
+            accept=".zip,application/zip"
+            className="hidden"
+            onChange={(event) => handleImportChange(event, onImportInstance)}
+          />
+          <Button
+            variant="secondary"
+            size="lg"
+            className="gap-2"
+            disabled={busy}
+            onClick={() => importInputRef.current?.click()}
+          >
+            <Download size={16} />
+            {t("instances.import")}
+          </Button>
           <Button variant="primary" size="lg" className="gap-2" onClick={onGoInstall}>
             <Plus size={16} />
             {t("instances.createInstall")}
@@ -248,6 +268,18 @@ export default function InstancesPage({
       </section>
     </div>
   );
+}
+
+function handleImportChange(
+  event: ChangeEvent<HTMLInputElement>,
+  onImportInstance: (file: File) => void
+) {
+  const file = event.target.files?.[0];
+  event.target.value = "";
+  if (!file) {
+    return;
+  }
+  onImportInstance(file);
 }
 
 function describePresetPackageStatus(

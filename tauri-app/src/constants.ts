@@ -47,7 +47,8 @@ export const DEFAULT_SETTINGS: Settings = {
   backgroundImage: "",
   backgroundWebUrl: "",
   backgroundOpacity: 32,
-  backgroundBlur: 0
+  backgroundBlur: 0,
+  curseforgeApiKey: ""
 };
 
 export const PRESET_INSTANCES: readonly Instance[] = [

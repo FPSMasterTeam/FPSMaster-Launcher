@@ -6,11 +6,13 @@ import Card from "../components/Card";
 import { useI18n } from "../i18n";
 import type {
   ContentProjectType,
+  ContentSource,
   InstalledContentItem,
   InstalledContentUpdate,
   Instance,
   ModrinthInstallResult,
   ModrinthSearchResult,
+  OnlineContentSource,
   WorldInstallResult
 } from "../types";
 
@@ -18,6 +20,7 @@ type ContentPageProps = {
   instances: Instance[];
   current: Instance | null;
   gameDir: string;
+  curseforgeApiKey: string;
   busy: boolean;
   onSelectInstance: (id: string) => void;
   onStatusChange: (message: string) => void;
@@ -29,12 +32,14 @@ export default function ContentPage({
   instances,
   current,
   gameDir,
+  curseforgeApiKey,
   busy,
   onSelectInstance,
   onStatusChange
 }: ContentPageProps) {
   const { t } = useI18n();
   const [query, setQuery] = useState("");
+  const [source, setSource] = useState<OnlineContentSource>("modrinth");
   const [contentType, setContentType] = useState<ContentProjectType>("mod");
   const [loading, setLoading] = useState(false);
   const [installingProjectId, setInstallingProjectId] = useState<string | null>(null);
@@ -59,14 +64,14 @@ export default function ContentPage({
   const installedMap = useMemo(() => {
     const map = new Map<string, InstalledContentItem>();
     for (const item of installedItems) {
-      map.set(`${item.contentType}:${item.projectId}`, item);
+      map.set(`${item.source}:${item.contentType}:${item.projectId}`, item);
     }
     return map;
   }, [installedItems]);
   const updateMap = useMemo(() => {
     const map = new Map<string, InstalledContentUpdate>();
     for (const item of installedUpdates) {
-      map.set(`${item.contentType}:${item.projectId}`, item);
+      map.set(`${item.source}:${item.contentType}:${item.projectId}`, item);
     }
     return map;
   }, [installedUpdates]);
@@ -77,14 +82,18 @@ export default function ContentPage({
   const filteredAvailableUpdateCount = useMemo(
     () =>
       filteredInstalledItems.filter(
-        (item) => updateMap.get(`${item.contentType}:${item.projectId}`)?.status === "update-available"
+        (item) =>
+          updateMap.get(`${item.source}:${item.contentType}:${item.projectId}`)?.status ===
+          "update-available"
       ).length,
     [filteredInstalledItems, updateMap]
   );
   const filteredUpdatableItems = useMemo(
     () =>
       filteredInstalledItems.filter(
-        (item) => updateMap.get(`${item.contentType}:${item.projectId}`)?.status === "update-available"
+        (item) =>
+          updateMap.get(`${item.source}:${item.contentType}:${item.projectId}`)?.status ===
+          "update-available"
       ),
     [filteredInstalledItems, updateMap]
   );
@@ -114,7 +123,8 @@ export default function ContentPage({
           gameDir,
           versionId: instance.versionId,
           gameVersion: instance.baseVersion,
-          loader: instance.loader
+          loader: instance.loader,
+          apiKey: curseforgeApiKey
         });
         setInstalledUpdates(updates);
       } catch {
@@ -137,6 +147,10 @@ export default function ContentPage({
     if (contentType === "world") {
       return;
     }
+    if (source === "curseforge" && !curseforgeApiKey.trim()) {
+      setError(t("content.curseforgeKeyRequired"));
+      return;
+    }
     const trimmedQuery = query.trim();
     if (!trimmedQuery) {
       setError(t("content.queryRequired"));
@@ -149,13 +163,23 @@ export default function ContentPage({
     onStatusChange(t("content.searching"));
     try {
       await refreshInstalledState(currentInstance);
-      const items = await invoke<ModrinthSearchResult[]>("modrinth_search_projects", {
-        query: trimmedQuery,
-        projectType: contentType,
-        gameVersion: currentInstance.baseVersion,
-        loader: currentInstance.loader,
-        limit: 18
-      });
+      const items =
+        source === "curseforge"
+          ? await invoke<ModrinthSearchResult[]>("curseforge_search_projects", {
+              query: trimmedQuery,
+              projectType: contentType,
+              gameVersion: currentInstance.baseVersion,
+              loader: currentInstance.loader,
+              limit: 18,
+              apiKey: curseforgeApiKey
+            })
+          : await invoke<ModrinthSearchResult[]>("modrinth_search_projects", {
+              query: trimmedQuery,
+              projectType: contentType,
+              gameVersion: currentInstance.baseVersion,
+              loader: currentInstance.loader,
+              limit: 18
+            });
       setResults(items);
       onStatusChange(t("content.searchDone", { count: items.length }));
     } catch (invokeError) {
@@ -168,6 +192,7 @@ export default function ContentPage({
   }
 
   async function installProject(item: {
+    source: OnlineContentSource;
     projectId: string;
     projectType: ContentProjectType;
     title: string;
@@ -177,8 +202,9 @@ export default function ContentPage({
       return false;
     }
 
-    const existingItem = installedMap.get(`${item.projectType}:${item.projectId}`);
-    const updateState = updateMap.get(`${item.projectType}:${item.projectId}`);
+    const itemKey = `${item.source}:${item.projectType}:${item.projectId}`;
+    const existingItem = installedMap.get(itemKey);
+    const updateState = updateMap.get(itemKey);
     setInstallingProjectId(item.projectId);
     setError(null);
     onStatusChange(
@@ -192,15 +218,27 @@ export default function ContentPage({
       )
     );
     try {
-      const result = await invoke<ModrinthInstallResult>("install_modrinth_project", {
-        gameDir,
-        versionId: currentInstance.versionId,
-        projectId: item.projectId,
-        projectTitle: item.title,
-        projectType: item.projectType,
-        gameVersion: currentInstance.baseVersion,
-        loader: currentInstance.loader
-      });
+      const result =
+        item.source === "curseforge"
+          ? await invoke<ModrinthInstallResult>("install_curseforge_project", {
+              gameDir,
+              versionId: currentInstance.versionId,
+              projectId: item.projectId,
+              projectTitle: item.title,
+              projectType: item.projectType,
+              gameVersion: currentInstance.baseVersion,
+              loader: currentInstance.loader,
+              apiKey: curseforgeApiKey
+            })
+          : await invoke<ModrinthInstallResult>("install_modrinth_project", {
+              gameDir,
+              versionId: currentInstance.versionId,
+              projectId: item.projectId,
+              projectTitle: item.title,
+              projectType: item.projectType,
+              gameVersion: currentInstance.baseVersion,
+              loader: currentInstance.loader
+            });
       setLastInstallResult(result);
       await refreshInstalledState(currentInstance);
       onStatusChange(
@@ -274,6 +312,7 @@ export default function ContentPage({
           })
         );
         const success = await installProject({
+          source: item.source as OnlineContentSource,
           projectId: item.projectId,
           projectType: item.contentType,
           title: item.projectTitle
@@ -390,6 +429,27 @@ export default function ContentPage({
             </button>
           ))}
         </div>
+        {contentType !== "world" && (
+          <div className="mb-4 flex flex-wrap items-center gap-2">
+            <span className="text-xs font-semibold uppercase tracking-[0.16em] text-[var(--text-muted)]">
+              {t("content.sourceLabel")}
+            </span>
+            {(["modrinth", "curseforge"] as const).map((item) => (
+              <button
+                key={item}
+                type="button"
+                onClick={() => setSource(item)}
+                className={`rounded-xl border px-3 py-2 text-sm font-medium transition-colors ${
+                  source === item
+                    ? "border-[var(--mc-grass)]/50 bg-[var(--mc-grass)]/12 text-[var(--text-primary)]"
+                    : "border-[var(--border-medium)] bg-[var(--bg-secondary)] text-[var(--text-secondary)] hover:border-[var(--border-strong)]"
+                }`}
+              >
+                {contentSourceLabel(item, t)}
+              </button>
+            ))}
+          </div>
+        )}
 
         {contentType === "world" ? (
           <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_auto] xl:items-center">
@@ -474,7 +534,7 @@ export default function ContentPage({
               {t("content.checkingUpdates")}
             </span>
           )}
-          <span>{t("content.modrinthOnlyNotice")}</span>
+          <span>{t("content.sourceNotice", { source: contentSourceLabel(source, t) })}</span>
         </div>
       </Card>
 
@@ -538,9 +598,9 @@ export default function ContentPage({
           {filteredInstalledItems.length > 0 ? (
             <div className="mt-4 space-y-3">
               {filteredInstalledItems.map((item) => {
-                const updateState = updateMap.get(`${item.contentType}:${item.projectId}`);
+                const updateState = updateMap.get(`${item.source}:${item.contentType}:${item.projectId}`);
                 const canUpdate = updateState?.status === "update-available";
-                const supportsOnlineUpdate = item.source === "modrinth" && item.contentType !== "world";
+                const supportsOnlineUpdate = item.source !== "local" && item.contentType !== "world";
                 return (
                   <div
                     key={`${item.contentType}:${item.projectId}`}
@@ -583,6 +643,7 @@ export default function ContentPage({
                             }
                             onClick={() =>
                               void installProject({
+                                source: item.source as OnlineContentSource,
                                 projectId: item.projectId,
                                 projectType: item.contentType,
                                 title: item.projectTitle
@@ -639,8 +700,8 @@ export default function ContentPage({
       ) : (
         <section className="mt-5 grid grid-cols-1 gap-4 pb-20 md:grid-cols-2 xl:grid-cols-3">
           {results.map((item) => {
-          const installedItem = installedMap.get(`${item.projectType}:${item.projectId}`);
-          const updateState = updateMap.get(`${item.projectType}:${item.projectId}`);
+          const installedItem = installedMap.get(`${item.source}:${item.projectType}:${item.projectId}`);
+          const updateState = updateMap.get(`${item.source}:${item.projectType}:${item.projectId}`);
           const canUpdate = updateState?.status === "update-available";
           const isInstalled = Boolean(installedItem);
           const actionBusy =
@@ -667,7 +728,7 @@ export default function ContentPage({
                       <p className="mt-1 text-xs text-[var(--text-muted)]">{item.author}</p>
                     </div>
                     <span className="shrink-0 rounded-md border border-[var(--border-medium)] bg-[var(--bg-elevated)] px-2 py-0.5 text-[10px] font-semibold uppercase text-[var(--text-secondary)]">
-                      Modrinth
+                      {contentSourceLabel(item.source, t)}
                     </span>
                   </div>
                   <div className="mt-2 flex flex-wrap gap-1.5">
@@ -805,13 +866,16 @@ function loaderLabel(loader: Instance["loader"], t: ReturnType<typeof useI18n>["
 }
 
 function contentSourceLabel(
-  source: InstalledContentItem["source"],
+  source: ContentSource,
   t: ReturnType<typeof useI18n>["t"]
 ): string {
   if (source === "local") {
     return t("content.source.imported");
   }
-  return "Modrinth";
+  if (source === "curseforge") {
+    return t("content.source.curseforge");
+  }
+  return t("content.source.modrinth");
 }
 
 function renderUpdateStateBadge(

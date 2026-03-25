@@ -347,6 +347,25 @@ export default function SettingsPage({ settings, onChange, onClampMemory, onRese
             </div>
           </Card>
 
+          <Card as="section" variant="strong" className="rounded-xl p-4 md:p-5">
+            <SectionTitle
+              icon={<Globe size={18} className="text-[var(--mc-grass)]" />}
+              title={t("settings.contentSources")}
+              subtitle={t("settings.contentSourcesDesc")}
+            />
+            <div className="space-y-2">
+              <FieldLabel>{t("settings.curseforgeApiKey")}</FieldLabel>
+              <input
+                type="password"
+                value={settings.curseforgeApiKey}
+                onChange={(event) => onChange({ ...settings, curseforgeApiKey: event.target.value })}
+                placeholder="cf-api-***"
+                className="w-full rounded-xl border border-[var(--border-medium)] bg-[var(--bg-secondary)] px-4 py-2.5 text-sm text-[var(--text-primary)]"
+              />
+              <p className="text-xs leading-5 text-[var(--text-muted)]">{t("settings.curseforgeApiKeyHint")}</p>
+            </div>
+          </Card>
+
           <Card as="section" variant="frost" className="rounded-xl p-4 md:p-5">
             <SectionTitle icon={<ImagePlus size={18} className="text-[var(--mc-grass)]" />} title={t("settings.background")} subtitle={t("settings.backgroundDesc")} />
 
