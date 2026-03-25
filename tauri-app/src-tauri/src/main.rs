@@ -1912,9 +1912,6 @@ fn modrinth_search_projects_blocking(
     }
 
     let normalized_project_type = normalize_content_project_type(&project_type)?;
-    if normalized_project_type == "world" {
-        return Err("World search is not available from the current online source".to_string());
-    }
     let client = build_blocking_http_client()?;
     let mut url = reqwest::Url::parse("https://api.modrinth.com/v2/search")
         .map_err(|e| format!("Invalid Modrinth search endpoint URL: {e}"))?;
@@ -1966,9 +1963,6 @@ fn install_modrinth_project_blocking(
     loader: Option<String>,
 ) -> Result<ModrinthInstallResult, String> {
     let normalized_project_type = normalize_content_project_type(&project_type)?;
-    if normalized_project_type == "world" {
-        return Err("World downloads must be imported from a ZIP package".to_string());
-    }
     let normalized_project_id = project_id.trim().to_string();
     if normalized_project_id.is_empty() {
         return Err("Modrinth project id cannot be empty".to_string());
@@ -2029,6 +2023,47 @@ fn install_modrinth_project_blocking(
         }
     }
 
+    let resolved_version_number = if version.version_number.trim().is_empty() {
+        version.name.clone()
+    } else {
+        version.version_number.clone()
+    };
+    if normalized_project_type == "world" {
+        let archive_bytes = fs::read(&download_path).map_err(|e| {
+            format!(
+                "Failed to read downloaded Modrinth world archive {}: {e}",
+                download_path.display()
+            )
+        })?;
+        let _ = fs::remove_file(&download_path);
+        let world_result = install_world_archive_with_metadata(
+            game_dir.clone(),
+            normalized_version_id.clone(),
+            file.filename.clone(),
+            archive_bytes,
+            Some(project_title.trim().to_string()),
+            "modrinth".to_string(),
+            Some(normalized_project_id.clone()),
+            Some(project_title.trim().to_string()),
+            Some((version.id.clone(), resolved_version_number.clone())),
+        )?;
+        return Ok(ModrinthInstallResult {
+            source: "modrinth".to_string(),
+            project_id: normalized_project_id,
+            project_title: project_title.trim().to_string(),
+            content_type: normalized_project_type,
+            version_id: version.id,
+            version_number: resolved_version_number,
+            file_name: file.filename,
+            target_dir: Path::new(&world_result.installed_path)
+                .parent()
+                .map(|path| path.to_string_lossy().to_string())
+                .unwrap_or_else(|| runtime_root.to_string_lossy().to_string()),
+            installed_path: world_result.installed_path,
+            changelog: version.changelog,
+        });
+    }
+
     let next_target_path = build_content_target_path(&runtime_root, &normalized_project_type, &file.filename)?;
     if let Some(existing) = existing_item.as_ref() {
         let same_target = resolve_managed_content_path(&runtime_root, &existing.installed_path)?
@@ -2047,11 +2082,6 @@ fn install_modrinth_project_blocking(
     )?;
     let _ = fs::remove_file(&download_path);
 
-    let resolved_version_number = if version.version_number.trim().is_empty() {
-        version.name.clone()
-    } else {
-        version.version_number.clone()
-    };
     upsert_installed_content_item(
         &runtime_root,
         InstalledContentItem {

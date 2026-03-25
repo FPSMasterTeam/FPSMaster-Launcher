@@ -163,7 +163,7 @@ export type ModrinthSearchResult = {
 };
 
 export type ModrinthInstallResult = {
-  source: OnlineContentSource;
+  source: ContentSource;
   projectId: string;
   projectTitle: string;
   contentType: ContentProjectType;

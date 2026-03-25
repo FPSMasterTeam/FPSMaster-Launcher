@@ -39,7 +39,7 @@ export default function ContentPage({
 }: ContentPageProps) {
   const { t } = useI18n();
   const [query, setQuery] = useState("");
-  const [source, setSource] = useState<OnlineContentSource>("modrinth");
+  const [source, setSource] = useState<ContentSource>("modrinth");
   const [contentType, setContentType] = useState<ContentProjectType>("mod");
   const [loading, setLoading] = useState(false);
   const [installingProjectId, setInstallingProjectId] = useState<string | null>(null);
@@ -56,7 +56,11 @@ export default function ContentPage({
   const worldFileInputRef = useRef<HTMLInputElement | null>(null);
 
   const currentInstance = current ?? instances[0] ?? null;
-  const worldImportMode = contentType === "world" && source === "modrinth";
+  const availableSources =
+    contentType === "world"
+      ? (["modrinth", "curseforge", "local"] as const satisfies readonly ContentSource[])
+      : (["modrinth", "curseforge"] as const satisfies readonly OnlineContentSource[]);
+  const worldImportMode = contentType === "world" && source === "local";
   const curseforgeNeedsKey = source === "curseforge" && !curseforgeApiKey.trim();
   const contentNavigationBusy =
     loading ||
@@ -69,6 +73,9 @@ export default function ContentPage({
     : contentType === "world"
       ? t("content.worldSearchPlaceholder")
       : t("content.searchPlaceholder");
+  const sourceNotice = worldImportMode
+    ? t("content.localSourceNotice")
+    : t("content.sourceNotice", { source: contentSourceLabel(source, t) });
   const contentTypeLabel = (value: ContentProjectType) => {
     if (value === "resourcepack") return t("content.type.resourcepack");
     if (value === "shader") return t("content.type.shader");
@@ -158,7 +165,7 @@ export default function ContentPage({
       setError(t("content.noInstance"));
       return;
     }
-    if (worldImportMode) {
+    if (worldImportMode || source === "local") {
       return;
     }
     if (curseforgeNeedsKey) {
@@ -396,6 +403,12 @@ export default function ContentPage({
   }
 
   useEffect(() => {
+    if (contentType !== "world" && source === "local") {
+      setSource("modrinth");
+    }
+  }, [contentType, source]);
+
+  useEffect(() => {
     void refreshInstalledState(currentInstance);
   }, [currentInstance?.id, currentInstance?.versionId, gameDir, curseforgeApiKey]);
 
@@ -471,7 +484,7 @@ export default function ContentPage({
           <span className="text-xs font-semibold uppercase tracking-[0.16em] text-[var(--text-muted)]">
             {t("content.sourceLabel")}
           </span>
-          {(["modrinth", "curseforge"] as const).map((item) => (
+          {availableSources.map((item) => (
             <button
               key={item}
               type="button"
@@ -577,7 +590,7 @@ export default function ContentPage({
               {t("content.checkingUpdates")}
             </span>
           )}
-          <span>{t("content.sourceNotice", { source: contentSourceLabel(source, t) })}</span>
+          <span>{sourceNotice}</span>
         </div>
       </Card>
 
@@ -883,14 +896,14 @@ export default function ContentPage({
           {!loading && results.length === 0 && (
             <Card variant="soft" className="rounded-2xl border border-dashed p-5 md:col-span-2 xl:col-span-3">
               <p className="text-sm text-[var(--text-secondary)]">
-                {contentType === "world" && source === "curseforge"
+                {contentType === "world" && source !== "local"
                   ? t("content.worldOnlineEmptyState")
                   : hasSearched
                     ? t("content.noSearchResults")
                   : t("content.emptyState")}
               </p>
               <p className="mt-2 text-xs text-[var(--text-muted)]">
-                {contentType === "world" && source === "curseforge"
+                {contentType === "world" && source !== "local"
                   ? t("content.worldOnlineHint")
                   : hasSearched
                     ? t("content.noSearchResultsHint")
@@ -931,7 +944,7 @@ function contentSourceLabel(
   t: ReturnType<typeof useI18n>["t"]
 ): string {
   if (source === "local") {
-    return t("content.source.imported");
+    return t("content.source.local");
   }
   if (source === "curseforge") {
     return t("content.source.curseforge");
