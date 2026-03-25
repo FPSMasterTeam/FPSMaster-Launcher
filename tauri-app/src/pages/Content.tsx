@@ -47,6 +47,7 @@ export default function ContentPage({
   const [checkingUpdates, setCheckingUpdates] = useState(false);
   const [batchUpdating, setBatchUpdating] = useState(false);
   const [importingWorld, setImportingWorld] = useState(false);
+  const [hasSearched, setHasSearched] = useState(false);
   const [results, setResults] = useState<ModrinthSearchResult[]>([]);
   const [installedItems, setInstalledItems] = useState<InstalledContentItem[]>([]);
   const [installedUpdates, setInstalledUpdates] = useState<InstalledContentUpdate[]>([]);
@@ -56,6 +57,13 @@ export default function ContentPage({
 
   const currentInstance = current ?? instances[0] ?? null;
   const worldImportMode = contentType === "world" && source === "modrinth";
+  const curseforgeNeedsKey = source === "curseforge" && !curseforgeApiKey.trim();
+  const contentNavigationBusy =
+    loading ||
+    batchUpdating ||
+    importingWorld ||
+    Boolean(installingProjectId) ||
+    Boolean(uninstallingProjectId);
   const searchPlaceholder = worldImportMode
     ? t("content.worldSearchUnavailable")
     : contentType === "world"
@@ -153,7 +161,7 @@ export default function ContentPage({
     if (worldImportMode) {
       return;
     }
-    if (source === "curseforge" && !curseforgeApiKey.trim()) {
+    if (curseforgeNeedsKey) {
       setError(t("content.curseforgeKeyRequired"));
       return;
     }
@@ -164,6 +172,7 @@ export default function ContentPage({
     }
 
     setLoading(true);
+    setHasSearched(true);
     setError(null);
     setLastInstallResult(null);
     onStatusChange(t("content.searching"));
@@ -363,6 +372,18 @@ export default function ContentPage({
         archiveName: file.name,
         archiveData: bytes
       });
+      setLastInstallResult({
+        source: "local",
+        projectId: result.projectId,
+        projectTitle: result.projectTitle,
+        contentType: result.contentType,
+        versionId: `world-import-${result.installedAtEpochSec}`,
+        versionNumber: t("content.importedVersionLabel"),
+        fileName: result.fileName,
+        targetDir: result.installedPath,
+        installedPath: result.installedPath,
+        changelog: null
+      });
       await refreshInstalledState(currentInstance);
       onStatusChange(t("content.worldImportDone", { title: result.projectTitle }));
     } catch (invokeError) {
@@ -382,6 +403,7 @@ export default function ContentPage({
     setResults([]);
     setError(null);
     setLastInstallResult(null);
+    setHasSearched(false);
   }, [currentInstance?.id, currentInstance?.versionId, contentType, source]);
 
   return (
@@ -433,12 +455,13 @@ export default function ContentPage({
             <button
               key={item}
               type="button"
+              disabled={contentNavigationBusy}
               onClick={() => setContentType(item)}
               className={`rounded-xl border px-3 py-2 text-sm font-medium transition-colors ${
                 contentType === item
                   ? "border-[var(--mc-grass)]/50 bg-[var(--mc-grass)]/12 text-[var(--text-primary)]"
                   : "border-[var(--border-medium)] bg-[var(--bg-secondary)] text-[var(--text-secondary)] hover:border-[var(--border-strong)]"
-              }`}
+              } disabled:cursor-not-allowed disabled:opacity-55`}
             >
               {contentTypeLabel(item)}
             </button>
@@ -452,17 +475,24 @@ export default function ContentPage({
             <button
               key={item}
               type="button"
+              disabled={contentNavigationBusy}
               onClick={() => setSource(item)}
               className={`rounded-xl border px-3 py-2 text-sm font-medium transition-colors ${
                 source === item
                   ? "border-[var(--mc-grass)]/50 bg-[var(--mc-grass)]/12 text-[var(--text-primary)]"
                   : "border-[var(--border-medium)] bg-[var(--bg-secondary)] text-[var(--text-secondary)] hover:border-[var(--border-strong)]"
-              }`}
+              } disabled:cursor-not-allowed disabled:opacity-55`}
             >
               {contentSourceLabel(item, t)}
             </button>
           ))}
         </div>
+        {curseforgeNeedsKey && !worldImportMode && (
+          <Card variant="soft" className="mb-4 rounded-2xl border border-amber-500/30 p-4">
+            <p className="text-sm font-medium text-amber-200">{t("content.curseforgeKeyRequired")}</p>
+            <p className="mt-1 text-xs text-[var(--text-muted)]">{t("content.curseforgeKeyHint")}</p>
+          </Card>
+        )}
 
         {worldImportMode ? (
           <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_auto] xl:items-center">
@@ -517,7 +547,7 @@ export default function ContentPage({
               variant="primary"
               size="lg"
               className="gap-2"
-              disabled={loading || busy || !currentInstance}
+              disabled={loading || busy || !currentInstance || curseforgeNeedsKey}
               onClick={() => void searchProjects()}
             >
               <Search size={16} />
@@ -562,6 +592,10 @@ export default function ContentPage({
               <p className="mt-1 text-xs text-[var(--text-secondary)]">
                 {lastInstallResult.versionNumber}
               </p>
+              <div className="mt-2 flex flex-wrap gap-1.5">
+                <MetaBadge>{contentSourceLabel(lastInstallResult.source, t)}</MetaBadge>
+                <MetaBadge>{contentTypeLabel(lastInstallResult.contentType)}</MetaBadge>
+              </div>
               {lastInstallResult.changelog && (
                 <p className="mt-2 line-clamp-3 text-xs leading-5 text-[var(--text-secondary)]">
                   {lastInstallResult.changelog.replace(/\s+/g, " ").trim()}
@@ -851,11 +885,15 @@ export default function ContentPage({
               <p className="text-sm text-[var(--text-secondary)]">
                 {contentType === "world" && source === "curseforge"
                   ? t("content.worldOnlineEmptyState")
+                  : hasSearched
+                    ? t("content.noSearchResults")
                   : t("content.emptyState")}
               </p>
               <p className="mt-2 text-xs text-[var(--text-muted)]">
                 {contentType === "world" && source === "curseforge"
                   ? t("content.worldOnlineHint")
+                  : hasSearched
+                    ? t("content.noSearchResultsHint")
                   : t("content.pendingNotice")}
               </p>
             </Card>
