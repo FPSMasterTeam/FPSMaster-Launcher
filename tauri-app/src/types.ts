@@ -15,8 +15,8 @@ export type ThemeAccent =
   | "custom";
 export type BackgroundSource = "local" | "web-random";
 export type LauncherVersionType = "EDGE" | "NOVA";
-export type ContentSource = "modrinth";
-export type ContentProjectType = "mod" | "resourcepack" | "shader";
+export type ContentSource = "modrinth" | "local";
+export type ContentProjectType = "mod" | "resourcepack" | "shader" | "world";
 export type InstalledContentUpdateStatus =
   | "up-to-date"
   | "update-available"
@@ -169,6 +169,16 @@ export type ModrinthInstallResult = {
   targetDir: string;
   installedPath: string;
   changelog?: string | null;
+};
+
+export type WorldInstallResult = {
+  source: ContentSource;
+  projectId: string;
+  projectTitle: string;
+  contentType: ContentProjectType;
+  fileName: string;
+  installedPath: string;
+  installedAtEpochSec: number;
 };
 
 export type InstalledContentItem = {

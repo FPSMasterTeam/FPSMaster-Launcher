@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { Download, Layers3, Search, Sparkles, Trash2 } from "lucide-react";
-import { type ReactNode, useEffect, useMemo, useState } from "react";
+import { type ChangeEvent, type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import Button from "../components/Button";
 import Card from "../components/Card";
 import { useI18n } from "../i18n";
@@ -10,7 +10,8 @@ import type {
   InstalledContentUpdate,
   Instance,
   ModrinthInstallResult,
-  ModrinthSearchResult
+  ModrinthSearchResult,
+  WorldInstallResult
 } from "../types";
 
 type ContentPageProps = {
@@ -22,7 +23,7 @@ type ContentPageProps = {
   onStatusChange: (message: string) => void;
 };
 
-const CONTENT_TYPES: readonly ContentProjectType[] = ["mod", "resourcepack", "shader"];
+const CONTENT_TYPES: readonly ContentProjectType[] = ["mod", "resourcepack", "shader", "world"];
 
 export default function ContentPage({
   instances,
@@ -40,16 +41,19 @@ export default function ContentPage({
   const [uninstallingProjectId, setUninstallingProjectId] = useState<string | null>(null);
   const [checkingUpdates, setCheckingUpdates] = useState(false);
   const [batchUpdating, setBatchUpdating] = useState(false);
+  const [importingWorld, setImportingWorld] = useState(false);
   const [results, setResults] = useState<ModrinthSearchResult[]>([]);
   const [installedItems, setInstalledItems] = useState<InstalledContentItem[]>([]);
   const [installedUpdates, setInstalledUpdates] = useState<InstalledContentUpdate[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [lastInstallResult, setLastInstallResult] = useState<ModrinthInstallResult | null>(null);
+  const worldFileInputRef = useRef<HTMLInputElement | null>(null);
 
   const currentInstance = current ?? instances[0] ?? null;
   const contentTypeLabel = (value: ContentProjectType) => {
     if (value === "resourcepack") return t("content.type.resourcepack");
     if (value === "shader") return t("content.type.shader");
+    if (value === "world") return t("content.type.world");
     return t("content.type.mod");
   };
   const installedMap = useMemo(() => {
@@ -128,6 +132,9 @@ export default function ContentPage({
   async function searchProjects() {
     if (!currentInstance) {
       setError(t("content.noInstance"));
+      return;
+    }
+    if (contentType === "world") {
       return;
     }
     const trimmedQuery = query.trim();
@@ -281,6 +288,44 @@ export default function ContentPage({
     }
   }
 
+  async function handleWorldImport(event: ChangeEvent<HTMLInputElement>) {
+    if (!currentInstance) {
+      setError(t("content.noInstance"));
+      return;
+    }
+
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) {
+      return;
+    }
+    if (!file.name.toLowerCase().endsWith(".zip")) {
+      setError(t("content.worldZipRequired"));
+      return;
+    }
+
+    setImportingWorld(true);
+    setError(null);
+    onStatusChange(t("content.importingWorld"));
+    try {
+      const bytes = Array.from(new Uint8Array(await file.arrayBuffer()));
+      const result = await invoke<WorldInstallResult>("import_world_archive", {
+        gameDir,
+        versionId: currentInstance.versionId,
+        archiveName: file.name,
+        archiveData: bytes
+      });
+      await refreshInstalledState(currentInstance);
+      onStatusChange(t("content.worldImportDone", { title: result.projectTitle }));
+    } catch (invokeError) {
+      const errorText = normalizeError(invokeError);
+      setError(errorText);
+      onStatusChange(t("app.status.failed", { error: errorText }));
+    } finally {
+      setImportingWorld(false);
+    }
+  }
+
   useEffect(() => {
     void refreshInstalledState(currentInstance);
   }, [currentInstance?.id, currentInstance?.versionId, gameDir]);
@@ -329,56 +374,84 @@ export default function ContentPage({
       </header>
 
       <Card variant="frost" className="rounded-2xl p-4 md:p-5">
-        <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_auto] xl:items-end">
-          <div>
-            <div className="mb-3 flex flex-wrap gap-2">
-              {CONTENT_TYPES.map((item) => (
-                <button
-                  key={item}
-                  type="button"
-                  onClick={() => setContentType(item)}
-                  className={`rounded-xl border px-3 py-2 text-sm font-medium transition-colors ${
-                    contentType === item
-                      ? "border-[var(--mc-grass)]/50 bg-[var(--mc-grass)]/12 text-[var(--text-primary)]"
-                      : "border-[var(--border-medium)] bg-[var(--bg-secondary)] text-[var(--text-secondary)] hover:border-[var(--border-strong)]"
-                  }`}
-                >
-                  {contentTypeLabel(item)}
-                </button>
-              ))}
-            </div>
-            <label className="relative block">
-              <Search
-                size={16}
-                className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-[var(--text-muted)]"
-              />
-              <input
-                value={query}
-                onChange={(event) => setQuery(event.target.value)}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter") {
-                    event.preventDefault();
-                    void searchProjects();
-                  }
-                }}
-                type="text"
-                placeholder={t("content.searchPlaceholder")}
-                className="w-full rounded-xl border border-[var(--border-medium)] bg-[var(--bg-secondary)] py-3 pl-10 pr-3 text-sm text-[var(--text-primary)] focus:border-[var(--mc-grass)]/45 focus:outline-none"
-              />
-            </label>
-          </div>
-
-          <Button
-            variant="primary"
-            size="lg"
-            className="gap-2"
-            disabled={loading || busy || !currentInstance}
-            onClick={() => void searchProjects()}
-          >
-            <Search size={16} />
-            {loading ? t("content.searching") : t("content.search")}
-          </Button>
+        <div className="mb-3 flex flex-wrap gap-2">
+          {CONTENT_TYPES.map((item) => (
+            <button
+              key={item}
+              type="button"
+              onClick={() => setContentType(item)}
+              className={`rounded-xl border px-3 py-2 text-sm font-medium transition-colors ${
+                contentType === item
+                  ? "border-[var(--mc-grass)]/50 bg-[var(--mc-grass)]/12 text-[var(--text-primary)]"
+                  : "border-[var(--border-medium)] bg-[var(--bg-secondary)] text-[var(--text-secondary)] hover:border-[var(--border-strong)]"
+              }`}
+            >
+              {contentTypeLabel(item)}
+            </button>
+          ))}
         </div>
+
+        {contentType === "world" ? (
+          <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_auto] xl:items-center">
+            <div>
+              <p className="text-sm text-[var(--text-secondary)]">{t("content.worldImportHint")}</p>
+            </div>
+            <div className="flex items-center gap-3">
+              <input
+                ref={worldFileInputRef}
+                type="file"
+                accept=".zip,application/zip"
+                className="hidden"
+                onChange={(event) => void handleWorldImport(event)}
+              />
+              <Button
+                variant="primary"
+                size="lg"
+                className="gap-2"
+                disabled={busy || importingWorld || !currentInstance}
+                onClick={() => worldFileInputRef.current?.click()}
+              >
+                <Download size={16} />
+                {importingWorld ? t("content.importingWorld") : t("content.importWorld")}
+              </Button>
+            </div>
+          </div>
+        ) : (
+          <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_auto] xl:items-end">
+            <div>
+              <label className="relative block">
+                <Search
+                  size={16}
+                  className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-[var(--text-muted)]"
+                />
+                <input
+                  value={query}
+                  onChange={(event) => setQuery(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") {
+                      event.preventDefault();
+                      void searchProjects();
+                    }
+                  }}
+                  type="text"
+                  placeholder={t("content.searchPlaceholder")}
+                  className="w-full rounded-xl border border-[var(--border-medium)] bg-[var(--bg-secondary)] py-3 pl-10 pr-3 text-sm text-[var(--text-primary)] focus:border-[var(--mc-grass)]/45 focus:outline-none"
+                />
+              </label>
+            </div>
+
+            <Button
+              variant="primary"
+              size="lg"
+              className="gap-2"
+              disabled={loading || busy || !currentInstance}
+              onClick={() => void searchProjects()}
+            >
+              <Search size={16} />
+              {loading ? t("content.searching") : t("content.search")}
+            </Button>
+          </div>
+        )}
 
         <div className="mt-4 flex flex-wrap items-center gap-2 text-xs text-[var(--text-muted)]">
           <span className="rounded-md border border-[var(--border-subtle)] bg-[var(--surface-soft)] px-2 py-1">
@@ -467,6 +540,7 @@ export default function ContentPage({
               {filteredInstalledItems.map((item) => {
                 const updateState = updateMap.get(`${item.contentType}:${item.projectId}`);
                 const canUpdate = updateState?.status === "update-available";
+                const supportsOnlineUpdate = item.source === "modrinth" && item.contentType !== "world";
                 return (
                   <div
                     key={`${item.contentType}:${item.projectId}`}
@@ -489,39 +563,42 @@ export default function ContentPage({
                         )}
                         <div className="mt-2 flex flex-wrap gap-1.5">
                           <MetaBadge>{contentTypeLabel(item.contentType)}</MetaBadge>
-                          <MetaBadge>Modrinth</MetaBadge>
+                          <MetaBadge>{contentSourceLabel(item.source, t)}</MetaBadge>
                           {renderUpdateStateBadge(updateState, t)}
                         </div>
                       </div>
 
-                      <div className="grid grid-cols-2 gap-2 md:min-w-[236px]">
-                        <Button
-                          variant={canUpdate ? "secondary" : "outline"}
-                          size="sm"
-                          className="gap-2"
-                          disabled={
-                            busy ||
-                            batchUpdating ||
-                            installingProjectId === item.projectId ||
-                            uninstallingProjectId === item.projectId
-                          }
-                          onClick={() =>
-                            void installProject({
-                              projectId: item.projectId,
-                              projectType: item.contentType,
-                              title: item.projectTitle
-                            })
-                          }
-                        >
-                          <Download size={14} />
-                          {installingProjectId === item.projectId
-                            ? canUpdate
-                              ? t("content.updatingButton")
-                              : t("content.installingButton")
-                            : canUpdate
-                              ? t("content.update")
-                              : t("content.reinstall")}
-                        </Button>
+                      <div className={`grid gap-2 ${supportsOnlineUpdate ? "grid-cols-2 md:min-w-[236px]" : "grid-cols-1 md:min-w-[120px]"}`}>
+                        {supportsOnlineUpdate && (
+                          <Button
+                            variant={canUpdate ? "secondary" : "outline"}
+                            size="sm"
+                            className="gap-2"
+                            disabled={
+                              busy ||
+                              batchUpdating ||
+                              importingWorld ||
+                              installingProjectId === item.projectId ||
+                              uninstallingProjectId === item.projectId
+                            }
+                            onClick={() =>
+                              void installProject({
+                                projectId: item.projectId,
+                                projectType: item.contentType,
+                                title: item.projectTitle
+                              })
+                            }
+                          >
+                            <Download size={14} />
+                            {installingProjectId === item.projectId
+                              ? canUpdate
+                                ? t("content.updatingButton")
+                                : t("content.installingButton")
+                              : canUpdate
+                                ? t("content.update")
+                                : t("content.reinstall")}
+                          </Button>
+                        )}
                         <Button
                           variant="danger"
                           size="sm"
@@ -529,6 +606,7 @@ export default function ContentPage({
                           disabled={
                             busy ||
                             batchUpdating ||
+                            importingWorld ||
                             installingProjectId === item.projectId ||
                             uninstallingProjectId === item.projectId
                           }
@@ -551,8 +629,16 @@ export default function ContentPage({
         </Card>
       )}
 
-      <section className="mt-5 grid grid-cols-1 gap-4 pb-20 md:grid-cols-2 xl:grid-cols-3">
-        {results.map((item) => {
+      {contentType === "world" ? (
+        <section className="mt-5 pb-20">
+          <Card variant="soft" className="rounded-2xl border border-dashed p-5">
+            <p className="text-sm text-[var(--text-secondary)]">{t("content.worldImportEmpty")}</p>
+            <p className="mt-2 text-xs text-[var(--text-muted)]">{t("content.worldImportHint")}</p>
+          </Card>
+        </section>
+      ) : (
+        <section className="mt-5 grid grid-cols-1 gap-4 pb-20 md:grid-cols-2 xl:grid-cols-3">
+          {results.map((item) => {
           const installedItem = installedMap.get(`${item.projectType}:${item.projectId}`);
           const updateState = updateMap.get(`${item.projectType}:${item.projectId}`);
           const canUpdate = updateState?.status === "update-available";
@@ -560,6 +646,7 @@ export default function ContentPage({
           const actionBusy =
             busy ||
             batchUpdating ||
+            importingWorld ||
             !currentInstance ||
             installingProjectId === item.projectId ||
             uninstallingProjectId === item.projectId;
@@ -681,15 +768,16 @@ export default function ContentPage({
               </div>
             </Card>
           );
-        })}
+          })}
 
-        {!loading && results.length === 0 && (
-          <Card variant="soft" className="rounded-2xl border border-dashed p-5 md:col-span-2 xl:col-span-3">
-            <p className="text-sm text-[var(--text-secondary)]">{t("content.emptyState")}</p>
-            <p className="mt-2 text-xs text-[var(--text-muted)]">{t("content.pendingNotice")}</p>
-          </Card>
-        )}
-      </section>
+          {!loading && results.length === 0 && (
+            <Card variant="soft" className="rounded-2xl border border-dashed p-5 md:col-span-2 xl:col-span-3">
+              <p className="text-sm text-[var(--text-secondary)]">{t("content.emptyState")}</p>
+              <p className="mt-2 text-xs text-[var(--text-muted)]">{t("content.pendingNotice")}</p>
+            </Card>
+          )}
+        </section>
+      )}
     </div>
   );
 }
@@ -714,6 +802,16 @@ function loaderLabel(loader: Instance["loader"], t: ReturnType<typeof useI18n>["
   if (loader === "forge") return t("loader.forge");
   if (loader === "fabric") return t("loader.fabric");
   return t("loader.vanilla");
+}
+
+function contentSourceLabel(
+  source: InstalledContentItem["source"],
+  t: ReturnType<typeof useI18n>["t"]
+): string {
+  if (source === "local") {
+    return t("content.source.imported");
+  }
+  return "Modrinth";
 }
 
 function renderUpdateStateBadge(

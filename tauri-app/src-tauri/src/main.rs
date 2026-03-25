@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256, Sha512};
 use std::collections::{HashMap, VecDeque};
-use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
+use std::io::{BufRead, BufReader, Cursor, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -354,6 +354,23 @@ struct InstalledContentUpdate {
     error: Option<String>,
     #[serde(rename = "checkedAtEpochSec")]
     checked_at_epoch_sec: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct WorldInstallResult {
+    source: String,
+    #[serde(rename = "projectId")]
+    project_id: String,
+    #[serde(rename = "projectTitle")]
+    project_title: String,
+    #[serde(rename = "contentType")]
+    content_type: String,
+    #[serde(rename = "fileName")]
+    file_name: String,
+    #[serde(rename = "installedPath")]
+    installed_path: String,
+    #[serde(rename = "installedAtEpochSec")]
+    installed_at_epoch_sec: u64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1345,6 +1362,21 @@ async fn check_installed_content_updates(
     .map_err(|e| format!("Failed to join content updates task: {e}"))?
 }
 
+#[tauri::command]
+async fn import_world_archive(
+    game_dir: String,
+    version_id: String,
+    archive_name: String,
+    archive_data: Vec<u8>,
+    world_name: Option<String>,
+) -> Result<WorldInstallResult, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        import_world_archive_blocking(game_dir, version_id, archive_name, archive_data, world_name)
+    })
+    .await
+    .map_err(|e| format!("Failed to join world import task: {e}"))?
+}
+
 fn modrinth_search_projects_blocking(
     query: String,
     project_type: String,
@@ -1358,6 +1390,9 @@ fn modrinth_search_projects_blocking(
     }
 
     let normalized_project_type = normalize_content_project_type(&project_type)?;
+    if normalized_project_type == "world" {
+        return Err("World search is not available from the current online source".to_string());
+    }
     let client = build_blocking_http_client()?;
     let mut url = reqwest::Url::parse("https://api.modrinth.com/v2/search")
         .map_err(|e| format!("Invalid Modrinth search endpoint URL: {e}"))?;
@@ -1409,6 +1444,9 @@ fn install_modrinth_project_blocking(
     loader: Option<String>,
 ) -> Result<ModrinthInstallResult, String> {
     let normalized_project_type = normalize_content_project_type(&project_type)?;
+    if normalized_project_type == "world" {
+        return Err("World downloads must be imported from a ZIP package".to_string());
+    }
     let normalized_project_id = project_id.trim().to_string();
     if normalized_project_id.is_empty() {
         return Err("Modrinth project id cannot be empty".to_string());
@@ -1585,6 +1623,98 @@ fn check_installed_content_updates_blocking(
         ));
     }
     Ok(results)
+}
+
+fn import_world_archive_blocking(
+    game_dir: String,
+    version_id: String,
+    archive_name: String,
+    archive_data: Vec<u8>,
+    world_name: Option<String>,
+) -> Result<WorldInstallResult, String> {
+    if archive_data.is_empty() {
+        return Err("World archive cannot be empty".to_string());
+    }
+
+    let game_dir_path = resolve_game_dir_path(&game_dir)?;
+    let runtime_root = resolve_version_runtime_dir(&game_dir_path, version_id.trim())?;
+    let saves_dir = runtime_root.join("saves");
+    fs::create_dir_all(&saves_dir)
+        .map_err(|e| format!("Failed to create saves directory {}: {e}", saves_dir.display()))?;
+
+    let resolved_world_name = resolve_world_name(world_name.as_deref(), &archive_name)?;
+    let stage_root = env::temp_dir().join(format!(
+        ".fpsmaster-world-stage-{}-{}",
+        std::process::id(),
+        now_epoch_millis()
+    ));
+    if stage_root.exists() {
+        fs::remove_dir_all(&stage_root).map_err(|e| {
+            format!(
+                "Failed to reset world staging directory {}: {e}",
+                stage_root.display()
+            )
+        })?;
+    }
+    fs::create_dir_all(&stage_root).map_err(|e| {
+        format!(
+            "Failed to create world staging directory {}: {e}",
+            stage_root.display()
+        )
+    })?;
+
+    let extracted_entries = extract_world_archive_to_stage(&archive_data, &stage_root)?;
+    if extracted_entries == 0 {
+        let _ = fs::remove_dir_all(&stage_root);
+        return Err("World archive does not contain importable files".to_string());
+    }
+
+    let extracted_root = determine_world_stage_root(&stage_root)?;
+    if !extracted_root.join("level.dat").exists() {
+        let _ = fs::remove_dir_all(&stage_root);
+        return Err("World archive is missing level.dat at the save root".to_string());
+    }
+
+    let target_world_dir = saves_dir.join(&resolved_world_name);
+    if target_world_dir.exists() {
+        fs::remove_dir_all(&target_world_dir).map_err(|e| {
+            format!(
+                "Failed to replace existing world {}: {e}",
+                target_world_dir.display()
+            )
+        })?;
+    }
+
+    move_or_copy_directory(&extracted_root, &target_world_dir)?;
+    let _ = fs::remove_dir_all(&stage_root);
+
+    let installed_at_epoch_sec = now_epoch_seconds();
+    let project_id = format!("local-world-{}", slugify_content_key(&resolved_world_name));
+    let file_name = sanitize_file_name(&archive_name);
+    upsert_installed_content_item(
+        &runtime_root,
+        InstalledContentItem {
+            source: "local".to_string(),
+            project_id: project_id.clone(),
+            project_title: resolved_world_name.clone(),
+            content_type: "world".to_string(),
+            version_id: format!("local-{}", installed_at_epoch_sec),
+            version_number: "Imported".to_string(),
+            file_name: file_name.clone(),
+            installed_path: target_world_dir.to_string_lossy().to_string(),
+            installed_at_epoch_sec,
+        },
+    )?;
+
+    Ok(WorldInstallResult {
+        source: "local".to_string(),
+        project_id,
+        project_title: resolved_world_name,
+        content_type: "world".to_string(),
+        file_name,
+        installed_path: target_world_dir.to_string_lossy().to_string(),
+        installed_at_epoch_sec,
+    })
 }
 
 #[tauri::command]
@@ -2007,8 +2137,9 @@ fn normalize_content_project_type(value: &str) -> Result<String, String> {
         "mod" => Ok("mod".to_string()),
         "resourcepack" => Ok("resourcepack".to_string()),
         "shader" => Ok("shader".to_string()),
+        "world" => Ok("world".to_string()),
         other => Err(format!(
-            "Unsupported content project type '{other}'. Expected mod/resourcepack/shader"
+            "Unsupported content project type '{other}'. Expected mod/resourcepack/shader/world"
         )),
     }
 }
@@ -2016,8 +2147,9 @@ fn normalize_content_project_type(value: &str) -> Result<String, String> {
 fn normalize_content_source(value: &str) -> Result<String, String> {
     match value.trim().to_ascii_lowercase().as_str() {
         "modrinth" => Ok("modrinth".to_string()),
+        "local" => Ok("local".to_string()),
         other => Err(format!(
-            "Unsupported content source '{other}'. Expected modrinth"
+            "Unsupported content source '{other}'. Expected modrinth/local"
         )),
     }
 }
@@ -2294,6 +2426,7 @@ fn content_target_dir(runtime_root: &Path, project_type: &str) -> Result<PathBuf
         "mod" => Ok(runtime_root.join("mods")),
         "resourcepack" => Ok(runtime_root.join("resourcepacks")),
         "shader" => Ok(runtime_root.join("shaderpacks")),
+        "world" => Ok(runtime_root.join("saves")),
         other => Err(format!(
             "Unsupported install target for content type '{other}'"
         )),
@@ -2520,6 +2653,163 @@ fn remove_content_install_path(runtime_root: &Path, raw_path: &str) -> Result<()
         })?;
     }
     Ok(())
+}
+
+fn resolve_world_name(world_name: Option<&str>, archive_name: &str) -> Result<String, String> {
+    let base = world_name
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| {
+            Path::new(archive_name)
+                .file_stem()
+                .map(|value| value.to_string_lossy().to_string())
+                .unwrap_or_else(|| "Imported World".to_string())
+        });
+    let sanitized = sanitize_file_name(&base).trim().trim_matches('.').to_string();
+    if sanitized.is_empty() {
+        return Err("World name cannot be empty".to_string());
+    }
+    Ok(sanitized)
+}
+
+fn slugify_content_key(raw: &str) -> String {
+    let mut output = String::with_capacity(raw.len());
+    let mut last_dash = false;
+    for ch in raw.chars() {
+        let normalized = ch.to_ascii_lowercase();
+        if normalized.is_ascii_alphanumeric() {
+            output.push(normalized);
+            last_dash = false;
+        } else if !last_dash {
+            output.push('-');
+            last_dash = true;
+        }
+    }
+    let normalized = output.trim_matches('-').to_string();
+    if normalized.is_empty() {
+        format!("content-{}", now_epoch_seconds())
+    } else {
+        normalized
+    }
+}
+
+fn extract_world_archive_to_stage(
+    archive_data: &[u8],
+    stage_root: &Path,
+) -> Result<usize, String> {
+    let cursor = Cursor::new(archive_data.to_vec());
+    let mut archive = zip::ZipArchive::new(cursor)
+        .map_err(|e| format!("Invalid world archive ZIP: {e}"))?;
+    let mut extracted_entries = 0usize;
+
+    for index in 0..archive.len() {
+        let mut entry = archive.by_index(index).map_err(|e| e.to_string())?;
+        let Some(relative_path) = entry.enclosed_name().map(|value| value.to_path_buf()) else {
+            continue;
+        };
+        if relative_path.as_os_str().is_empty() {
+            continue;
+        }
+        if relative_path.components().any(|part| {
+            part.as_os_str()
+                .to_string_lossy()
+                .eq_ignore_ascii_case("__MACOSX")
+        }) {
+            continue;
+        }
+
+        let out_path = stage_root.join(&relative_path);
+        if entry.name().ends_with('/') {
+            fs::create_dir_all(&out_path).map_err(|e| {
+                format!(
+                    "Failed to create extracted world directory {}: {e}",
+                    out_path.display()
+                )
+            })?;
+            continue;
+        }
+
+        if let Some(parent) = out_path.parent() {
+            fs::create_dir_all(parent).map_err(|e| {
+                format!(
+                    "Failed to create extracted world directory {}: {e}",
+                    parent.display()
+                )
+            })?;
+        }
+
+        let mut output = fs::File::create(&out_path).map_err(|e| {
+            format!(
+                "Failed to create extracted world file {}: {e}",
+                out_path.display()
+            )
+        })?;
+        std::io::copy(&mut entry, &mut output).map_err(|e| {
+            format!(
+                "Failed to extract world file {}: {e}",
+                out_path.display()
+            )
+        })?;
+        output.flush().map_err(|e| {
+            format!(
+                "Failed to flush extracted world file {}: {e}",
+                out_path.display()
+            )
+        })?;
+        extracted_entries += 1;
+    }
+
+    Ok(extracted_entries)
+}
+
+fn determine_world_stage_root(stage_root: &Path) -> Result<PathBuf, String> {
+    let mut child_dirs = Vec::new();
+    let mut child_files = 0usize;
+    for entry in fs::read_dir(stage_root).map_err(|e| {
+        format!(
+            "Failed to inspect extracted world directory {}: {e}",
+            stage_root.display()
+        )
+    })? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let path = entry.path();
+        if path.is_dir() {
+            child_dirs.push(path);
+        } else {
+            child_files += 1;
+        }
+    }
+
+    if child_dirs.len() == 1 && child_files == 0 {
+        Ok(child_dirs.remove(0))
+    } else {
+        Ok(stage_root.to_path_buf())
+    }
+}
+
+fn move_or_copy_directory(source_dir: &Path, target_dir: &Path) -> Result<(), String> {
+    if let Some(parent) = target_dir.parent() {
+        fs::create_dir_all(parent).map_err(|e| {
+            format!(
+                "Failed to create parent directory {}: {e}",
+                parent.display()
+            )
+        })?;
+    }
+
+    match fs::rename(source_dir, target_dir) {
+        Ok(_) => Ok(()),
+        Err(_) => {
+            fs::create_dir_all(target_dir).map_err(|e| {
+                format!(
+                    "Failed to create target world directory {}: {e}",
+                    target_dir.display()
+                )
+            })?;
+            copy_directory_contents(source_dir, target_dir)
+        }
+    }
 }
 
 fn download_file_quiet_blocking(
@@ -4876,6 +5166,7 @@ fn main() {
             list_installed_content,
             uninstall_installed_content,
             check_installed_content_updates,
+            import_world_archive,
             get_launcher_package_state,
             install_launcher_version_mods,
             list_vanilla_versions,
