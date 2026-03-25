@@ -55,6 +55,12 @@ export default function ContentPage({
   const worldFileInputRef = useRef<HTMLInputElement | null>(null);
 
   const currentInstance = current ?? instances[0] ?? null;
+  const worldImportMode = contentType === "world" && source === "modrinth";
+  const searchPlaceholder = worldImportMode
+    ? t("content.worldSearchUnavailable")
+    : contentType === "world"
+      ? t("content.worldSearchPlaceholder")
+      : t("content.searchPlaceholder");
   const contentTypeLabel = (value: ContentProjectType) => {
     if (value === "resourcepack") return t("content.type.resourcepack");
     if (value === "shader") return t("content.type.shader");
@@ -144,7 +150,7 @@ export default function ContentPage({
       setError(t("content.noInstance"));
       return;
     }
-    if (contentType === "world") {
+    if (worldImportMode) {
       return;
     }
     if (source === "curseforge" && !curseforgeApiKey.trim()) {
@@ -205,7 +211,7 @@ export default function ContentPage({
     const itemKey = `${item.source}:${item.projectType}:${item.projectId}`;
     const existingItem = installedMap.get(itemKey);
     const updateState = updateMap.get(itemKey);
-    setInstallingProjectId(item.projectId);
+    setInstallingProjectId(itemKey);
     setError(null);
     onStatusChange(
       t(
@@ -268,7 +274,7 @@ export default function ContentPage({
       return;
     }
 
-    setUninstallingProjectId(item.projectId);
+    setUninstallingProjectId(`${item.source}:${item.contentType}:${item.projectId}`);
     setError(null);
     onStatusChange(t("content.uninstalling", { title: item.projectTitle }));
     try {
@@ -279,7 +285,10 @@ export default function ContentPage({
         projectId: item.projectId,
         contentType: item.contentType
       });
-      if (lastInstallResult?.projectId === item.projectId) {
+      if (
+        lastInstallResult?.projectId === item.projectId &&
+        lastInstallResult?.source === item.source
+      ) {
         setLastInstallResult(null);
       }
       await refreshInstalledState(currentInstance);
@@ -367,7 +376,13 @@ export default function ContentPage({
 
   useEffect(() => {
     void refreshInstalledState(currentInstance);
-  }, [currentInstance?.id, currentInstance?.versionId, gameDir]);
+  }, [currentInstance?.id, currentInstance?.versionId, gameDir, curseforgeApiKey]);
+
+  useEffect(() => {
+    setResults([]);
+    setError(null);
+    setLastInstallResult(null);
+  }, [currentInstance?.id, currentInstance?.versionId, contentType, source]);
 
   return (
     <div className="h-full overflow-y-auto p-4 md:p-5 xl:p-6">
@@ -429,29 +444,27 @@ export default function ContentPage({
             </button>
           ))}
         </div>
-        {contentType !== "world" && (
-          <div className="mb-4 flex flex-wrap items-center gap-2">
-            <span className="text-xs font-semibold uppercase tracking-[0.16em] text-[var(--text-muted)]">
-              {t("content.sourceLabel")}
-            </span>
-            {(["modrinth", "curseforge"] as const).map((item) => (
-              <button
-                key={item}
-                type="button"
-                onClick={() => setSource(item)}
-                className={`rounded-xl border px-3 py-2 text-sm font-medium transition-colors ${
-                  source === item
-                    ? "border-[var(--mc-grass)]/50 bg-[var(--mc-grass)]/12 text-[var(--text-primary)]"
-                    : "border-[var(--border-medium)] bg-[var(--bg-secondary)] text-[var(--text-secondary)] hover:border-[var(--border-strong)]"
-                }`}
-              >
-                {contentSourceLabel(item, t)}
-              </button>
-            ))}
-          </div>
-        )}
+        <div className="mb-4 flex flex-wrap items-center gap-2">
+          <span className="text-xs font-semibold uppercase tracking-[0.16em] text-[var(--text-muted)]">
+            {t("content.sourceLabel")}
+          </span>
+          {(["modrinth", "curseforge"] as const).map((item) => (
+            <button
+              key={item}
+              type="button"
+              onClick={() => setSource(item)}
+              className={`rounded-xl border px-3 py-2 text-sm font-medium transition-colors ${
+                source === item
+                  ? "border-[var(--mc-grass)]/50 bg-[var(--mc-grass)]/12 text-[var(--text-primary)]"
+                  : "border-[var(--border-medium)] bg-[var(--bg-secondary)] text-[var(--text-secondary)] hover:border-[var(--border-strong)]"
+              }`}
+            >
+              {contentSourceLabel(item, t)}
+            </button>
+          ))}
+        </div>
 
-        {contentType === "world" ? (
+        {worldImportMode ? (
           <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_auto] xl:items-center">
             <div>
               <p className="text-sm text-[var(--text-secondary)]">{t("content.worldImportHint")}</p>
@@ -494,7 +507,7 @@ export default function ContentPage({
                     }
                   }}
                   type="text"
-                  placeholder={t("content.searchPlaceholder")}
+                  placeholder={searchPlaceholder}
                   className="w-full rounded-xl border border-[var(--border-medium)] bg-[var(--bg-secondary)] py-3 pl-10 pr-3 text-sm text-[var(--text-primary)] focus:border-[var(--mc-grass)]/45 focus:outline-none"
                 />
               </label>
@@ -600,10 +613,11 @@ export default function ContentPage({
               {filteredInstalledItems.map((item) => {
                 const updateState = updateMap.get(`${item.source}:${item.contentType}:${item.projectId}`);
                 const canUpdate = updateState?.status === "update-available";
-                const supportsOnlineUpdate = item.source !== "local" && item.contentType !== "world";
+                const supportsOnlineUpdate = item.source !== "local";
+                const itemKey = `${item.source}:${item.contentType}:${item.projectId}`;
                 return (
                   <div
-                    key={`${item.contentType}:${item.projectId}`}
+                    key={`${item.source}:${item.contentType}:${item.projectId}`}
                     className="rounded-2xl border border-[var(--border-subtle)] bg-[var(--surface-soft)] p-4"
                   >
                     <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
@@ -638,8 +652,8 @@ export default function ContentPage({
                               busy ||
                               batchUpdating ||
                               importingWorld ||
-                              installingProjectId === item.projectId ||
-                              uninstallingProjectId === item.projectId
+                              installingProjectId === itemKey ||
+                              uninstallingProjectId === itemKey
                             }
                             onClick={() =>
                               void installProject({
@@ -651,7 +665,7 @@ export default function ContentPage({
                             }
                           >
                             <Download size={14} />
-                            {installingProjectId === item.projectId
+                            {installingProjectId === itemKey
                               ? canUpdate
                                 ? t("content.updatingButton")
                                 : t("content.installingButton")
@@ -668,13 +682,13 @@ export default function ContentPage({
                             busy ||
                             batchUpdating ||
                             importingWorld ||
-                            installingProjectId === item.projectId ||
-                            uninstallingProjectId === item.projectId
+                            installingProjectId === itemKey ||
+                            uninstallingProjectId === itemKey
                           }
                           onClick={() => void uninstallProject(item)}
                         >
                           <Trash2 size={14} />
-                          {uninstallingProjectId === item.projectId
+                          {uninstallingProjectId === itemKey
                             ? t("content.uninstallingButton")
                             : t("content.uninstall")}
                         </Button>
@@ -690,7 +704,7 @@ export default function ContentPage({
         </Card>
       )}
 
-      {contentType === "world" ? (
+      {worldImportMode ? (
         <section className="mt-5 pb-20">
           <Card variant="soft" className="rounded-2xl border border-dashed p-5">
             <p className="text-sm text-[var(--text-secondary)]">{t("content.worldImportEmpty")}</p>
@@ -704,13 +718,14 @@ export default function ContentPage({
           const updateState = updateMap.get(`${item.source}:${item.projectType}:${item.projectId}`);
           const canUpdate = updateState?.status === "update-available";
           const isInstalled = Boolean(installedItem);
+          const itemKey = `${item.source}:${item.projectType}:${item.projectId}`;
           const actionBusy =
             busy ||
             batchUpdating ||
             importingWorld ||
             !currentInstance ||
-            installingProjectId === item.projectId ||
-            uninstallingProjectId === item.projectId;
+            installingProjectId === itemKey ||
+            uninstallingProjectId === itemKey;
           return (
             <Card key={item.projectId} as="article" variant="frost" className="flex min-h-[280px] flex-col rounded-2xl p-4">
               <div className="flex items-start gap-3">
@@ -791,7 +806,7 @@ export default function ContentPage({
                       onClick={() => void installProject(item)}
                     >
                       <Download size={14} />
-                      {installingProjectId === item.projectId
+                      {installingProjectId === itemKey
                         ? canUpdate
                           ? t("content.updatingButton")
                           : t("content.installingButton")
@@ -807,7 +822,7 @@ export default function ContentPage({
                       onClick={() => void uninstallProject(installedItem)}
                     >
                       <Trash2 size={14} />
-                      {uninstallingProjectId === item.projectId
+                      {uninstallingProjectId === itemKey
                         ? t("content.uninstallingButton")
                         : t("content.uninstall")}
                     </Button>
@@ -821,7 +836,7 @@ export default function ContentPage({
                     onClick={() => void installProject(item)}
                   >
                     <Download size={14} />
-                    {installingProjectId === item.projectId
+                    {installingProjectId === itemKey
                       ? t("content.installingButton")
                       : t("content.install")}
                   </Button>
@@ -833,8 +848,16 @@ export default function ContentPage({
 
           {!loading && results.length === 0 && (
             <Card variant="soft" className="rounded-2xl border border-dashed p-5 md:col-span-2 xl:col-span-3">
-              <p className="text-sm text-[var(--text-secondary)]">{t("content.emptyState")}</p>
-              <p className="mt-2 text-xs text-[var(--text-muted)]">{t("content.pendingNotice")}</p>
+              <p className="text-sm text-[var(--text-secondary)]">
+                {contentType === "world" && source === "curseforge"
+                  ? t("content.worldOnlineEmptyState")
+                  : t("content.emptyState")}
+              </p>
+              <p className="mt-2 text-xs text-[var(--text-muted)]">
+                {contentType === "world" && source === "curseforge"
+                  ? t("content.worldOnlineHint")
+                  : t("content.pendingNotice")}
+              </p>
             </Card>
           )}
         </section>

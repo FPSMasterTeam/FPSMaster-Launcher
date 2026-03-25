@@ -2098,9 +2098,6 @@ fn curseforge_search_projects_blocking(
     }
 
     let normalized_project_type = normalize_content_project_type(&project_type)?;
-    if normalized_project_type == "world" {
-        return Err("World search is not available from CurseForge in the current launcher flow".to_string());
-    }
     let normalized_api_key = normalize_curseforge_api_key(&api_key)?;
     let client = build_blocking_http_client()?;
     let class_id = curseforge_class_id_for_project_type(&normalized_project_type)?;
@@ -2159,9 +2156,6 @@ fn install_curseforge_project_blocking(
     api_key: String,
 ) -> Result<ModrinthInstallResult, String> {
     let normalized_project_type = normalize_content_project_type(&project_type)?;
-    if normalized_project_type == "world" {
-        return Err("World downloads must be imported from a ZIP package".to_string());
-    }
     let normalized_api_key = normalize_curseforge_api_key(&api_key)?;
     let normalized_project_id = project_id.trim().to_string();
     if normalized_project_id.is_empty() {
@@ -2208,6 +2202,43 @@ fn install_curseforge_project_blocking(
     download_file_quiet_blocking(&client, &download_url, &download_path)
         .map_err(|err| format!("Failed to download CurseForge file {}: {err}", file.file_name))?;
 
+    let version_label = resolve_curseforge_version_label(&file);
+    if normalized_project_type == "world" {
+        let archive_bytes = fs::read(&download_path).map_err(|e| {
+            format!(
+                "Failed to read downloaded CurseForge world archive {}: {e}",
+                download_path.display()
+            )
+        })?;
+        let _ = fs::remove_file(&download_path);
+        let world_result = install_world_archive_with_metadata(
+            game_dir.clone(),
+            normalized_version_id.clone(),
+            file.file_name.clone(),
+            archive_bytes,
+            Some(project_title.trim().to_string()),
+            "curseforge".to_string(),
+            Some(normalized_project_id.clone()),
+            Some(project_title.trim().to_string()),
+            Some((file.id.to_string(), version_label.clone())),
+        )?;
+        return Ok(ModrinthInstallResult {
+            source: "curseforge".to_string(),
+            project_id: normalized_project_id,
+            project_title: project_title.trim().to_string(),
+            content_type: normalized_project_type,
+            version_id: file.id.to_string(),
+            version_number: version_label,
+            file_name: file.file_name,
+            target_dir: Path::new(&world_result.installed_path)
+                .parent()
+                .map(|path| path.to_string_lossy().to_string())
+                .unwrap_or_else(|| runtime_root.to_string_lossy().to_string()),
+            installed_path: world_result.installed_path,
+            changelog: None,
+        });
+    }
+
     let next_target_path = build_content_target_path(&runtime_root, &normalized_project_type, &file.file_name)?;
     if let Some(existing) = existing_item.as_ref() {
         let same_target = resolve_managed_content_path(&runtime_root, &existing.installed_path)?
@@ -2234,7 +2265,7 @@ fn install_curseforge_project_blocking(
             project_title: project_title.trim().to_string(),
             content_type: normalized_project_type.clone(),
             version_id: file.id.to_string(),
-            version_number: resolve_curseforge_version_label(&file),
+            version_number: version_label.clone(),
             file_name: file.file_name.clone(),
             installed_path: installed_path.to_string_lossy().to_string(),
             installed_at_epoch_sec: now_epoch_seconds(),
@@ -2247,7 +2278,7 @@ fn install_curseforge_project_blocking(
         project_title: project_title.trim().to_string(),
         content_type: normalized_project_type,
         version_id: file.id.to_string(),
-        version_number: resolve_curseforge_version_label(&file),
+        version_number: version_label,
         file_name: file.file_name,
         target_dir: installed_path
             .parent()
@@ -2331,6 +2362,30 @@ fn import_world_archive_blocking(
     archive_data: Vec<u8>,
     world_name: Option<String>,
 ) -> Result<WorldInstallResult, String> {
+    install_world_archive_with_metadata(
+        game_dir,
+        version_id,
+        archive_name,
+        archive_data,
+        world_name,
+        "local".to_string(),
+        None,
+        None,
+        None,
+    )
+}
+
+fn install_world_archive_with_metadata(
+    game_dir: String,
+    version_id: String,
+    archive_name: String,
+    archive_data: Vec<u8>,
+    world_name: Option<String>,
+    source: String,
+    project_id_override: Option<String>,
+    project_title_override: Option<String>,
+    version_label_override: Option<(String, String)>,
+) -> Result<WorldInstallResult, String> {
     if archive_data.is_empty() {
         return Err("World archive cannot be empty".to_string());
     }
@@ -2388,17 +2443,28 @@ fn import_world_archive_blocking(
     let _ = fs::remove_dir_all(&stage_root);
 
     let installed_at_epoch_sec = now_epoch_seconds();
-    let project_id = format!("local-world-{}", slugify_content_key(&resolved_world_name));
+    let project_title = project_title_override.unwrap_or_else(|| resolved_world_name.clone());
+    let project_id = project_id_override
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| format!("local-world-{}", slugify_content_key(&resolved_world_name)));
+    let (resolved_version_id, resolved_version_number) = version_label_override
+        .filter(|(version_id, _)| !version_id.trim().is_empty())
+        .unwrap_or_else(|| {
+            (
+                format!("local-{}", installed_at_epoch_sec),
+                "Imported".to_string(),
+            )
+        });
     let file_name = sanitize_file_name(&archive_name);
     upsert_installed_content_item(
         &runtime_root,
         InstalledContentItem {
-            source: "local".to_string(),
+            source: source.clone(),
             project_id: project_id.clone(),
-            project_title: resolved_world_name.clone(),
+            project_title: project_title.clone(),
             content_type: "world".to_string(),
-            version_id: format!("local-{}", installed_at_epoch_sec),
-            version_number: "Imported".to_string(),
+            version_id: resolved_version_id,
+            version_number: resolved_version_number,
             file_name: file_name.clone(),
             installed_path: target_world_dir.to_string_lossy().to_string(),
             installed_at_epoch_sec,
@@ -2406,9 +2472,9 @@ fn import_world_archive_blocking(
     )?;
 
     Ok(WorldInstallResult {
-        source: "local".to_string(),
+        source,
         project_id,
-        project_title: resolved_world_name,
+        project_title,
         content_type: "world".to_string(),
         file_name,
         installed_path: target_world_dir.to_string_lossy().to_string(),
@@ -3034,6 +3100,13 @@ fn fetch_curseforge_project_files(
 fn choose_best_curseforge_file(
     mut files: Vec<CurseForgeFile>,
 ) -> Result<CurseForgeFile, String> {
+    files.retain(|item| {
+        item.download_url
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .is_some()
+    });
     if files.is_empty() {
         return Err("No compatible CurseForge file found for the current instance".to_string());
     }
