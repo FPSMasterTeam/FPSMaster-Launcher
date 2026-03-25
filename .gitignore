@@ -10,6 +10,8 @@ tauri-app/dist/
 
 # Rust
 tauri-app/src-tauri/target/
+tauri-app/src-tauri/target-codex-check*/
+tmp-check/
 
 # Reference
 reference
