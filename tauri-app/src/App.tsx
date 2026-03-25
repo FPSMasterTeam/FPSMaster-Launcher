@@ -28,6 +28,7 @@ import InstallPage from "./pages/Install";
 import InstancesPage from "./pages/Instances";
 import LoginPage from "./pages/Login";
 import MonitorPage from "./pages/Monitor";
+import ContentPage from "./pages/Content";
 import SettingsPage from "./pages/Settings";
 import type {
   FabricInstallResult,
@@ -146,7 +147,7 @@ function Launcher() {
 
   const [installDialog, setInstallDialog] = useState<InstallDialogState | null>(null);
   const [titlebarBusy, setTitlebarBusy] = useState(false);
-  const [windowVisible, setWindowVisible] = useState(true);
+  const [windowVisible, setWindowVisible] = useState(false);
   const launcherSessionIdRef = useRef(loadOrCreateLauncherSessionId());
 
   const logCursorRef = useRef<number | null>(null);
@@ -165,6 +166,7 @@ function Launcher() {
   const majors = useMemo(() => Object.keys(grouped).sort((a, b) => compareMajor(b, a)), [grouped]);
   const majorVersions = major ? grouped[major] ?? [] : [];
   const effectiveSidebarCollapsed = compactLayout ? true : sidebarCollapsed;
+  const backgroundMode = settings.minimizeToTray && !windowVisible;
   const activeBackgroundUrl =
     settings.backgroundSource === "web-random" ? settings.backgroundWebUrl : settings.backgroundImage;
   const snapshots = useMemo(() => catalog.filter(isSnapshot), [catalog]);
@@ -206,12 +208,17 @@ function Launcher() {
       setLauncherDashboard(null);
       setLauncherOnlineCount(null);
       setPresetPackageStatuses({});
-      void refreshLauncherHome(true);
+      if (!backgroundMode) {
+        void refreshLauncherHome(true);
+      }
+      return;
+    }
+    if (backgroundMode) {
       return;
     }
     void refreshLauncherVersions(true);
     void refreshLauncherHome(true, launcherAuth.token);
-  }, [launcherAuth?.token]);
+  }, [launcherAuth?.token, backgroundMode]);
 
   useEffect(() => {
     const token = launcherAuth?.token?.trim();
@@ -282,8 +289,11 @@ function Launcher() {
   }, []);
 
   useEffect(() => {
+    if (backgroundMode || launcherAuth?.token) {
+      return;
+    }
     void refreshLauncherHome(true);
-  }, []);
+  }, [backgroundMode, launcherAuth?.token]);
 
   useEffect(() => {
     applyTheme(settings.themeMode, settings.themeAccent, settings.customAccentHex);
@@ -578,7 +588,7 @@ function Launcher() {
         .map(async (instance) => {
           const expected = targetMap[instance.launcherVersionType!];
           if (!expected) {
-            return [instance.id, { state: "missing", versionTag: null } satisfies PresetPackageStatus] as const;
+            return [instance.id, createPresetPackageStatus("missing")] as const;
           }
           try {
             const state = await invoke<LauncherPackageState>("get_launcher_package_state", {
@@ -586,16 +596,38 @@ function Launcher() {
               versionId: instance.versionId,
               expectedVersionTag: expected.versionName,
               expectedChecksum: expected.checksum,
+              expectedManifestUrl: expected.manifestUrl,
               expectedDownloadUrl: expected.downloadUrl
             });
             const mapped: PresetPackageStatus = !state.installed
-              ? { state: "missing", versionTag: null }
+              ? createPresetPackageStatus("missing", {
+                  targetVersionTag: expected.versionName,
+                  changelog: expected.changelog
+                })
               : state.upToDate
-                ? { state: "ready", versionTag: state.versionTag }
-                : { state: "update-available", versionTag: expected.versionName };
+                ? createPresetPackageStatus("ready", {
+                    versionTag: state.versionTag ?? expected.versionName,
+                    installedVersionTag: state.versionTag ?? expected.versionName,
+                    targetVersionTag: expected.versionName,
+                    changelog: expected.changelog
+                  })
+                : createPresetPackageStatus("update-available", {
+                    versionTag: expected.versionName,
+                    installedVersionTag: state.versionTag ?? null,
+                    targetVersionTag: expected.versionName,
+                    changelog: expected.changelog
+                  });
             return [instance.id, mapped] as const;
-          } catch {
-            return [instance.id, { state: "checking", versionTag: null } satisfies PresetPackageStatus] as const;
+          } catch (error) {
+            return [
+              instance.id,
+              createPresetPackageStatus("error", {
+                versionTag: expected.versionName,
+                targetVersionTag: expected.versionName,
+                changelog: expected.changelog,
+                lastError: formatLaunchError(error)
+              })
+            ] as const;
           }
         })
     );
@@ -807,40 +839,81 @@ function Launcher() {
     }
 
     if (!targetVersion) {
+      setPresetPackageStatuses((prev) => ({
+        ...prev,
+        [instance.id]: createPresetPackageStatus("missing")
+      }));
       return;
     }
 
     if (!isLauncherVersionCompatible(targetVersion.minLauncherVersion)) {
-      setStatus(
-        t("app.status.launcherUpgradeRequired", {
-          required: targetVersion.minLauncherVersion ?? "-"
+      const errorText = t("app.status.launcherUpgradeRequired", {
+        required: targetVersion.minLauncherVersion ?? "-"
+      });
+      setPresetPackageStatuses((prev) => ({
+        ...prev,
+        [instance.id]: createPresetPackageStatus("error", {
+          versionTag: targetVersion.versionName,
+          targetVersionTag: targetVersion.versionName,
+          changelog: targetVersion.changelog,
+          lastError: errorText
         })
+      }));
+      setStatus(
+        errorText
       );
       return;
     }
 
-    setStatus(t("app.status.autoInstallMods", { name: instance.name }));
-    const result = await invoke<LauncherModsInstallResult>("install_launcher_version_mods", {
-      gameDir: settings.gameDir,
-      versionId: instance.versionId,
-      downloadUrl: targetVersion.downloadUrl,
-      checksum: targetVersion.checksum,
-      versionTag: targetVersion.versionName,
-      cleanExisting: true
-    });
-    if (result.skipped) {
-      setPresetPackageStatuses((prev) => ({
-        ...prev,
-        [instance.id]: { state: "ready", versionTag: targetVersion.versionName }
-      }));
-      setStatus(t("app.status.autoInstallModsUpToDate"));
-      return;
-    }
     setPresetPackageStatuses((prev) => ({
       ...prev,
-      [instance.id]: { state: "ready", versionTag: targetVersion.versionName }
+      [instance.id]: createPresetPackageStatus("syncing", {
+        versionTag: targetVersion.versionName,
+        installedVersionTag: prev[instance.id]?.installedVersionTag ?? prev[instance.id]?.versionTag ?? null,
+        targetVersionTag: targetVersion.versionName,
+        changelog: targetVersion.changelog,
+        lastError: null
+      })
     }));
-    setStatus(t("app.status.autoInstallModsDone", { count: result.installedFiles }));
+    setStatus(t("app.status.autoInstallMods", { name: instance.name }));
+    try {
+      const result = await invoke<LauncherModsInstallResult>("install_launcher_version_mods", {
+        gameDir: settings.gameDir,
+        versionId: instance.versionId,
+        downloadUrl: targetVersion.downloadUrl,
+        checksum: targetVersion.checksum,
+        manifestUrl: targetVersion.manifestUrl,
+        versionTag: targetVersion.versionName,
+        cleanExisting: true
+      });
+      setPresetPackageStatuses((prev) => ({
+        ...prev,
+        [instance.id]: createPresetPackageStatus("ready", {
+          versionTag: targetVersion.versionName,
+          installedVersionTag: targetVersion.versionName,
+          targetVersionTag: targetVersion.versionName,
+          changelog: targetVersion.changelog
+        })
+      }));
+      setStatus(
+        result.skipped
+          ? t("app.status.autoInstallModsUpToDate")
+          : t("app.status.autoInstallModsDone", { count: result.installedFiles })
+      );
+    } catch (error) {
+      const errorText = formatLaunchError(error);
+      setPresetPackageStatuses((prev) => ({
+        ...prev,
+        [instance.id]: createPresetPackageStatus("error", {
+          versionTag: targetVersion.versionName,
+          installedVersionTag: prev[instance.id]?.installedVersionTag ?? null,
+          targetVersionTag: targetVersion.versionName,
+          changelog: targetVersion.changelog,
+          lastError: errorText
+        })
+      }));
+      throw error;
+    }
   }
 
   async function ensureInstanceReadyForLaunch(instance: Instance): Promise<Instance> {
@@ -1300,8 +1373,10 @@ function Launcher() {
     setPresetPackageStatuses((prev) => ({
       ...prev,
       [instanceId]: {
-        state: "checking",
-        versionTag: prev[instanceId]?.versionTag ?? null
+        ...prev[instanceId],
+        state: "syncing",
+        versionTag: prev[instanceId]?.targetVersionTag ?? prev[instanceId]?.versionTag ?? null,
+        lastError: null
       }
     }));
     try {
@@ -1414,6 +1489,19 @@ function Launcher() {
           onSelectLoader={setLoader}
           onSelectLoaderVersion={setLoaderVersion}
           onInstall={install}
+        />
+      );
+    }
+
+    if (page === "content") {
+      return (
+        <ContentPage
+          instances={instances}
+          current={current}
+          gameDir={settings.gameDir}
+          busy={busy}
+          onSelectInstance={setSelected}
+          onStatusChange={setStatus}
         />
       );
     }
@@ -1608,6 +1696,21 @@ function normalizeSemanticVersion(input: string): number[] {
       const match = part.match(/\d+/);
       return match ? Number.parseInt(match[0], 10) : 0;
     });
+}
+
+function createPresetPackageStatus(
+  state: PresetPackageStatus["state"],
+  overrides: Partial<Omit<PresetPackageStatus, "state">> = {}
+): PresetPackageStatus {
+  return {
+    state,
+    versionTag: null,
+    installedVersionTag: null,
+    targetVersionTag: null,
+    changelog: null,
+    lastError: null,
+    ...overrides
+  };
 }
 
 function formatLaunchError(error: unknown): string {

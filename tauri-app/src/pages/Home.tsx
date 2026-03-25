@@ -1,6 +1,6 @@
 import { Calendar, Check, ChevronRight, Download, Play, Search, Users, X } from "lucide-react";
 import { createPortal } from "react-dom";
-import { useMemo, useState } from "react";
+import { type ReactNode, useMemo, useState } from "react";
 import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import Button from "../components/Button";
 import Card from "../components/Card";
@@ -75,6 +75,10 @@ export default function HomePage({
     typeof profileUser?.experience === "number" && typeof profileUser?.nextLevelNeed === "number"
       ? `${profileUser.experience}/${profileUser.nextLevelNeed}`
       : "--/--";
+  const presetStatusText = presetPackageStatus ? describePresetPackageStatus(presetPackageStatus, t) : null;
+  const presetStatusTone = presetPackageStatus ? resolvePresetStatusTone(presetPackageStatus.state) : "";
+  const presetChangelog = presetPackageStatus?.changelog ? summarizeChangelog(presetPackageStatus.changelog) : null;
+  const selectedLoaderLabel = selectedInstance ? loaderLabel(selectedInstance.loader, t) : null;
 
   return (
     <div className="flex h-full flex-col overflow-hidden">
@@ -178,21 +182,34 @@ export default function HomePage({
                 {t("home.viewAll")}
               </button>
             </div>
-            <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
-              {launcherNews.map((news) => (
-                <Card as="article" key={news.id ?? news.title} variant="soft" className="group rounded-xl p-4">
-                  <div className="mb-2 inline-flex items-center rounded-md border border-[var(--border-subtle)] bg-[var(--bg-elevated)] px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-[var(--text-muted)]">
-                    {news.pinned ? t("home.news.pinnedTag") : t("home.news.tag")}
-                  </div>
-                  <h3 className="text-base font-semibold leading-tight text-[var(--text-primary)] transition-colors group-hover:text-[var(--mc-grass)]">
-                    {news.title}
-                  </h3>
-                  <p className="mt-1.5 text-sm leading-6 text-[var(--text-secondary)]">
-                    {news.summary}
-                  </p>
-                </Card>
-              ))}
-            </div>
+            {launcherNews.length > 0 ? (
+              <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                {launcherNews.map((news) => (
+                  <Card as="article" key={news.id ?? news.title} variant="soft" className="group rounded-xl p-4">
+                    <div className="mb-2 flex flex-wrap items-center gap-2">
+                      <div className="inline-flex items-center rounded-md border border-[var(--border-subtle)] bg-[var(--bg-elevated)] px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-[var(--text-muted)]">
+                        {news.pinned ? t("home.news.pinnedTag") : t("home.news.tag")}
+                      </div>
+                      {news.publishedAt && (
+                        <span className="text-[11px] text-[var(--text-muted)]">
+                          {new Date(news.publishedAt).toLocaleDateString()}
+                        </span>
+                      )}
+                    </div>
+                    <h3 className="text-base font-semibold leading-tight text-[var(--text-primary)] transition-colors group-hover:text-[var(--mc-grass)]">
+                      {news.title}
+                    </h3>
+                    <p className="mt-1.5 text-sm leading-6 text-[var(--text-secondary)]">
+                      {news.summary}
+                    </p>
+                  </Card>
+                ))}
+              </div>
+            ) : (
+              <Card variant="soft" className="rounded-xl border border-dashed p-5 text-sm text-[var(--text-secondary)]">
+                {t("home.dashboardReady")}
+              </Card>
+            )}
           </div>
 
           <div className="space-y-4">
@@ -206,9 +223,16 @@ export default function HomePage({
                     </h2>
                     <p className="mt-1 text-xs text-[var(--text-secondary)]">{selectedInstance.name}</p>
                   </div>
+                  {presetPackageStatus && (
+                    <span className={`rounded-md border px-2 py-1 text-[10px] font-semibold uppercase tracking-wide ${presetStatusTone}`}>
+                      {presetStatusLabel(presetPackageStatus.state, t)}
+                    </span>
+                  )}
                   <Button
                     variant={
-                      presetPackageStatus?.state === "update-available" || presetPackageStatus?.state === "missing"
+                      presetPackageStatus?.state === "update-available" ||
+                      presetPackageStatus?.state === "missing" ||
+                      presetPackageStatus?.state === "error"
                         ? "secondary"
                         : "outline"
                     }
@@ -220,14 +244,30 @@ export default function HomePage({
                   </Button>
                 </div>
                 <p className="mt-3 text-sm text-[var(--text-secondary)]">
-                  {presetPackageStatus?.state === "ready"
-                    ? t("instances.packageReady", { version: presetPackageStatus.versionTag ?? "-" })
-                    : presetPackageStatus?.state === "update-available"
-                      ? t("instances.packageUpdateAvailable", { version: presetPackageStatus.versionTag ?? "-" })
-                      : presetPackageStatus?.state === "checking"
-                        ? t("instances.packageChecking")
-                        : t("instances.packageMissing")}
+                  {presetStatusText ?? t("instances.packageMissing")}
                 </p>
+                {presetPackageStatus && (
+                  <div className="mt-3 space-y-2">
+                    <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                      <PresetMeta
+                        label={t("instances.packageInstalledVersion")}
+                        value={presetPackageStatus.installedVersionTag ?? "-"}
+                      />
+                      <PresetMeta
+                        label={t("instances.packageTargetVersion")}
+                        value={presetPackageStatus.targetVersionTag ?? presetPackageStatus.versionTag ?? "-"}
+                      />
+                    </div>
+                    {presetChangelog && (
+                      <div className="rounded-lg border border-[var(--border-subtle)] bg-[var(--surface-soft)] px-3 py-2">
+                        <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--text-muted)]">
+                          {t("instances.packageChangelog")}
+                        </p>
+                        <p className="mt-1 text-xs leading-5 text-[var(--text-secondary)]">{presetChangelog}</p>
+                      </div>
+                    )}
+                  </div>
+                )}
               </Card>
             )}
 
@@ -280,6 +320,13 @@ export default function HomePage({
                 <p className="truncate text-sm font-semibold text-[var(--text-primary)]">{selectedInstance ? selectedInstance.name : t("home.noInstance")}</p>
                 <ChevronRight size={14} className="text-[var(--text-muted)]" />
               </div>
+              {selectedInstance && (
+                <div className="mt-1 flex flex-wrap gap-1.5">
+                  <MetaBadge>{selectedInstance.baseVersion}</MetaBadge>
+                  <MetaBadge>{selectedLoaderLabel}</MetaBadge>
+                  {selectedInstance.launcherVersionType && <MetaBadge>{selectedInstance.launcherVersionType}</MetaBadge>}
+                </div>
+              )}
             </div>
           </button>
 
@@ -366,15 +413,12 @@ export default function HomePage({
                         </div>
                         <div className="min-w-0 flex-1">
                           <p className="truncate text-sm font-semibold text-[var(--text-primary)]">{instance.name}</p>
-                          <p className="truncate font-mono text-[11px] text-[var(--text-muted)]">{instance.versionId}</p>
+                          <div className="mt-1 flex flex-wrap gap-1.5">
+                            <MetaBadge>{instance.baseVersion}</MetaBadge>
+                            <MetaBadge>{loaderLabel(instance.loader, t)}</MetaBadge>
+                            {instance.launcherVersionType && <MetaBadge>{instance.launcherVersionType}</MetaBadge>}
+                          </div>
                         </div>
-                        <div className="hidden text-right sm:block">
-                          <p className="text-[10px] uppercase tracking-wide text-[var(--text-muted)]">{t("instances.base")}</p>
-                          <p className="text-xs text-[var(--text-secondary)]">{instance.baseVersion}</p>
-                        </div>
-                        <span className="rounded-md border border-[var(--border-medium)] bg-[var(--bg-elevated)] px-2 py-0.5 text-[10px] font-semibold uppercase text-[var(--text-secondary)]">
-                          {instance.loader}
-                        </span>
                         {active && <Check size={14} className="text-[var(--mc-grass)]" />}
                       </button>
                     );
@@ -405,4 +449,88 @@ function ProfileMetric({ label, value }: { label: string; value: string }) {
       <p className="mt-1 truncate text-sm font-semibold text-[var(--text-primary)]">{value}</p>
     </div>
   );
+}
+
+function MetaBadge({ children }: { children: ReactNode }) {
+  return (
+    <span className="rounded-md border border-[var(--border-medium)] bg-[var(--bg-elevated)] px-2 py-0.5 text-[10px] font-semibold uppercase text-[var(--text-secondary)]">
+      {children}
+    </span>
+  );
+}
+
+function PresetMeta({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-lg border border-[var(--border-subtle)] bg-[var(--surface-soft)] px-3 py-2">
+      <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--text-muted)]">{label}</p>
+      <p className="mt-1 truncate text-sm font-semibold text-[var(--text-primary)]">{value}</p>
+    </div>
+  );
+}
+
+function loaderLabel(
+  loader: Instance["loader"],
+  t: ReturnType<typeof useI18n>["t"]
+): string {
+  if (loader === "forge") return t("loader.forge");
+  if (loader === "fabric") return t("loader.fabric");
+  return t("loader.vanilla");
+}
+
+function describePresetPackageStatus(
+  status: PresetPackageStatus,
+  t: ReturnType<typeof useI18n>["t"]
+): string {
+  if (status.state === "ready") {
+    return t("instances.packageReady", { version: status.versionTag ?? "-" });
+  }
+  if (status.state === "update-available") {
+    return t("instances.packageUpdateAvailable", { version: status.targetVersionTag ?? status.versionTag ?? "-" });
+  }
+  if (status.state === "syncing") {
+    return t("instances.packageSyncing", { version: status.targetVersionTag ?? status.versionTag ?? "-" });
+  }
+  if (status.state === "checking") {
+    return t("instances.packageChecking");
+  }
+  if (status.state === "error") {
+    return t("instances.packageError", { error: status.lastError ?? "-" });
+  }
+  return t("instances.packageMissing");
+}
+
+function resolvePresetStatusTone(state: PresetPackageStatus["state"]): string {
+  if (state === "ready") {
+    return "border-[var(--mc-grass)]/35 bg-[var(--mc-grass)]/10 text-[var(--mc-grass)]";
+  }
+  if (state === "update-available") {
+    return "border-amber-500/35 bg-amber-500/10 text-amber-300";
+  }
+  if (state === "syncing" || state === "checking") {
+    return "border-cyan-500/35 bg-cyan-500/10 text-cyan-300";
+  }
+  if (state === "error") {
+    return "border-[var(--accent-danger)]/35 bg-[var(--accent-danger)]/10 text-[var(--accent-danger)]";
+  }
+  return "border-[var(--border-medium)] bg-[var(--surface-soft)] text-[var(--text-secondary)]";
+}
+
+function presetStatusLabel(
+  state: PresetPackageStatus["state"],
+  t: ReturnType<typeof useI18n>["t"]
+): string {
+  if (state === "ready") return t("instances.status.ready");
+  if (state === "update-available") return t("instances.status.updateAvailable");
+  if (state === "syncing") return t("instances.status.syncing");
+  if (state === "checking") return t("instances.status.checking");
+  if (state === "error") return t("instances.status.error");
+  return t("instances.status.missing");
+}
+
+function summarizeChangelog(changelog: string): string {
+  const compact = changelog.replace(/\s+/g, " ").trim();
+  if (compact.length <= 140) {
+    return compact;
+  }
+  return `${compact.slice(0, 137)}...`;
 }

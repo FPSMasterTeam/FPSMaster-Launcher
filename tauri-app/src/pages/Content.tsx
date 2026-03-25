@@ -1,0 +1,541 @@
+import { invoke } from "@tauri-apps/api/core";
+import { Download, Layers3, Search, Sparkles, Trash2 } from "lucide-react";
+import { type ReactNode, useEffect, useMemo, useState } from "react";
+import Button from "../components/Button";
+import Card from "../components/Card";
+import { useI18n } from "../i18n";
+import type {
+  ContentProjectType,
+  InstalledContentItem,
+  Instance,
+  ModrinthInstallResult,
+  ModrinthSearchResult
+} from "../types";
+
+type ContentPageProps = {
+  instances: Instance[];
+  current: Instance | null;
+  gameDir: string;
+  busy: boolean;
+  onSelectInstance: (id: string) => void;
+  onStatusChange: (message: string) => void;
+};
+
+const CONTENT_TYPES: readonly ContentProjectType[] = ["mod", "resourcepack", "shader"];
+
+export default function ContentPage({
+  instances,
+  current,
+  gameDir,
+  busy,
+  onSelectInstance,
+  onStatusChange
+}: ContentPageProps) {
+  const { t } = useI18n();
+  const [query, setQuery] = useState("");
+  const [contentType, setContentType] = useState<ContentProjectType>("mod");
+  const [loading, setLoading] = useState(false);
+  const [installingProjectId, setInstallingProjectId] = useState<string | null>(null);
+  const [uninstallingProjectId, setUninstallingProjectId] = useState<string | null>(null);
+  const [results, setResults] = useState<ModrinthSearchResult[]>([]);
+  const [installedItems, setInstalledItems] = useState<InstalledContentItem[]>([]);
+  const [error, setError] = useState<string | null>(null);
+  const [lastInstallResult, setLastInstallResult] = useState<ModrinthInstallResult | null>(null);
+
+  const currentInstance = current ?? instances[0] ?? null;
+  const contentTypeLabel = (value: ContentProjectType) => {
+    if (value === "resourcepack") return t("content.type.resourcepack");
+    if (value === "shader") return t("content.type.shader");
+    return t("content.type.mod");
+  };
+  const installedMap = useMemo(() => {
+    const map = new Map<string, InstalledContentItem>();
+    for (const item of installedItems) {
+      map.set(`${item.contentType}:${item.projectId}`, item);
+    }
+    return map;
+  }, [installedItems]);
+  const filteredInstalledItems = useMemo(
+    () => installedItems.filter((item) => item.contentType === contentType),
+    [installedItems, contentType]
+  );
+
+  async function refreshInstalledItems(instance: Instance | null) {
+    if (!instance) {
+      setInstalledItems([]);
+      return;
+    }
+    try {
+      const items = await invoke<InstalledContentItem[]>("list_installed_content", {
+        gameDir,
+        versionId: instance.versionId
+      });
+      setInstalledItems(items);
+    } catch {
+      setInstalledItems([]);
+    }
+  }
+
+  async function searchProjects() {
+    if (!currentInstance) {
+      setError(t("content.noInstance"));
+      return;
+    }
+    const trimmedQuery = query.trim();
+    if (!trimmedQuery) {
+      setError(t("content.queryRequired"));
+      return;
+    }
+
+    setLoading(true);
+    setError(null);
+    setLastInstallResult(null);
+    onStatusChange(t("content.searching"));
+    try {
+      await refreshInstalledItems(currentInstance);
+      const items = await invoke<ModrinthSearchResult[]>("modrinth_search_projects", {
+        query: trimmedQuery,
+        projectType: contentType,
+        gameVersion: currentInstance.baseVersion,
+        loader: currentInstance.loader,
+        limit: 18
+      });
+      setResults(items);
+      onStatusChange(t("content.searchDone", { count: items.length }));
+    } catch (invokeError) {
+      const errorText = normalizeError(invokeError);
+      setError(errorText);
+      onStatusChange(t("app.status.failed", { error: errorText }));
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function installProject(item: ModrinthSearchResult) {
+    if (!currentInstance) {
+      setError(t("content.noInstance"));
+      return;
+    }
+
+    const existingItem = installedMap.get(`${item.projectType}:${item.projectId}`);
+    setInstallingProjectId(item.projectId);
+    setError(null);
+    onStatusChange(
+      t(existingItem ? "content.reinstalling" : "content.installing", { title: item.title })
+    );
+    try {
+      const result = await invoke<ModrinthInstallResult>("install_modrinth_project", {
+        gameDir,
+        versionId: currentInstance.versionId,
+        projectId: item.projectId,
+        projectTitle: item.title,
+        projectType: item.projectType,
+        gameVersion: currentInstance.baseVersion,
+        loader: currentInstance.loader
+      });
+      setLastInstallResult(result);
+      await refreshInstalledItems(currentInstance);
+      onStatusChange(
+        t(existingItem ? "content.reinstallDone" : "content.installDone", {
+          title: item.title,
+          file: result.fileName
+        })
+      );
+    } catch (invokeError) {
+      const errorText = normalizeError(invokeError);
+      setError(errorText);
+      onStatusChange(t("app.status.failed", { error: errorText }));
+    } finally {
+      setInstallingProjectId(null);
+    }
+  }
+
+  async function uninstallProject(item: InstalledContentItem) {
+    if (!currentInstance) {
+      setError(t("content.noInstance"));
+      return;
+    }
+
+    setUninstallingProjectId(item.projectId);
+    setError(null);
+    onStatusChange(t("content.uninstalling", { title: item.projectTitle }));
+    try {
+      await invoke<InstalledContentItem>("uninstall_installed_content", {
+        gameDir,
+        versionId: currentInstance.versionId,
+        source: item.source,
+        projectId: item.projectId,
+        contentType: item.contentType
+      });
+      if (lastInstallResult?.projectId === item.projectId) {
+        setLastInstallResult(null);
+      }
+      await refreshInstalledItems(currentInstance);
+      onStatusChange(t("content.uninstallDone", { title: item.projectTitle }));
+    } catch (invokeError) {
+      const errorText = normalizeError(invokeError);
+      setError(errorText);
+      onStatusChange(t("app.status.failed", { error: errorText }));
+    } finally {
+      setUninstallingProjectId(null);
+    }
+  }
+
+  useEffect(() => {
+    void refreshInstalledItems(currentInstance);
+  }, [currentInstance?.id, currentInstance?.versionId, gameDir]);
+
+  return (
+    <div className="h-full overflow-y-auto p-4 md:p-5 xl:p-6">
+      <header className="mb-6 grid gap-4 xl:grid-cols-[minmax(0,1fr)_320px] xl:items-start">
+        <div>
+          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[var(--text-muted)]">
+            {t("nav.content")}
+          </p>
+          <h1 className="mt-2 text-3xl font-semibold tracking-tight text-[var(--text-primary)]">
+            {t("content.title")}
+          </h1>
+          <p className="mt-1 text-[var(--text-secondary)]">{t("content.subtitle")}</p>
+        </div>
+
+        <Card variant="frost" className="rounded-2xl p-4">
+          <div className="flex items-center gap-2 text-sm font-semibold text-[var(--text-primary)]">
+            <Layers3 size={16} className="text-[var(--mc-grass)]" />
+            {t("content.currentInstance")}
+          </div>
+          <select
+            value={currentInstance?.id ?? ""}
+            onChange={(event) => onSelectInstance(event.target.value)}
+            className="mt-3 w-full rounded-xl border border-[var(--border-medium)] bg-[var(--bg-secondary)] px-3 py-2.5 text-sm text-[var(--text-primary)] focus:border-[var(--mc-grass)]/45 focus:outline-none"
+          >
+            {instances.map((instance) => (
+              <option key={instance.id} value={instance.id}>
+                {instance.name}
+              </option>
+            ))}
+          </select>
+          {currentInstance ? (
+            <div className="mt-3 flex flex-wrap gap-1.5">
+              <MetaBadge>{currentInstance.baseVersion}</MetaBadge>
+              <MetaBadge>{loaderLabel(currentInstance.loader, t)}</MetaBadge>
+              {currentInstance.launcherVersionType && (
+                <MetaBadge>{currentInstance.launcherVersionType}</MetaBadge>
+              )}
+            </div>
+          ) : (
+            <p className="mt-2 text-xs text-[var(--accent-danger)]">{t("content.noInstance")}</p>
+          )}
+        </Card>
+      </header>
+
+      <Card variant="frost" className="rounded-2xl p-4 md:p-5">
+        <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_auto] xl:items-end">
+          <div>
+            <div className="mb-3 flex flex-wrap gap-2">
+              {CONTENT_TYPES.map((item) => (
+                <button
+                  key={item}
+                  type="button"
+                  onClick={() => setContentType(item)}
+                  className={`rounded-xl border px-3 py-2 text-sm font-medium transition-colors ${
+                    contentType === item
+                      ? "border-[var(--mc-grass)]/50 bg-[var(--mc-grass)]/12 text-[var(--text-primary)]"
+                      : "border-[var(--border-medium)] bg-[var(--bg-secondary)] text-[var(--text-secondary)] hover:border-[var(--border-strong)]"
+                  }`}
+                >
+                  {contentTypeLabel(item)}
+                </button>
+              ))}
+            </div>
+            <label className="relative block">
+              <Search
+                size={16}
+                className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-[var(--text-muted)]"
+              />
+              <input
+                value={query}
+                onChange={(event) => setQuery(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") {
+                    event.preventDefault();
+                    void searchProjects();
+                  }
+                }}
+                type="text"
+                placeholder={t("content.searchPlaceholder")}
+                className="w-full rounded-xl border border-[var(--border-medium)] bg-[var(--bg-secondary)] py-3 pl-10 pr-3 text-sm text-[var(--text-primary)] focus:border-[var(--mc-grass)]/45 focus:outline-none"
+              />
+            </label>
+          </div>
+
+          <Button
+            variant="primary"
+            size="lg"
+            className="gap-2"
+            disabled={loading || busy || !currentInstance}
+            onClick={() => void searchProjects()}
+          >
+            <Search size={16} />
+            {loading ? t("content.searching") : t("content.search")}
+          </Button>
+        </div>
+
+        <div className="mt-4 flex flex-wrap items-center gap-2 text-xs text-[var(--text-muted)]">
+          <span className="rounded-md border border-[var(--border-subtle)] bg-[var(--surface-soft)] px-2 py-1">
+            {t("content.compatibility", {
+              version: currentInstance?.baseVersion ?? "-",
+              loader: currentInstance ? loaderLabel(currentInstance.loader, t) : "-"
+            })}
+          </span>
+          <span className="rounded-md border border-[var(--border-subtle)] bg-[var(--surface-soft)] px-2 py-1">
+            {t("content.resultsCount", { count: results.length })}
+          </span>
+          <span className="rounded-md border border-[var(--border-subtle)] bg-[var(--surface-soft)] px-2 py-1">
+            {t("content.installedCount", { count: filteredInstalledItems.length })}
+          </span>
+          <span>{t("content.modrinthOnlyNotice")}</span>
+        </div>
+      </Card>
+
+      {lastInstallResult && (
+        <Card variant="soft" className="mt-4 rounded-2xl border border-[var(--mc-grass)]/25 p-4">
+          <div className="flex items-start gap-3">
+            <Sparkles size={18} className="mt-0.5 text-[var(--mc-grass)]" />
+            <div className="min-w-0">
+              <p className="text-sm font-semibold text-[var(--text-primary)]">
+                {t("content.lastInstallTitle", { title: lastInstallResult.projectTitle })}
+              </p>
+              <p className="mt-1 text-xs text-[var(--text-secondary)]">
+                {lastInstallResult.versionNumber}
+              </p>
+              {lastInstallResult.changelog && (
+                <p className="mt-2 line-clamp-3 text-xs leading-5 text-[var(--text-secondary)]">
+                  {lastInstallResult.changelog.replace(/\s+/g, " ").trim()}
+                </p>
+              )}
+            </div>
+          </div>
+        </Card>
+      )}
+
+      {error && (
+        <Card variant="soft" className="mt-4 rounded-2xl border border-[var(--accent-danger)]/35 p-4">
+          <p className="text-sm text-[var(--accent-danger)]">{error}</p>
+        </Card>
+      )}
+
+      {currentInstance && (
+        <Card variant="frost" className="mt-4 rounded-2xl p-4 md:p-5">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <h2 className="text-base font-semibold text-[var(--text-primary)]">
+                {t("content.installedSectionTitle")}
+              </h2>
+              <p className="mt-1 text-xs text-[var(--text-muted)]">
+                {contentTypeLabel(contentType)} · {filteredInstalledItems.length}
+              </p>
+            </div>
+          </div>
+
+          {filteredInstalledItems.length > 0 ? (
+            <div className="mt-4 space-y-3">
+              {filteredInstalledItems.map((item) => (
+                <div
+                  key={`${item.contentType}:${item.projectId}`}
+                  className="rounded-2xl border border-[var(--border-subtle)] bg-[var(--surface-soft)] p-4"
+                >
+                  <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+                    <div className="min-w-0">
+                      <p className="truncate text-sm font-semibold text-[var(--text-primary)]">
+                        {item.projectTitle}
+                      </p>
+                      <p className="mt-1 text-xs text-[var(--text-secondary)]">
+                        {t("content.installedVersion", { version: item.versionNumber })}
+                      </p>
+                      <div className="mt-2 flex flex-wrap gap-1.5">
+                        <MetaBadge>{contentTypeLabel(item.contentType)}</MetaBadge>
+                        <MetaBadge>Modrinth</MetaBadge>
+                      </div>
+                    </div>
+
+                    <Button
+                      variant="danger"
+                      size="sm"
+                      className="gap-2 md:min-w-[120px]"
+                      disabled={
+                        busy ||
+                        installingProjectId === item.projectId ||
+                        uninstallingProjectId === item.projectId
+                      }
+                      onClick={() => void uninstallProject(item)}
+                    >
+                      <Trash2 size={14} />
+                      {uninstallingProjectId === item.projectId
+                        ? t("content.uninstallingButton")
+                        : t("content.uninstall")}
+                    </Button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p className="mt-4 text-sm text-[var(--text-secondary)]">{t("content.installedEmpty")}</p>
+          )}
+        </Card>
+      )}
+
+      <section className="mt-5 grid grid-cols-1 gap-4 pb-20 md:grid-cols-2 xl:grid-cols-3">
+        {results.map((item) => {
+          const installedItem = installedMap.get(`${item.projectType}:${item.projectId}`);
+          const isInstalled = Boolean(installedItem);
+          const actionBusy =
+            busy ||
+            !currentInstance ||
+            installingProjectId === item.projectId ||
+            uninstallingProjectId === item.projectId;
+          return (
+            <Card key={item.projectId} as="article" variant="frost" className="flex min-h-[280px] flex-col rounded-2xl p-4">
+              <div className="flex items-start gap-3">
+                <div className="h-12 w-12 overflow-hidden rounded-xl border border-[var(--border-medium)] bg-[var(--bg-elevated)]">
+                  {item.iconUrl ? (
+                    <img src={item.iconUrl} alt={item.title} className="h-full w-full object-cover" />
+                  ) : null}
+                </div>
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      <h3 className="truncate text-base font-semibold text-[var(--text-primary)]">
+                        {item.title}
+                      </h3>
+                      <p className="mt-1 text-xs text-[var(--text-muted)]">{item.author}</p>
+                    </div>
+                    <span className="shrink-0 rounded-md border border-[var(--border-medium)] bg-[var(--bg-elevated)] px-2 py-0.5 text-[10px] font-semibold uppercase text-[var(--text-secondary)]">
+                      Modrinth
+                    </span>
+                  </div>
+                  <div className="mt-2 flex flex-wrap gap-1.5">
+                    {isInstalled && (
+                      <span className="rounded-md border border-[var(--mc-grass)]/35 bg-[var(--mc-grass)]/10 px-2 py-0.5 text-[10px] font-semibold uppercase text-[var(--mc-grass)]">
+                        {t("content.installedBadge")}
+                      </span>
+                    )}
+                    {(item.displayCategories.length > 0 ? item.displayCategories : item.categories)
+                      .slice(0, 4)
+                      .map((tag) => (
+                        <span
+                          key={tag}
+                          className="rounded-md border border-[var(--border-medium)] bg-[var(--surface-soft)] px-2 py-0.5 text-[10px] font-semibold uppercase text-[var(--text-secondary)]"
+                        >
+                          {tag}
+                        </span>
+                      ))}
+                  </div>
+                </div>
+              </div>
+
+              <p className="mt-3 line-clamp-4 text-sm leading-6 text-[var(--text-secondary)]">
+                {item.description || t("content.noDescription")}
+              </p>
+
+              <div className="mt-4 grid grid-cols-2 gap-2 text-xs text-[var(--text-muted)]">
+                <InfoPill label={t("content.downloads")} value={item.downloads.toLocaleString()} />
+                <InfoPill
+                  label={t("content.latestGameVersion")}
+                  value={item.latestGameVersion ?? currentInstance?.baseVersion ?? "-"}
+                />
+              </div>
+              {installedItem && (
+                <p className="mt-3 line-clamp-2 text-xs leading-5 text-[var(--text-muted)]">
+                  {t("content.installedVersion", {
+                    version: installedItem.versionNumber ?? "-"
+                  })}
+                </p>
+              )}
+
+              <div className="mt-auto pt-4">
+                {installedItem ? (
+                  <div className="grid grid-cols-2 gap-2">
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      className="gap-2"
+                      disabled={actionBusy}
+                      onClick={() => void installProject(item)}
+                    >
+                      <Download size={14} />
+                      {installingProjectId === item.projectId
+                        ? t("content.installingButton")
+                        : t("content.reinstall")}
+                    </Button>
+                    <Button
+                      variant="danger"
+                      size="sm"
+                      className="gap-2"
+                      disabled={actionBusy}
+                      onClick={() => void uninstallProject(installedItem)}
+                    >
+                      <Trash2 size={14} />
+                      {uninstallingProjectId === item.projectId
+                        ? t("content.uninstallingButton")
+                        : t("content.uninstall")}
+                    </Button>
+                  </div>
+                ) : (
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    className="w-full gap-2"
+                    disabled={actionBusy}
+                    onClick={() => void installProject(item)}
+                  >
+                    <Download size={14} />
+                    {installingProjectId === item.projectId
+                      ? t("content.installingButton")
+                      : t("content.install")}
+                  </Button>
+                )}
+              </div>
+            </Card>
+          );
+        })}
+
+        {!loading && results.length === 0 && (
+          <Card variant="soft" className="rounded-2xl border border-dashed p-5 md:col-span-2 xl:col-span-3">
+            <p className="text-sm text-[var(--text-secondary)]">{t("content.emptyState")}</p>
+            <p className="mt-2 text-xs text-[var(--text-muted)]">{t("content.pendingNotice")}</p>
+          </Card>
+        )}
+      </section>
+    </div>
+  );
+}
+
+function InfoPill({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-soft)] px-3 py-2">
+      <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--text-muted)]">
+        {label}
+      </p>
+      <p className="mt-1 truncate text-sm font-semibold text-[var(--text-primary)]">{value}</p>
+    </div>
+  );
+}
+
+function normalizeError(error: unknown): string {
+  const raw = String(error ?? "");
+  return raw.startsWith("Error: ") ? raw.slice("Error: ".length).trim() : raw.trim();
+}
+
+function loaderLabel(loader: Instance["loader"], t: ReturnType<typeof useI18n>["t"]): string {
+  if (loader === "forge") return t("loader.forge");
+  if (loader === "fabric") return t("loader.fabric");
+  return t("loader.vanilla");
+}
+
+function MetaBadge({ children }: { children: ReactNode }) {
+  return (
+    <span className="rounded-md border border-[var(--border-medium)] bg-[var(--bg-elevated)] px-2 py-1 text-[10px] font-semibold uppercase text-[var(--text-secondary)]">
+      {children}
+    </span>
+  );
+}

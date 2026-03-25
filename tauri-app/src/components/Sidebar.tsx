@@ -1,4 +1,4 @@
-import { ChevronsLeft, ChevronsRight, Gamepad2, Home, Settings, User } from "lucide-react";
+import { ChevronsLeft, ChevronsRight, Compass, Gamepad2, Home, Settings, User } from "lucide-react";
 import AppLogo from "./AppLogo";
 import { useI18n } from "../i18n";
 import type { LauncherUser, Page } from "../types";
@@ -24,11 +24,13 @@ export default function Sidebar({
   const navItems = [
     { id: "home" as const, icon: Home, label: t("nav.dashboard") },
     { id: "instances" as const, icon: Gamepad2, label: t("nav.myGames") },
+    { id: "content" as const, icon: Compass, label: t("nav.content") },
     { id: "settings" as const, icon: Settings, label: t("nav.settings") }
   ];
 
   const userName = resolveUserName(user, t("nav.player"));
   const role = resolveUserRole(user);
+  const roleLabel = resolveUserRoleLabel(role, t);
   const levelText = resolveUserLevel(user, role);
   const roleBadgeClass = resolveRoleBadgeClass(role);
 
@@ -97,7 +99,7 @@ export default function Sidebar({
             <p className="whitespace-nowrap text-sm font-semibold text-[var(--text-primary)] transition-colors group-hover:text-[var(--mc-grass)]">{userName}</p>
             <div className="mt-1 flex items-center gap-2 whitespace-nowrap">
               <span className="text-xs text-[var(--text-muted)]">{levelText}</span>
-              <span className={`rounded-md border px-1.5 py-0.5 text-[10px] font-semibold tracking-wide ${roleBadgeClass}`}>{role}</span>
+              <span className={`rounded-md border px-1.5 py-0.5 text-[10px] font-semibold tracking-wide ${roleBadgeClass}`}>{roleLabel}</span>
             </div>
           </div>
         </button>
@@ -136,6 +138,15 @@ function resolveUserName(user: LauncherUser | null, fallback: string): string {
 function resolveUserRole(user: LauncherUser | null): string {
   const role = user?.role?.trim().toUpperCase();
   return role || "USER";
+}
+
+function resolveUserRoleLabel(
+  role: string,
+  t: ReturnType<typeof useI18n>["t"]
+): string {
+  if (role === "ADMIN") return t("sidebar.role.staff");
+  if (role === "SPONSOR") return t("sidebar.role.pro");
+  return t("sidebar.role.member");
 }
 
 function resolveUserLevel(user: LauncherUser | null, role: string): string {

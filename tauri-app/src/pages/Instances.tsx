@@ -59,7 +59,7 @@ export default function InstancesPage({
         </div>
         <div className="flex items-center gap-3">
           <Card as="span" variant="frost" className="inline-flex rounded-full px-3 py-1.5 text-xs text-[var(--text-secondary)]">
-            {filteredInstances.length}
+            {t("instances.count", { count: filteredInstances.length })}
           </Card>
           <Button variant="primary" size="lg" className="gap-2" onClick={onGoInstall}>
             <Plus size={16} />
@@ -106,38 +106,52 @@ export default function InstancesPage({
 
                 <div className="min-w-0 flex-1">
                   <h3 className="truncate text-base font-semibold text-[var(--text-primary)]">{instance.name}</h3>
-                  <p className="mt-1 truncate font-mono text-xs text-[var(--text-muted)]">{instance.versionId}</p>
                   <div className="mt-2 flex flex-wrap gap-2">
-                    <span className={`rounded-md border px-2 py-0.5 text-[10px] font-semibold uppercase ${loaderTone}`}>
-                      {instance.loader}
+                    <span className="rounded-md border border-[var(--border-medium)] bg-[var(--bg-elevated)] px-2 py-0.5 text-[10px] font-semibold uppercase text-[var(--text-secondary)]">
+                      {instance.baseVersion}
                     </span>
+                    <span className={`rounded-md border px-2 py-0.5 text-[10px] font-semibold uppercase ${loaderTone}`}>
+                      {loaderLabel(instance.loader, t)}
+                    </span>
+                    {instance.launcherVersionType && (
+                      <span className="rounded-md border border-[var(--border-medium)] bg-[var(--surface-soft)] px-2 py-0.5 text-[10px] font-semibold uppercase text-[var(--text-secondary)]">
+                        {instance.launcherVersionType}
+                      </span>
+                    )}
                     {instance.preset && (
                       <span className="rounded-md border border-[var(--border-medium)] bg-[var(--surface-soft)] px-2 py-0.5 text-[10px] font-semibold uppercase text-[var(--text-secondary)]">
                         {t("instances.preset")}
                       </span>
                     )}
                   </div>
-                  <p className="mt-2 truncate text-xs text-[var(--text-secondary)]">
-                    <span className="text-[var(--text-muted)]">{t("instances.base")}: </span>
-                    {instance.baseVersion}
-                    {instance.loaderVersion ? `  |  loader ${instance.loaderVersion}` : ""}
-                  </p>
-                  {instance.preset && presetStatus && (
-                    <p className="mt-1 truncate text-[11px] text-[var(--text-muted)]">
-                      {presetStatus.state === "ready"
-                        ? t("instances.packageReady", { version: presetStatus.versionTag ?? "-" })
-                        : presetStatus.state === "update-available"
-                          ? t("instances.packageUpdateAvailable", { version: presetStatus.versionTag ?? "-" })
-                          : presetStatus.state === "checking"
-                            ? t("instances.packageChecking")
-                            : t("instances.packageMissing")}
+                  {instance.loaderVersion && (
+                    <p className="mt-2 truncate text-xs text-[var(--text-secondary)]">
+                      <span className="text-[var(--text-muted)]">{t("install.loaderLabel")}</span>
+                      {loaderLabel(instance.loader, t)} {instance.loaderVersion}
                     </p>
+                  )}
+                  {instance.preset && presetStatus && (
+                    <div className="mt-3 rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-soft)] p-3 space-y-1.5">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className={`rounded-md border px-2 py-0.5 text-[10px] font-semibold uppercase ${resolvePresetStatusTone(presetStatus.state)}`}>
+                          {presetStatusLabel(presetStatus.state, t)}
+                        </span>
+                        {presetStatus.targetVersionTag && (
+                          <span className="truncate text-[10px] text-[var(--text-muted)]">
+                            {t("instances.packageTargetVersion")}: {presetStatus.targetVersionTag}
+                          </span>
+                        )}
+                      </div>
+                      <p className="line-clamp-2 text-[11px] leading-5 text-[var(--text-muted)]">
+                        {describePresetPackageStatus(presetStatus, t)}
+                      </p>
+                    </div>
                   )}
                 </div>
               </div>
 
               <div className="mt-auto">
-                <div className={`grid gap-2 ${instance.preset ? "grid-cols-4" : "grid-cols-3"}`}>
+                <div className="grid grid-cols-2 gap-2">
                   <Button
                     variant="primary"
                     size="sm"
@@ -163,10 +177,14 @@ export default function InstancesPage({
                     <Settings size={13} />
                     {t("instances.settings")}
                   </Button>
+                </div>
+                <div className={`mt-2 grid gap-2 ${instance.preset ? "grid-cols-2" : "grid-cols-1"}`}>
                   {instance.preset && (
                     <Button
                       variant={
-                        presetStatus?.state === "update-available" || presetStatus?.state === "missing"
+                        presetStatus?.state === "update-available" ||
+                        presetStatus?.state === "missing" ||
+                        presetStatus?.state === "error"
                           ? "secondary"
                           : "outline"
                       }
@@ -202,4 +220,63 @@ export default function InstancesPage({
       </section>
     </div>
   );
+}
+
+function describePresetPackageStatus(
+  status: PresetPackageStatus,
+  t: ReturnType<typeof useI18n>["t"]
+): string {
+  if (status.state === "ready") {
+    return t("instances.packageReady", { version: status.versionTag ?? "-" });
+  }
+  if (status.state === "update-available") {
+    return t("instances.packageUpdateAvailable", { version: status.targetVersionTag ?? status.versionTag ?? "-" });
+  }
+  if (status.state === "syncing") {
+    return t("instances.packageSyncing", { version: status.targetVersionTag ?? status.versionTag ?? "-" });
+  }
+  if (status.state === "checking") {
+    return t("instances.packageChecking");
+  }
+  if (status.state === "error") {
+    return t("instances.packageError", { error: status.lastError ?? "-" });
+  }
+  return t("instances.packageMissing");
+}
+
+function loaderLabel(
+  loader: Instance["loader"],
+  t: ReturnType<typeof useI18n>["t"]
+): string {
+  if (loader === "forge") return t("loader.forge");
+  if (loader === "fabric") return t("loader.fabric");
+  return t("loader.vanilla");
+}
+
+function presetStatusLabel(
+  state: PresetPackageStatus["state"],
+  t: ReturnType<typeof useI18n>["t"]
+): string {
+  if (state === "ready") return t("instances.status.ready");
+  if (state === "update-available") return t("instances.status.updateAvailable");
+  if (state === "syncing") return t("instances.status.syncing");
+  if (state === "checking") return t("instances.status.checking");
+  if (state === "error") return t("instances.status.error");
+  return t("instances.status.missing");
+}
+
+function resolvePresetStatusTone(state: PresetPackageStatus["state"]): string {
+  if (state === "ready") {
+    return "border-[var(--mc-grass)]/35 bg-[var(--mc-grass)]/10 text-[var(--mc-grass)]";
+  }
+  if (state === "update-available") {
+    return "border-amber-500/35 bg-amber-500/10 text-amber-300";
+  }
+  if (state === "syncing" || state === "checking") {
+    return "border-cyan-500/35 bg-cyan-500/10 text-cyan-300";
+  }
+  if (state === "error") {
+    return "border-[var(--accent-danger)]/35 bg-[var(--accent-danger)]/10 text-[var(--accent-danger)]";
+  }
+  return "border-[var(--border-medium)] bg-[var(--surface-soft)] text-[var(--text-secondary)]";
 }

@@ -1,4 +1,4 @@
-export type Page = "home" | "instances" | "install" | "settings" | "instance-settings";
+export type Page = "home" | "instances" | "install" | "content" | "settings" | "instance-settings";
 export type Loader = "vanilla" | "forge" | "fabric";
 export type PhaseStatus = "pending" | "running" | "done" | "error";
 export type Locale = "en-US" | "zh-CN";
@@ -15,6 +15,8 @@ export type ThemeAccent =
   | "custom";
 export type BackgroundSource = "local" | "web-random";
 export type LauncherVersionType = "EDGE" | "NOVA";
+export type ContentSource = "modrinth";
+export type ContentProjectType = "mod" | "resourcepack" | "shader";
 
 export type Instance = {
   id: string;
@@ -135,6 +137,47 @@ export type InstanceSectionEntry = {
   isDir: boolean;
 };
 
+export type ModrinthSearchResult = {
+  projectId: string;
+  slug: string;
+  title: string;
+  description: string;
+  author: string;
+  iconUrl?: string | null;
+  downloads: number;
+  categories: string[];
+  displayCategories: string[];
+  projectType: ContentProjectType;
+  latestGameVersion?: string | null;
+  gameVersions: string[];
+  clientSide?: string | null;
+  serverSide?: string | null;
+};
+
+export type ModrinthInstallResult = {
+  projectId: string;
+  projectTitle: string;
+  contentType: ContentProjectType;
+  versionId: string;
+  versionNumber: string;
+  fileName: string;
+  targetDir: string;
+  installedPath: string;
+  changelog?: string | null;
+};
+
+export type InstalledContentItem = {
+  source: ContentSource;
+  projectId: string;
+  projectTitle: string;
+  contentType: ContentProjectType;
+  versionId: string;
+  versionNumber: string;
+  fileName: string;
+  installedPath: string;
+  installedAtEpochSec: number;
+};
+
 export type LauncherUser = {
   id?: string;
   username?: string;
@@ -183,6 +226,7 @@ export type LauncherModsInstallResult = {
   installedFiles: number;
   skipped: boolean;
   versionTag: string;
+  manifestUrl?: string | null;
 };
 
 export type LauncherPackageState = {
@@ -190,11 +234,16 @@ export type LauncherPackageState = {
   upToDate: boolean;
   versionTag: string | null;
   checksum?: string | null;
+  manifestUrl?: string | null;
 };
 
 export type PresetPackageStatus = {
-  state: "checking" | "missing" | "ready" | "update-available";
+  state: "checking" | "missing" | "ready" | "update-available" | "syncing" | "error";
   versionTag: string | null;
+  installedVersionTag?: string | null;
+  targetVersionTag?: string | null;
+  changelog?: string | null;
+  lastError?: string | null;
 };
 
 export type DailyPlaytimePoint = {

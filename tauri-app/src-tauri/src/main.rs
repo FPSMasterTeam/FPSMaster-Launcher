@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256, Sha512};
 use std::collections::{HashMap, VecDeque};
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -11,9 +12,9 @@ use std::{env, fs};
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Emitter, Manager, WebviewWindow, WindowEvent};
-use tauri_plugin_autostart::ManagerExt;
 #[cfg(target_os = "macos")]
 use tauri_plugin_autostart::MacosLauncher;
+use tauri_plugin_autostart::ManagerExt;
 
 #[derive(Debug, Serialize, Deserialize)]
 struct InstallResult {
@@ -211,6 +212,8 @@ struct LauncherModsInstallResult {
     skipped: bool,
     #[serde(rename = "versionTag")]
     version_tag: String,
+    #[serde(rename = "manifestUrl")]
+    manifest_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -219,6 +222,8 @@ struct LauncherModsInstallMarker {
     version_tag: String,
     #[serde(default)]
     checksum: Option<String>,
+    #[serde(rename = "manifestUrl", default)]
+    manifest_url: Option<String>,
     #[serde(rename = "downloadUrl")]
     download_url: String,
     #[serde(rename = "installedAtEpochSec")]
@@ -233,6 +238,164 @@ struct LauncherPackageState {
     #[serde(rename = "versionTag")]
     version_tag: Option<String>,
     checksum: Option<String>,
+    #[serde(rename = "manifestUrl")]
+    manifest_url: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct LauncherPackageManifest {
+    #[serde(rename = "versionTag", default)]
+    version_tag: Option<String>,
+    #[serde(rename = "baseUrl", default)]
+    base_url: Option<String>,
+    #[serde(default)]
+    files: Vec<LauncherPackageManifestFile>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct LauncherPackageManifestFile {
+    #[serde(alias = "targetPath", alias = "filePath")]
+    path: String,
+    #[serde(default, alias = "downloadUrl", alias = "sourceUrl")]
+    url: Option<String>,
+    #[serde(default, alias = "checksum", alias = "hash")]
+    sha256: Option<String>,
+    #[serde(default)]
+    size: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct ModrinthSearchResult {
+    #[serde(rename = "projectId")]
+    project_id: String,
+    slug: String,
+    title: String,
+    description: String,
+    author: String,
+    #[serde(rename = "iconUrl")]
+    icon_url: Option<String>,
+    downloads: u64,
+    categories: Vec<String>,
+    #[serde(rename = "displayCategories")]
+    display_categories: Vec<String>,
+    #[serde(rename = "projectType")]
+    project_type: String,
+    #[serde(rename = "latestGameVersion")]
+    latest_game_version: Option<String>,
+    #[serde(rename = "gameVersions")]
+    game_versions: Vec<String>,
+    #[serde(rename = "clientSide")]
+    client_side: Option<String>,
+    #[serde(rename = "serverSide")]
+    server_side: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct ModrinthInstallResult {
+    #[serde(rename = "projectId")]
+    project_id: String,
+    #[serde(rename = "projectTitle")]
+    project_title: String,
+    #[serde(rename = "contentType")]
+    content_type: String,
+    #[serde(rename = "versionId")]
+    version_id: String,
+    #[serde(rename = "versionNumber")]
+    version_number: String,
+    #[serde(rename = "fileName")]
+    file_name: String,
+    #[serde(rename = "targetDir")]
+    target_dir: String,
+    #[serde(rename = "installedPath")]
+    installed_path: String,
+    changelog: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct InstalledContentItem {
+    source: String,
+    #[serde(rename = "projectId")]
+    project_id: String,
+    #[serde(rename = "projectTitle")]
+    project_title: String,
+    #[serde(rename = "contentType")]
+    content_type: String,
+    #[serde(rename = "versionId")]
+    version_id: String,
+    #[serde(rename = "versionNumber")]
+    version_number: String,
+    #[serde(rename = "fileName")]
+    file_name: String,
+    #[serde(rename = "installedPath")]
+    installed_path: String,
+    #[serde(rename = "installedAtEpochSec")]
+    installed_at_epoch_sec: u64,
+}
+
+#[derive(Debug, Deserialize)]
+struct ModrinthSearchResponse {
+    #[serde(default)]
+    hits: Vec<ModrinthSearchHit>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ModrinthSearchHit {
+    #[serde(rename = "project_id")]
+    project_id: String,
+    #[serde(default)]
+    slug: String,
+    title: String,
+    #[serde(default)]
+    description: String,
+    #[serde(default)]
+    author: String,
+    #[serde(rename = "icon_url", default)]
+    icon_url: Option<String>,
+    #[serde(default)]
+    downloads: u64,
+    #[serde(default)]
+    categories: Vec<String>,
+    #[serde(rename = "display_categories", default)]
+    display_categories: Vec<String>,
+    #[serde(rename = "project_type")]
+    project_type: String,
+    #[serde(default)]
+    versions: Vec<String>,
+    #[serde(rename = "client_side", default)]
+    client_side: Option<String>,
+    #[serde(rename = "server_side", default)]
+    server_side: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct ModrinthProjectVersion {
+    id: String,
+    #[serde(default)]
+    name: String,
+    #[serde(rename = "version_number", default)]
+    version_number: String,
+    #[serde(default)]
+    changelog: Option<String>,
+    #[serde(rename = "date_published", default)]
+    date_published: Option<String>,
+    #[serde(default)]
+    featured: bool,
+    #[serde(rename = "version_type", default)]
+    version_type: Option<String>,
+    #[serde(default)]
+    files: Vec<ModrinthVersionFile>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct ModrinthVersionFile {
+    url: String,
+    filename: String,
+    #[serde(default)]
+    primary: bool,
+    #[serde(default)]
+    size: Option<u64>,
+    #[serde(default)]
+    hashes: HashMap<String, String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -370,6 +533,10 @@ fn should_minimize_to_tray(app: &AppHandle) -> bool {
     app.state::<LauncherRuntimeState>()
         .minimize_to_tray
         .load(Ordering::Relaxed)
+}
+
+fn is_autostart_launch() -> bool {
+    env::args().any(|arg| arg == "--autostart")
 }
 
 struct LauncherRuntimeState {
@@ -876,10 +1043,7 @@ fn launcher_login_blocking(
     username_or_email: String,
     password: String,
 ) -> Result<LauncherLoginResult, String> {
-    let endpoint = format!(
-        "{}/api/v1/auth/login",
-        normalize_api_base_url(&base_url)?
-    );
+    let endpoint = format!("{}/api/v1/auth/login", normalize_api_base_url(&base_url)?);
     let client = reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(20))
         .build()
@@ -924,14 +1088,20 @@ async fn launcher_list_news(
 }
 
 #[tauri::command]
-async fn launcher_get_dashboard(base_url: String, token: String) -> Result<LauncherDashboard, String> {
+async fn launcher_get_dashboard(
+    base_url: String,
+    token: String,
+) -> Result<LauncherDashboard, String> {
     tauri::async_runtime::spawn_blocking(move || launcher_get_dashboard_blocking(base_url, token))
         .await
         .map_err(|e| format!("Failed to join launcher dashboard task: {e}"))?
 }
 
 #[tauri::command]
-async fn launcher_get_home(base_url: String, token: Option<String>) -> Result<LauncherHomePayload, String> {
+async fn launcher_get_home(
+    base_url: String,
+    token: Option<String>,
+) -> Result<LauncherHomePayload, String> {
     tauri::async_runtime::spawn_blocking(move || launcher_get_home_blocking(base_url, token))
         .await
         .map_err(|e| format!("Failed to join launcher home task: {e}"))?
@@ -1005,7 +1175,10 @@ fn launcher_get_home_blocking(
     let url = reqwest::Url::parse(&format!("{normalized_base}/api/v1/launcher/home"))
         .map_err(|e| format!("Invalid launcher home endpoint URL: {e}"))?;
     let mut request = client.get(url);
-    if let Some(value) = token.map(|item| item.trim().to_string()).filter(|item| !item.is_empty()) {
+    if let Some(value) = token
+        .map(|item| item.trim().to_string())
+        .filter(|item| !item.is_empty())
+    {
         request = request.bearer_auth(value);
     }
     let response = request
@@ -1068,12 +1241,291 @@ fn launcher_list_available_versions_blocking(
 }
 
 #[tauri::command]
+async fn modrinth_search_projects(
+    query: String,
+    project_type: String,
+    game_version: Option<String>,
+    loader: Option<String>,
+    limit: Option<u32>,
+) -> Result<Vec<ModrinthSearchResult>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        modrinth_search_projects_blocking(query, project_type, game_version, loader, limit)
+    })
+    .await
+    .map_err(|e| format!("Failed to join Modrinth search task: {e}"))?
+}
+
+#[tauri::command]
+async fn install_modrinth_project(
+    game_dir: String,
+    version_id: String,
+    project_id: String,
+    project_title: String,
+    project_type: String,
+    game_version: String,
+    loader: Option<String>,
+) -> Result<ModrinthInstallResult, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        install_modrinth_project_blocking(
+            game_dir,
+            version_id,
+            project_id,
+            project_title,
+            project_type,
+            game_version,
+            loader,
+        )
+    })
+    .await
+    .map_err(|e| format!("Failed to join Modrinth install task: {e}"))?
+}
+
+#[tauri::command]
+async fn list_installed_content(
+    game_dir: String,
+    version_id: String,
+) -> Result<Vec<InstalledContentItem>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        list_installed_content_blocking(game_dir, version_id)
+    })
+    .await
+    .map_err(|e| format!("Failed to join installed content task: {e}"))?
+}
+
+#[tauri::command]
+async fn uninstall_installed_content(
+    game_dir: String,
+    version_id: String,
+    source: String,
+    project_id: String,
+    content_type: String,
+) -> Result<InstalledContentItem, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        uninstall_installed_content_blocking(game_dir, version_id, source, project_id, content_type)
+    })
+    .await
+    .map_err(|e| format!("Failed to join uninstall content task: {e}"))?
+}
+
+fn modrinth_search_projects_blocking(
+    query: String,
+    project_type: String,
+    game_version: Option<String>,
+    loader: Option<String>,
+    limit: Option<u32>,
+) -> Result<Vec<ModrinthSearchResult>, String> {
+    let normalized_query = query.trim().to_string();
+    if normalized_query.is_empty() {
+        return Err("Search query cannot be empty".to_string());
+    }
+
+    let normalized_project_type = normalize_content_project_type(&project_type)?;
+    let client = build_blocking_http_client()?;
+    let mut url = reqwest::Url::parse("https://api.modrinth.com/v2/search")
+        .map_err(|e| format!("Invalid Modrinth search endpoint URL: {e}"))?;
+    let facets = build_modrinth_search_facets(
+        &normalized_project_type,
+        game_version.as_deref(),
+        loader.as_deref(),
+    )?;
+
+    url.query_pairs_mut()
+        .append_pair("query", &normalized_query)
+        .append_pair("limit", &limit.unwrap_or(18).clamp(1, 50).to_string())
+        .append_pair("index", "downloads")
+        .append_pair("facets", &facets);
+
+    let response = client
+        .get(url)
+        .send()
+        .map_err(|e| format!("Modrinth search request failed: {e}"))?;
+    let status = response.status();
+    let text = response
+        .text()
+        .map_err(|e| format!("Failed to read Modrinth search response: {e}"))?;
+    if !status.is_success() {
+        return Err(format!(
+            "Modrinth search failed with HTTP {}: {}",
+            status.as_u16(),
+            text.trim()
+        ));
+    }
+
+    let payload = serde_json::from_str::<ModrinthSearchResponse>(&text)
+        .map_err(|e| format!("Invalid Modrinth search response JSON: {e}"))?;
+    Ok(payload
+        .hits
+        .into_iter()
+        .filter(|item| item.project_type == normalized_project_type)
+        .map(map_modrinth_search_hit)
+        .collect())
+}
+
+fn install_modrinth_project_blocking(
+    game_dir: String,
+    version_id: String,
+    project_id: String,
+    project_title: String,
+    project_type: String,
+    game_version: String,
+    loader: Option<String>,
+) -> Result<ModrinthInstallResult, String> {
+    let normalized_project_type = normalize_content_project_type(&project_type)?;
+    let normalized_project_id = project_id.trim().to_string();
+    if normalized_project_id.is_empty() {
+        return Err("Modrinth project id cannot be empty".to_string());
+    }
+    let normalized_version_id = version_id.trim().to_string();
+    if normalized_version_id.is_empty() {
+        return Err("Version id cannot be empty".to_string());
+    }
+    let normalized_game_version = game_version.trim().to_string();
+    if normalized_game_version.is_empty() {
+        return Err("Game version cannot be empty".to_string());
+    }
+
+    let game_dir_path = resolve_game_dir_path(&game_dir)?;
+    let runtime_root = resolve_version_runtime_dir(&game_dir_path, &normalized_version_id)?;
+    let existing_item = find_installed_content_item(
+        &runtime_root,
+        "modrinth",
+        &normalized_project_id,
+        &normalized_project_type,
+    )?;
+    let client = build_blocking_http_client()?;
+    let versions = fetch_modrinth_project_versions(
+        &client,
+        &normalized_project_id,
+        &normalized_project_type,
+        &normalized_game_version,
+        loader.as_deref(),
+    )?;
+    let version = choose_best_modrinth_version(versions)?;
+    let file = choose_modrinth_version_file(&version)?;
+
+    let download_path = env::temp_dir().join(format!(
+        "fpsmaster-content-{}-{}-{}",
+        std::process::id(),
+        now_epoch_millis(),
+        sanitize_file_name(&file.filename)
+    ));
+    download_file_quiet_blocking(&client, &file.url, &download_path)
+        .map_err(|err| format!("Failed to download Modrinth file {}: {err}", file.filename))?;
+
+    if let Some(expected_size) = file.size {
+        let actual_size = fs::metadata(&download_path)
+            .map_err(|e| format!("Failed to inspect downloaded Modrinth file: {e}"))?
+            .len();
+        if actual_size != expected_size {
+            let _ = fs::remove_file(&download_path);
+            return Err(format!(
+                "Modrinth file size mismatch: expected {}, got {}",
+                expected_size, actual_size
+            ));
+        }
+    }
+    if let Some(expected_sha512) = file.hashes.get("sha512") {
+        if let Err(err) = verify_file_sha512(&download_path, expected_sha512) {
+            let _ = fs::remove_file(&download_path);
+            return Err(format!("Modrinth checksum mismatch: {err}"));
+        }
+    }
+
+    let next_target_path = build_content_target_path(&runtime_root, &normalized_project_type, &file.filename)?;
+    if let Some(existing) = existing_item.as_ref() {
+        let same_target = resolve_managed_content_path(&runtime_root, &existing.installed_path)?
+            .map(|path| path == next_target_path)
+            .unwrap_or(false);
+        if !same_target {
+            remove_content_install_path(&runtime_root, &existing.installed_path)?;
+        }
+    }
+
+    let installed_path = install_content_file_by_type(
+        &download_path,
+        &runtime_root,
+        &normalized_project_type,
+        &file.filename,
+    )?;
+    let _ = fs::remove_file(&download_path);
+
+    let resolved_version_number = if version.version_number.trim().is_empty() {
+        version.name.clone()
+    } else {
+        version.version_number.clone()
+    };
+    upsert_installed_content_item(
+        &runtime_root,
+        InstalledContentItem {
+            source: "modrinth".to_string(),
+            project_id: normalized_project_id.clone(),
+            project_title: project_title.trim().to_string(),
+            content_type: normalized_project_type.clone(),
+            version_id: version.id.clone(),
+            version_number: resolved_version_number.clone(),
+            file_name: file.filename.clone(),
+            installed_path: installed_path.to_string_lossy().to_string(),
+            installed_at_epoch_sec: now_epoch_seconds(),
+        },
+    )?;
+
+    Ok(ModrinthInstallResult {
+        project_id: normalized_project_id,
+        project_title: project_title.trim().to_string(),
+        content_type: normalized_project_type,
+        version_id: version.id,
+        version_number: resolved_version_number,
+        file_name: file.filename,
+        target_dir: installed_path
+            .parent()
+            .map(|path| path.to_string_lossy().to_string())
+            .unwrap_or_else(|| runtime_root.to_string_lossy().to_string()),
+        installed_path: installed_path.to_string_lossy().to_string(),
+        changelog: version.changelog,
+    })
+}
+
+fn list_installed_content_blocking(
+    game_dir: String,
+    version_id: String,
+) -> Result<Vec<InstalledContentItem>, String> {
+    let game_dir_path = resolve_game_dir_path(&game_dir)?;
+    let runtime_root = resolve_version_runtime_dir(&game_dir_path, version_id.trim())?;
+    read_installed_content_index(&runtime_root)
+}
+
+fn uninstall_installed_content_blocking(
+    game_dir: String,
+    version_id: String,
+    source: String,
+    project_id: String,
+    content_type: String,
+) -> Result<InstalledContentItem, String> {
+    let normalized_source = normalize_content_source(&source)?;
+    let normalized_content_type = normalize_content_project_type(&content_type)?;
+    let normalized_project_id = project_id.trim().to_string();
+    if normalized_project_id.is_empty() {
+        return Err("Project id cannot be empty".to_string());
+    }
+
+    let game_dir_path = resolve_game_dir_path(&game_dir)?;
+    let runtime_root = resolve_version_runtime_dir(&game_dir_path, version_id.trim())?;
+    remove_installed_content_item(
+        &runtime_root,
+        &normalized_source,
+        &normalized_project_id,
+        &normalized_content_type,
+    )
+}
+
+#[tauri::command]
 async fn install_launcher_version_mods(
     game_dir: String,
     version_id: String,
     download_url: String,
     version_tag: Option<String>,
     checksum: Option<String>,
+    manifest_url: Option<String>,
     clean_existing: Option<bool>,
 ) -> Result<LauncherModsInstallResult, String> {
     tauri::async_runtime::spawn_blocking(move || {
@@ -1083,6 +1535,7 @@ async fn install_launcher_version_mods(
             download_url,
             version_tag,
             checksum,
+            manifest_url,
             clean_existing,
         )
     })
@@ -1096,6 +1549,7 @@ async fn get_launcher_package_state(
     version_id: String,
     expected_version_tag: Option<String>,
     expected_checksum: Option<String>,
+    expected_manifest_url: Option<String>,
     expected_download_url: Option<String>,
 ) -> Result<LauncherPackageState, String> {
     tauri::async_runtime::spawn_blocking(move || {
@@ -1104,6 +1558,7 @@ async fn get_launcher_package_state(
             version_id,
             expected_version_tag,
             expected_checksum,
+            expected_manifest_url,
             expected_download_url,
         )
     })
@@ -1117,12 +1572,17 @@ fn install_launcher_version_mods_blocking(
     download_url: String,
     version_tag: Option<String>,
     checksum: Option<String>,
+    manifest_url: Option<String>,
     clean_existing: Option<bool>,
 ) -> Result<LauncherModsInstallResult, String> {
     let game_dir_path = resolve_game_dir_path(&game_dir)?;
     let mods_dir = resolve_version_runtime_dir(&game_dir_path, &version_id)?.join("mods");
-    fs::create_dir_all(&mods_dir)
-        .map_err(|e| format!("Failed to create mods directory {}: {e}", mods_dir.display()))?;
+    fs::create_dir_all(&mods_dir).map_err(|e| {
+        format!(
+            "Failed to create mods directory {}: {e}",
+            mods_dir.display()
+        )
+    })?;
 
     let normalized_url = download_url.trim().to_string();
     if normalized_url.is_empty() {
@@ -1132,49 +1592,68 @@ fn install_launcher_version_mods_blocking(
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
         .unwrap_or_else(|| normalized_url.clone());
+    let normalized_manifest_url = manifest_url
+        .as_ref()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
 
     let marker_path = mods_dir.join(".fpsmaster-launcher-mods.json");
     if is_mods_marker_up_to_date(
         &marker_path,
         &normalized_tag,
         checksum.as_deref(),
+        normalized_manifest_url.as_deref(),
         Some(normalized_url.as_str()),
-    )?
-        && mods_dir_has_payload(&mods_dir, &marker_path)?
+    )? && mods_dir_has_payload(&mods_dir, &marker_path)?
     {
         return Ok(LauncherModsInstallResult {
             target_dir: mods_dir.to_string_lossy().to_string(),
             installed_files: 0,
             skipped: true,
             version_tag: normalized_tag,
+            manifest_url: normalized_manifest_url,
         });
     }
 
-    if clean_existing.unwrap_or(true) {
-        clear_directory_contents(&mods_dir)?;
-    }
+    let installed_files = if let Some(manifest_source) = normalized_manifest_url.as_deref() {
+        install_launcher_manifest_package(
+            manifest_source,
+            &normalized_tag,
+            &mods_dir,
+            clean_existing.unwrap_or(true),
+        )?
+    } else {
+        if clean_existing.unwrap_or(true) {
+            clear_directory_contents(&mods_dir)?;
+        }
 
-    let archive_path = env::temp_dir().join(format!(
-        "fpsmaster-launcher-mods-{}-{}.zip",
-        std::process::id(),
-        now_epoch_millis()
-    ));
-    let download_result =
-        download_file_blocking(None, "launcher-mods", &normalized_url, &archive_path);
-    if let Err(err) = download_result {
+        let archive_path = env::temp_dir().join(format!(
+            "fpsmaster-launcher-mods-{}-{}.zip",
+            std::process::id(),
+            now_epoch_millis()
+        ));
+        let download_result =
+            download_file_blocking(None, "launcher-mods", &normalized_url, &archive_path);
+        if let Err(err) = download_result {
+            let _ = fs::remove_file(&archive_path);
+            return Err(format!("Failed to download launcher package: {err}"));
+        }
+        if let Some(expected_checksum) = checksum.as_deref() {
+            verify_file_sha256(&archive_path, expected_checksum)
+                .map_err(|err| format!("Launcher package checksum mismatch: {err}"))?;
+        }
+
+        let extract_result = extract_launcher_mod_archive(&archive_path, &mods_dir);
         let _ = fs::remove_file(&archive_path);
-        return Err(format!("Failed to download launcher package: {err}"));
-    }
-
-    let extract_result = extract_launcher_mod_archive(&archive_path, &mods_dir);
-    let _ = fs::remove_file(&archive_path);
-    let installed_files = extract_result?;
+        extract_result?
+    };
 
     let marker = LauncherModsInstallMarker {
         version_tag: normalized_tag.clone(),
         checksum: checksum
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty()),
+        manifest_url: normalized_manifest_url,
         download_url: normalized_url,
         installed_at_epoch_sec: now_epoch_seconds(),
     };
@@ -1192,6 +1671,7 @@ fn install_launcher_version_mods_blocking(
         installed_files,
         skipped: false,
         version_tag: normalized_tag,
+        manifest_url: marker.manifest_url.clone(),
     })
 }
 
@@ -1200,6 +1680,7 @@ fn get_launcher_package_state_blocking(
     version_id: String,
     expected_version_tag: Option<String>,
     expected_checksum: Option<String>,
+    expected_manifest_url: Option<String>,
     expected_download_url: Option<String>,
 ) -> Result<LauncherPackageState, String> {
     let game_dir_path = resolve_game_dir_path(&game_dir)?;
@@ -1208,6 +1689,7 @@ fn get_launcher_package_state_blocking(
     let marker = read_mods_marker(&marker_path)?;
     let version_tag = marker.as_ref().map(|value| value.version_tag.clone());
     let checksum = marker.as_ref().and_then(|value| value.checksum.clone());
+    let manifest_url = marker.as_ref().and_then(|value| value.manifest_url.clone());
     let installed = version_tag.is_some() && mods_dir_has_payload(&mods_dir, &marker_path)?;
     let up_to_date = match (marker.as_ref(), expected_version_tag.as_ref()) {
         (Some(installed_marker), Some(expected_tag)) => {
@@ -1222,11 +1704,21 @@ fn get_launcher_package_state_blocking(
                 (_, None) => true,
                 _ => false,
             };
+            let manifest_matches = match (
+                installed_marker.manifest_url.as_deref(),
+                expected_manifest_url.as_deref(),
+            ) {
+                (Some(installed_manifest), Some(expected_manifest)) => {
+                    installed_manifest.trim() == expected_manifest.trim()
+                }
+                (_, None) => true,
+                _ => false,
+            };
             let url_matches = match expected_download_url.as_deref() {
                 Some(expected_url) => installed_marker.download_url.trim() == expected_url.trim(),
                 None => true,
             };
-            version_matches && checksum_matches && url_matches
+            version_matches && checksum_matches && manifest_matches && url_matches
         }
         (Some(_), None) => true,
         _ => false,
@@ -1236,7 +1728,944 @@ fn get_launcher_package_state_blocking(
         up_to_date: installed && up_to_date,
         version_tag,
         checksum,
+        manifest_url,
     })
+}
+
+fn install_launcher_manifest_package(
+    manifest_url: &str,
+    expected_version_tag: &str,
+    mods_dir: &Path,
+    clean_existing: bool,
+) -> Result<usize, String> {
+    let manifest = fetch_launcher_package_manifest(manifest_url)?;
+    if let Some(manifest_version_tag) = manifest
+        .version_tag
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        if manifest_version_tag != expected_version_tag.trim() {
+            return Err(format!(
+                "Launcher manifest version mismatch: expected {}, got {}",
+                expected_version_tag.trim(),
+                manifest_version_tag
+            ));
+        }
+    }
+    if manifest.files.is_empty() {
+        return Err("Launcher manifest does not contain any files".to_string());
+    }
+
+    let runtime_dir = mods_dir
+        .parent()
+        .ok_or_else(|| format!("Invalid mods directory: {}", mods_dir.display()))?;
+    let stage_dir = runtime_dir.join(format!(
+        ".fpsmaster-launcher-mods-stage-{}-{}",
+        std::process::id(),
+        now_epoch_millis()
+    ));
+    if stage_dir.exists() {
+        fs::remove_dir_all(&stage_dir).map_err(|e| {
+            format!(
+                "Failed to reset stage directory {}: {e}",
+                stage_dir.display()
+            )
+        })?;
+    }
+    fs::create_dir_all(&stage_dir).map_err(|e| {
+        format!(
+            "Failed to create stage directory {}: {e}",
+            stage_dir.display()
+        )
+    })?;
+
+    let install_result = install_manifest_files_into_stage(manifest_url, &manifest, &stage_dir);
+    if let Err(err) = install_result {
+        let _ = fs::remove_dir_all(&stage_dir);
+        return Err(err);
+    }
+    let installed_files = install_result?;
+
+    if clean_existing {
+        if let Err(err) = replace_directory_with_stage(mods_dir, &stage_dir) {
+            let _ = fs::remove_dir_all(&stage_dir);
+            return Err(err);
+        }
+    } else {
+        fs::create_dir_all(mods_dir).map_err(|e| {
+            format!(
+                "Failed to create mods directory {}: {e}",
+                mods_dir.display()
+            )
+        })?;
+        copy_directory_contents(&stage_dir, mods_dir)?;
+        let _ = fs::remove_dir_all(&stage_dir);
+    }
+
+    Ok(installed_files)
+}
+
+fn install_manifest_files_into_stage(
+    manifest_url: &str,
+    manifest: &LauncherPackageManifest,
+    stage_dir: &Path,
+) -> Result<usize, String> {
+    let client = build_blocking_http_client()?;
+    let base_url = resolve_manifest_base_url(manifest_url, manifest.base_url.as_deref())?;
+    let mut installed_files = 0_usize;
+
+    for entry in &manifest.files {
+        let relative_path = normalize_manifest_relative_path(&entry.path)?;
+        let resolved_url = resolve_manifest_file_url(&base_url, entry)?;
+        let target_path = stage_dir.join(&relative_path);
+        if let Some(parent) = target_path.parent() {
+            fs::create_dir_all(parent).map_err(|e| {
+                format!(
+                    "Failed to create manifest target directory {}: {e}",
+                    parent.display()
+                )
+            })?;
+        }
+
+        download_file_quiet_blocking(&client, &resolved_url, &target_path).map_err(|err| {
+            format!(
+                "Failed to download manifest file {} from {}: {err}",
+                relative_path.display(),
+                resolved_url
+            )
+        })?;
+
+        if let Some(expected_size) = entry.size {
+            let actual_size = fs::metadata(&target_path)
+                .map_err(|e| {
+                    format!(
+                        "Failed to inspect downloaded file {}: {e}",
+                        target_path.display()
+                    )
+                })?
+                .len();
+            if actual_size != expected_size {
+                return Err(format!(
+                    "Manifest file size mismatch for {}: expected {}, got {}",
+                    relative_path.display(),
+                    expected_size,
+                    actual_size
+                ));
+            }
+        }
+        if let Some(expected_sha256) = entry.sha256.as_deref() {
+            verify_file_sha256(&target_path, expected_sha256).map_err(|err| {
+                format!(
+                    "Manifest file checksum mismatch for {}: {err}",
+                    relative_path.display()
+                )
+            })?;
+        }
+
+        installed_files += 1;
+    }
+
+    if installed_files == 0 {
+        return Err("Launcher manifest does not contain any downloadable files".to_string());
+    }
+    Ok(installed_files)
+}
+
+fn fetch_launcher_package_manifest(manifest_url: &str) -> Result<LauncherPackageManifest, String> {
+    let client = build_blocking_http_client()?;
+    let body = http_get_text_quiet_blocking(&client, manifest_url)?;
+
+    if let Ok(manifest) = serde_json::from_str::<LauncherPackageManifest>(&body) {
+        return Ok(manifest);
+    }
+
+    parse_api_envelope::<LauncherPackageManifest>(
+        reqwest::StatusCode::OK,
+        &body,
+        "launcher manifest",
+    )
+    .map_err(|err| format!("Invalid launcher manifest JSON: {err}"))
+}
+
+fn build_blocking_http_client() -> Result<reqwest::blocking::Client, String> {
+    const LAUNCHER_HTTP_USER_AGENT: &str =
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) FPSMasterLauncher/0.2 (+https://github.com/fpsmaster)";
+
+    reqwest::blocking::Client::builder()
+        .user_agent(LAUNCHER_HTTP_USER_AGENT)
+        .connect_timeout(std::time::Duration::from_secs(30))
+        .timeout(std::time::Duration::from_secs(60 * 30))
+        .redirect(reqwest::redirect::Policy::limited(10))
+        .build()
+        .map_err(|e| e.to_string())
+}
+
+fn http_get_text_quiet_blocking(
+    client: &reqwest::blocking::Client,
+    url: &str,
+) -> Result<String, String> {
+    let mut last_error = String::new();
+    for attempt in 1..=3 {
+        let response = client
+            .get(url)
+            .header(reqwest::header::ACCEPT, "application/json, text/plain, */*")
+            .header(reqwest::header::ACCEPT_ENCODING, "identity")
+            .send();
+
+        let response = match response {
+            Ok(value) => value,
+            Err(err) => {
+                last_error = format!("request failed on attempt {attempt}/3: {err}");
+                continue;
+            }
+        };
+
+        if !response.status().is_success() {
+            last_error = format!("HTTP {}", response.status());
+            continue;
+        }
+
+        return response
+            .text()
+            .map_err(|e| format!("Failed to read response body from {url}: {e}"));
+    }
+    Err(last_error)
+}
+
+fn normalize_content_project_type(value: &str) -> Result<String, String> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "mod" => Ok("mod".to_string()),
+        "resourcepack" => Ok("resourcepack".to_string()),
+        "shader" => Ok("shader".to_string()),
+        other => Err(format!(
+            "Unsupported content project type '{other}'. Expected mod/resourcepack/shader"
+        )),
+    }
+}
+
+fn normalize_content_source(value: &str) -> Result<String, String> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "modrinth" => Ok("modrinth".to_string()),
+        other => Err(format!(
+            "Unsupported content source '{other}'. Expected modrinth"
+        )),
+    }
+}
+
+fn build_modrinth_search_facets(
+    project_type: &str,
+    game_version: Option<&str>,
+    loader: Option<&str>,
+) -> Result<String, String> {
+    let mut facets = vec![vec![format!("project_type:{project_type}")]];
+
+    if let Some(version) = game_version
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        facets.push(vec![format!("versions:{version}")]);
+    }
+
+    if project_type == "mod" {
+        if let Some(loader_value) = loader.map(str::trim).filter(|value| !value.is_empty()) {
+            facets.push(vec![format!(
+                "categories:{}",
+                loader_value.to_ascii_lowercase()
+            )]);
+        }
+    }
+
+    serde_json::to_string(&facets).map_err(|e| format!("Failed to serialize Modrinth facets: {e}"))
+}
+
+fn map_modrinth_search_hit(item: ModrinthSearchHit) -> ModrinthSearchResult {
+    let latest_game_version = item.versions.first().cloned();
+    ModrinthSearchResult {
+        project_id: item.project_id,
+        slug: item.slug,
+        title: item.title,
+        description: item.description,
+        author: item.author,
+        icon_url: item.icon_url,
+        downloads: item.downloads,
+        categories: item.categories,
+        display_categories: item.display_categories,
+        project_type: item.project_type,
+        latest_game_version,
+        game_versions: item.versions,
+        client_side: item.client_side,
+        server_side: item.server_side,
+    }
+}
+
+fn fetch_modrinth_project_versions(
+    client: &reqwest::blocking::Client,
+    project_id: &str,
+    project_type: &str,
+    game_version: &str,
+    loader: Option<&str>,
+) -> Result<Vec<ModrinthProjectVersion>, String> {
+    let mut url = reqwest::Url::parse(&format!(
+        "https://api.modrinth.com/v2/project/{project_id}/version"
+    ))
+    .map_err(|e| format!("Invalid Modrinth versions endpoint URL: {e}"))?;
+
+    {
+        let mut query_pairs = url.query_pairs_mut();
+        query_pairs.append_pair(
+            "game_versions",
+            &serde_json::to_string(&vec![game_version.trim()])
+                .map_err(|e| format!("Failed to encode Modrinth game_versions: {e}"))?,
+        );
+
+        let loader_filters = build_modrinth_loader_filters(project_type, loader);
+        if !loader_filters.is_empty() {
+            query_pairs.append_pair(
+                "loaders",
+                &serde_json::to_string(&loader_filters)
+                    .map_err(|e| format!("Failed to encode Modrinth loaders: {e}"))?,
+            );
+        }
+    }
+
+    let response = client
+        .get(url)
+        .send()
+        .map_err(|e| format!("Modrinth versions request failed: {e}"))?;
+    let status = response.status();
+    let text = response
+        .text()
+        .map_err(|e| format!("Failed to read Modrinth versions response: {e}"))?;
+    if !status.is_success() {
+        return Err(format!(
+            "Modrinth versions failed with HTTP {}: {}",
+            status.as_u16(),
+            text.trim()
+        ));
+    }
+
+    serde_json::from_str::<Vec<ModrinthProjectVersion>>(&text)
+        .map_err(|e| format!("Invalid Modrinth versions response JSON: {e}"))
+}
+
+fn build_modrinth_loader_filters(project_type: &str, loader: Option<&str>) -> Vec<String> {
+    match project_type {
+        "mod" => loader
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(|value| vec![value.to_ascii_lowercase()])
+            .unwrap_or_default(),
+        "resourcepack" => vec!["minecraft".to_string()],
+        _ => Vec::new(),
+    }
+}
+
+fn choose_best_modrinth_version(
+    mut versions: Vec<ModrinthProjectVersion>,
+) -> Result<ModrinthProjectVersion, String> {
+    if versions.is_empty() {
+        return Err("No compatible Modrinth version found for the current instance".to_string());
+    }
+
+    versions.sort_by(|left, right| {
+        let left_rank = modrinth_version_rank(left);
+        let right_rank = modrinth_version_rank(right);
+        right_rank.cmp(&left_rank)
+    });
+    versions
+        .into_iter()
+        .next()
+        .ok_or_else(|| "No compatible Modrinth version found for the current instance".to_string())
+}
+
+fn modrinth_version_rank(item: &ModrinthProjectVersion) -> (u8, u8, String) {
+    let featured = if item.featured { 1 } else { 0 };
+    let release_rank = match item
+        .version_type
+        .as_deref()
+        .map(|value| value.trim().to_ascii_lowercase())
+        .as_deref()
+    {
+        Some("release") => 3,
+        Some("beta") => 2,
+        Some("alpha") => 1,
+        _ => 0,
+    };
+    let published = item.date_published.clone().unwrap_or_default();
+    (featured, release_rank, published)
+}
+
+fn choose_modrinth_version_file(
+    version: &ModrinthProjectVersion,
+) -> Result<ModrinthVersionFile, String> {
+    version
+        .files
+        .iter()
+        .find(|file| file.primary)
+        .cloned()
+        .or_else(|| version.files.first().cloned())
+        .ok_or_else(|| {
+            format!(
+                "Modrinth version {} does not contain downloadable files",
+                version.id
+            )
+        })
+}
+
+fn install_content_file_by_type(
+    download_path: &Path,
+    runtime_root: &Path,
+    project_type: &str,
+    filename: &str,
+) -> Result<PathBuf, String> {
+    let target_dir = content_target_dir(runtime_root, project_type)?;
+    move_file_into_directory(download_path, &target_dir, filename)
+}
+
+fn content_target_dir(runtime_root: &Path, project_type: &str) -> Result<PathBuf, String> {
+    match project_type {
+        "mod" => Ok(runtime_root.join("mods")),
+        "resourcepack" => Ok(runtime_root.join("resourcepacks")),
+        "shader" => Ok(runtime_root.join("shaderpacks")),
+        other => Err(format!(
+            "Unsupported install target for content type '{other}'"
+        )),
+    }
+}
+
+fn build_content_target_path(
+    runtime_root: &Path,
+    project_type: &str,
+    filename: &str,
+) -> Result<PathBuf, String> {
+    Ok(content_target_dir(runtime_root, project_type)?.join(sanitize_file_name(filename)))
+}
+
+fn move_file_into_directory(
+    source_path: &Path,
+    target_dir: &Path,
+    filename: &str,
+) -> Result<PathBuf, String> {
+    fs::create_dir_all(target_dir)
+        .map_err(|e| format!("Failed to create directory {}: {e}", target_dir.display()))?;
+    let safe_name = sanitize_file_name(filename);
+    let target_path = target_dir.join(safe_name);
+    if target_path.exists() {
+        fs::remove_file(&target_path).map_err(|e| {
+            format!(
+                "Failed to replace existing file {}: {e}",
+                target_path.display()
+            )
+        })?;
+    }
+    fs::rename(source_path, &target_path).or_else(|_| {
+        fs::copy(source_path, &target_path)
+            .map(|_| ())
+            .map_err(|e| {
+                format!(
+                    "Failed to move downloaded file from {} to {}: {e}",
+                    source_path.display(),
+                    target_path.display()
+                )
+            })
+    })?;
+    Ok(target_path)
+}
+
+fn sanitize_file_name(raw: &str) -> String {
+    let candidate = Path::new(raw)
+        .file_name()
+        .map(|value| value.to_string_lossy().to_string())
+        .unwrap_or_else(|| "download.bin".to_string());
+    let mut output = String::with_capacity(candidate.len());
+    for ch in candidate.chars() {
+        if matches!(ch, '\\' | '/' | ':' | '*' | '?' | '"' | '<' | '>' | '|') {
+            output.push('_');
+        } else {
+            output.push(ch);
+        }
+    }
+    if output.trim().is_empty() {
+        "download.bin".to_string()
+    } else {
+        output
+    }
+}
+
+fn installed_content_index_path(runtime_root: &Path) -> PathBuf {
+    runtime_root.join(".fpsmaster-content-index.json")
+}
+
+fn write_installed_content_index(
+    runtime_root: &Path,
+    items: &[InstalledContentItem],
+) -> Result<(), String> {
+    let index_path = installed_content_index_path(runtime_root);
+    let serialized = serde_json::to_string_pretty(items)
+        .map_err(|e| format!("Failed to serialize installed content index: {e}"))?;
+    fs::write(&index_path, format!("{serialized}\n")).map_err(|e| {
+        format!(
+            "Failed to write installed content index {}: {e}",
+            index_path.display()
+        )
+    })
+}
+
+fn read_installed_content_index(runtime_root: &Path) -> Result<Vec<InstalledContentItem>, String> {
+    let index_path = installed_content_index_path(runtime_root);
+    if !index_path.exists() {
+        return Ok(Vec::new());
+    }
+    let content = fs::read_to_string(&index_path).map_err(|e| {
+        format!(
+            "Failed to read installed content index {}: {e}",
+            index_path.display()
+        )
+    })?;
+    serde_json::from_str::<Vec<InstalledContentItem>>(&content).map_err(|e| {
+        format!(
+            "Invalid installed content index {}: {e}",
+            index_path.display()
+        )
+    })
+}
+
+fn upsert_installed_content_item(
+    runtime_root: &Path,
+    item: InstalledContentItem,
+) -> Result<(), String> {
+    let mut items = read_installed_content_index(runtime_root)?;
+    items.retain(|existing| {
+        !(existing.source == item.source
+            && existing.project_id == item.project_id
+            && existing.content_type == item.content_type)
+    });
+    items.push(item);
+    items.sort_by(|left, right| {
+        right
+            .installed_at_epoch_sec
+            .cmp(&left.installed_at_epoch_sec)
+            .then_with(|| left.project_title.cmp(&right.project_title))
+    });
+    write_installed_content_index(runtime_root, &items)
+}
+
+fn find_installed_content_item(
+    runtime_root: &Path,
+    source: &str,
+    project_id: &str,
+    content_type: &str,
+) -> Result<Option<InstalledContentItem>, String> {
+    let items = read_installed_content_index(runtime_root)?;
+    Ok(items.into_iter().find(|item| {
+        item.source.eq_ignore_ascii_case(source)
+            && item.project_id == project_id
+            && item.content_type == content_type
+    }))
+}
+
+fn remove_installed_content_item(
+    runtime_root: &Path,
+    source: &str,
+    project_id: &str,
+    content_type: &str,
+) -> Result<InstalledContentItem, String> {
+    let mut items = read_installed_content_index(runtime_root)?;
+    let position = items
+        .iter()
+        .position(|item| {
+            item.source.eq_ignore_ascii_case(source)
+                && item.project_id == project_id
+                && item.content_type == content_type
+        })
+        .ok_or_else(|| {
+            format!(
+                "Installed content record not found for {source}:{content_type}:{project_id}"
+            )
+        })?;
+
+    let removed = items.remove(position);
+    remove_content_install_path(runtime_root, &removed.installed_path)?;
+    write_installed_content_index(runtime_root, &items)?;
+    Ok(removed)
+}
+
+fn resolve_managed_content_path(
+    runtime_root: &Path,
+    raw_path: &str,
+) -> Result<Option<PathBuf>, String> {
+    let trimmed = raw_path.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+
+    let candidate = PathBuf::from(trimmed);
+    let resolved = if candidate.is_absolute() {
+        candidate
+    } else {
+        runtime_root.join(candidate)
+    };
+
+    let canonical_runtime = fs::canonicalize(runtime_root).unwrap_or_else(|_| runtime_root.to_path_buf());
+    if resolved.exists() {
+        let canonical_target = fs::canonicalize(&resolved).map_err(|e| {
+            format!(
+                "Failed to resolve installed content path {}: {e}",
+                resolved.display()
+            )
+        })?;
+        if !canonical_target.starts_with(&canonical_runtime) {
+            return Err(format!(
+                "Refusing to manage content outside runtime root: {}",
+                canonical_target.display()
+            ));
+        }
+    } else if !resolved.starts_with(&canonical_runtime) && !resolved.starts_with(runtime_root) {
+        return Err(format!(
+            "Refusing to manage missing content outside runtime root: {}",
+            resolved.display()
+        ));
+    }
+
+    Ok(Some(resolved))
+}
+
+fn remove_content_install_path(runtime_root: &Path, raw_path: &str) -> Result<(), String> {
+    let Some(resolved) = resolve_managed_content_path(runtime_root, raw_path)? else {
+        return Ok(());
+    };
+    if !resolved.exists() {
+        return Ok(());
+    }
+    if resolved.is_dir() {
+        fs::remove_dir_all(&resolved).map_err(|e| {
+            format!(
+                "Failed to remove installed content directory {}: {e}",
+                resolved.display()
+            )
+        })?;
+    } else {
+        fs::remove_file(&resolved).map_err(|e| {
+            format!(
+                "Failed to remove installed content file {}: {e}",
+                resolved.display()
+            )
+        })?;
+    }
+    Ok(())
+}
+
+fn download_file_quiet_blocking(
+    client: &reqwest::blocking::Client,
+    url: &str,
+    target: &Path,
+) -> Result<(), String> {
+    if let Some(parent) = target.parent() {
+        fs::create_dir_all(parent).map_err(|e| {
+            format!(
+                "Failed to create download directory {}: {e}",
+                parent.display()
+            )
+        })?;
+    }
+
+    let tmp = target.with_extension("download");
+    let mut last_error = String::new();
+    for attempt in 1..=3 {
+        let response = client
+            .get(url)
+            .header(reqwest::header::ACCEPT, "*/*")
+            .header(reqwest::header::ACCEPT_ENCODING, "identity")
+            .send();
+
+        let mut response = match response {
+            Ok(value) => value,
+            Err(err) => {
+                last_error = format!("request failed on attempt {attempt}/3: {err}");
+                continue;
+            }
+        };
+        if !response.status().is_success() {
+            last_error = format!("HTTP {}", response.status());
+            continue;
+        }
+
+        let mut file = fs::File::create(&tmp)
+            .map_err(|e| format!("Failed to create temp file {}: {e}", tmp.display()))?;
+        let write_result = std::io::copy(&mut response, &mut file);
+        match write_result {
+            Ok(_) => {
+                file.flush()
+                    .map_err(|e| format!("Failed to flush temp file {}: {e}", tmp.display()))?;
+                if target.exists() {
+                    fs::remove_file(target).map_err(|e| {
+                        format!("Failed to replace existing file {}: {e}", target.display())
+                    })?;
+                }
+                fs::rename(&tmp, target).map_err(|e| {
+                    format!(
+                        "Failed to move downloaded file from {} to {}: {e}",
+                        tmp.display(),
+                        target.display()
+                    )
+                })?;
+                return Ok(());
+            }
+            Err(err) => {
+                last_error = format!("read failed on attempt {attempt}/3: {err}");
+                let _ = fs::remove_file(&tmp);
+            }
+        }
+    }
+
+    let _ = fs::remove_file(&tmp);
+    Err(last_error)
+}
+
+fn resolve_manifest_base_url(
+    manifest_url: &str,
+    manifest_base_url: Option<&str>,
+) -> Result<reqwest::Url, String> {
+    let manifest_url = reqwest::Url::parse(manifest_url)
+        .map_err(|e| format!("Invalid manifestUrl {}: {e}", manifest_url))?;
+    if let Some(base_url) = manifest_base_url
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        if let Ok(parsed) = reqwest::Url::parse(base_url) {
+            return Ok(parsed);
+        }
+        return manifest_url
+            .join(base_url)
+            .map_err(|e| format!("Invalid manifest baseUrl {}: {e}", base_url));
+    }
+    Ok(manifest_url)
+}
+
+fn resolve_manifest_file_url(
+    base_url: &reqwest::Url,
+    entry: &LauncherPackageManifestFile,
+) -> Result<String, String> {
+    let source = entry
+        .url
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| value.replace('\\', "/"))
+        .unwrap_or_else(|| entry.path.trim().replace('\\', "/"));
+    if let Ok(parsed) = reqwest::Url::parse(&source) {
+        return Ok(parsed.to_string());
+    }
+    base_url
+        .join(&source)
+        .map(|url| url.to_string())
+        .map_err(|e| format!("Invalid manifest file url {}: {e}", source))
+}
+
+fn normalize_manifest_relative_path(raw: &str) -> Result<PathBuf, String> {
+    let normalized = raw.trim().replace('\\', "/");
+    if normalized.is_empty() {
+        return Err("Manifest file path cannot be empty".to_string());
+    }
+    let candidate = PathBuf::from(normalized);
+    let mut relative = PathBuf::new();
+    for component in candidate.components() {
+        match component {
+            std::path::Component::Normal(part) => relative.push(part),
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir
+            | std::path::Component::RootDir
+            | std::path::Component::Prefix(_) => {
+                return Err(format!("Manifest file path is not allowed: {}", raw.trim()));
+            }
+        }
+    }
+    if relative.as_os_str().is_empty() {
+        return Err(format!("Manifest file path is not allowed: {}", raw.trim()));
+    }
+    Ok(relative)
+}
+
+fn replace_directory_with_stage(target_dir: &Path, stage_dir: &Path) -> Result<(), String> {
+    let parent_dir = target_dir
+        .parent()
+        .ok_or_else(|| format!("Invalid target directory: {}", target_dir.display()))?;
+    let backup_dir = parent_dir.join(format!(
+        ".fpsmaster-launcher-mods-backup-{}-{}",
+        std::process::id(),
+        now_epoch_millis()
+    ));
+    if backup_dir.exists() {
+        fs::remove_dir_all(&backup_dir).map_err(|e| {
+            format!(
+                "Failed to reset backup directory {}: {e}",
+                backup_dir.display()
+            )
+        })?;
+    }
+
+    let had_existing = target_dir.exists();
+    if had_existing {
+        fs::rename(target_dir, &backup_dir).map_err(|e| {
+            format!(
+                "Failed to move existing mods directory {} to backup {}: {e}",
+                target_dir.display(),
+                backup_dir.display()
+            )
+        })?;
+    }
+
+    let promote_result = fs::rename(stage_dir, target_dir);
+    if let Err(err) = promote_result {
+        if had_existing {
+            let _ = fs::rename(&backup_dir, target_dir);
+        }
+        return Err(format!(
+            "Failed to promote staged mods directory {} to {}: {err}",
+            stage_dir.display(),
+            target_dir.display()
+        ));
+    }
+
+    if had_existing {
+        fs::remove_dir_all(&backup_dir).map_err(|e| {
+            format!(
+                "Failed to remove backup directory {}: {e}",
+                backup_dir.display()
+            )
+        })?;
+    }
+
+    Ok(())
+}
+
+fn copy_directory_contents(source_dir: &Path, target_dir: &Path) -> Result<(), String> {
+    if !source_dir.exists() {
+        return Ok(());
+    }
+    fs::create_dir_all(target_dir)
+        .map_err(|e| format!("Failed to create directory {}: {e}", target_dir.display()))?;
+    for entry in fs::read_dir(source_dir).map_err(|e| {
+        format!(
+            "Failed to read staged directory {}: {e}",
+            source_dir.display()
+        )
+    })? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let source_path = entry.path();
+        let target_path = target_dir.join(entry.file_name());
+        if source_path.is_dir() {
+            copy_directory_contents(&source_path, &target_path)?;
+        } else {
+            if let Some(parent) = target_path.parent() {
+                fs::create_dir_all(parent).map_err(|e| {
+                    format!(
+                        "Failed to create target directory {}: {e}",
+                        parent.display()
+                    )
+                })?;
+            }
+            fs::copy(&source_path, &target_path).map_err(|e| {
+                format!(
+                    "Failed to copy file from {} to {}: {e}",
+                    source_path.display(),
+                    target_path.display()
+                )
+            })?;
+        }
+    }
+    Ok(())
+}
+
+fn verify_file_sha256(path: &Path, expected_checksum: &str) -> Result<(), String> {
+    let expected = normalize_sha256_value(expected_checksum)
+        .ok_or_else(|| format!("Unsupported checksum value: {}", expected_checksum.trim()))?;
+    let actual = compute_file_sha256_hex(path)?;
+    if actual != expected {
+        return Err(format!("expected {}, got {}", expected, actual));
+    }
+    Ok(())
+}
+
+fn verify_file_sha512(path: &Path, expected_checksum: &str) -> Result<(), String> {
+    let expected = normalize_sha512_value(expected_checksum)
+        .ok_or_else(|| format!("Unsupported checksum value: {}", expected_checksum.trim()))?;
+    let actual = compute_file_sha512_hex(path)?;
+    if actual != expected {
+        return Err(format!("expected {}, got {}", expected, actual));
+    }
+    Ok(())
+}
+
+fn compute_file_sha256_hex(path: &Path) -> Result<String, String> {
+    let mut file = fs::File::open(path)
+        .map_err(|e| format!("Failed to open file {} for checksum: {e}", path.display()))?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let read = file
+            .read(&mut buffer)
+            .map_err(|e| format!("Failed to read file {} for checksum: {e}", path.display()))?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+
+    let digest = hasher.finalize();
+    let mut output = String::with_capacity(digest.len() * 2);
+    for byte in digest {
+        output.push_str(&format!("{byte:02x}"));
+    }
+    Ok(output)
+}
+
+fn compute_file_sha512_hex(path: &Path) -> Result<String, String> {
+    let mut file = fs::File::open(path)
+        .map_err(|e| format!("Failed to open file {} for checksum: {e}", path.display()))?;
+    let mut hasher = Sha512::new();
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let read = file
+            .read(&mut buffer)
+            .map_err(|e| format!("Failed to read file {} for checksum: {e}", path.display()))?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+
+    let digest = hasher.finalize();
+    let mut output = String::with_capacity(digest.len() * 2);
+    for byte in digest {
+        output.push_str(&format!("{byte:02x}"));
+    }
+    Ok(output)
+}
+
+fn normalize_sha256_value(raw: &str) -> Option<String> {
+    let mut normalized = raw.trim().to_ascii_lowercase();
+    if let Some(stripped) = normalized.strip_prefix("sha256:") {
+        normalized = stripped.trim().to_string();
+    }
+    if normalized.len() == 64 && normalized.chars().all(|ch| ch.is_ascii_hexdigit()) {
+        Some(normalized)
+    } else {
+        None
+    }
+}
+
+fn normalize_sha512_value(raw: &str) -> Option<String> {
+    let mut normalized = raw.trim().to_ascii_lowercase();
+    if let Some(stripped) = normalized.strip_prefix("sha512:") {
+        normalized = stripped.trim().to_string();
+    }
+    if normalized.len() == 128 && normalized.chars().all(|ch| ch.is_ascii_hexdigit()) {
+        Some(normalized)
+    } else {
+        None
+    }
 }
 
 #[tauri::command]
@@ -1627,10 +3056,11 @@ fn resolve_instance_section_dir(
         "saves" => "saves",
         "mods" => "mods",
         "resourcepacks" => "resourcepacks",
+        "shaderpacks" => "shaderpacks",
         other => {
             return Err(format!(
-                "Unsupported instance section '{other}'. Expected saves/mods/resourcepacks"
-            ))
+            "Unsupported instance section '{other}'. Expected saves/mods/resourcepacks/shaderpacks"
+        ))
         }
     };
     Ok(resolve_version_runtime_dir(game_dir, version_id)?.join(normalized))
@@ -2679,10 +4109,8 @@ fn parse_launcher_login_response(
         serde_json::from_str(body).map_err(|e| format!("Invalid login response JSON: {e}"))?;
 
     if !status.is_success() {
-        return Err(
-            extract_api_error_message(body)
-                .unwrap_or_else(|| format!("login failed with HTTP {}", status.as_u16())),
-        );
+        return Err(extract_api_error_message(body)
+            .unwrap_or_else(|| format!("login failed with HTTP {}", status.as_u16())));
     }
 
     let container = login_payload_container(&value);
@@ -2711,13 +4139,12 @@ fn parse_launcher_versions_response(
         .map_err(|e| format!("Invalid versions list response JSON: {e}"))?;
 
     if !status.is_success() {
-        return Err(
-            extract_api_error_message(body)
-                .unwrap_or_else(|| format!("versions list failed with HTTP {}", status.as_u16())),
-        );
+        return Err(extract_api_error_message(body)
+            .unwrap_or_else(|| format!("versions list failed with HTTP {}", status.as_u16())));
     }
 
-    extract_launcher_versions(&value).ok_or_else(|| "versions list response missing data".to_string())
+    extract_launcher_versions(&value)
+        .ok_or_else(|| "versions list response missing data".to_string())
 }
 
 fn parse_launcher_news_response(
@@ -2732,10 +4159,8 @@ fn parse_launcher_news_response(
         .map_err(|e| format!("Invalid launcher news response JSON: {e}"))?;
 
     if !status.is_success() {
-        return Err(
-            extract_api_error_message(body)
-                .unwrap_or_else(|| format!("launcher news failed with HTTP {}", status.as_u16())),
-        );
+        return Err(extract_api_error_message(body)
+            .unwrap_or_else(|| format!("launcher news failed with HTTP {}", status.as_u16())));
     }
 
     extract_launcher_news(&value).ok_or_else(|| "launcher news response missing data".to_string())
@@ -2753,10 +4178,9 @@ fn parse_launcher_dashboard_response(
         .map_err(|e| format!("Invalid launcher dashboard response JSON: {e}"))?;
 
     if !status.is_success() {
-        return Err(
-            extract_api_error_message(body)
-                .unwrap_or_else(|| format!("launcher dashboard failed with HTTP {}", status.as_u16())),
-        );
+        return Err(extract_api_error_message(body).unwrap_or_else(|| {
+            format!("launcher dashboard failed with HTTP {}", status.as_u16())
+        }));
     }
 
     serde_json::from_value::<LauncherDashboard>(value)
@@ -2775,10 +4199,8 @@ fn parse_launcher_home_response(
         .map_err(|e| format!("Invalid launcher home response JSON: {e}"))?;
 
     if !status.is_success() {
-        return Err(
-            extract_api_error_message(body)
-                .unwrap_or_else(|| format!("launcher home failed with HTTP {}", status.as_u16())),
-        );
+        return Err(extract_api_error_message(body)
+            .unwrap_or_else(|| format!("launcher home failed with HTTP {}", status.as_u16())));
     }
 
     serde_json::from_value::<LauncherHomePayload>(value)
@@ -2988,6 +4410,7 @@ fn is_mods_marker_up_to_date(
     marker_path: &Path,
     version_tag: &str,
     expected_checksum: Option<&str>,
+    expected_manifest_url: Option<&str>,
     expected_download_url: Option<&str>,
 ) -> Result<bool, String> {
     let marker = match read_mods_marker(marker_path)? {
@@ -3002,6 +4425,15 @@ fn is_mods_marker_up_to_date(
         if installed_checksum != expected_checksum_value.trim() {
             return Ok(false);
         }
+    }
+    match (marker.manifest_url.as_deref(), expected_manifest_url) {
+        (Some(installed_manifest_url), Some(expected_manifest_url_value)) => {
+            if installed_manifest_url.trim() != expected_manifest_url_value.trim() {
+                return Ok(false);
+            }
+        }
+        (None, Some(_)) => return Ok(false),
+        _ => {}
     }
     if let Some(expected_url) = expected_download_url {
         if marker.download_url.trim() != expected_url.trim() {
@@ -3030,6 +4462,9 @@ fn read_mods_marker(marker_path: &Path) -> Result<Option<LauncherModsInstallMark
 }
 
 fn mods_dir_has_payload(mods_dir: &Path, marker_path: &Path) -> Result<bool, String> {
+    if !mods_dir.exists() {
+        return Ok(false);
+    }
     let read_dir = fs::read_dir(mods_dir).map_err(|e| {
         format!(
             "Failed to inspect mods directory {}: {e}",
@@ -3231,17 +4666,26 @@ fn main() {
         .plugin({
             #[cfg(target_os = "macos")]
             {
-                tauri_plugin_autostart::init(MacosLauncher::LaunchAgent, None)
+                tauri_plugin_autostart::Builder::new()
+                    .arg("--autostart")
+                    .macos_launcher(MacosLauncher::LaunchAgent)
+                    .build()
             }
             #[cfg(not(target_os = "macos"))]
             {
-                tauri_plugin_autostart::init(Default::default(), None)
+                tauri_plugin_autostart::Builder::new()
+                    .arg("--autostart")
+                    .build()
             }
         })
         .setup(|app| {
             let _ = app.path().app_data_dir();
             create_tray(&app.handle())?;
+            let launched_from_autostart = is_autostart_launch();
             if let Some(window) = app.get_webview_window("main") {
+                if launched_from_autostart {
+                    let _ = window.hide();
+                }
                 let app_handle = app.handle().clone();
                 window.on_window_event(move |event| {
                     if let WindowEvent::CloseRequested { api, .. } = event {
@@ -3261,6 +4705,10 @@ fn main() {
             launcher_list_news,
             launcher_get_dashboard,
             launcher_get_home,
+            modrinth_search_projects,
+            install_modrinth_project,
+            list_installed_content,
+            uninstall_installed_content,
             get_launcher_package_state,
             install_launcher_version_mods,
             list_vanilla_versions,

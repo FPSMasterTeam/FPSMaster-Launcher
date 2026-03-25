@@ -1,12 +1,12 @@
 import { invoke } from "@tauri-apps/api/core";
 import { ArrowLeft, File, Folder, FolderOpen, RefreshCw } from "lucide-react";
-import { useEffect, useState } from "react";
+import { type ReactNode, useEffect, useState } from "react";
 import Button from "../components/Button";
 import Card from "../components/Card";
 import { useI18n } from "../i18n";
 import type { Instance, InstanceSectionEntry } from "../types";
 
-type InstanceSection = "saves" | "mods" | "resourcepacks";
+type InstanceSection = "saves" | "mods" | "resourcepacks" | "shaderpacks";
 
 type SectionState = {
   entries: InstanceSectionEntry[];
@@ -20,13 +20,14 @@ type InstanceSettingsPageProps = {
   onBack: () => void;
 };
 
-const SECTIONS: readonly InstanceSection[] = ["saves", "mods", "resourcepacks"];
+const SECTIONS: readonly InstanceSection[] = ["saves", "mods", "resourcepacks", "shaderpacks"];
 
 function emptySectionState(): Record<InstanceSection, SectionState> {
   return {
     saves: { entries: [], loading: false, error: null },
     mods: { entries: [], loading: false, error: null },
-    resourcepacks: { entries: [], loading: false, error: null }
+    resourcepacks: { entries: [], loading: false, error: null },
+    shaderpacks: { entries: [], loading: false, error: null }
   };
 }
 
@@ -37,6 +38,7 @@ export default function InstanceSettingsPage({ instance, gameDir, onBack }: Inst
   function sectionLabel(section: InstanceSection): string {
     if (section === "saves") return t("instanceFiles.saves");
     if (section === "mods") return t("instanceFiles.mods");
+    if (section === "shaderpacks") return t("instanceFiles.shaderpacks");
     return t("instanceFiles.resourcepacks");
   }
 
@@ -141,7 +143,11 @@ export default function InstanceSettingsPage({ instance, gameDir, onBack }: Inst
           <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[var(--text-muted)]">{t("instanceFiles.title")}</p>
           <h1 className="mt-2 text-3xl font-semibold tracking-tight text-[var(--text-primary)]">{instance.name}</h1>
           <p className="mt-1 text-[var(--text-secondary)]">{t("instanceFiles.subtitle", { name: instance.name })}</p>
-          <p className="mt-1 text-xs text-[var(--text-muted)]">{instance.versionId}</p>
+          <div className="mt-3 flex flex-wrap gap-2">
+            <MetaBadge>{instance.baseVersion}</MetaBadge>
+            <MetaBadge>{loaderLabel(instance.loader, t)}</MetaBadge>
+            {instance.launcherVersionType && <MetaBadge>{instance.launcherVersionType}</MetaBadge>}
+          </div>
         </div>
         <Button variant="secondary" size="sm" className="gap-2" onClick={onBack}>
           <ArrowLeft size={14} />
@@ -197,5 +203,22 @@ export default function InstanceSettingsPage({ instance, gameDir, onBack }: Inst
         })}
       </div>
     </div>
+  );
+}
+
+function loaderLabel(
+  loader: Instance["loader"],
+  t: ReturnType<typeof useI18n>["t"]
+): string {
+  if (loader === "forge") return t("loader.forge");
+  if (loader === "fabric") return t("loader.fabric");
+  return t("loader.vanilla");
+}
+
+function MetaBadge({ children }: { children: ReactNode }) {
+  return (
+    <span className="rounded-md border border-[var(--border-medium)] bg-[var(--bg-elevated)] px-2 py-0.5 text-[10px] font-semibold uppercase text-[var(--text-secondary)]">
+      {children}
+    </span>
   );
 }

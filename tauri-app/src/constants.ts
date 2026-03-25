@@ -12,8 +12,8 @@ export const LAUNCHER_API_BASE_URL = "https://api.fpsmaster.top";
 
 export const NEWS_ITEMS: readonly NewsItem[] = [
   {
-    title: "全新启动器发布",
-    summary: "基于现代技术栈开发的FPSMaster启动器已发布，提供便捷快速的启动体验。"
+    title: "欢迎使用 FPSMaster",
+    summary: "登录后即可同步客户端包、查看最新公告，并快速启动常用实例。"
   }
 ];
 

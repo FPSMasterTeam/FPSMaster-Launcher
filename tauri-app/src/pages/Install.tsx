@@ -67,8 +67,9 @@ export default function InstallPage({
     <div className="h-full overflow-y-auto p-4 md:p-5 xl:p-6">
       <header className="mb-6 grid gap-4 md:grid-cols-[minmax(0,1fr)_auto] md:items-center">
         <div>
-          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[var(--text-muted)]">{t("install.title")}</p>
-          <h1 className="mt-2 text-3xl font-semibold tracking-tight text-[var(--text-primary)]">{t("install.subtitle")}</h1>
+          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[var(--text-muted)]">{t("nav.myGames")}</p>
+          <h1 className="mt-2 text-3xl font-semibold tracking-tight text-[var(--text-primary)]">{t("install.title")}</h1>
+          <p className="mt-1 text-[var(--text-secondary)]">{t("install.subtitle")}</p>
         </div>
         <Card variant="frost" className="rounded-full px-4 py-2 text-sm text-[var(--text-secondary)]">
           {catalogLoading ? t("install.syncing") : t("install.versionCount", { count: catalogCount })}
