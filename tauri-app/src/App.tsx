@@ -61,6 +61,7 @@ import type {
   Loader,
   Page,
   PresetPackageStatus,
+  ServerItem,
   Settings,
   TelemetryOnlineSummary,
   UiLogPollResult
@@ -130,6 +131,7 @@ function Launcher() {
   const [launcherAuth, setLauncherAuth] = useState<LauncherAuthState | null>(loadLauncherAuthState);
   const [launcherVersions, setLauncherVersions] = useState<LauncherVersionMap>(EMPTY_LAUNCHER_VERSIONS);
   const [launcherNews, setLauncherNews] = useState<NewsItem[]>(() => [...NEWS_ITEMS]);
+  const [launcherServers, setLauncherServers] = useState<ServerItem[]>([]);
   const [launcherDashboard, setLauncherDashboard] = useState<LauncherDashboard | null>(null);
   const [launcherOnlineSummary, setLauncherOnlineSummary] = useState<TelemetryOnlineSummary | null>(null);
   const [launcherAppUpdate, setLauncherAppUpdate] = useState<LauncherAppUpdateInfo | null>(null);
@@ -719,6 +721,7 @@ function Launcher() {
       } else {
         setLauncherNews([...NEWS_ITEMS]);
       }
+      setLauncherServers(payload.servers ?? []);
       setLauncherOnlineSummary(payload.online ?? null);
       if (payload.dashboard) {
         setLauncherDashboard(payload.dashboard);
@@ -742,6 +745,7 @@ function Launcher() {
     } catch (error) {
       if (!token) {
         setLauncherNews([...NEWS_ITEMS]);
+        setLauncherServers([]);
         setLauncherOnlineSummary(null);
       }
       if (!silent) {
@@ -1773,6 +1777,7 @@ function Launcher() {
         <HomePage
           availableInstances={instances}
           launcherNews={launcherNews}
+          launcherServers={launcherServers}
           launcherDashboard={launcherDashboard}
           launcherOnlineSummary={launcherOnlineSummary}
           launcherUpdate={launcherAppUpdate}

@@ -4,7 +4,6 @@ import { type ReactNode, useMemo, useState } from "react";
 import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import Button from "../components/Button";
 import Card from "../components/Card";
-import { RECOMMENDED_SERVERS } from "../constants";
 import { useI18n } from "../i18n";
 import type {
   DownloadedLauncherUpdate,
@@ -14,6 +13,7 @@ import type {
   LauncherVersion,
   NewsItem,
   PresetPackageStatus,
+  ServerItem,
   TelemetryOnlineSummary
 } from "../types";
 import { resolveInstanceIconPath } from "../utils/launcher";
@@ -21,6 +21,7 @@ import { resolveInstanceIconPath } from "../utils/launcher";
 type HomePageProps = {
   availableInstances: Instance[];
   launcherNews: NewsItem[];
+  launcherServers: ServerItem[];
   launcherDashboard: LauncherDashboard | null;
   launcherOnlineSummary: TelemetryOnlineSummary | null;
   launcherUpdate: LauncherAppUpdateInfo | null;
@@ -43,6 +44,7 @@ type HomePageProps = {
 export default function HomePage({
   availableInstances,
   launcherNews,
+  launcherServers,
   launcherDashboard,
   launcherOnlineSummary,
   launcherUpdate,
@@ -386,26 +388,32 @@ export default function HomePage({
                 <Users size={16} className="text-[var(--mc-grass)]" />
                 {t("home.topServers")}
               </h2>
-              <div className="space-y-1.5">
-                {RECOMMENDED_SERVERS.map((server) => (
-                  <button
-                    key={server.address}
-                    className="linear-float flex min-h-11 w-full cursor-pointer items-center rounded-lg border border-transparent px-2.5 py-2 text-left transition-all duration-[var(--duration-normal)] hover:border-[var(--border-subtle)] hover:bg-[var(--surface-soft)]"
-                    type="button"
-                  >
-                    <div className="h-8 w-8 overflow-hidden rounded-md border border-[var(--border-subtle)] bg-[var(--bg-elevated)]">
-                      {server.iconPath ? <img src={server.iconPath} alt={server.name} className="h-full w-full object-cover" /> : null}
-                    </div>
-                    <div className="ml-2.5 min-w-0 flex-1">
-                      <p className="truncate text-sm font-semibold text-[var(--text-primary)]">{server.name}</p>
-                      <p className="truncate text-[11px] text-[var(--text-muted)]">{server.address}</p>
-                    </div>
-                    <span className="rounded-md border border-[var(--border-medium)] bg-[var(--bg-elevated)] px-2 py-0.5 text-[10px] font-semibold uppercase text-[var(--text-secondary)]">
-                      {server.mode}
-                    </span>
-                  </button>
-                ))}
-              </div>
+              {launcherServers.length > 0 ? (
+                <div className="space-y-1.5">
+                  {launcherServers.map((server) => (
+                    <button
+                      key={server.id ?? server.address}
+                      className="linear-float flex min-h-11 w-full cursor-pointer items-center rounded-lg border border-transparent px-2.5 py-2 text-left transition-all duration-[var(--duration-normal)] hover:border-[var(--border-subtle)] hover:bg-[var(--surface-soft)]"
+                      type="button"
+                    >
+                      <div className="flex h-8 w-8 items-center justify-center overflow-hidden rounded-md border border-[var(--border-subtle)] bg-[var(--bg-elevated)] text-[10px] font-semibold uppercase text-[var(--text-muted)]">
+                        {server.iconPath ? <img src={server.iconPath} alt={server.name} className="h-full w-full object-cover" /> : server.name.slice(0, 1)}
+                      </div>
+                      <div className="ml-2.5 min-w-0 flex-1">
+                        <p className="truncate text-sm font-semibold text-[var(--text-primary)]">{server.name}</p>
+                        <p className="truncate text-[11px] text-[var(--text-muted)]">{server.address}</p>
+                      </div>
+                      <span className="rounded-md border border-[var(--border-medium)] bg-[var(--bg-elevated)] px-2 py-0.5 text-[10px] font-semibold uppercase text-[var(--text-secondary)]">
+                        {server.mode}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              ) : (
+                <div className="rounded-lg border border-dashed border-[var(--border-subtle)] px-3 py-4 text-center text-xs text-[var(--text-muted)]">
+                  {t("home.dashboardReady")}
+                </div>
+              )}
               <button className="mt-1.5 flex w-full items-center justify-center gap-1 rounded-lg px-2 py-1.5 text-xs font-medium text-[var(--text-muted)] transition-colors hover:text-[var(--text-primary)]" type="button">
                 {t("home.moreServers")} <ChevronRight size={12} />
               </button>

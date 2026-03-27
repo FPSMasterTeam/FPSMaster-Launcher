@@ -63,14 +63,20 @@ export type NewsItem = {
   author?: string | null;
   category?: string | null;
   pinned?: boolean;
+  targetClients?: string[];
+  startsAt?: string | null;
+  endsAt?: string | null;
+  severity?: "info" | "success" | "warning" | "critical";
   publishedAt?: string | null;
 };
 
 export type ServerItem = {
+  id?: string;
   name: string;
   address: string;
   mode: string;
   iconPath?: string;
+  description?: string;
 };
 
 export type LaunchExecutionResult = {
@@ -358,6 +364,7 @@ export type DownloadedLauncherUpdate = {
 
 export type LauncherHomePayload = {
   news: NewsItem[];
+  servers: ServerItem[];
   online: TelemetryOnlineSummary;
   dashboard?: LauncherDashboard | null;
 };

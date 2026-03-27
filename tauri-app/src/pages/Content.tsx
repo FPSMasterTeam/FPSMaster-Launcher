@@ -173,16 +173,12 @@ export default function ContentPage({
       return;
     }
     const trimmedQuery = query.trim();
-    if (!trimmedQuery) {
-      setError(t("content.queryRequired"));
-      return;
-    }
 
     setLoading(true);
     setHasSearched(true);
     setError(null);
     setLastInstallResult(null);
-    onStatusChange(t("content.searching"));
+    onStatusChange(trimmedQuery ? t("content.searching") : t("content.loadingTrending"));
     try {
       await refreshInstalledState(currentInstance);
       const items =
@@ -203,7 +199,11 @@ export default function ContentPage({
               limit: 18
             });
       setResults(items);
-      onStatusChange(t("content.searchDone", { count: items.length }));
+      onStatusChange(
+        trimmedQuery
+          ? t("content.searchDone", { count: items.length })
+          : t("content.trendingLoaded", { count: items.length })
+      );
     } catch (invokeError) {
       const errorText = normalizeError(invokeError);
       setError(errorText);

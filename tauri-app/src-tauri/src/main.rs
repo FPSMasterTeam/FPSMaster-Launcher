@@ -146,6 +146,26 @@ struct LauncherNewsItem {
     published_at: Option<String>,
     #[serde(default)]
     pinned: bool,
+    #[serde(rename = "targetClients", default)]
+    target_clients: Vec<String>,
+    #[serde(rename = "startsAt", default)]
+    starts_at: Option<String>,
+    #[serde(rename = "endsAt", default)]
+    ends_at: Option<String>,
+    #[serde(default)]
+    severity: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct LauncherServerItem {
+    id: String,
+    name: String,
+    address: String,
+    description: String,
+    active: bool,
+    mode: String,
+    #[serde(rename = "iconPath", default)]
+    icon_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -205,6 +225,7 @@ struct TelemetryOnlineSummary {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct LauncherHomePayload {
     news: Vec<LauncherNewsItem>,
+    servers: Vec<LauncherServerItem>,
     online: TelemetryOnlineSummary,
     dashboard: Option<LauncherDashboard>,
 }
@@ -1687,7 +1708,10 @@ fn launcher_login_blocking(
     username_or_email: String,
     password: String,
 ) -> Result<LauncherLoginResult, String> {
-    let endpoint = format!("{}/api/v1/auth/login", normalize_api_base_url(&base_url)?);
+    let endpoint = format!(
+        "{}/api/v1/auth/launcher/login",
+        normalize_api_base_url(&base_url)?
+    );
     let client = reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(20))
         .build()
@@ -1815,7 +1839,8 @@ fn launcher_list_news_blocking(
     let mut url = reqwest::Url::parse(&format!("{normalized_base}/api/v1/launcher/news"))
         .map_err(|e| format!("Invalid launcher news endpoint URL: {e}"))?;
     url.query_pairs_mut()
-        .append_pair("limit", &limit.unwrap_or(4).clamp(1, 12).to_string());
+        .append_pair("limit", &limit.unwrap_or(4).clamp(1, 12).to_string())
+        .append_pair("clientKind", "LAUNCHER");
 
     let response = client
         .get(url)
@@ -2154,10 +2179,6 @@ fn modrinth_search_projects_blocking(
     limit: Option<u32>,
 ) -> Result<Vec<ModrinthSearchResult>, String> {
     let normalized_query = query.trim().to_string();
-    if normalized_query.is_empty() {
-        return Err("Search query cannot be empty".to_string());
-    }
-
     let normalized_project_type = normalize_content_project_type(&project_type)?;
     let client = build_blocking_http_client()?;
     let mut url = reqwest::Url::parse("https://api.modrinth.com/v2/search")
@@ -2169,10 +2190,12 @@ fn modrinth_search_projects_blocking(
     )?;
 
     url.query_pairs_mut()
-        .append_pair("query", &normalized_query)
         .append_pair("limit", &limit.unwrap_or(18).clamp(1, 50).to_string())
         .append_pair("index", "downloads")
         .append_pair("facets", &facets);
+    if !normalized_query.is_empty() {
+        url.query_pairs_mut().append_pair("query", &normalized_query);
+    }
 
     let response = client
         .get(url)

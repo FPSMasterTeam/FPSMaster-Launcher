@@ -1,4 +1,4 @@
-import type { Instance, NewsItem, ServerItem, Settings } from "./types";
+import type { Instance, NewsItem, Settings } from "./types";
 
 export const STORAGE_KEYS = {
   instances: "fpsmaster.instances",
@@ -14,21 +14,6 @@ export const NEWS_ITEMS: readonly NewsItem[] = [
   {
     title: "欢迎使用 FPSMaster",
     summary: "登录后即可同步客户端包、查看最新公告，并快速启动常用实例。"
-  }
-];
-
-export const RECOMMENDED_SERVERS: readonly ServerItem[] = [
-  {
-    name: "Hypixel",
-    address: "mc.hypixel.net",
-    mode: "PvP",
-    iconPath: "/server-icons/hypixel.png"
-  },
-  {
-    name: "CloverPixel",
-    address: "cloverpixel.com",
-    mode: "Network",
-    iconPath: "/server-icons/cloverpixel.png"
   }
 ];
 
