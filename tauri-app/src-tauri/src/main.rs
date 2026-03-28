@@ -56,8 +56,10 @@ struct LaunchExecutionResult {
 struct FabricInstallResult {
     #[serde(rename = "profileId")]
     profile_id: String,
-    #[serde(rename = "profilePath")]
-    profile_path: String,
+    #[serde(rename = "loaderVersion", default)]
+    loader_version: Option<String>,
+    #[serde(rename = "profileJsonPath", alias = "profilePath")]
+    profile_json_path: String,
     #[serde(rename = "librariesDownloaded")]
     libraries_downloaded: i32,
 }
@@ -7075,6 +7077,50 @@ fn extract_tar_gz(archive: &Path, dest: &Path) -> Result<(), String> {
     let decoder = flate2::read::GzDecoder::new(file);
     let mut tar = tar::Archive::new(decoder);
     tar.unpack(dest).map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{FabricInstallResult, ForgeInstallResult};
+
+    #[test]
+    fn fabric_install_result_matches_java_core_payload() {
+        let payload = r#"{
+            "profileId":"fabric-loader-0.16.10-1.20.1",
+            "loaderVersion":"0.16.10",
+            "profileJsonPath":"E:\\test\\fabric-loader-0.16.10-1.20.1.json",
+            "librariesDownloaded":8
+        }"#;
+
+        let result: FabricInstallResult =
+            serde_json::from_str(payload).expect("fabric payload should deserialize");
+        assert_eq!(result.profile_id, "fabric-loader-0.16.10-1.20.1");
+        assert_eq!(result.loader_version.as_deref(), Some("0.16.10"));
+        assert_eq!(
+            result.profile_json_path,
+            r"E:\test\fabric-loader-0.16.10-1.20.1.json"
+        );
+        assert_eq!(result.libraries_downloaded, 8);
+    }
+
+    #[test]
+    fn forge_install_result_matches_java_core_payload() {
+        let payload = r#"{
+            "profileId":"1.20.1-forge-47.4.18",
+            "forgeVersion":"1.20.1-47.4.18",
+            "profileJsonPath":"E:\\test\\1.20.1-forge-47.4.18.json",
+            "installerUrl":"https://maven.minecraftforge.net/net/minecraftforge/forge/1.20.1-47.4.18/forge-1.20.1-47.4.18-installer.jar"
+        }"#;
+
+        let result: ForgeInstallResult =
+            serde_json::from_str(payload).expect("forge payload should deserialize");
+        assert_eq!(result.profile_id, "1.20.1-forge-47.4.18");
+        assert_eq!(result.forge_version, "1.20.1-47.4.18");
+        assert_eq!(
+            result.profile_json_path,
+            r"E:\test\1.20.1-forge-47.4.18.json"
+        );
+    }
 }
 
 fn locate_java_binary(runtime_root: &Path) -> Option<PathBuf> {

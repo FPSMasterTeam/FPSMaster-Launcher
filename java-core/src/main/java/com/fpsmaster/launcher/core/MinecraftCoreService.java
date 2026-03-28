@@ -160,6 +160,7 @@ public final class MinecraftCoreService {
         String versionId = request.versionId();
         ResolvedVersionDescriptor descriptor = resolveVersionDescriptor(gameDir, versionId, 0);
         JsonObject versionJson = descriptor.merged();
+        Map<String, Boolean> ruleFeatures = buildRuleFeatures();
 
         Path versionDir = gameDir.resolve("versions").resolve(versionId);
 
@@ -167,7 +168,7 @@ public final class MinecraftCoreService {
         Files.createDirectories(nativesDir);
 
         List<Path> classPathEntries = new ArrayList<>();
-        for (ResolvedLibrary library : resolveLibraries(versionJson, gameDir, versionId)) {
+        for (ResolvedLibrary library : resolveLibraries(versionJson, gameDir, versionId, ruleFeatures)) {
             ensureLibraryDownloaded(library);
             if (library.classpathEntry()) {
                 classPathEntries.add(library.path());
@@ -196,14 +197,22 @@ public final class MinecraftCoreService {
         jvmArgs.add("-Djava.library.path=" + nativesDir.toAbsolutePath());
 
         if (versionJson.has("arguments") && versionJson.getAsJsonObject("arguments").has("jvm")) {
-            jvmArgs.addAll(resolveArgumentArray(versionJson.getAsJsonObject("arguments").getAsJsonArray("jvm"), variables));
+            jvmArgs.addAll(resolveArgumentArray(
+                    versionJson.getAsJsonObject("arguments").getAsJsonArray("jvm"),
+                    variables,
+                    ruleFeatures
+            ));
         }
         jvmArgs = normalizeJvmArguments(jvmArgs);
 
         String mainClass = versionJson.get("mainClass").getAsString();
         List<String> gameArgs = new ArrayList<>();
         if (versionJson.has("arguments") && versionJson.getAsJsonObject("arguments").has("game")) {
-            gameArgs.addAll(resolveArgumentArray(versionJson.getAsJsonObject("arguments").getAsJsonArray("game"), variables));
+            gameArgs.addAll(resolveArgumentArray(
+                    versionJson.getAsJsonObject("arguments").getAsJsonArray("game"),
+                    variables,
+                    ruleFeatures
+            ));
         } else if (versionJson.has("minecraftArguments")) {
             for (String token : versionJson.get("minecraftArguments").getAsString().split(" ")) {
                 if (!token.isBlank()) {
@@ -647,6 +656,17 @@ public final class MinecraftCoreService {
         return false;
     }
 
+    private Map<String, Boolean> buildRuleFeatures() {
+        Map<String, Boolean> features = new HashMap<>();
+        features.put("is_demo_user", false);
+        features.put("has_custom_resolution", false);
+        features.put("has_quick_plays_support", false);
+        features.put("is_quick_play_singleplayer", false);
+        features.put("is_quick_play_multiplayer", false);
+        features.put("is_quick_play_realms", false);
+        return features;
+    }
+
     private Map<String, String> buildVariables(LaunchRequest request, JsonObject versionJson, Path gameDir, Path nativesDir, String classpath) {
         Map<String, String> variables = new HashMap<>();
         variables.put("${auth_player_name}", request.playerName());
@@ -676,7 +696,11 @@ public final class MinecraftCoreService {
         return variables;
     }
 
-    private List<String> resolveArgumentArray(JsonArray argumentArray, Map<String, String> variables) {
+    private List<String> resolveArgumentArray(
+            JsonArray argumentArray,
+            Map<String, String> variables,
+            Map<String, Boolean> ruleFeatures
+    ) {
         List<String> arguments = new ArrayList<>();
         for (JsonElement element : argumentArray) {
             if (element.isJsonPrimitive()) {
@@ -684,7 +708,7 @@ public final class MinecraftCoreService {
                 continue;
             }
             JsonObject argumentObject = element.getAsJsonObject();
-            if (!rulesMatch(argumentObject.getAsJsonArray("rules"))) {
+            if (!rulesMatch(argumentObject.getAsJsonArray("rules"), ruleFeatures)) {
                 continue;
             }
             JsonElement valueElement = argumentObject.get("value");
@@ -781,24 +805,33 @@ public final class MinecraftCoreService {
         JsonObject objects = indexObject.getAsJsonObject("objects");
 
         int total = objects.entrySet().size();
-        logProgress("assets", "Start download total=" + total + " version=" + versionId);
-        IpcLogBridge.installProgress(phase, "assets", 0, total, 0, total, "Start downloading assets");
-
-        AtomicInteger completed = new AtomicInteger(0);
-        AtomicInteger downloaded = new AtomicInteger(0);
-        List<Callable<Void>> jobs = new ArrayList<>(total);
+        Map<Path, AssetDownload> uniqueAssets = new LinkedHashMap<>();
         for (Map.Entry<String, JsonElement> entry : objects.entrySet()) {
             JsonObject object = entry.getValue().getAsJsonObject();
             String hash = object.get("hash").getAsString();
             String prefix = hash.substring(0, 2);
             String url = DEFAULT_ASSET_REPO + prefix + "/" + hash;
             Path objectPath = gameDirectory.resolve("assets").resolve("objects").resolve(prefix).resolve(hash);
+            uniqueAssets.compute(
+                    objectPath,
+                    (path, existing) -> existing == null
+                            ? new AssetDownload(objectPath, url, hash, 1)
+                            : existing.withAdditionalReference()
+            );
+        }
+        logProgress("assets", "Start download total=" + total + " version=" + versionId);
+        IpcLogBridge.installProgress(phase, "assets", 0, total, 0, total, "Start downloading assets");
+
+        AtomicInteger completed = new AtomicInteger(0);
+        AtomicInteger downloaded = new AtomicInteger(0);
+        List<Callable<Void>> jobs = new ArrayList<>(uniqueAssets.size());
+        for (AssetDownload asset : uniqueAssets.values()) {
             jobs.add(() -> {
-                boolean fetched = downloadFile(url, objectPath, hash, "asset");
+                boolean fetched = downloadFile(asset.url(), asset.target(), asset.sha1(), "asset");
                 if (fetched) {
                     downloaded.incrementAndGet();
                 }
-                int done = completed.incrementAndGet();
+                int done = completed.addAndGet(asset.references());
                 logProgress("assets", "Downloaded " + done + "/" + total);
                 IpcLogBridge.installProgress(
                         phase,
@@ -806,7 +839,7 @@ public final class MinecraftCoreService {
                         done,
                         total,
                         downloaded.get(),
-                        done - downloaded.get(),
+                        Math.max(0, done - downloaded.get()),
                         "Downloaded assets " + done + "/" + total
                 );
                 return null;
@@ -842,7 +875,7 @@ public final class MinecraftCoreService {
     }
 
     private List<Path> downloadLibraries(JsonObject versionJson, Path gameDirectory, String versionId, String phase) throws IOException, InterruptedException {
-        List<ResolvedLibrary> libraries = resolveLibraries(versionJson, gameDirectory, versionId);
+        List<ResolvedLibrary> libraries = resolveLibraries(versionJson, gameDirectory, versionId, buildRuleFeatures());
         Map<Path, ResolvedLibrary> uniqueLibraries = new LinkedHashMap<>();
         for (ResolvedLibrary library : libraries) {
             if (library.downloadUrl() == null) {
@@ -893,13 +926,18 @@ public final class MinecraftCoreService {
         return results;
     }
 
-    private List<ResolvedLibrary> resolveLibraries(JsonObject versionJson, Path gameDirectory, String versionId) {
+    private List<ResolvedLibrary> resolveLibraries(
+            JsonObject versionJson,
+            Path gameDirectory,
+            String versionId,
+            Map<String, Boolean> ruleFeatures
+    ) {
         JsonArray libraries = versionJson.getAsJsonArray("libraries");
         List<ResolvedLibrary> resolved = new ArrayList<>();
 
         for (JsonElement libraryElement : libraries) {
             JsonObject library = libraryElement.getAsJsonObject();
-            if (!rulesMatch(library.has("rules") ? library.getAsJsonArray("rules") : null)) {
+            if (!rulesMatch(library.has("rules") ? library.getAsJsonArray("rules") : null, ruleFeatures)) {
                 continue;
             }
 
@@ -973,7 +1011,7 @@ public final class MinecraftCoreService {
         return null;
     }
 
-    private boolean rulesMatch(JsonArray rules) {
+    private boolean rulesMatch(JsonArray rules, Map<String, Boolean> ruleFeatures) {
         if (rules == null || rules.isEmpty()) {
             return true;
         }
@@ -986,6 +1024,17 @@ public final class MinecraftCoreService {
                 JsonObject os = rule.getAsJsonObject("os");
                 if (os.has("name")) {
                     matches = currentOs.equals(os.get("name").getAsString());
+                }
+            }
+            if (matches && rule.has("features")) {
+                JsonObject features = rule.getAsJsonObject("features");
+                for (Map.Entry<String, JsonElement> featureEntry : features.entrySet()) {
+                    boolean expected = featureEntry.getValue().getAsBoolean();
+                    boolean actual = ruleFeatures.getOrDefault(featureEntry.getKey(), false);
+                    if (actual != expected) {
+                        matches = false;
+                        break;
+                    }
                 }
             }
             if (!matches) {
@@ -1158,7 +1207,11 @@ public final class MinecraftCoreService {
                 || reason.contains("timeout")
                 || reason.contains("broken pipe")
                 || reason.contains("premature eof")
-                || reason.contains("temporarily unavailable");
+                || reason.contains("temporarily unavailable")
+                || reason.contains("buffer_underflow")
+                || reason.contains("non decrypted")
+                || reason.contains("sslflowdelegate")
+                || reason.contains("insufficient bytes");
     }
 
     private boolean isRetryableHttpStatus(Integer statusCode) {
@@ -1345,6 +1398,12 @@ public final class MinecraftCoreService {
     }
 
     private record ResolvedLibrary(Path path, String downloadUrl, String sha1, boolean classpathEntry, boolean nativeEntry) {
+    }
+
+    private record AssetDownload(Path target, String url, String sha1, int references) {
+        private AssetDownload withAdditionalReference() {
+            return new AssetDownload(target, url, sha1, references + 1);
+        }
     }
 
     private record MavenCoordinates(String group, String artifact, String version) {
