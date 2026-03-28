@@ -15,9 +15,12 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.FileVisitResult;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.SimpleFileVisitor;
 import java.nio.file.StandardCopyOption;
+import java.nio.file.attribute.BasicFileAttributes;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -164,8 +167,9 @@ public final class MinecraftCoreService {
 
         Path versionDir = gameDir.resolve("versions").resolve(versionId);
 
-        Path nativesDir = versionDir.resolve("natives");
-        Files.createDirectories(nativesDir);
+        Path nativesBaseDir = versionDir.resolve("natives");
+        Files.createDirectories(nativesBaseDir);
+        Path nativesDir = Files.createTempDirectory(nativesBaseDir, "run-");
 
         List<Path> classPathEntries = new ArrayList<>();
         for (ResolvedLibrary library : resolveLibraries(versionJson, gameDir, versionId, ruleFeatures)) {
@@ -239,7 +243,13 @@ public final class MinecraftCoreService {
         builder.directory(request.gameDirectory().toFile());
         builder.redirectErrorStream(true);
 
-        Process process = builder.start();
+        Process process;
+        try {
+            process = builder.start();
+        } catch (IOException e) {
+            cleanupLaunchArtifacts(plan);
+            throw e;
+        }
         long pid = process.pid();
         logProgress("launch", "Process started version=" + request.versionId() + " pid=" + pid);
 
@@ -248,8 +258,12 @@ public final class MinecraftCoreService {
 
         Integer exitCode = null;
         if (waitForExit) {
-            exitCode = waitForProcessWithLatestLog(process, latestLogPath);
-            logProgress("launch", "Process finished pid=" + pid + " exitCode=" + exitCode);
+            try {
+                exitCode = waitForProcessWithLatestLog(process, latestLogPath);
+                logProgress("launch", "Process finished pid=" + pid + " exitCode=" + exitCode);
+            } finally {
+                cleanupLaunchArtifacts(plan);
+            }
         } else {
             Thread tailThread = new Thread(() -> {
                 try {
@@ -257,6 +271,8 @@ public final class MinecraftCoreService {
                     logProgress("launch", "Process finished pid=" + pid + " exitCode=" + code);
                 } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
+                } finally {
+                    cleanupLaunchArtifacts(plan);
                 }
             }, "mc-latest-log-tailer");
             tailThread.setDaemon(true);
@@ -271,6 +287,36 @@ public final class MinecraftCoreService {
                 plan.mainClass(),
                 plan.command()
         );
+    }
+
+    private void cleanupLaunchArtifacts(LaunchPlan plan) {
+        try {
+            deleteDirectoryRecursively(plan.nativesDirectory());
+        } catch (IOException e) {
+            logProgress("launch", "Failed cleaning natives directory " + plan.nativesDirectory() + ": " + e.getMessage());
+        }
+    }
+
+    private void deleteDirectoryRecursively(Path directory) throws IOException {
+        if (directory == null || !Files.exists(directory)) {
+            return;
+        }
+        Files.walkFileTree(directory, new SimpleFileVisitor<>() {
+            @Override
+            public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) throws IOException {
+                Files.deleteIfExists(file);
+                return FileVisitResult.CONTINUE;
+            }
+
+            @Override
+            public FileVisitResult postVisitDirectory(Path dir, IOException exc) throws IOException {
+                if (exc != null) {
+                    throw exc;
+                }
+                Files.deleteIfExists(dir);
+                return FileVisitResult.CONTINUE;
+            }
+        });
     }
 
     private void startProcessOutputForwarder(Process process) {
