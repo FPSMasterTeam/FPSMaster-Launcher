@@ -20,6 +20,7 @@ export const NEWS_ITEMS: readonly NewsItem[] = [
 export const DEFAULT_SETTINGS: Settings = {
   gameDir: "./.minecraft",
   playerName: "Player",
+  downloadSource: "official",
   maxMemoryMb: 4096,
   hideMainOnLaunch: true,
   minimizeToTray: true,

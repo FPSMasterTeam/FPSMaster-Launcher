@@ -1,7 +1,6 @@
-import { AlertTriangle, Calendar, Check, ChevronRight, Download, Play, Search, Users, X } from "lucide-react";
+import { AlertTriangle, Calendar, Check, ChevronRight, Play, Search, Users, X } from "lucide-react";
 import { createPortal } from "react-dom";
 import { type ReactNode, useMemo, useState } from "react";
-import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import Button from "../components/Button";
 import Card from "../components/Card";
 import { useI18n } from "../i18n";
@@ -9,10 +8,8 @@ import type {
   DownloadedLauncherUpdate,
   Instance,
   LauncherAppUpdateInfo,
-  LauncherDashboard,
   LauncherVersion,
   NewsItem,
-  PresetPackageStatus,
   ServerItem,
   TelemetryOnlineSummary
 } from "../types";
@@ -22,22 +19,18 @@ type HomePageProps = {
   availableInstances: Instance[];
   launcherNews: NewsItem[];
   launcherServers: ServerItem[];
-  launcherDashboard: LauncherDashboard | null;
   launcherOnlineSummary: TelemetryOnlineSummary | null;
   launcherUpdate: LauncherAppUpdateInfo | null;
   launcherUpdateAvailable: boolean;
   launcherUpdateDownloading: boolean;
   launcherUpdateDownload: DownloadedLauncherUpdate | null;
-  recommendedVersion: LauncherVersion | null;
   current: Instance | null;
   busy: boolean;
   launching: boolean;
   launchProgressPercent: number | null;
   launchProgressText: string;
-  presetPackageStatus?: PresetPackageStatus;
   onSelect: (id: string) => void;
   onLaunch: () => void;
-  onSyncPresetPackage: () => void;
   onOpenSettings: () => void;
 };
 
@@ -45,22 +38,18 @@ export default function HomePage({
   availableInstances,
   launcherNews,
   launcherServers,
-  launcherDashboard,
   launcherOnlineSummary,
   launcherUpdate,
   launcherUpdateAvailable,
   launcherUpdateDownloading,
   launcherUpdateDownload,
-  recommendedVersion,
   current,
   busy,
   launching,
   launchProgressPercent,
   launchProgressText,
-  presetPackageStatus,
   onSelect,
   onLaunch,
-  onSyncPresetPackage,
   onOpenSettings
 }: HomePageProps) {
   const { t } = useI18n();
@@ -82,30 +71,6 @@ export default function HomePage({
       );
     });
   }, [availableInstances, pickerQuery]);
-  const playtimeChartData = useMemo(
-    () =>
-      launcherDashboard?.weeklyPlaytime.points.map((point) => ({
-        name: point.date.slice(5),
-        hours: Number(point.playHours.toFixed(2))
-      })) ?? [],
-    [launcherDashboard]
-  );
-  const profileUser = launcherDashboard?.user ?? null;
-  const profileStats = launcherDashboard?.stats ?? null;
-  const membershipText = profileUser?.membershipExpiresAt
-    ? new Date(profileUser.membershipExpiresAt).toLocaleDateString()
-    : t("home.profile.membershipInactive");
-  const expText =
-    typeof profileUser?.experience === "number" && typeof profileUser?.nextLevelNeed === "number"
-      ? `${profileUser.experience}/${profileUser.nextLevelNeed}`
-      : "--/--";
-  const presetStatusText = presetPackageStatus ? describePresetPackageStatus(presetPackageStatus, t) : null;
-  const presetStatusTone = presetPackageStatus ? resolvePresetStatusTone(presetPackageStatus.state) : "";
-  const presetChangelog = presetPackageStatus?.changelog ? summarizeChangelog(presetPackageStatus.changelog) : null;
-  const recommendedVersionDate = recommendedVersion?.createdAt
-    ? new Date(recommendedVersion.createdAt).toLocaleDateString()
-    : null;
-  const recommendedVersionChannel = recommendedVersion?.channel?.trim() || "--";
   const launcherUpdateDate = launcherUpdate?.publishedAt
     ? new Date(launcherUpdate.publishedAt).toLocaleDateString()
     : null;
@@ -182,81 +147,6 @@ export default function HomePage({
 
         <section className="grid grid-cols-1 gap-4 xl:grid-cols-[minmax(0,1.35fr)_minmax(280px,0.92fr)]">
           <div>
-            <Card variant="frost" className="mb-4 rounded-xl p-4 md:p-5">
-              <div className="grid grid-cols-1 gap-4 lg:grid-cols-[minmax(0,0.95fr)_minmax(0,1.05fr)]">
-                <div>
-                  <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[var(--text-muted)]">
-                    {t("home.profile.title")}
-                  </p>
-                  <div className="mt-3 flex items-center gap-3">
-                    <div className="flex h-14 w-14 items-center justify-center overflow-hidden rounded-2xl border border-[var(--border-medium)] bg-[var(--bg-elevated)]">
-                      {profileUser?.avatarUrl ? (
-                        <img src={profileUser.avatarUrl} alt={profileUser.username ?? "avatar"} className="h-full w-full object-cover" />
-                      ) : (
-                        <span className="text-lg font-semibold text-[var(--text-primary)]">
-                          {(profileUser?.username ?? "?").slice(0, 1).toUpperCase()}
-                        </span>
-                      )}
-                    </div>
-                    <div className="min-w-0">
-                      <h2 className="truncate text-lg font-semibold text-[var(--text-primary)]">
-                        {profileUser?.username ?? t("nav.player")}
-                      </h2>
-                      <p className="truncate text-sm text-[var(--text-secondary)]">
-                        {profileUser?.customTitle || t("home.profile.noTitle")}
-                      </p>
-                    </div>
-                  </div>
-                  <div className="mt-4 grid grid-cols-2 gap-2">
-                    <ProfileMetric label={t("home.profile.wallet")} value={profileUser?.walletBalance ?? "--"} />
-                    <ProfileMetric label={t("home.profile.membership")} value={membershipText} />
-                    <ProfileMetric label={t("home.profile.sessions")} value={String(profileStats?.playSessionCount ?? 0)} />
-                    <ProfileMetric label={t("home.profile.exp")} value={expText} />
-                  </div>
-                </div>
-
-                <div className="min-w-0">
-                  <div className="mb-2 flex items-center justify-between gap-2">
-                    <h2 className="text-sm font-semibold text-[var(--text-primary)]">{t("home.profile.playtime")}</h2>
-                    <span className="rounded-md border border-[var(--border-subtle)] bg-[var(--bg-elevated)] px-2 py-1 text-[11px] font-semibold text-[var(--text-secondary)]">
-                      {t("home.profile.totalHours", { hours: profileStats?.totalPlayHours ?? 0 })}
-                    </span>
-                  </div>
-                  <Card variant="soft" className="h-44 rounded-2xl p-2" interactive={false}>
-                    {playtimeChartData.length > 0 ? (
-                      <ResponsiveContainer width="100%" height="100%">
-                        <AreaChart data={playtimeChartData}>
-                          <defs>
-                            <linearGradient id="homePlaytimeGradient" x1="0" y1="0" x2="0" y2="1">
-                              <stop offset="5%" stopColor="var(--mc-grass)" stopOpacity={0.26} />
-                              <stop offset="95%" stopColor="var(--mc-grass)" stopOpacity={0.02} />
-                            </linearGradient>
-                          </defs>
-                          <CartesianGrid strokeDasharray="3 3" stroke="var(--border-subtle)" vertical={false} />
-                          <XAxis dataKey="name" tick={{ fill: "var(--text-muted)", fontSize: 11 }} axisLine={false} tickLine={false} />
-                          <YAxis hide domain={[0, "dataMax + 1"]} />
-                          <Tooltip
-                            contentStyle={{
-                              backgroundColor: "var(--bg-tertiary)",
-                              borderColor: "var(--border-medium)",
-                              borderRadius: "12px"
-                            }}
-                            formatter={(value: number) => [`${value}h`, t("home.profile.playtime")]}
-                            labelStyle={{ color: "var(--text-secondary)" }}
-                          />
-                          <Area type="monotone" dataKey="hours" stroke="var(--mc-grass)" strokeWidth={1.8} fillOpacity={1} fill="url(#homePlaytimeGradient)" />
-                        </AreaChart>
-                      </ResponsiveContainer>
-                    ) : (
-                      <div className="flex h-full items-center justify-center text-sm text-[var(--text-muted)]">
-                        {t("home.profile.noStats")}
-                      </div>
-                    )}
-                  </Card>
-                </div>
-              </div>
-            </Card>
-
             <div className="mb-3 flex items-center justify-between gap-2">
               <h2 className="flex items-center gap-2 text-base font-semibold text-[var(--text-primary)]">
                 <Calendar size={16} className="text-[var(--mc-grass)]" />
@@ -309,80 +199,6 @@ export default function HomePage({
           </div>
 
           <div className="space-y-4">
-            {selectedInstance?.preset && (
-              <Card variant="frost" className="rounded-xl p-3.5 md:p-4">
-                <div className="flex items-start justify-between gap-3">
-                  <div>
-                    <h2 className="flex items-center gap-2 text-sm font-semibold text-[var(--text-primary)]">
-                      <Download size={16} className="text-[var(--mc-grass)]" />
-                      {t("home.presetPackageTitle")}
-                    </h2>
-                    <p className="mt-1 text-xs text-[var(--text-secondary)]">{selectedInstance.name}</p>
-                  </div>
-                  {presetPackageStatus && (
-                    <span className={`rounded-md border px-2 py-1 text-[10px] font-semibold uppercase tracking-wide ${presetStatusTone}`}>
-                      {presetStatusLabel(presetPackageStatus.state, t)}
-                    </span>
-                  )}
-                  <Button
-                    variant={
-                      presetPackageStatus?.state === "update-available" ||
-                      presetPackageStatus?.state === "missing" ||
-                      presetPackageStatus?.state === "error"
-                        ? "secondary"
-                        : "outline"
-                    }
-                    size="sm"
-                    onClick={onSyncPresetPackage}
-                    disabled={busy}
-                  >
-                    {t("instances.syncPackage")}
-                  </Button>
-                </div>
-                <p className="mt-3 text-sm text-[var(--text-secondary)]">
-                  {presetStatusText ?? t("instances.packageMissing")}
-                </p>
-                {presetPackageStatus && (
-                  <div className="mt-3 space-y-2">
-                    <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-                      <PresetMeta
-                        label={t("instances.packageInstalledVersion")}
-                        value={presetPackageStatus.installedVersionTag ?? "-"}
-                      />
-                      <PresetMeta
-                        label={t("instances.packageTargetVersion")}
-                        value={presetPackageStatus.targetVersionTag ?? presetPackageStatus.versionTag ?? "-"}
-                      />
-                    </div>
-                    {recommendedVersion && (
-                      <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
-                        <PresetMeta
-                          label={t("instances.packageChannel")}
-                          value={recommendedVersionChannel}
-                        />
-                        <PresetMeta
-                          label={t("instances.packagePublishedAt")}
-                          value={recommendedVersionDate ?? "-"}
-                        />
-                        <PresetMeta
-                          label={t("instances.packageRecommendedVersion")}
-                          value={recommendedVersion.versionName}
-                        />
-                      </div>
-                    )}
-                    {presetChangelog && (
-                      <div className="rounded-lg border border-[var(--border-subtle)] bg-[var(--surface-soft)] px-3 py-2">
-                        <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--text-muted)]">
-                          {t("instances.packageChangelog")}
-                        </p>
-                        <p className="mt-1 text-xs leading-5 text-[var(--text-secondary)]">{presetChangelog}</p>
-                      </div>
-                    )}
-                  </div>
-                )}
-              </Card>
-            )}
-
             <Card variant="frost" className="rounded-xl p-3.5 md:p-4">
               <h2 className="mb-2 flex items-center gap-2 text-sm font-semibold text-[var(--text-primary)]">
                 <Users size={16} className="text-[var(--mc-grass)]" />
@@ -601,29 +417,11 @@ export default function HomePage({
   );
 }
 
-function ProfileMetric({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-soft)] px-3 py-2.5">
-      <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--text-muted)]">{label}</p>
-      <p className="mt-1 truncate text-sm font-semibold text-[var(--text-primary)]">{value}</p>
-    </div>
-  );
-}
-
 function MetaBadge({ children }: { children: ReactNode }) {
   return (
     <span className="rounded-md border border-[var(--border-medium)] bg-[var(--bg-elevated)] px-2 py-0.5 text-[10px] font-semibold uppercase text-[var(--text-secondary)]">
       {children}
     </span>
-  );
-}
-
-function PresetMeta({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="rounded-lg border border-[var(--border-subtle)] bg-[var(--surface-soft)] px-3 py-2">
-      <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--text-muted)]">{label}</p>
-      <p className="mt-1 truncate text-sm font-semibold text-[var(--text-primary)]">{value}</p>
-    </div>
   );
 }
 
@@ -634,76 +432,4 @@ function loaderLabel(
   if (loader === "forge") return t("loader.forge");
   if (loader === "fabric") return t("loader.fabric");
   return t("loader.vanilla");
-}
-
-function describePresetPackageStatus(
-  status: PresetPackageStatus,
-  t: ReturnType<typeof useI18n>["t"]
-): string {
-  if (status.state === "ready") {
-    return t("instances.packageReady", { version: status.versionTag ?? "-" });
-  }
-  if (status.state === "update-available") {
-    return t("instances.packageUpdateAvailable", { version: status.targetVersionTag ?? status.versionTag ?? "-" });
-  }
-  if (status.state === "syncing") {
-    return t("instances.packageSyncing", { version: status.targetVersionTag ?? status.versionTag ?? "-" });
-  }
-  if (status.state === "checking") {
-    return t("instances.packageChecking");
-  }
-  if (status.state === "error") {
-    return t("instances.packageError", { error: status.lastError ?? "-" });
-  }
-  return t("instances.packageMissing");
-  if (status.state === "pending-release") {
-    return t("instances.packagePendingRelease");
-  }
-  if (status.state === "beta") {
-    return t("instances.packageBetaOnly");
-  }
-}
-
-function resolvePresetStatusTone(state: PresetPackageStatus["state"]): string {
-  if (state === "ready") {
-    return "border-[var(--mc-grass)]/35 bg-[var(--mc-grass)]/10 text-[var(--mc-grass)]";
-  }
-  if (state === "update-available") {
-    return "border-amber-500/35 bg-amber-500/10 text-amber-300";
-  }
-  if (state === "syncing" || state === "checking") {
-    return "border-cyan-500/35 bg-cyan-500/10 text-cyan-300";
-  }
-  if (state === "error") {
-    return "border-[var(--accent-danger)]/35 bg-[var(--accent-danger)]/10 text-[var(--accent-danger)]";
-  }
-  return "border-[var(--border-medium)] bg-[var(--surface-soft)] text-[var(--text-secondary)]";
-  if (state === "pending-release") {
-    return "border-violet-500/35 bg-violet-500/10 text-violet-300";
-  }
-  if (state === "beta") {
-    return "border-[var(--border-medium)] bg-[var(--surface-soft)] text-[var(--text-secondary)]";
-  }
-}
-
-function presetStatusLabel(
-  state: PresetPackageStatus["state"],
-  t: ReturnType<typeof useI18n>["t"]
-): string {
-  if (state === "ready") return t("instances.status.ready");
-  if (state === "update-available") return t("instances.status.updateAvailable");
-  if (state === "syncing") return t("instances.status.syncing");
-  if (state === "checking") return t("instances.status.checking");
-  if (state === "error") return t("instances.status.error");
-  return t("instances.status.missing");
-  if (state === "pending-release") return t("instances.status.pendingRelease");
-  if (state === "beta") return t("instances.status.beta");
-}
-
-function summarizeChangelog(changelog: string): string {
-  const compact = changelog.replace(/\s+/g, " ").trim();
-  if (compact.length <= 140) {
-    return compact;
-  }
-  return `${compact.slice(0, 137)}...`;
 }

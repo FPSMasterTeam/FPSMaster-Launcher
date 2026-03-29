@@ -30,6 +30,7 @@ import LoginPage from "./pages/Login";
 import MonitorPage from "./pages/Monitor";
 import ContentPage from "./pages/Content";
 import MandatoryUpdatePage from "./pages/MandatoryUpdate";
+import AccountCenterPage from "./pages/AccountCenter";
 import SettingsPage from "./pages/Settings";
 import type {
   DownloadedLauncherUpdate,
@@ -131,7 +132,7 @@ function Launcher() {
   const [settings, setSettings] = useState<Settings>(loadSettings);
   const [launcherAuth, setLauncherAuth] = useState<LauncherAuthState | null>(loadLauncherAuthState);
   const [launcherVersions, setLauncherVersions] = useState<LauncherVersionMap>(EMPTY_LAUNCHER_VERSIONS);
-  const [launcherNews, setLauncherNews] = useState<NewsItem[]>(() => [...NEWS_ITEMS]);
+  const [launcherNews, setLauncherNews] = useState<NewsItem[]>([]);
   const [launcherServers, setLauncherServers] = useState<ServerItem[]>([]);
   const [launcherDashboard, setLauncherDashboard] = useState<LauncherDashboard | null>(null);
   const [launcherOnlineSummary, setLauncherOnlineSummary] = useState<TelemetryOnlineSummary | null>(null);
@@ -753,11 +754,7 @@ function Launcher() {
         baseUrl: LAUNCHER_API_BASE_URL,
         token: token || null
       });
-      if (payload.news.length > 0) {
-        setLauncherNews(payload.news);
-      } else {
-        setLauncherNews([...NEWS_ITEMS]);
-      }
+      setLauncherNews(payload.news ?? []);
       setLauncherServers(payload.servers ?? []);
       setLauncherOnlineSummary(payload.online ?? null);
       if (payload.dashboard) {
@@ -781,7 +778,7 @@ function Launcher() {
       }
     } catch (error) {
       if (!token) {
-        setLauncherNews([...NEWS_ITEMS]);
+        setLauncherNews([]);
         setLauncherServers([]);
         setLauncherOnlineSummary(null);
       }
@@ -803,10 +800,10 @@ function Launcher() {
           setStatus(t("app.status.loadedLauncherNews", { count: items.length }));
         }
       } else {
-        setLauncherNews([...NEWS_ITEMS]);
+        setLauncherNews([]);
       }
     } catch (error) {
-      setLauncherNews([...NEWS_ITEMS]);
+      setLauncherNews([]);
       if (!silent) {
         setStatus(t("app.status.failed", { error: formatLaunchError(error) }));
       }
@@ -1864,7 +1861,6 @@ function Launcher() {
           availableInstances={instances}
           launcherNews={launcherNews}
           launcherServers={launcherServers}
-          launcherDashboard={launcherDashboard}
           launcherOnlineSummary={launcherOnlineSummary}
           launcherUpdate={launcherAppUpdate}
           launcherUpdateAvailable={launcherAppUpdateAvailable}
@@ -1889,6 +1885,10 @@ function Launcher() {
           onOpenSettings={() => navigatePage("settings")}
         />
       );
+    }
+
+    if (page === "account-center") {
+      return <AccountCenterPage launcherDashboard={launcherDashboard} />;
     }
 
     if (page === "instances") {

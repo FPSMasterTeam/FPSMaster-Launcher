@@ -5,6 +5,7 @@ import grassIcon from "../assets/icons/grass.png";
 import { detectLocaleFromEnvironment } from "../i18n";
 import type {
   BackgroundSource,
+  DownloadSource,
   InstallIpcEvent,
   InstallPhaseState,
   Instance,
@@ -90,6 +91,7 @@ export function loadSettings(): Settings {
         typeof parsed.playerName === "string" && parsed.playerName
           ? parsed.playerName
           : DEFAULT_SETTINGS.playerName,
+      downloadSource: parseDownloadSource(parsed.downloadSource),
       maxMemoryMb:
         typeof parsed.maxMemoryMb === "number"
           ? clamp(parsed.maxMemoryMb, 1024, 16384)
@@ -143,6 +145,13 @@ function parseLocale(input: unknown): Locale {
     return input;
   }
   return detectLocaleFromEnvironment();
+}
+
+function parseDownloadSource(input: unknown): DownloadSource {
+  if (input === "official" || input === "bmclapi") {
+    return input;
+  }
+  return DEFAULT_SETTINGS.downloadSource;
 }
 
 function parseThemeMode(input: unknown): ThemeMode {

@@ -22,21 +22,23 @@ import java.util.zip.ZipEntry;
 import java.util.zip.ZipFile;
 
 public final class ModLoaderService {
-    private static final String FABRIC_META = "https://meta.fabricmc.net";
-    private static final String FORGE_MAVEN = "https://maven.minecraftforge.net";
-    private static final String MINECRAFT_LIBRARIES = "https://libraries.minecraft.net";
-
     private final HttpClient httpClient;
+    private final DownloadSource downloadSource;
 
     public ModLoaderService() {
+        this(DownloadSource.OFFICIAL);
+    }
+
+    public ModLoaderService(DownloadSource downloadSource) {
         this.httpClient = HttpClient.newBuilder()
                 .connectTimeout(Duration.ofSeconds(30))
                 .followRedirects(HttpClient.Redirect.NORMAL)
                 .build();
+        this.downloadSource = downloadSource;
     }
 
     public List<String> listFabricLoaderVersions(String gameVersion) throws IOException, InterruptedException {
-        String url = FABRIC_META + "/v2/versions/loader/" + gameVersion;
+        String url = downloadSource.fabricLoaderApiBase() + "/" + gameVersion;
         JsonArray payload = getJsonArray(url);
         List<String> result = new ArrayList<>();
         for (JsonElement element : payload) {
@@ -52,7 +54,7 @@ public final class ModLoaderService {
         Path gameDir = gameDirectory.toAbsolutePath().normalize();
         Files.createDirectories(gameDir);
 
-        String profileUrl = FABRIC_META + "/v2/versions/loader/" + gameVersion + "/" + loaderVersion + "/profile/json";
+        String profileUrl = downloadSource.fabricLoaderApiBase() + "/" + gameVersion + "/" + loaderVersion + "/profile/json";
         JsonObject profile = getJsonObject(profileUrl);
         String profileId = profile.get("id").getAsString();
 
@@ -66,7 +68,9 @@ public final class ModLoaderService {
         for (JsonElement libraryElement : libraries) {
             JsonObject library = libraryElement.getAsJsonObject();
             String name = library.get("name").getAsString();
-            String baseUrl = library.has("url") ? library.get("url").getAsString() : "https://maven.fabricmc.net/";
+            String baseUrl = library.has("url")
+                    ? downloadSource.rewriteUrl(library.get("url").getAsString())
+                    : downloadSource.fabricMavenRepo();
             String sha1 = library.has("sha1") ? library.get("sha1").getAsString() : null;
 
             MavenArtifact artifact = MavenArtifact.parse(name);
@@ -79,7 +83,38 @@ public final class ModLoaderService {
     }
 
     public List<String> listForgeVersions(String gameVersion) throws Exception {
-        String metadataUrl = FORGE_MAVEN + "/net/minecraftforge/forge/maven-metadata.xml";
+        if (downloadSource == DownloadSource.BMCLAPI) {
+            JsonArray payload = getJsonArray(downloadSource.forgeVersionListUrl(gameVersion));
+            List<String> result = new ArrayList<>();
+            for (JsonElement element : payload) {
+                JsonObject row = element.getAsJsonObject();
+                if (!row.has("version")) {
+                    continue;
+                }
+                boolean hasInstaller = false;
+                if (row.has("files") && row.get("files").isJsonArray()) {
+                    for (JsonElement fileElement : row.getAsJsonArray("files")) {
+                        JsonObject file = fileElement.getAsJsonObject();
+                        if ("installer".equals(file.get("category").getAsString())
+                                && "jar".equals(file.get("format").getAsString())) {
+                            hasInstaller = true;
+                            break;
+                        }
+                    }
+                }
+                if (!hasInstaller) {
+                    continue;
+                }
+                String branch = row.has("branch") && !row.get("branch").isJsonNull()
+                        ? row.get("branch").getAsString()
+                        : "";
+                result.add(gameVersion + "-" + row.get("version").getAsString() + (branch.isBlank() ? "" : "-" + branch));
+            }
+            result.sort((a, b) -> compareForgeVersions(b, a));
+            return result;
+        }
+
+        String metadataUrl = downloadSource.forgeMavenMetadataUrl();
         String xml = getText(metadataUrl);
 
         var document = DocumentBuilderFactory.newInstance()
@@ -129,8 +164,8 @@ public final class ModLoaderService {
         IpcLogBridge.installPhaseStart("forge", "prepare", "Preparing forge installer environment");
 
         String installerName = "forge-" + forgeVersion + "-installer.jar";
-        String artifactBase = FORGE_MAVEN + "/net/minecraftforge/forge/" + forgeVersion + "/";
-        String installerUrl = artifactBase + installerName;
+        String gameVersion = forgeVersion.split("-", 2)[0];
+        String installerUrl = downloadSource.forgeInstallerUrl(gameVersion, forgeVersion);
 
         Path installerPath = gameDir.resolve("installers").resolve(installerName);
         IpcLogBridge.installProgress("forge", "download-installer", 0, 1, 0, 1, "Downloading forge installer");

@@ -33,6 +33,7 @@ export default function Sidebar({
   const roleLabel = resolveUserRoleLabel(role, t);
   const levelText = resolveUserLevel(user, role);
   const roleBadgeClass = resolveRoleBadgeClass(role);
+  const accountActive = currentPage === "account-center";
 
   return (
     <aside
@@ -86,15 +87,20 @@ export default function Sidebar({
 
       <div className="border-t border-[var(--border-subtle)] p-2.5 lg:p-3">
         <button
-          className={`group flex min-h-10 w-full items-center rounded-lg border border-transparent p-2 transition-all duration-[var(--duration-normal)] hover:border-[var(--border-medium)] hover:bg-[var(--surface-soft)] ${
+          className={`group flex min-h-10 w-full items-center rounded-lg border p-2 transition-all duration-[var(--duration-normal)] ${
             collapsed ? "justify-center" : "justify-center lg:justify-start"
+          } ${
+            accountActive
+              ? "border-[rgba(var(--accent-rgb),0.25)] bg-[var(--linear-card-bg)] text-[var(--text-primary)] shadow-[0_0_0_1px_rgba(var(--accent-rgb),var(--linear-hover-ring)),0_8px_18px_rgba(2,8,16,0.22),0_0_14px_rgba(var(--accent-rgb),var(--linear-hover-halo))]"
+              : "border-transparent hover:border-[var(--border-medium)] hover:bg-[var(--surface-soft)]"
           }`}
           type="button"
           aria-label={userName}
+          onClick={() => setPage("account-center")}
         >
           <div className="relative flex h-8 w-8 min-h-8 min-w-8 shrink-0 items-center justify-center rounded-lg bg-[var(--bg-elevated)] ring-1 ring-[var(--border-medium)]">
             <div className="absolute inset-0 rounded-lg bg-[var(--mc-grass)]/20 opacity-0 blur-xl transition-opacity duration-[var(--duration-normal)] group-hover:opacity-40" />
-            <User size={14} className="text-[var(--text-primary)]" />
+            <User size={14} className={accountActive ? "text-[var(--mc-grass)]" : "text-[var(--text-primary)]"} />
           </div>
           <div className={`ml-3 text-left ${collapsed ? "hidden" : "hidden lg:block"}`}>
             <p className="whitespace-nowrap text-sm font-semibold text-[var(--text-primary)] transition-colors group-hover:text-[var(--mc-grass)]">{userName}</p>

@@ -1345,7 +1345,12 @@ fn repair_instance_runtime_blocking(
         )
     })?;
 
-    let vanilla = install_vanilla_blocking_core(Some(&window), &game_dir_path, &normalized_base_version)?;
+    let vanilla = install_vanilla_blocking_core(
+        Some(&window),
+        &game_dir_path,
+        &normalized_base_version,
+        None,
+    )?;
     let mut source_version_id = vanilla.version_id;
     let mut resolved_loader_version = loader_version
         .map(|value| value.trim().to_string())
@@ -1353,8 +1358,11 @@ fn repair_instance_runtime_blocking(
 
     if normalized_loader == "fabric" {
         if resolved_loader_version.is_none() {
-            let loader_versions =
-                list_fabric_loaders_blocking_core(Some(&window), &normalized_base_version)?;
+            let loader_versions = list_fabric_loaders_blocking_core(
+                Some(&window),
+                &normalized_base_version,
+                None,
+            )?;
             resolved_loader_version = loader_versions
                 .into_iter()
                 .find(|value| !value.trim().is_empty());
@@ -1367,12 +1375,16 @@ fn repair_instance_runtime_blocking(
             &game_dir_path,
             &normalized_base_version,
             &selected_loader_version,
+            None,
         )?;
         source_version_id = fabric.profile_id;
     } else if normalized_loader == "forge" {
         if resolved_loader_version.is_none() {
-            let forge_versions =
-                list_forge_versions_blocking_core(Some(&window), &normalized_base_version)?;
+            let forge_versions = list_forge_versions_blocking_core(
+                Some(&window),
+                &normalized_base_version,
+                None,
+            )?;
             resolved_loader_version = forge_versions
                 .into_iter()
                 .find(|value| !value.trim().is_empty());
@@ -1392,6 +1404,7 @@ fn repair_instance_runtime_blocking(
             &game_dir_path,
             &selected_loader_version,
             &jdk.java_path,
+            None,
         )?;
         source_version_id = forge.profile_id;
         resolved_loader_version = Some(forge.forge_version);
@@ -4846,9 +4859,22 @@ fn normalize_sha512_value(raw: &str) -> Option<String> {
     }
 }
 
+fn push_download_source_arg(command: &mut Vec<String>, download_source: Option<&str>) {
+    let Some(source) = download_source.map(str::trim).filter(|value| !value.is_empty()) else {
+        return;
+    };
+    command.push("--download-source".to_string());
+    command.push(source.to_string());
+}
+
 #[tauri::command]
-async fn list_vanilla_versions(window: tauri::Window) -> Result<Vec<String>, String> {
-    let output = run_java_core_async(Some(window), vec!["list-versions".to_string()]).await?;
+async fn list_vanilla_versions(
+    window: tauri::Window,
+    download_source: Option<String>,
+) -> Result<Vec<String>, String> {
+    let mut command = vec!["list-versions".to_string()];
+    push_download_source_arg(&mut command, download_source.as_deref());
+    let output = run_java_core_async(Some(window), command).await?;
     serde_json::from_str::<Vec<String>>(&output)
         .map_err(|e| format!("Invalid java-core output: {e}"))
 }
@@ -4858,6 +4884,7 @@ async fn install_vanilla(
     window: tauri::Window,
     game_dir: String,
     version_id: String,
+    download_source: Option<String>,
     ipc_session: Option<String>,
 ) -> Result<InstallResult, String> {
     let game_dir = resolve_game_dir_path(&game_dir)?
@@ -4870,6 +4897,7 @@ async fn install_vanilla(
         "--version".to_string(),
         version_id,
     ];
+    push_download_source_arg(&mut command, download_source.as_deref());
     if let Some(session) = ipc_session {
         if !session.trim().is_empty() {
             command.push("--ipc-session".to_string());
@@ -4885,6 +4913,7 @@ fn install_vanilla_blocking_core(
     window: Option<&tauri::Window>,
     game_dir: &Path,
     version_id: &str,
+    download_source: Option<&str>,
 ) -> Result<InstallResult, String> {
     let normalized_version_id = version_id.trim();
     if normalized_version_id.is_empty() {
@@ -4899,6 +4928,8 @@ fn install_vanilla_blocking_core(
         "--version".to_string(),
         normalized_version_id.to_string(),
     ];
+    let mut command = command;
+    push_download_source_arg(&mut command, download_source);
     let refs: Vec<&str> = command.iter().map(String::as_str).collect();
     let output = run_java_core(window, &refs)?;
     serde_json::from_str::<InstallResult>(&output)
@@ -4915,6 +4946,7 @@ async fn build_vanilla_launch_plan(
     access_token: String,
     max_memory_mb: i32,
     java_path: Option<String>,
+    download_source: Option<String>,
 ) -> Result<LaunchPlan, String> {
     let game_dir = resolve_game_dir_path(&game_dir)?
         .to_string_lossy()
@@ -4939,6 +4971,7 @@ async fn build_vanilla_launch_plan(
         command.push("--java".to_string());
         command.push(java);
     }
+    push_download_source_arg(&mut command, download_source.as_deref());
 
     let output = run_java_core_async(Some(window), command).await?;
     serde_json::from_str::<LaunchPlan>(&output)
@@ -4955,6 +4988,7 @@ async fn launch_vanilla(
     access_token: String,
     max_memory_mb: i32,
     java_path: Option<String>,
+    download_source: Option<String>,
     wait_for_exit: Option<bool>,
 ) -> Result<LaunchExecutionResult, String> {
     tauri::async_runtime::spawn_blocking(move || {
@@ -4967,6 +5001,7 @@ async fn launch_vanilla(
             access_token,
             max_memory_mb,
             java_path,
+            download_source,
             wait_for_exit,
         )
     })
@@ -4983,6 +5018,7 @@ fn launch_vanilla_blocking(
     access_token: String,
     max_memory_mb: i32,
     java_path: Option<String>,
+    download_source: Option<String>,
     wait_for_exit: Option<bool>,
 ) -> Result<LaunchExecutionResult, String> {
     if let Some(pid) = detect_active_game_pid() {
@@ -5002,6 +5038,7 @@ fn launch_vanilla_blocking(
         &access_token,
         max_memory_mb,
         java_path.as_deref(),
+        download_source.as_deref(),
     )?;
 
     let mut normalized_command = normalize_game_command_tokens(plan.command.clone());
@@ -5151,6 +5188,7 @@ fn resolve_launch_plan_blocking(
     access_token: &str,
     max_memory_mb: i32,
     java_path: Option<&str>,
+    download_source: Option<&str>,
 ) -> Result<LaunchPlan, String> {
     let mut command = vec![
         "build-launch-plan".to_string(),
@@ -5171,6 +5209,7 @@ fn resolve_launch_plan_blocking(
         command.push("--java".to_string());
         command.push(java.to_string());
     }
+    push_download_source_arg(&mut command, download_source);
 
     let refs: Vec<&str> = command.iter().map(String::as_str).collect();
     let output = run_java_core(Some(window), &refs)?;
@@ -5674,13 +5713,15 @@ fn pump_game_stream<R: Read + Send + 'static>(
 async fn list_fabric_loaders(
     window: tauri::Window,
     game_version: String,
+    download_source: Option<String>,
 ) -> Result<Vec<String>, String> {
-    list_fabric_loaders_blocking_core(Some(&window), game_version.trim())
+    list_fabric_loaders_blocking_core(Some(&window), game_version.trim(), download_source.as_deref())
 }
 
 fn list_fabric_loaders_blocking_core(
     window: Option<&tauri::Window>,
     game_version: &str,
+    download_source: Option<&str>,
 ) -> Result<Vec<String>, String> {
     let normalized_game_version = game_version.trim();
     if normalized_game_version.is_empty() {
@@ -5691,6 +5732,8 @@ fn list_fabric_loaders_blocking_core(
         "--game-version".to_string(),
         normalized_game_version.to_string(),
     ];
+    let mut command = command;
+    push_download_source_arg(&mut command, download_source);
     let refs: Vec<&str> = command.iter().map(String::as_str).collect();
     let output = run_java_core(window, &refs)?;
     serde_json::from_str::<Vec<String>>(&output)
@@ -5703,6 +5746,7 @@ async fn install_fabric(
     game_dir: String,
     game_version: String,
     loader_version: String,
+    download_source: Option<String>,
     ipc_session: Option<String>,
 ) -> Result<FabricInstallResult, String> {
     let game_dir = resolve_game_dir_path(&game_dir)?
@@ -5717,6 +5761,7 @@ async fn install_fabric(
         "--loader-version".to_string(),
         loader_version,
     ];
+    push_download_source_arg(&mut command, download_source.as_deref());
     if let Some(session) = ipc_session {
         if !session.trim().is_empty() {
             command.push("--ipc-session".to_string());
@@ -5733,6 +5778,7 @@ fn install_fabric_blocking_core(
     game_dir: &Path,
     game_version: &str,
     loader_version: &str,
+    download_source: Option<&str>,
 ) -> Result<FabricInstallResult, String> {
     let normalized_game_version = game_version.trim();
     if normalized_game_version.is_empty() {
@@ -5753,6 +5799,8 @@ fn install_fabric_blocking_core(
         "--loader-version".to_string(),
         normalized_loader_version.to_string(),
     ];
+    let mut command = command;
+    push_download_source_arg(&mut command, download_source);
     let refs: Vec<&str> = command.iter().map(String::as_str).collect();
     let output = run_java_core(window, &refs)?;
     serde_json::from_str::<FabricInstallResult>(&output)
@@ -5763,13 +5811,15 @@ fn install_fabric_blocking_core(
 async fn list_forge_versions(
     window: tauri::Window,
     game_version: String,
+    download_source: Option<String>,
 ) -> Result<Vec<String>, String> {
-    list_forge_versions_blocking_core(Some(&window), game_version.trim())
+    list_forge_versions_blocking_core(Some(&window), game_version.trim(), download_source.as_deref())
 }
 
 fn list_forge_versions_blocking_core(
     window: Option<&tauri::Window>,
     game_version: &str,
+    download_source: Option<&str>,
 ) -> Result<Vec<String>, String> {
     let normalized_game_version = game_version.trim();
     if normalized_game_version.is_empty() {
@@ -5780,6 +5830,8 @@ fn list_forge_versions_blocking_core(
         "--game-version".to_string(),
         normalized_game_version.to_string(),
     ];
+    let mut command = command;
+    push_download_source_arg(&mut command, download_source);
     let refs: Vec<&str> = command.iter().map(String::as_str).collect();
     let output = run_java_core(window, &refs)?;
     serde_json::from_str::<Vec<String>>(&output)
@@ -5792,6 +5844,7 @@ async fn install_forge(
     game_dir: String,
     forge_version: String,
     java_path: Option<String>,
+    download_source: Option<String>,
     ipc_session: Option<String>,
 ) -> Result<ForgeInstallResult, String> {
     let java_exe = java_path.unwrap_or_else(|| "java".to_string());
@@ -5807,6 +5860,7 @@ async fn install_forge(
         "--java".to_string(),
         java_exe,
     ];
+    push_download_source_arg(&mut command, download_source.as_deref());
     if let Some(session) = ipc_session {
         if !session.trim().is_empty() {
             command.push("--ipc-session".to_string());
@@ -5823,6 +5877,7 @@ fn install_forge_blocking_core(
     game_dir: &Path,
     forge_version: &str,
     java_path: &str,
+    download_source: Option<&str>,
 ) -> Result<ForgeInstallResult, String> {
     let normalized_forge_version = forge_version.trim();
     if normalized_forge_version.is_empty() {
@@ -5844,6 +5899,8 @@ fn install_forge_blocking_core(
         "--java".to_string(),
         normalized_java.to_string(),
     ];
+    let mut command = command;
+    push_download_source_arg(&mut command, download_source);
     let refs: Vec<&str> = command.iter().map(String::as_str).collect();
     let output = run_java_core(window, &refs)?;
     serde_json::from_str::<ForgeInstallResult>(&output)

@@ -1,4 +1,4 @@
-export type Page = "home" | "instances" | "install" | "content" | "settings" | "instance-settings" | "mandatory-update";
+export type Page = "home" | "instances" | "install" | "content" | "settings" | "instance-settings" | "mandatory-update" | "account-center";
 export type Loader = "vanilla" | "forge" | "fabric";
 export type PhaseStatus = "pending" | "running" | "done" | "error";
 export type Locale = "en-US" | "zh-CN";

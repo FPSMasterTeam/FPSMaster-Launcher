@@ -29,63 +29,64 @@ public final class LauncherCoreCli {
         Map<String, String> options = parseOptions(args);
         IpcLogBridge.setSessionId(options.get("--ipc-session"));
         try {
+            DownloadSource downloadSource = parseDownloadSource(options);
             switch (command) {
                 case "list-versions" -> {
-                    List<String> versions = service.listVanillaVersions();
+                    List<String> versions = service.listVanillaVersions(downloadSource);
                     System.out.println(GSON.toJson(versions));
                 }
                 case "install-vanilla" -> {
                     Path gameDir = requiredPath(options, "--game-dir");
                     String versionId = required(options, "--version");
-                    MinecraftCoreService.InstallResult result = service.installVanilla(gameDir, versionId);
+                    MinecraftCoreService.InstallResult result = service.installVanilla(gameDir, versionId, downloadSource);
                     System.out.println(GSON.toJson(result));
                 }
                 case "build-launch-plan" -> {
                     MinecraftCoreService.LaunchRequest request = buildLaunchRequest(options);
-                    MinecraftCoreService.LaunchPlan result = service.buildVanillaLaunchPlan(request);
+                    MinecraftCoreService.LaunchPlan result = service.buildVanillaLaunchPlan(request, downloadSource);
                     System.out.println(GSON.toJson(result));
                 }
                 case "launch-vanilla" -> {
                     MinecraftCoreService.LaunchRequest request = buildLaunchRequest(options);
                     boolean wait = isFlagEnabled(options, "--wait");
-                    MinecraftCoreService.LaunchExecutionResult result = service.launchVanilla(request, wait);
+                    MinecraftCoreService.LaunchExecutionResult result = service.launchVanilla(request, wait, downloadSource);
                     System.out.println(GSON.toJson(result));
                 }
                 case "resolve-java-major" -> {
                     String versionId = required(options, "--version");
                     MinecraftCoreService.JavaRuntimeRequirement result;
                     if (options.containsKey("--game-dir")) {
-                        result = service.resolveJavaRuntimeRequirement(requiredPath(options, "--game-dir"), versionId);
+                        result = service.resolveJavaRuntimeRequirement(requiredPath(options, "--game-dir"), versionId, downloadSource);
                     } else {
-                        result = service.resolveJavaRuntimeRequirement(versionId);
+                        result = service.resolveJavaRuntimeRequirement(null, versionId, downloadSource);
                     }
                     System.out.println(GSON.toJson(result));
                 }
                 case "list-fabric-loaders" -> {
                     String gameVersion = required(options, "--game-version");
-                    System.out.println(GSON.toJson(service.listFabricLoaderVersions(gameVersion)));
+                    System.out.println(GSON.toJson(service.listFabricLoaderVersions(gameVersion, downloadSource)));
                 }
                 case "install-fabric" -> {
                     Path gameDir = requiredPath(options, "--game-dir");
                     String gameVersion = required(options, "--game-version");
                     String loaderVersion = required(options, "--loader-version");
-                    System.out.println(GSON.toJson(service.installFabric(gameDir, gameVersion, loaderVersion)));
+                    System.out.println(GSON.toJson(service.installFabric(gameDir, gameVersion, loaderVersion, downloadSource)));
                 }
                 case "list-forge-versions" -> {
                     String gameVersion = required(options, "--game-version");
-                    System.out.println(GSON.toJson(service.listForgeVersions(gameVersion)));
+                    System.out.println(GSON.toJson(service.listForgeVersions(gameVersion, downloadSource)));
                 }
                 case "install-forge" -> {
                     Path gameDir = requiredPath(options, "--game-dir");
                     String forgeVersion = required(options, "--forge-version");
                     String javaPath = options.getOrDefault("--java", "java");
                     String gameVersion = forgeVersion.split("-", 2)[0];
-                    System.out.println(GSON.toJson(service.installForge(gameDir, gameVersion, forgeVersion, Path.of(javaPath))));
+                    System.out.println(GSON.toJson(service.installForge(gameDir, gameVersion, forgeVersion, Path.of(javaPath), downloadSource)));
                 }
                 case "launch-forge" -> {
                     MinecraftCoreService.LaunchRequest request = buildLaunchRequest(options);
                     boolean wait = isFlagEnabled(options, "--wait");
-                    MinecraftCoreService.LaunchExecutionResult result = service.launchVanilla(request, wait);
+                    MinecraftCoreService.LaunchExecutionResult result = service.launchVanilla(request, wait, downloadSource);
                     System.out.println(GSON.toJson(result));
                 }
                 default -> throw new IllegalArgumentException("Unknown command: " + command);
@@ -136,6 +137,10 @@ public final class LauncherCoreCli {
         return options.containsKey(key) && Boolean.parseBoolean(options.get(key));
     }
 
+    private static DownloadSource parseDownloadSource(Map<String, String> options) {
+        return DownloadSource.fromId(options.getOrDefault("--download-source", "official"));
+    }
+
     private static MinecraftCoreService.LaunchRequest buildLaunchRequest(Map<String, String> options) {
         Path gameDir = requiredPath(options, "--game-dir");
         String versionId = required(options, "--version");
@@ -161,15 +166,15 @@ public final class LauncherCoreCli {
     private static void printUsage() {
         System.out.println("FPSMaster Launcher Core CLI");
         System.out.println("Commands:");
-        System.out.println("  list-versions");
-        System.out.println("  install-vanilla --game-dir <path> --version <id>");
-        System.out.println("  build-launch-plan --game-dir <path> --version <id> [--player <name>] [--uuid <uuid>] [--access-token <token>] [--java <path>] [--max-memory <mb>]");
-        System.out.println("  launch-vanilla --game-dir <path> --version <id> [--player <name>] [--uuid <uuid>] [--access-token <token>] [--java <path>] [--max-memory <mb>] [--wait]");
-        System.out.println("  resolve-java-major --version <id> [--game-dir <path>]");
-        System.out.println("  list-fabric-loaders --game-version <id>");
-        System.out.println("  install-fabric --game-dir <path> --game-version <id> --loader-version <id>");
-        System.out.println("  list-forge-versions --game-version <id>");
-        System.out.println("  install-forge --game-dir <path> --forge-version <minecraft-forge-version> [--java <path>]");
-        System.out.println("  launch-forge --game-dir <path> --version <forge-profile-id> [--player <name>] [--uuid <uuid>] [--access-token <token>] [--java <path>] [--max-memory <mb>] [--wait]");
+        System.out.println("  list-versions [--download-source <official|bmclapi>]");
+        System.out.println("  install-vanilla --game-dir <path> --version <id> [--download-source <official|bmclapi>]");
+        System.out.println("  build-launch-plan --game-dir <path> --version <id> [--player <name>] [--uuid <uuid>] [--access-token <token>] [--java <path>] [--max-memory <mb>] [--download-source <official|bmclapi>]");
+        System.out.println("  launch-vanilla --game-dir <path> --version <id> [--player <name>] [--uuid <uuid>] [--access-token <token>] [--java <path>] [--max-memory <mb>] [--wait] [--download-source <official|bmclapi>]");
+        System.out.println("  resolve-java-major --version <id> [--game-dir <path>] [--download-source <official|bmclapi>]");
+        System.out.println("  list-fabric-loaders --game-version <id> [--download-source <official|bmclapi>]");
+        System.out.println("  install-fabric --game-dir <path> --game-version <id> --loader-version <id> [--download-source <official|bmclapi>]");
+        System.out.println("  list-forge-versions --game-version <id> [--download-source <official|bmclapi>]");
+        System.out.println("  install-forge --game-dir <path> --forge-version <minecraft-forge-version> [--java <path>] [--download-source <official|bmclapi>]");
+        System.out.println("  launch-forge --game-dir <path> --version <forge-profile-id> [--player <name>] [--uuid <uuid>] [--access-token <token>] [--java <path>] [--max-memory <mb>] [--wait] [--download-source <official|bmclapi>]");
     }
 }

@@ -18,6 +18,7 @@ import Card from "../components/Card";
 import { LOCALE_OPTIONS, useI18n } from "../i18n";
 import type {
   BackgroundSource,
+  DownloadSource,
   DownloadedLauncherUpdate,
   LauncherAppUpdateInfo,
   Settings,
@@ -76,6 +77,7 @@ export default function SettingsPage({
   );
 
   const themeModes: ThemeMode[] = ["dark", "light"];
+  const downloadSources: DownloadSource[] = ["official", "bmclapi"];
   const accentOptions: Array<{ id: ThemeAccent; swatch: string }> = [
     { id: "emerald", swatch: "#25b87a" },
     { id: "cyan", swatch: "#2b7fff" },
@@ -189,6 +191,23 @@ export default function SettingsPage({
                 onChange={(event) => onChange({ ...settings, playerName: event.target.value })}
                 className="w-full rounded-xl border border-[var(--border-medium)] bg-[var(--bg-secondary)] px-4 py-2.5 text-sm text-[var(--text-primary)] focus:border-[var(--mc-grass)]/45 focus:outline-none"
               />
+            </div>
+
+            <div>
+              <FieldLabel>{t("settings.downloadSource")}</FieldLabel>
+              <select
+                value={settings.downloadSource}
+                onChange={(event) =>
+                  onChange({ ...settings, downloadSource: event.target.value as DownloadSource })
+                }
+                className="w-full rounded-xl border border-[var(--border-medium)] bg-[var(--bg-secondary)] px-4 py-2.5 text-sm text-[var(--text-primary)] focus:border-[var(--mc-grass)]/45 focus:outline-none"
+              >
+                {downloadSources.map((source) => (
+                  <option key={source} value={source}>
+                    {t(`settings.downloadSource.${source}` as const)}
+                  </option>
+                ))}
+              </select>
             </div>
 
             <div>
