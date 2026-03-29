@@ -1,8 +1,9 @@
-export type Page = "home" | "instances" | "install" | "content" | "settings" | "instance-settings";
+export type Page = "home" | "instances" | "install" | "content" | "settings" | "instance-settings" | "mandatory-update";
 export type Loader = "vanilla" | "forge" | "fabric";
 export type PhaseStatus = "pending" | "running" | "done" | "error";
 export type Locale = "en-US" | "zh-CN";
 export type ThemeMode = "dark" | "light";
+export type DownloadSource = "official" | "bmclapi";
 export type ThemeAccent =
   | "emerald"
   | "cyan"
@@ -39,6 +40,7 @@ export type Instance = {
 export type Settings = {
   gameDir: string;
   playerName: string;
+  downloadSource: DownloadSource;
   maxMemoryMb: number;
   hideMainOnLaunch: boolean;
   minimizeToTray: boolean;
@@ -256,9 +258,9 @@ export type LauncherUser = {
   customTitle?: string;
   avatarUrl?: string;
   membershipExpiresAt?: string | null;
+  novaBetaEligible?: boolean;
 };
 
-  novaBetaEligible?: boolean;
 export type LauncherLoginResult = {
   token: string;
   user: LauncherUser;

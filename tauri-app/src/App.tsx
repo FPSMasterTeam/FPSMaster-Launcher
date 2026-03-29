@@ -29,6 +29,7 @@ import InstancesPage from "./pages/Instances";
 import LoginPage from "./pages/Login";
 import MonitorPage from "./pages/Monitor";
 import ContentPage from "./pages/Content";
+import MandatoryUpdatePage from "./pages/MandatoryUpdate";
 import SettingsPage from "./pages/Settings";
 import type {
   DownloadedLauncherUpdate,
@@ -182,6 +183,8 @@ function Launcher() {
       compareMajor(launcherAppUpdate.version, CURRENT_LAUNCHER_VERSION) > 0,
     [launcherAppUpdate]
   );
+  const launcherMandatoryUpdateRequired =
+    launcherAppUpdateAvailable && Boolean(launcherAppUpdate?.mandatory);
 
   const current = useMemo(
     () => instances.find((item) => item.id === selected) ?? instances[0] ?? null,
@@ -210,6 +213,24 @@ function Launcher() {
       : loader !== "vanilla" && loaderLoading
         ? t("install.button.loadingLoader", { loader: loaderDisplayName(loader) })
         : t("install.button.installSelected");
+
+  function ensureMandatoryLauncherUpdate(): boolean {
+    if (!launcherMandatoryUpdateRequired) {
+      return false;
+    }
+    setPage("mandatory-update");
+    setStatus(t("settings.launcherUpdateMandatory"));
+    return true;
+  }
+
+  function navigatePage(nextPage: Page) {
+    if (launcherMandatoryUpdateRequired && nextPage !== "mandatory-update") {
+      setPage("mandatory-update");
+      setStatus(t("settings.launcherUpdateMandatory"));
+      return;
+    }
+    setPage(nextPage);
+  }
 
   useEffect(() => {
     localStorage.setItem(STORAGE_KEYS.instances, JSON.stringify(instances));
@@ -245,6 +266,13 @@ function Launcher() {
     void refreshLauncherVersions(true);
     void refreshLauncherHome(true, launcherAuth.token);
   }, [launcherAuth?.token, backgroundMode]);
+
+  useEffect(() => {
+    if (launcherMandatoryUpdateRequired && page !== "mandatory-update") {
+      setPage("mandatory-update");
+      setStatus(t("settings.launcherUpdateMandatory"));
+    }
+  }, [launcherMandatoryUpdateRequired, page, t]);
 
   useEffect(() => {
     const currentToken = launcherAuth?.token?.trim() ?? null;
@@ -659,6 +687,8 @@ function Launcher() {
     const targetMap = versionMapOverride ?? launcherVersions;
     const nextEntries = await Promise.all(
       instances
+        .filter((item) => item.preset && item.launcherVersionType)
+        .map(async (instance) => {
           const presetAccess = resolvePresetAccessState(instance, launcherAuth?.user ?? null, targetMap);
           if (presetAccess.state === "beta" || presetAccess.state === "pending-release") {
             return [instance.id, createPresetPackageStatus(presetAccess.state, {
@@ -668,8 +698,6 @@ function Launcher() {
               lastError: presetAccess.lastError ?? null
             })] as const;
           }
-        .filter((item) => item.preset && item.launcherVersionType)
-        .map(async (instance) => {
           const expected = targetMap[instance.launcherVersionType!];
           if (!expected) {
             return [instance.id, createPresetPackageStatus("missing")] as const;
@@ -1000,13 +1028,6 @@ function Launcher() {
   ) {
     if (!instance.preset || !instance.launcherVersionType) return;
 
-    const token = launcherAuth?.token?.trim() ?? "";
-    if (!token) {
-      setStatus(t("app.status.authRequiredForPreset"));
-      return;
-    }
-
-    let targetVersion =
     const presetAccess = resolvePresetAccessState(instance, launcherAuth?.user ?? null, versionMapOverride ?? launcherVersions);
     if (presetAccess.state === "beta" || presetAccess.state === "pending-release") {
       setPresetPackageStatuses((prev) => ({
@@ -1022,6 +1043,13 @@ function Launcher() {
       return;
     }
 
+    const token = launcherAuth?.token?.trim() ?? "";
+    if (!token) {
+      setStatus(t("app.status.authRequiredForPreset"));
+      return;
+    }
+
+    let targetVersion =
       versionMapOverride?.[instance.launcherVersionType] ??
       launcherVersions[instance.launcherVersionType];
     if (!targetVersion) {
@@ -1232,6 +1260,7 @@ function Launcher() {
     const vanilla = await invoke<InstallResult>("install_vanilla", {
       gameDir: settings.gameDir,
       versionId: workingInstance.baseVersion,
+      downloadSource: settings.downloadSource,
       ipcSession: sessionId
     });
 
@@ -1241,7 +1270,8 @@ function Launcher() {
     if (workingInstance.loader === "fabric") {
       if (!nextLoaderVersion) {
         const loaderVersions = await invoke<string[]>("list_fabric_loaders", {
-          gameVersion: workingInstance.baseVersion
+          gameVersion: workingInstance.baseVersion,
+          downloadSource: settings.downloadSource
         });
         nextLoaderVersion = loaderVersions[0] ?? "";
       }
@@ -1252,13 +1282,15 @@ function Launcher() {
         gameDir: settings.gameDir,
         gameVersion: workingInstance.baseVersion,
         loaderVersion: nextLoaderVersion,
+        downloadSource: settings.downloadSource,
         ipcSession: sessionId
       });
       nextVersionId = fabric.profileId;
     } else if (workingInstance.loader === "forge") {
       if (!nextLoaderVersion) {
         const forgeVersions = await invoke<string[]>("list_forge_versions", {
-          gameVersion: workingInstance.baseVersion
+          gameVersion: workingInstance.baseVersion,
+          downloadSource: settings.downloadSource
         });
         nextLoaderVersion = forgeVersions[0] ?? "";
       }
@@ -1270,6 +1302,7 @@ function Launcher() {
         gameDir: settings.gameDir,
         forgeVersion: nextLoaderVersion,
         javaPath: jdk.javaPath,
+        downloadSource: settings.downloadSource,
         ipcSession: sessionId
       });
       nextVersionId = forge.profileId;
@@ -1299,6 +1332,16 @@ function Launcher() {
   }
 
   async function launchTarget(target: Instance) {
+    if (ensureMandatoryLauncherUpdate()) {
+      return;
+    }
+    const presetAccess = resolvePresetAccessState(target, launcherAuth?.user ?? null, launcherVersions);
+    if (presetAccess.state === "beta" || presetAccess.state === "pending-release") {
+      const errorText = presetAccess.lastError ?? t("app.status.authRequiredForPreset");
+      setLaunchError(errorText);
+      setStatus(errorText);
+      return;
+    }
     if (activeGamePid !== null && activeGamePid > 0) {
       try {
         const runtime = await invoke<GameRuntimeStats>("poll_game_runtime", { pid: activeGamePid });
@@ -1315,13 +1358,6 @@ function Launcher() {
     setLaunchingInstanceId(target.id);
     setLaunchProgressPercent(null);
     setLaunchProgressText(t("launch.progress.preparing"));
-    const presetAccess = resolvePresetAccessState(target, launcherAuth?.user ?? null, launcherVersions);
-    if (presetAccess.state === "beta" || presetAccess.state === "pending-release") {
-      const errorText = presetAccess.lastError ?? t("app.status.authRequiredForPreset");
-      setLaunchError(errorText);
-      setStatus(errorText);
-      return;
-    }
     setBusy(true);
     setStatus(t("app.status.launching", { name: target.name }));
     let launchResult: LaunchExecutionResult | null = null;
@@ -1336,6 +1372,7 @@ function Launcher() {
         accessToken: "offline",
         maxMemoryMb: settings.maxMemoryMb,
         javaPath: jdk.javaPath,
+        downloadSource: settings.downloadSource,
         waitForExit: false
       });
     } catch (error) {
@@ -1392,7 +1429,7 @@ function Launcher() {
     setStatus(t("app.status.loadingVersions"));
     try {
       const [versions, installed] = await Promise.all([
-        invoke<string[]>("list_vanilla_versions"),
+        invoke<string[]>("list_vanilla_versions", { downloadSource: settings.downloadSource }),
         invoke<string[]>("list_installed_versions", { gameDir: settings.gameDir }).catch(() => [])
       ]);
       const groupedVersions = groupByMajor(versions);
@@ -1426,8 +1463,14 @@ function Launcher() {
     try {
       const versions =
         loader === "fabric"
-          ? await invoke<string[]>("list_fabric_loaders", { gameVersion: installVersion })
-          : await invoke<string[]>("list_forge_versions", { gameVersion: installVersion });
+          ? await invoke<string[]>("list_fabric_loaders", {
+              gameVersion: installVersion,
+              downloadSource: settings.downloadSource
+            })
+          : await invoke<string[]>("list_forge_versions", {
+              gameVersion: installVersion,
+              downloadSource: settings.downloadSource
+            });
 
       if (requestId !== loaderRequestRef.current) return;
 
@@ -1458,6 +1501,9 @@ function Launcher() {
   }
 
   async function install() {
+    if (ensureMandatoryLauncherUpdate()) {
+      return;
+    }
     if (!installVersion) return;
     if (loader !== "vanilla" && !loaderVersion) {
       setStatus(
@@ -1499,6 +1545,7 @@ function Launcher() {
       const vanilla = await invoke<InstallResult>("install_vanilla", {
         gameDir: settings.gameDir,
         versionId: installVersion,
+        downloadSource: settings.downloadSource,
         ipcSession: sessionId
       });
 
@@ -1537,6 +1584,7 @@ function Launcher() {
           gameDir: settings.gameDir,
           gameVersion: installVersion,
           loaderVersion,
+          downloadSource: settings.downloadSource,
           ipcSession: sessionId
         });
         versionId = result.profileId;
@@ -1563,6 +1611,7 @@ function Launcher() {
           gameDir: settings.gameDir,
           forgeVersion: loaderVersion,
           javaPath: jdk.javaPath,
+          downloadSource: settings.downloadSource,
           ipcSession: sessionId
         });
         versionId = result.profileId;
@@ -1725,6 +1774,9 @@ function Launcher() {
   }
 
   async function repairInstance(id: string) {
+    if (ensureMandatoryLauncherUpdate()) {
+      return;
+    }
     const source = instances.find((entry) => entry.id === id);
     if (!source) return;
 
@@ -1768,6 +1820,9 @@ function Launcher() {
   }
 
   async function syncPresetPackage(instanceId: string) {
+    if (ensureMandatoryLauncherUpdate()) {
+      return;
+    }
     const target = instances.find((item) => item.id === instanceId);
     if (!target || !target.preset) {
       return;
@@ -1831,7 +1886,7 @@ function Launcher() {
               void syncPresetPackage(current.id);
             }
           }}
-          onOpenSettings={() => setPage("settings")}
+          onOpenSettings={() => navigatePage("settings")}
         />
       );
     }
@@ -1850,7 +1905,7 @@ function Launcher() {
           onDuplicateInstance={duplicateInstance}
           onExportInstance={exportInstance}
           onImportInstance={importInstance}
-          onGoInstall={() => setPage("install")}
+          onGoInstall={() => navigatePage("install")}
           onLaunchInstance={async (id) => {
             const target = instances.find((item) => item.id === id);
             if (!target) return;
@@ -1859,7 +1914,7 @@ function Launcher() {
           }}
           onOpenInstanceSettings={(id) => {
             setSelected(id);
-            setPage("instance-settings");
+            navigatePage("instance-settings");
           }}
           onSyncPresetPackage={syncPresetPackage}
         />
@@ -1872,7 +1927,7 @@ function Launcher() {
           instance={current}
           gameDir={settings.gameDir}
           busy={busy}
-          onBack={() => setPage("instances")}
+          onBack={() => navigatePage("instances")}
           onRepair={() => {
             if (current) {
               void repairInstance(current.id);
@@ -1924,6 +1979,17 @@ function Launcher() {
           busy={busy}
           onSelectInstance={setSelected}
           onStatusChange={setStatus}
+        />
+      );
+    }
+
+    if (page === "mandatory-update") {
+      return (
+        <MandatoryUpdatePage
+          launcherUpdate={launcherAppUpdate}
+          launcherUpdateDownloading={launcherAppUpdateDownloading}
+          launcherUpdateDownload={launcherAppUpdateDownload}
+          onInstallLauncherUpdate={() => void installLauncherAppUpdate()}
         />
       );
     }
@@ -2064,7 +2130,7 @@ async function withTitlebarGuard(action: () => Promise<void>) {
               canToggleCollapse={!compactLayout}
               user={launcherAuth?.user ?? null}
               onToggleCollapse={() => setSidebarCollapsed((value) => !value)}
-              setPage={setPage}
+              setPage={navigatePage}
             />
 
             <main className="relative flex-1 overflow-hidden border-l border-[var(--border-subtle)] bg-[var(--bg-secondary)]/34">
@@ -2160,6 +2226,38 @@ function createPresetPackageStatus(
   };
 }
 
+function resolvePresetAccessState(
+  instance: Instance,
+  user: LauncherUser | null,
+  versionMap: LauncherVersionMap
+): { state: "ok" | "beta" | "pending-release"; versionTag?: string | null; changelog?: string | null; lastError?: string | null } {
+  if (!instance.preset || !instance.launcherVersionType) {
+    return { state: "ok" };
+  }
+  if (instance.launcherVersionType === "EDGE") {
+    return { state: "ok" };
+  }
+  const eligible = Boolean(user?.novaBetaEligible);
+  const version = versionMap.NOVA;
+  if (!eligible) {
+    return {
+      state: "beta",
+      lastError: "Nova is still in beta for this account."
+    };
+  }
+  if (!version) {
+    return {
+      state: "pending-release",
+      lastError: "Nova is approved for this account but not released yet."
+    };
+  }
+  return {
+    state: "ok",
+    versionTag: version.versionName,
+    changelog: version.changelog ?? null
+  };
+}
+
 function formatLaunchError(error: unknown): string {
   const raw = String(error ?? "");
   if (raw === "") return "Unknown launch error";
@@ -2204,38 +2302,6 @@ function tryExtractMessageFromJson(raw: string): string | null {
 function findMessageInUnknown(value: unknown): string | null {
   if (typeof value === "string") {
     const trimmed = value.trim();
-
-function resolvePresetAccessState(
-  instance: Instance,
-  user: LauncherUser | null,
-  versionMap: LauncherVersionMap
-): { state: "ok" | "beta" | "pending-release"; versionTag?: string | null; changelog?: string | null; lastError?: string | null } {
-  if (!instance.preset || !instance.launcherVersionType) {
-    return { state: "ok" };
-  }
-  if (instance.launcherVersionType === "EDGE") {
-    return { state: "ok" };
-  }
-  const eligible = Boolean(user?.novaBetaEligible);
-  const version = versionMap.NOVA;
-  if (!eligible) {
-    return {
-      state: "beta",
-      lastError: "Nova is still in beta for this account."
-    };
-  }
-  if (!version) {
-    return {
-      state: "pending-release",
-      lastError: "Nova is approved for this account but not released yet."
-    };
-  }
-  return {
-    state: "ok",
-    versionTag: version.versionName,
-    changelog: version.changelog ?? null
-  };
-}
     return trimmed === "" ? null : trimmed;
   }
   if (Array.isArray(value)) {

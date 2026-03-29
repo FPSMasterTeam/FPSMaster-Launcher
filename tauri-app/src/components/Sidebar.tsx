@@ -59,7 +59,8 @@ export default function Sidebar({
         {navItems.map((item) => {
           const active =
             currentPage === item.id ||
-            ((currentPage === "install" || currentPage === "instance-settings") && item.id === "instances");
+            ((currentPage === "install" || currentPage === "instance-settings") && item.id === "instances") ||
+            (currentPage === "mandatory-update" && item.id === "settings");
           const Icon = item.icon;
           return (
             <button
