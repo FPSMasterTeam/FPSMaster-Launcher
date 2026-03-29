@@ -5,6 +5,7 @@ import {
   Globe,
   HardDrive,
   ImagePlus,
+  LogOut,
   Monitor,
   Palette,
   RefreshCw,
@@ -21,6 +22,7 @@ import type {
   DownloadSource,
   DownloadedLauncherUpdate,
   LauncherAppUpdateInfo,
+  LauncherUser,
   Settings,
   ThemeAccent,
   ThemeMode
@@ -34,6 +36,8 @@ type SettingsPageProps = {
   launcherUpdateChecking: boolean;
   launcherUpdateDownloading: boolean;
   launcherUpdateDownload: DownloadedLauncherUpdate | null;
+  launcherUser: LauncherUser | null;
+  onLogoutLauncherAccount: () => void;
   onRefreshLauncherUpdate: () => void;
   onInstallLauncherUpdate: () => void;
   onChange: (next: Settings) => void;
@@ -49,6 +53,8 @@ export default function SettingsPage({
   launcherUpdateChecking,
   launcherUpdateDownloading,
   launcherUpdateDownload,
+  launcherUser,
+  onLogoutLauncherAccount,
   onRefreshLauncherUpdate,
   onInstallLauncherUpdate,
   onChange,
@@ -162,6 +168,22 @@ export default function SettingsPage({
         <h1 className="mt-2 text-3xl font-semibold tracking-tight text-[var(--text-primary)]">{t("settings.title")}</h1>
         <p className="mt-1 text-[var(--text-secondary)]">{t("settings.subtitle")}</p>
       </header>
+
+      {launcherUser ? (
+        <Card as="section" variant="strong" className="mb-6 rounded-xl p-4 md:p-5">
+          <SectionTitle icon={<Globe size={18} className="text-[var(--mc-grass)]" />} title={t("settings.launcherAuth.title")} subtitle={t("settings.launcherAuth.subtitle")} />
+          <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[var(--text-muted)]">{t("settings.launcherAuth.loggedInAs")}</p>
+              <p className="mt-1 text-base font-semibold text-[var(--text-primary)]">{launcherUser.username || launcherUser.email || launcherUser.id || "-"}</p>
+            </div>
+            <Button variant="ghost" size="sm" className="gap-2 self-start" onClick={onLogoutLauncherAccount}>
+              <LogOut size={14} />
+              {t("settings.launcherAuth.logout")}
+            </Button>
+          </div>
+        </Card>
+      ) : null}
 
       <div className="grid grid-cols-1 gap-6 xl:grid-cols-[minmax(0,1.1fr)_minmax(0,0.9fr)]">
         <Card as="section" variant="frost" className="rounded-xl p-4 md:p-5">

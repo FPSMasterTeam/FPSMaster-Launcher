@@ -4,27 +4,40 @@ import AppLogo from "../components/AppLogo";
 import Button from "../components/Button";
 import Card from "../components/Card";
 import { useI18n } from "../i18n";
+import type { LauncherLoginPrefs } from "../types";
 
 type LoginPageProps = {
   loading: boolean;
-  onSubmit: (usernameOrEmail: string, password: string) => Promise<string | null>;
+  initialPrefs: LauncherLoginPrefs;
+  statusText?: string | null;
+  onSubmit: (prefs: LauncherLoginPrefs) => Promise<string | null>;
 };
 
-export default function LoginPage({ loading, onSubmit }: LoginPageProps) {
+export default function LoginPage({ loading, initialPrefs, statusText, onSubmit }: LoginPageProps) {
   const { t } = useI18n();
-  const [identity, setIdentity] = useState("");
-  const [password, setPassword] = useState("");
+  const [identity, setIdentity] = useState(initialPrefs.usernameOrEmail);
+  const [password, setPassword] = useState(initialPrefs.password);
+  const [rememberPassword, setRememberPassword] = useState(initialPrefs.rememberPassword);
+  const [autoLogin, setAutoLogin] = useState(initialPrefs.autoLogin && initialPrefs.rememberPassword);
   const [errorText, setErrorText] = useState("");
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setErrorText("");
-    const error = await onSubmit(identity.trim(), password);
+    const nextPrefs: LauncherLoginPrefs = {
+      usernameOrEmail: identity.trim(),
+      password,
+      rememberPassword,
+      autoLogin: rememberPassword && autoLogin
+    };
+    const error = await onSubmit(nextPrefs);
     if (error) {
       setErrorText(error);
       return;
     }
-    setPassword("");
+    if (!rememberPassword) {
+      setPassword("");
+    }
   }
 
   return (
@@ -63,7 +76,48 @@ export default function LoginPage({ loading, onSubmit }: LoginPageProps) {
             />
           </div>
 
+          <div className="grid gap-2 sm:grid-cols-2">
+            <label className="flex cursor-pointer items-center gap-3 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-secondary)]/72 px-3 py-3 text-sm text-[var(--text-secondary)] transition-colors hover:border-[var(--border-medium)]">
+              <input
+                type="checkbox"
+                checked={rememberPassword}
+                onChange={(event) => {
+                  const checked = event.target.checked;
+                  setRememberPassword(checked);
+                  if (!checked) {
+                    setAutoLogin(false);
+                  }
+                }}
+                className="h-4 w-4 rounded border-[var(--border-medium)] bg-[var(--bg-secondary)] text-[var(--mc-grass)] focus:ring-[var(--mc-grass)]/35"
+              />
+              <span>{t("login.rememberPassword")}</span>
+            </label>
+
+            <label className={`flex items-center gap-3 rounded-xl border px-3 py-3 text-sm transition-colors ${rememberPassword ? "cursor-pointer border-[var(--border-subtle)] bg-[var(--bg-secondary)]/72 text-[var(--text-secondary)] hover:border-[var(--border-medium)]" : "cursor-not-allowed border-[var(--border-subtle)] bg-[var(--surface-soft)]/65 text-[var(--text-muted)] opacity-70"}`}>
+              <input
+                type="checkbox"
+                checked={rememberPassword && autoLogin}
+                disabled={!rememberPassword}
+                onChange={(event) => setAutoLogin(event.target.checked)}
+                className="h-4 w-4 rounded border-[var(--border-medium)] bg-[var(--bg-secondary)] text-[var(--mc-grass)] focus:ring-[var(--mc-grass)]/35"
+              />
+              <span>{t("login.autoLogin")}</span>
+            </label>
+          </div>
+
+          {!rememberPassword && autoLogin && (
+            <div className="rounded-xl border border-[var(--accent-warning)]/35 bg-[var(--accent-warning)]/10 px-3 py-2 text-xs text-[var(--accent-warning)]">
+              {t("login.autoLoginRequiresRemember")}
+            </div>
+          )}
+
           {errorText && <div className="rounded-xl border border-[var(--accent-danger)]/40 bg-[var(--accent-danger)]/10 px-3 py-2 text-xs text-[var(--accent-danger)]">{errorText}</div>}
+
+          {statusText ? (
+            <div className="rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-soft)] px-3 py-2 text-xs text-[var(--text-secondary)]">
+              {statusText}
+            </div>
+          ) : null}
 
           <Button type="submit" variant="primary" size="lg" className="w-full justify-center gap-2" disabled={loading}>
             <LogIn size={16} />

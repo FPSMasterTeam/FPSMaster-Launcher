@@ -5,6 +5,7 @@ export const STORAGE_KEYS = {
   settings: "fpsmaster.settings",
   selected: "fpsmaster.selected",
   launcherAuth: "fpsmaster.launcherAuth",
+  launcherLoginPrefs: "fpsmaster.launcherLoginPrefs",
   launcherSessionId: "fpsmaster.launcherSessionId"
 } as const;
 

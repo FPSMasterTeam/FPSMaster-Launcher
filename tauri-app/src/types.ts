@@ -94,6 +94,13 @@ export type FabricInstallResult = { profileId: string };
 export type ForgeInstallResult = { profileId: string; forgeVersion: string };
 export type JdkEnsureResult = { javaPath: string };
 
+export type LauncherLoginPrefs = {
+  usernameOrEmail: string;
+  password: string;
+  rememberPassword: boolean;
+  autoLogin: boolean;
+};
+
 export type UiLogEntry = {
   seq: number;
   source: string;

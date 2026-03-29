@@ -58,6 +58,7 @@ import type {
   JdkEnsureResult,
   LauncherDashboard,
   LauncherHomePayload,
+  LauncherLoginPrefs,
   Locale,
   LaunchExecutionResult,
   Loader,
@@ -85,6 +86,13 @@ import {
 type LauncherAuthState = {
   token: string;
   user: LauncherUser;
+};
+
+const DEFAULT_LOGIN_PREFS: LauncherLoginPrefs = {
+  usernameOrEmail: "",
+  password: "",
+  rememberPassword: false,
+  autoLogin: false
 };
 
 type LauncherVersionMap = Record<LauncherVersionType, LauncherVersion | null>;
@@ -131,6 +139,7 @@ function Launcher() {
   );
   const [settings, setSettings] = useState<Settings>(loadSettings);
   const [launcherAuth, setLauncherAuth] = useState<LauncherAuthState | null>(loadLauncherAuthState);
+  const [launcherLoginPrefs, setLauncherLoginPrefs] = useState<LauncherLoginPrefs>(loadLauncherLoginPrefs);
   const [launcherVersions, setLauncherVersions] = useState<LauncherVersionMap>(EMPTY_LAUNCHER_VERSIONS);
   const [launcherNews, setLauncherNews] = useState<NewsItem[]>([]);
   const [launcherServers, setLauncherServers] = useState<ServerItem[]>([]);
@@ -150,6 +159,7 @@ function Launcher() {
   const [status, setStatus] = useState(() =>
     createTranslator(loadSettings().language)("app.status.ready")
   );
+  const [authNotice, setAuthNotice] = useState<string | null>(null);
 
   const [catalog, setCatalog] = useState<string[]>([]);
   const [major, setMajor] = useState("");
@@ -250,11 +260,16 @@ function Launcher() {
   }, [launcherAuth]);
 
   useEffect(() => {
+    localStorage.setItem(STORAGE_KEYS.launcherLoginPrefs, JSON.stringify(launcherLoginPrefs));
+  }, [launcherLoginPrefs]);
+
+  useEffect(() => {
     if (!launcherAuth?.token) {
       setLauncherVersions(EMPTY_LAUNCHER_VERSIONS);
       setLauncherDashboard(null);
       setLauncherOnlineSummary(null);
       setPresetPackageStatuses({});
+      setPage("home");
       if (!backgroundMode) {
         void refreshLauncherHome(true);
       }
@@ -274,6 +289,25 @@ function Launcher() {
       setStatus(t("settings.launcherUpdateMandatory"));
     }
   }, [launcherMandatoryUpdateRequired, page, t]);
+
+  useEffect(() => {
+    if (launcherAuth?.token || launcherAuthLoading) {
+      return;
+    }
+    if (!launcherLoginPrefs.autoLogin || !launcherLoginPrefs.rememberPassword) {
+      return;
+    }
+    const identity = launcherLoginPrefs.usernameOrEmail.trim();
+    const password = launcherLoginPrefs.password;
+    if (!identity || !password) {
+      return;
+    }
+    void loginLauncherAccount({
+      ...launcherLoginPrefs,
+      usernameOrEmail: identity,
+      password
+    }, true);
+  }, [launcherAuth?.token, launcherAuthLoading, launcherLoginPrefs]);
 
   useEffect(() => {
     const currentToken = launcherAuth?.token?.trim() ?? null;
@@ -303,7 +337,10 @@ function Launcher() {
       try {
         await cacheLauncherTelemetrySession();
         await postLauncherHeartbeat(token);
-      } catch {
+      } catch (error) {
+        if (active && isAuthExpiredError(error)) {
+          handleAuthExpired(t("login.sessionExpired"));
+        }
       }
     };
     const loadOnline = async () => {
@@ -315,7 +352,11 @@ function Launcher() {
         if (active) {
           setLauncherOnlineSummary(summary);
         }
-      } catch {
+      } catch (error) {
+        if (active && isAuthExpiredError(error)) {
+          handleAuthExpired(t("login.sessionExpired"));
+          return;
+        }
         if (active) {
           setLauncherOnlineSummary(null);
         }
@@ -655,6 +696,10 @@ function Launcher() {
       return { map, error: null };
     } catch (error) {
       const errorText = formatLaunchError(error);
+      if (token && isAuthExpiredError(error)) {
+        handleAuthExpired(t("login.sessionExpired"));
+        return { map: null, error: t("login.sessionExpired") };
+      }
       if (!silent) {
         setStatus(t("app.status.failed", { error: errorText }));
       }
@@ -777,13 +822,18 @@ function Launcher() {
         setStatus(t("app.status.ready"));
       }
     } catch (error) {
+      const errorText = formatLaunchError(error);
+      if (token && isAuthExpiredError(error)) {
+        handleAuthExpired(t("login.sessionExpired"));
+        return;
+      }
       if (!token) {
         setLauncherNews([]);
         setLauncherServers([]);
         setLauncherOnlineSummary(null);
       }
       if (!silent) {
-        setStatus(t("app.status.failed", { error: formatLaunchError(error) }));
+        setStatus(t("app.status.failed", { error: errorText }));
       }
     }
   }
@@ -838,9 +888,14 @@ function Launcher() {
         setStatus(t("app.status.ready"));
       }
     } catch (error) {
+      const errorText = formatLaunchError(error);
+      if (token && isAuthExpiredError(error)) {
+        handleAuthExpired(t("login.sessionExpired"));
+        return;
+      }
       setLauncherDashboard(null);
       if (!silent) {
-        setStatus(t("app.status.failed", { error: formatLaunchError(error) }));
+        setStatus(t("app.status.failed", { error: errorText }));
       }
     }
   }
@@ -967,15 +1022,42 @@ function Launcher() {
     return raw.data;
   }
 
+  function persistLauncherLoginPrefs(next: LauncherLoginPrefs) {
+    setLauncherLoginPrefs({
+      usernameOrEmail: next.usernameOrEmail.trim(),
+      password: next.rememberPassword ? next.password : "",
+      rememberPassword: next.rememberPassword,
+      autoLogin: next.rememberPassword && next.autoLogin
+    });
+  }
+
+  function handleAuthExpired(message: string) {
+    void flushLauncherTelemetrySession();
+    setLauncherAuth(null);
+    setLauncherVersions(EMPTY_LAUNCHER_VERSIONS);
+    setLauncherDashboard(null);
+    setPresetPackageStatuses({});
+    setPage("home");
+    setAuthNotice(message);
+    setStatus(message);
+  }
+
   async function loginLauncherAccount(
-    usernameOrEmail: string,
-    password: string
+    prefs: LauncherLoginPrefs,
+    silent = false
   ): Promise<string | null> {
-    const identity = usernameOrEmail.trim();
+    const identity = prefs.usernameOrEmail.trim();
+    const password = prefs.password;
     if (!identity || !password) {
       return t("login.required");
     }
 
+    persistLauncherLoginPrefs({
+      ...prefs,
+      usernameOrEmail: identity,
+      password
+    });
+    setAuthNotice(null);
     setLauncherAuthLoading(true);
     try {
       const result = await invoke<LauncherLoginResult>("launcher_login", {
@@ -1000,10 +1082,13 @@ function Launcher() {
       if (!refresh.error && refresh.map) {
         void syncPresetLauncherPackages(refresh.map);
       }
+      setPage("home");
       return refresh.error;
     } catch (error) {
       const errorText = normalizeLoginError(error, t);
-      setStatus(t("app.status.failed", { error: errorText }));
+      if (!silent) {
+        setStatus(t("app.status.failed", { error: errorText }));
+      }
       return errorText;
     } finally {
       setLauncherAuthLoading(false);
@@ -1016,6 +1101,8 @@ function Launcher() {
     setLauncherVersions(EMPTY_LAUNCHER_VERSIONS);
     setLauncherDashboard(null);
     setPresetPackageStatuses({});
+    setPage("home");
+    setAuthNotice(t("login.tip.signInToContinue"));
     setStatus(t("login.tip.signInToContinue"));
   }
 
@@ -2003,6 +2090,8 @@ function Launcher() {
         launcherUpdateChecking={launcherAppUpdateChecking}
         launcherUpdateDownloading={launcherAppUpdateDownloading}
         launcherUpdateDownload={launcherAppUpdateDownload}
+        launcherUser={launcherAuth?.user ?? null}
+        onLogoutLauncherAccount={logoutLauncherAccount}
         onRefreshLauncherUpdate={() => void refreshLauncherAppUpdate(false)}
         onInstallLauncherUpdate={() => void installLauncherAppUpdate()}
         onChange={updateSettings}
@@ -2147,6 +2236,8 @@ async function withTitlebarGuard(action: () => Promise<void>) {
             <div className="w-full max-w-[520px]">
               <LoginPage
                 loading={launcherAuthLoading}
+                initialPrefs={launcherLoginPrefs}
+                statusText={authNotice}
                 onSubmit={loginLauncherAccount}
               />
             </div>
@@ -2415,6 +2506,41 @@ function loadLauncherAuthState(): LauncherAuthState | null {
   } catch {
     return null;
   }
+}
+
+function loadLauncherLoginPrefs(): LauncherLoginPrefs {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEYS.launcherLoginPrefs);
+    if (!raw) return DEFAULT_LOGIN_PREFS;
+    const parsed = JSON.parse(raw) as Partial<LauncherLoginPrefs>;
+    const rememberPassword = Boolean(parsed?.rememberPassword);
+    return {
+      usernameOrEmail: typeof parsed?.usernameOrEmail === "string" ? parsed.usernameOrEmail : "",
+      password: rememberPassword && typeof parsed?.password === "string" ? parsed.password : "",
+      rememberPassword,
+      autoLogin: rememberPassword && Boolean(parsed?.autoLogin)
+    };
+  } catch {
+    return DEFAULT_LOGIN_PREFS;
+  }
+}
+
+function isAuthExpiredError(error: unknown): boolean {
+  const normalized = formatLaunchError(error).trim().toLowerCase();
+  if (!normalized) return false;
+  if (normalized === "token is required" || normalized === "authentication required") {
+    return true;
+  }
+  if (/\bhttp\s*401\b/i.test(normalized)) {
+    return true;
+  }
+  if (/\b(jwt|token)\b.*\b(expired|invalid|revoked)\b/i.test(normalized)) {
+    return true;
+  }
+  if (/\b(invalid|expired|missing)\b.*\b(jwt|token|authorization)\b/i.test(normalized)) {
+    return true;
+  }
+  return normalized.includes("bearer") && normalized.includes("invalid");
 }
 
 function loadOrCreateLauncherSessionId(): string {
