@@ -258,6 +258,7 @@ export type LauncherUser = {
   membershipExpiresAt?: string | null;
 };
 
+  novaBetaEligible?: boolean;
 export type LauncherLoginResult = {
   token: string;
   user: LauncherUser;
@@ -300,7 +301,7 @@ export type LauncherPackageState = {
 };
 
 export type PresetPackageStatus = {
-  state: "checking" | "missing" | "ready" | "update-available" | "syncing" | "error";
+  state: "checking" | "missing" | "ready" | "update-available" | "syncing" | "error" | "beta" | "pending-release";
   versionTag: string | null;
   installedVersionTag?: string | null;
   targetVersionTag?: string | null;

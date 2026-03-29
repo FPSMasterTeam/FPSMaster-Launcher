@@ -659,6 +659,15 @@ function Launcher() {
     const targetMap = versionMapOverride ?? launcherVersions;
     const nextEntries = await Promise.all(
       instances
+          const presetAccess = resolvePresetAccessState(instance, launcherAuth?.user ?? null, targetMap);
+          if (presetAccess.state === "beta" || presetAccess.state === "pending-release") {
+            return [instance.id, createPresetPackageStatus(presetAccess.state, {
+              versionTag: presetAccess.versionTag ?? null,
+              targetVersionTag: presetAccess.versionTag ?? null,
+              changelog: presetAccess.changelog ?? null,
+              lastError: presetAccess.lastError ?? null
+            })] as const;
+          }
         .filter((item) => item.preset && item.launcherVersionType)
         .map(async (instance) => {
           const expected = targetMap[instance.launcherVersionType!];
@@ -998,6 +1007,21 @@ function Launcher() {
     }
 
     let targetVersion =
+    const presetAccess = resolvePresetAccessState(instance, launcherAuth?.user ?? null, versionMapOverride ?? launcherVersions);
+    if (presetAccess.state === "beta" || presetAccess.state === "pending-release") {
+      setPresetPackageStatuses((prev) => ({
+        ...prev,
+        [instance.id]: createPresetPackageStatus(presetAccess.state, {
+          versionTag: presetAccess.versionTag ?? null,
+          targetVersionTag: presetAccess.versionTag ?? null,
+          changelog: presetAccess.changelog ?? null,
+          lastError: presetAccess.lastError ?? null
+        })
+      }));
+      setStatus(presetAccess.lastError ?? t("app.status.authRequiredForPreset"));
+      return;
+    }
+
       versionMapOverride?.[instance.launcherVersionType] ??
       launcherVersions[instance.launcherVersionType];
     if (!targetVersion) {
@@ -1291,6 +1315,13 @@ function Launcher() {
     setLaunchingInstanceId(target.id);
     setLaunchProgressPercent(null);
     setLaunchProgressText(t("launch.progress.preparing"));
+    const presetAccess = resolvePresetAccessState(target, launcherAuth?.user ?? null, launcherVersions);
+    if (presetAccess.state === "beta" || presetAccess.state === "pending-release") {
+      const errorText = presetAccess.lastError ?? t("app.status.authRequiredForPreset");
+      setLaunchError(errorText);
+      setStatus(errorText);
+      return;
+    }
     setBusy(true);
     setStatus(t("app.status.launching", { name: target.name }));
     let launchResult: LaunchExecutionResult | null = null;
@@ -2173,6 +2204,38 @@ function tryExtractMessageFromJson(raw: string): string | null {
 function findMessageInUnknown(value: unknown): string | null {
   if (typeof value === "string") {
     const trimmed = value.trim();
+
+function resolvePresetAccessState(
+  instance: Instance,
+  user: LauncherUser | null,
+  versionMap: LauncherVersionMap
+): { state: "ok" | "beta" | "pending-release"; versionTag?: string | null; changelog?: string | null; lastError?: string | null } {
+  if (!instance.preset || !instance.launcherVersionType) {
+    return { state: "ok" };
+  }
+  if (instance.launcherVersionType === "EDGE") {
+    return { state: "ok" };
+  }
+  const eligible = Boolean(user?.novaBetaEligible);
+  const version = versionMap.NOVA;
+  if (!eligible) {
+    return {
+      state: "beta",
+      lastError: "Nova is still in beta for this account."
+    };
+  }
+  if (!version) {
+    return {
+      state: "pending-release",
+      lastError: "Nova is approved for this account but not released yet."
+    };
+  }
+  return {
+    state: "ok",
+    versionTag: version.versionName,
+    changelog: version.changelog ?? null
+  };
+}
     return trimmed === "" ? null : trimmed;
   }
   if (Array.isArray(value)) {
