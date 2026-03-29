@@ -339,6 +339,12 @@ function describePresetPackageStatus(
     return t("instances.packageError", { error: status.lastError ?? "-" });
   }
   return t("instances.packageMissing");
+  if (status.state === "pending-release") {
+    return t("instances.packagePendingRelease");
+  }
+  if (status.state === "beta") {
+    return t("instances.packageBetaOnly");
+  }
 }
 
 function loaderLabel(
@@ -360,6 +366,8 @@ function presetStatusLabel(
   if (state === "checking") return t("instances.status.checking");
   if (state === "error") return t("instances.status.error");
   return t("instances.status.missing");
+  if (state === "pending-release") return t("instances.status.pendingRelease");
+  if (state === "beta") return t("instances.status.beta");
 }
 
 function resolvePresetStatusTone(state: PresetPackageStatus["state"]): string {
@@ -376,4 +384,10 @@ function resolvePresetStatusTone(state: PresetPackageStatus["state"]): string {
     return "border-[var(--accent-danger)]/35 bg-[var(--accent-danger)]/10 text-[var(--accent-danger)]";
   }
   return "border-[var(--border-medium)] bg-[var(--surface-soft)] text-[var(--text-secondary)]";
+  if (state === "pending-release") {
+    return "border-violet-500/35 bg-violet-500/10 text-violet-300";
+  }
+  if (state === "beta") {
+    return "border-[var(--border-medium)] bg-[var(--surface-soft)] text-[var(--text-secondary)]";
+  }
 }
