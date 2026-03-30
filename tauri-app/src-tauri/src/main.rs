@@ -133,6 +133,39 @@ struct LauncherVersion {
     created_at: Option<String>,
 }
 
+// Custom deserializer for category that extracts just the name as a string
+mod category_option {
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+    use serde_json::Value;
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let opt = Option::<Value>::deserialize(deserializer)?;
+        match opt {
+            None => Ok(None),
+            Some(Value::String(s)) => Ok(Some(s)),
+            Some(Value::Object(obj)) => {
+                // Extract the "name" field from the category object
+                if let Some(Value::String(name)) = obj.get("name") {
+                    Ok(Some(name.clone()))
+                } else {
+                    Ok(None)
+                }
+            }
+            Some(_) => Ok(None),
+        }
+    }
+
+    pub fn serialize<S>(value: &Option<String>, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        value.serialize(serializer)
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct LauncherNewsItem {
     id: String,
@@ -142,7 +175,7 @@ struct LauncherNewsItem {
     content: Option<String>,
     #[serde(default)]
     author: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "category_option::deserialize", serialize_with = "category_option::serialize")]
     category: Option<String>,
     #[serde(rename = "publishedAt", default)]
     published_at: Option<String>,
@@ -623,6 +656,17 @@ struct GameExitEvent {
     exit_code: i32,
 }
 
+#[derive(Debug, Clone, Serialize)]
+struct ContentInstallProgressEvent {
+    #[serde(rename = "projectKey")]
+    project_key: String,
+    #[serde(rename = "downloadedBytes")]
+    downloaded_bytes: u64,
+    #[serde(rename = "totalBytes")]
+    total_bytes: Option<u64>,
+    percent: Option<u8>,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 struct JavaRuntimeRequirement {
     #[serde(rename = "versionId")]
@@ -682,6 +726,8 @@ struct InstanceSectionEntry {
     name: String,
     #[serde(rename = "isDir")]
     is_dir: bool,
+    #[serde(rename = "disabled")]
+    disabled: bool,
 }
 
 fn ui_log_store() -> &'static Mutex<UiLogStore> {
@@ -2056,6 +2102,7 @@ async fn modrinth_search_projects(
 
 #[tauri::command]
 async fn install_modrinth_project(
+    window: tauri::Window,
     game_dir: String,
     version_id: String,
     project_id: String,
@@ -2066,6 +2113,7 @@ async fn install_modrinth_project(
 ) -> Result<ModrinthInstallResult, String> {
     tauri::async_runtime::spawn_blocking(move || {
         install_modrinth_project_blocking(
+            Some(window),
             game_dir,
             version_id,
             project_id,
@@ -2104,6 +2152,7 @@ async fn curseforge_search_projects(
 
 #[tauri::command]
 async fn install_curseforge_project(
+    window: tauri::Window,
     game_dir: String,
     version_id: String,
     project_id: String,
@@ -2115,6 +2164,7 @@ async fn install_curseforge_project(
 ) -> Result<ModrinthInstallResult, String> {
     tauri::async_runtime::spawn_blocking(move || {
         install_curseforge_project_blocking(
+            Some(window),
             game_dir,
             version_id,
             project_id,
@@ -2239,6 +2289,7 @@ fn modrinth_search_projects_blocking(
 }
 
 fn install_modrinth_project_blocking(
+    window: Option<tauri::Window>,
     game_dir: String,
     version_id: String,
     project_id: String,
@@ -2260,6 +2311,10 @@ fn install_modrinth_project_blocking(
     if normalized_game_version.is_empty() {
         return Err("Game version cannot be empty".to_string());
     }
+    let project_key = format!(
+        "modrinth:{}:{}",
+        normalized_project_type, normalized_project_id
+    );
 
     let game_dir_path = resolve_game_dir_path(&game_dir)?;
     let runtime_root = resolve_version_runtime_dir(&game_dir_path, &normalized_version_id)?;
@@ -2286,7 +2341,13 @@ fn install_modrinth_project_blocking(
         now_epoch_millis(),
         sanitize_file_name(&file.filename)
     ));
-    download_file_quiet_blocking(&client, &file.url, &download_path)
+    download_file_quiet_with_progress_blocking(
+        &client,
+        &file.url,
+        &download_path,
+        window.as_ref(),
+        Some(&project_key),
+    )
         .map_err(|err| format!("Failed to download Modrinth file {}: {err}", file.filename))?;
 
     if let Some(expected_size) = file.size {
@@ -2408,10 +2469,6 @@ fn curseforge_search_projects_blocking(
     api_key: String,
 ) -> Result<Vec<ModrinthSearchResult>, String> {
     let normalized_query = query.trim().to_string();
-    if normalized_query.is_empty() {
-        return Err("Search query cannot be empty".to_string());
-    }
-
     let normalized_project_type = normalize_content_project_type(&project_type)?;
     let normalized_api_key = normalize_curseforge_api_key(&api_key)?;
     let client = build_blocking_http_client()?;
@@ -2422,8 +2479,12 @@ fn curseforge_search_projects_blocking(
         let mut query_pairs = url.query_pairs_mut();
         query_pairs.append_pair("gameId", "432");
         query_pairs.append_pair("classId", &class_id.to_string());
-        query_pairs.append_pair("searchFilter", &normalized_query);
+        query_pairs.append_pair("sortField", "2");
+        query_pairs.append_pair("sortOrder", "desc");
         query_pairs.append_pair("pageSize", &limit.unwrap_or(18).clamp(1, 50).to_string());
+        if !normalized_query.is_empty() {
+            query_pairs.append_pair("searchFilter", &normalized_query);
+        }
         if let Some(version) = game_version.as_deref().map(str::trim).filter(|value| !value.is_empty()) {
             query_pairs.append_pair("gameVersion", version);
         }
@@ -2461,6 +2522,7 @@ fn curseforge_search_projects_blocking(
 }
 
 fn install_curseforge_project_blocking(
+    window: Option<tauri::Window>,
     game_dir: String,
     version_id: String,
     project_id: String,
@@ -2484,6 +2546,10 @@ fn install_curseforge_project_blocking(
     if normalized_game_version.is_empty() {
         return Err("Game version cannot be empty".to_string());
     }
+    let project_key = format!(
+        "curseforge:{}:{}",
+        normalized_project_type, normalized_project_id
+    );
 
     let game_dir_path = resolve_game_dir_path(&game_dir)?;
     let runtime_root = resolve_version_runtime_dir(&game_dir_path, &normalized_version_id)?;
@@ -2503,10 +2569,20 @@ fn install_curseforge_project_blocking(
         loader.as_deref(),
     )?;
     let file = choose_best_curseforge_file(files)?;
-    let download_url = file
+    let download_url = match file
         .download_url
         .clone()
-        .ok_or_else(|| "CurseForge file does not expose a direct download URL".to_string())?;
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+    {
+        Some(value) => value,
+        None => fetch_curseforge_file_download_url(
+            &client,
+            &normalized_api_key,
+            &normalized_project_id,
+            file.id,
+        )?,
+    };
 
     let download_path = env::temp_dir().join(format!(
         "fpsmaster-content-{}-{}-{}",
@@ -2514,7 +2590,13 @@ fn install_curseforge_project_blocking(
         now_epoch_millis(),
         sanitize_file_name(&file.file_name)
     ));
-    download_file_quiet_blocking(&client, &download_url, &download_path)
+    download_file_quiet_with_progress_blocking(
+        &client,
+        &download_url,
+        &download_path,
+        window.as_ref(),
+        Some(&project_key),
+    )
         .map_err(|err| format!("Failed to download CurseForge file {}: {err}", file.file_name))?;
 
     let version_label = resolve_curseforge_version_label(&file);
@@ -3290,9 +3372,11 @@ fn map_modrinth_search_hit(item: ModrinthSearchHit) -> ModrinthSearchResult {
 fn normalize_curseforge_api_key(raw: &str) -> Result<String, String> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
-        return Err("CurseForge API key is empty".to_string());
+        // Built-in CurseForge API key
+        Ok("$2a$10$o8pygPrhvKBHuuh5imL2W.LCNFhB15zBYAExXx/TqTx/Zp5px2lxu".to_string())
+    } else {
+        Ok(trimmed.to_string())
     }
-    Ok(trimmed.to_string())
 }
 
 fn curseforge_class_id_for_project_type(project_type: &str) -> Result<u64, String> {
@@ -3417,16 +3501,46 @@ fn fetch_curseforge_project_files(
     Ok(payload.data)
 }
 
+fn fetch_curseforge_file_download_url(
+    client: &reqwest::blocking::Client,
+    api_key: &str,
+    project_id: &str,
+    file_id: u64,
+) -> Result<String, String> {
+    let url = reqwest::Url::parse(&format!(
+        "https://api.curseforge.com/v1/mods/{project_id}/files/{file_id}/download-url"
+    ))
+    .map_err(|e| format!("Invalid CurseForge download URL endpoint URL: {e}"))?;
+
+    let response = client
+        .get(url)
+        .header("x-api-key", api_key)
+        .send()
+        .map_err(|e| format!("CurseForge download URL request failed: {e}"))?;
+    let status = response.status();
+    let text = response
+        .text()
+        .map_err(|e| format!("Failed to read CurseForge download URL response: {e}"))?;
+    if !status.is_success() {
+        return Err(format!(
+            "CurseForge download URL lookup failed with HTTP {}: {}",
+            status.as_u16(),
+            text.trim()
+        ));
+    }
+
+    let payload = serde_json::from_str::<CurseForgeEnvelope<String>>(&text)
+        .map_err(|e| format!("Invalid CurseForge download URL response JSON: {e}"))?;
+    let download_url = payload.data.trim().to_string();
+    if download_url.is_empty() {
+        return Err("CurseForge download URL response was empty".to_string());
+    }
+    Ok(download_url)
+}
+
 fn choose_best_curseforge_file(
     mut files: Vec<CurseForgeFile>,
 ) -> Result<CurseForgeFile, String> {
-    files.retain(|item| {
-        item.download_url
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .is_some()
-    });
     if files.is_empty() {
         return Err("No compatible CurseForge file found for the current instance".to_string());
     }
@@ -4552,6 +4666,40 @@ fn download_file_quiet_blocking(
     url: &str,
     target: &Path,
 ) -> Result<(), String> {
+    download_file_quiet_with_progress_blocking(client, url, target, None, None)
+}
+
+fn emit_content_install_progress(
+    window: Option<&tauri::Window>,
+    project_key: &str,
+    downloaded_bytes: u64,
+    total_bytes: Option<u64>,
+) {
+    let Some(target_window) = window else {
+        return;
+    };
+    let percent = total_bytes
+        .filter(|value| *value > 0)
+        .map(|value| downloaded_bytes.saturating_mul(100).min(value.saturating_mul(100)) / value)
+        .and_then(|value| u8::try_from(value).ok());
+    let _ = target_window.emit(
+        "content-install-progress",
+        ContentInstallProgressEvent {
+            project_key: project_key.to_string(),
+            downloaded_bytes,
+            total_bytes,
+            percent,
+        },
+    );
+}
+
+fn download_file_quiet_with_progress_blocking(
+    client: &reqwest::blocking::Client,
+    url: &str,
+    target: &Path,
+    window: Option<&tauri::Window>,
+    project_key: Option<&str>,
+) -> Result<(), String> {
     if let Some(parent) = target.parent() {
         fs::create_dir_all(parent).map_err(|e| {
             format!(
@@ -4581,10 +4729,34 @@ fn download_file_quiet_blocking(
             last_error = format!("HTTP {}", response.status());
             continue;
         }
+        let total_bytes = response.content_length();
+        if let Some(key) = project_key {
+            emit_content_install_progress(window, key, 0, total_bytes);
+        }
 
         let mut file = fs::File::create(&tmp)
             .map_err(|e| format!("Failed to create temp file {}: {e}", tmp.display()))?;
-        let write_result = std::io::copy(&mut response, &mut file);
+        let mut write_result = Ok(0_u64);
+        let mut downloaded_bytes = 0_u64;
+        let mut buffer = [0_u8; 64 * 1024];
+        loop {
+            let read = match response.read(&mut buffer) {
+                Ok(0) => break,
+                Ok(value) => value,
+                Err(err) => {
+                    write_result = Err(err);
+                    break;
+                }
+            };
+            if let Err(err) = file.write_all(&buffer[..read]) {
+                write_result = Err(err);
+                break;
+            }
+            downloaded_bytes += read as u64;
+            if let Some(key) = project_key {
+                emit_content_install_progress(window, key, downloaded_bytes, total_bytes);
+            }
+        }
         match write_result {
             Ok(_) => {
                 file.flush()
@@ -4601,6 +4773,10 @@ fn download_file_quiet_blocking(
                         target.display()
                     )
                 })?;
+                if let Some(key) = project_key {
+                    let final_total = total_bytes.or(Some(downloaded_bytes));
+                    emit_content_install_progress(window, key, downloaded_bytes, final_total);
+                }
                 return Ok(());
             }
             Err(err) => {
@@ -5341,9 +5517,20 @@ fn list_instance_section_entries(
                 section_dir.display()
             )
         })?;
+        let file_name = item.file_name();
+        let file_name_str = file_name.to_string_lossy().to_string();
+
+        // Check if the file is disabled (for mods)
+        let disabled = if section == "mods" {
+            file_name_str.ends_with(".disabled") || file_name_str.ends_with(".jar.disabled")
+        } else {
+            false
+        };
+
         entries.push(InstanceSectionEntry {
-            name: item.file_name().to_string_lossy().to_string(),
+            name: file_name_str,
             is_dir: metadata.is_dir(),
+            disabled,
         });
     }
 
@@ -5370,6 +5557,84 @@ fn open_instance_section(
         )
     })?;
     open_path_in_explorer(&section_dir)
+}
+
+#[tauri::command]
+fn delete_instance_section_entry(
+    game_dir: String,
+    version_id: String,
+    section: String,
+    entry_name: String,
+) -> Result<(), String> {
+    let game_dir_path = resolve_game_dir_path(&game_dir)?;
+    let section_dir = resolve_instance_section_dir(&game_dir_path, &version_id, &section)?;
+    let entry_path = section_dir.join(&entry_name);
+
+    if !entry_path.exists() {
+        return Err(format!("Entry does not exist: {}", entry_name));
+    }
+
+    if entry_path.is_dir() {
+        fs::remove_dir_all(&entry_path).map_err(|e| {
+            format!(
+                "Failed to delete directory {}: {e}",
+                entry_path.display()
+            )
+        })?;
+    } else {
+        fs::remove_file(&entry_path).map_err(|e| {
+            format!(
+                "Failed to delete file {}: {e}",
+                entry_path.display()
+            )
+        })?;
+    }
+
+    Ok(())
+}
+
+#[tauri::command]
+fn toggle_mod_disabled(
+    game_dir: String,
+    version_id: String,
+    mod_name: String,
+    disable: bool,
+) -> Result<(), String> {
+    let game_dir_path = resolve_game_dir_path(&game_dir)?;
+    let mods_dir = resolve_instance_section_dir(&game_dir_path, &version_id, "mods")?;
+    let mod_path = mods_dir.join(&mod_name);
+
+    if !mod_path.exists() {
+        return Err(format!("Mod does not exist: {}", mod_name));
+    }
+
+    if disable {
+        // Disable by adding .disabled extension
+        let new_name = format!("{}.disabled", mod_name);
+        let new_path = mods_dir.join(&new_name);
+        fs::rename(&mod_path, &new_path).map_err(|e| {
+            format!(
+                "Failed to disable mod {}: {e}",
+                mod_name
+            )
+        })?;
+    } else {
+        // Enable by removing .disabled extension
+        if !mod_name.ends_with(".disabled") {
+            return Err(format!("Mod is not disabled: {}", mod_name));
+        }
+        let new_name = mod_name.strip_suffix(".disabled")
+            .ok_or_else(|| "Invalid mod name".to_string())?;
+        let new_path = mods_dir.join(new_name);
+        fs::rename(&mod_path, &new_path).map_err(|e| {
+            format!(
+                "Failed to enable mod {}: {e}",
+                mod_name
+            )
+        })?;
+    }
+
+    Ok(())
 }
 
 fn open_path_in_explorer(path: &Path) -> Result<(), String> {
@@ -6552,8 +6817,14 @@ fn parse_launcher_versions_response(
         .map_err(|e| format!("Invalid versions list response JSON: {e}"))?;
 
     if !status.is_success() {
-        return Err(extract_api_error_message(body)
-            .unwrap_or_else(|| format!("versions list failed with HTTP {}", status.as_u16())));
+        let is_auth_error = status.as_u16() == 401 || status.as_u16() == 403;
+        if let Some(msg) = extract_api_error_message(body) {
+            if is_auth_error {
+                return Err(format!("HTTP {} - {}", status.as_u16(), msg));
+            }
+            return Err(msg);
+        }
+        return Err(format!("versions list failed with HTTP {}", status.as_u16()));
     }
 
     extract_launcher_versions(&value)
@@ -6591,9 +6862,14 @@ fn parse_launcher_dashboard_response(
         .map_err(|e| format!("Invalid launcher dashboard response JSON: {e}"))?;
 
     if !status.is_success() {
-        return Err(extract_api_error_message(body).unwrap_or_else(|| {
-            format!("launcher dashboard failed with HTTP {}", status.as_u16())
-        }));
+        let is_auth_error = status.as_u16() == 401 || status.as_u16() == 403;
+        if let Some(msg) = extract_api_error_message(body) {
+            if is_auth_error {
+                return Err(format!("HTTP {} - {}", status.as_u16(), msg));
+            }
+            return Err(msg);
+        }
+        return Err(format!("launcher dashboard failed with HTTP {}", status.as_u16()));
     }
 
     serde_json::from_value::<LauncherDashboard>(value)
@@ -6612,8 +6888,14 @@ fn parse_launcher_home_response(
         .map_err(|e| format!("Invalid launcher home response JSON: {e}"))?;
 
     if !status.is_success() {
-        return Err(extract_api_error_message(body)
-            .unwrap_or_else(|| format!("launcher home failed with HTTP {}", status.as_u16())));
+        let is_auth_error = status.as_u16() == 401 || status.as_u16() == 403;
+        if let Some(msg) = extract_api_error_message(body) {
+            if is_auth_error {
+                return Err(format!("HTTP {} - {}", status.as_u16(), msg));
+            }
+            return Err(msg);
+        }
+        return Err(format!("launcher home failed with HTTP {}", status.as_u16()));
     }
 
     serde_json::from_value::<LauncherHomePayload>(value)
@@ -6649,6 +6931,7 @@ fn parse_api_envelope<T: for<'de> Deserialize<'de>>(
     match serde_json::from_str::<ApiEnvelope<T>>(body) {
         Ok(payload) => {
             if !status.is_success() || !payload.success {
+                let is_auth_error = status.as_u16() == 401 || status.as_u16() == 403;
                 let message = payload
                     .message
                     .and_then(|value| {
@@ -6660,6 +6943,13 @@ fn parse_api_envelope<T: for<'de> Deserialize<'de>>(
                         }
                     })
                     .or_else(|| extract_api_error_message(body))
+                    .map(|msg| {
+                        if is_auth_error {
+                            format!("HTTP {} - {}", status.as_u16(), msg)
+                        } else {
+                            msg
+                        }
+                    })
                     .unwrap_or_else(|| format!("{context} failed with HTTP {}", status.as_u16()));
                 return Err(message);
             }
@@ -6668,7 +6958,11 @@ fn parse_api_envelope<T: for<'de> Deserialize<'de>>(
                 .ok_or_else(|| format!("{context} response missing data"))
         }
         Err(err) => {
+            let is_auth_error = status.as_u16() == 401 || status.as_u16() == 403;
             if let Some(message) = extract_api_error_message(body) {
+                if is_auth_error {
+                    return Err(format!("HTTP {} - {}", status.as_u16(), message));
+                }
                 return Err(message);
             }
             if status.is_success() {
@@ -7282,6 +7576,8 @@ fn main() {
             repair_instance_runtime,
             list_instance_section_entries,
             open_instance_section,
+            delete_instance_section_entry,
+            toggle_mod_disabled,
             get_default_game_dir,
             show_main_window,
             hide_main_window,

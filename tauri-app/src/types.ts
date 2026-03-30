@@ -134,6 +134,13 @@ export type InstallIpcEvent = {
   error?: string;
 };
 
+export type ContentInstallProgressEvent = {
+  projectKey: string;
+  downloadedBytes: number;
+  totalBytes: number | null;
+  percent: number | null;
+};
+
 export type InstallPhaseState = {
   title: string;
   sourcePhase: "vanilla" | "forge" | "fabric";
@@ -160,6 +167,7 @@ export type InstallDialogState = {
 export type InstanceSectionEntry = {
   name: string;
   isDir: boolean;
+  disabled?: boolean;
 };
 
 export type ModrinthSearchResult = {

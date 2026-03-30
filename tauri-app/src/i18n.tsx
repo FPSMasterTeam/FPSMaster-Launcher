@@ -56,7 +56,7 @@ const translations = {
     "nav.expand": "Expand sidebar",
     "sidebar.role.member": "Member",
     "sidebar.role.pro": "Pro",
-    "sidebar.role.staff": "Staff",
+    "sidebar.role.staff": "Developer",
 
     "loader.vanilla": "Vanilla",
     "loader.forge": "Forge",
@@ -109,6 +109,7 @@ const translations = {
     "account.totalHours": "{hours}h total",
     "account.totalActivities": "Total Activities",
     "account.latestActivity": "Latest Activity",
+    "account.weeklyActivity": "This Week",
     "account.weeklyPoints": "Collected {count} playtime points for the latest week.",
     "account.noStats": "No activity statistics yet.",
     "home.launcherUpdate.requiredTitle": "Launcher update required",
@@ -224,6 +225,16 @@ const translations = {
     "content.localSourceNotice": "Import a world ZIP from your computer. The launcher will extract and install it into the current instance.",
     "content.curseforgeKeyRequired": "Enter a CurseForge API key in Settings before searching this source.",
     "content.curseforgeKeyHint": "Open Settings and fill in your CurseForge API key to enable search, install, and update checks.",
+    "content.error.curseforgeDistributionBlocked":
+      "CurseForge denied the download request. This project may not allow third-party distribution, or the current API key does not have permission to fetch its download link.",
+    "content.error.curseforgeNoCompatibleFile":
+      "No compatible CurseForge file was found for the current instance.",
+    "content.error.curseforgeNoCompatibleFileDetailed":
+      "No compatible CurseForge file was found for Minecraft {version} with {loader}. Try another version, loader, or project release.",
+    "content.error.curseforgeNoDownloadUrl":
+      "CurseForge returned a file entry, but no usable download link was available for this project.",
+    "content.error.curseforgeMissingProjectId":
+      "The selected CurseForge project is missing its project ID and cannot be installed.",
     "content.resultsCount": "{count} results",
     "content.installedCount": "{count} installed",
     "content.install": "Install",
@@ -270,6 +281,15 @@ const translations = {
     "content.type.resourcepack": "Resource Packs",
     "content.type.shader": "Shaders",
     "content.type.world": "Worlds",
+    "content.typeLabel": "Content Type",
+    "content.selectZipFile": "Select ZIP File",
+    "content.updates": "Updates",
+    "content.installed": "Installed",
+    "content.searchResults": "Search Results",
+    "content.searchHint": "Enter keywords to search for compatible mods, resource packs, and more",
+    "content.noResults": "No results found",
+    "content.searchQueryRequired": "Please enter a search keyword",
+    "content.selectInstance": "Select an instance",
     "instanceFiles.title": "Instance Settings",
     "instanceFiles.subtitle": "Manage saves, mods, resource packs, logs, and crash reports for {name}.",
     "instanceFiles.back": "Back to Instances",
@@ -287,6 +307,8 @@ const translations = {
     "instanceFiles.loadFailed": "Load failed: {error}",
     "instanceFiles.openFailed": "Open folder failed: {error}",
     "instanceFiles.noInstance": "No instance selected.",
+    "instanceFiles.deleteFailed": "Delete failed: {error}",
+    "instanceFiles.toggleFailed": "Toggle failed: {error}",
 
     "install.title": "Install New Version",
     "install.subtitle": "Choose game version and optional loader.",
@@ -533,7 +555,7 @@ const translations = {
     "nav.expand": "展开侧边栏",
     "sidebar.role.member": "会员",
     "sidebar.role.pro": "专业版",
-    "sidebar.role.staff": "团队",
+    "sidebar.role.staff": "开发者",
 
     "loader.vanilla": "原版",
     "loader.forge": "Forge",
@@ -586,6 +608,7 @@ const translations = {
     "account.totalHours": "累计 {hours} 小时",
     "account.totalActivities": "活动总数",
     "account.latestActivity": "最近活跃",
+    "account.weeklyActivity": "本周统计",
     "account.weeklyPoints": "最近一周记录了 {count} 个游玩统计点。",
     "account.noStats": "暂时没有活跃统计。",
     "home.launcherUpdate.requiredTitle": "启动器需要更新",
@@ -700,6 +723,16 @@ const translations = {
     "content.localSourceNotice": "从本机导入世界 ZIP，启动器会自动解压并安装到当前实例。",
     "content.curseforgeKeyRequired": "请先在设置中填写 CurseForge API Key 再搜索该来源。",
     "content.curseforgeKeyHint": "前往设置填写 CurseForge API Key 后，即可启用搜索、安装与更新检查。",
+    "content.error.curseforgeDistributionBlocked":
+      "CurseForge 拒绝了下载请求。该项目可能未开放第三方分发，或当前 API Key 无权获取它的下载链接。",
+    "content.error.curseforgeNoCompatibleFile":
+      "当前实例没有找到可兼容的 CurseForge 文件。",
+    "content.error.curseforgeNoCompatibleFileDetailed":
+      "没有找到适用于 Minecraft {version} 且加载器为 {loader} 的 CurseForge 文件。请尝试其他版本、加载器或项目发布版本。",
+    "content.error.curseforgeNoDownloadUrl":
+      "CurseForge 返回了文件记录，但没有提供可用的下载链接。",
+    "content.error.curseforgeMissingProjectId":
+      "当前选择的 CurseForge 项目缺少项目 ID，无法安装。",
     "content.resultsCount": "{count} 条结果",
     "content.installedCount": "已安装 {count} 项",
     "content.install": "安装",
@@ -746,6 +779,15 @@ const translations = {
     "content.type.resourcepack": "资源包",
     "content.type.shader": "光影",
     "content.type.world": "世界",
+    "content.typeLabel": "内容类型",
+    "content.selectZipFile": "选择 ZIP 文件",
+    "content.updates": "更新",
+    "content.installed": "已安装",
+    "content.searchResults": "搜索结果",
+    "content.searchHint": "输入关键词搜索适配的模组、资源包等内容",
+    "content.noResults": "未找到相关结果",
+    "content.searchQueryRequired": "请输入搜索关键词",
+    "content.selectInstance": "选择实例",
     "instanceFiles.title": "版本设置",
     "instanceFiles.subtitle": "管理 {name} 的存档、模组、资源包、日志与崩溃报告。",
     "instanceFiles.back": "返回实例列表",
@@ -763,6 +805,8 @@ const translations = {
     "instanceFiles.loadFailed": "加载失败：{error}",
     "instanceFiles.openFailed": "打开文件夹失败：{error}",
     "instanceFiles.noInstance": "未选择实例。",
+    "instanceFiles.deleteFailed": "删除失败：{error}",
+    "instanceFiles.toggleFailed": "切换失败：{error}",
 
     "install.title": "安装新版本",
     "install.subtitle": "选择游戏版本和可选加载器。",

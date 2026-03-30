@@ -24,19 +24,19 @@ const Button: React.FC<ButtonProps> = ({
 
   const variants = {
     primary:
-      'bg-[var(--mc-grass)] text-white rounded-xl border border-[var(--mc-grass)]/65 shadow-[0_8px_20px_rgba(95,111,255,0.2)] hover:bg-[var(--mc-grass-dark)] hover:shadow-[0_10px_24px_rgba(95,111,255,0.26)] hover:-translate-y-0.5',
+      'bg-[var(--mc-grass)] text-white rounded-xl border border-[#25b87a]/50 hover:bg-[var(--mc-grass-dark)] hover:-translate-y-0.5',
     secondary:
-      'bg-[var(--bg-tertiary)] text-[var(--text-primary)] rounded-xl border border-[var(--border-subtle)] hover:border-[var(--border-medium)] hover:bg-[var(--bg-elevated)] hover:-translate-y-0.5',
+      'bg-[var(--bg-tertiary)] text-[var(--text-primary)] rounded-xl border border-white/5 hover:bg-[var(--bg-elevated)] hover:-translate-y-0.5',
     outline:
-      'bg-transparent border border-[var(--border-medium)] text-[var(--text-secondary)] hover:border-[var(--mc-grass)]/45 hover:text-[var(--text-primary)] rounded-xl hover:bg-[var(--surface-soft)]',
+      'bg-transparent border border-white/5 text-[var(--text-secondary)] hover:border-white/10 hover:text-[var(--text-primary)] rounded-xl hover:bg-[var(--surface-soft)]',
     ghost:
       'bg-transparent text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[var(--border-subtle)] rounded-xl',
     danger:
-      'bg-[var(--accent-danger)]/12 text-[var(--accent-danger)] hover:bg-[var(--accent-danger)]/20 rounded-xl border border-[var(--accent-danger)]/30',
+      'bg-[var(--accent-danger)]/12 text-[var(--accent-danger)] hover:bg-[var(--accent-danger)]/20 rounded-xl border border-[#ff6b8f]/25',
     'minecraft-success':
-      'bg-[var(--mc-grass)] text-white rounded-xl border border-[var(--mc-grass)]/65 shadow-[0_8px_20px_rgba(95,111,255,0.2)] hover:bg-[var(--mc-grass-dark)] hover:shadow-[0_10px_24px_rgba(95,111,255,0.26)] hover:-translate-y-0.5',
+      'bg-[var(--mc-grass)] text-white rounded-xl border border-[#25b87a]/50 shadow-[0_8px_20px_rgba(95,111,255,0.2)] hover:bg-[var(--mc-grass-dark)] hover:shadow-[0_10px_24px_rgba(95,111,255,0.26)] hover:-translate-y-0.5',
     'minecraft-primary':
-      'bg-[var(--mc-grass)] text-white rounded-xl border border-[var(--mc-grass)]/65 shadow-[0_8px_20px_rgba(95,111,255,0.2)] hover:bg-[var(--mc-grass-dark)] hover:shadow-[0_10px_24px_rgba(95,111,255,0.26)] hover:-translate-y-0.5',
+      'bg-[var(--mc-grass)] text-white rounded-xl border border-[#25b87a]/50 shadow-[0_8px_20px_rgba(95,111,255,0.2)] hover:bg-[var(--mc-grass-dark)] hover:shadow-[0_10px_24px_rgba(95,111,255,0.26)] hover:-translate-y-0.5',
   };
 
   const sizes = {

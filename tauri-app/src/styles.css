@@ -1346,6 +1346,62 @@ button:disabled {
   }
 }
 
+@keyframes modal-fade-in {
+  from {
+    opacity: 0;
+    transform: scale(0.96) translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}
+
+@keyframes modal-fade-out {
+  from {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+  to {
+    opacity: 0;
+    transform: scale(0.96) translateY(8px);
+  }
+}
+
+@keyframes modal-backdrop-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes modal-backdrop-fade-out {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
+}
+
+.modal-animate {
+  animation: modal-fade-in 240ms var(--ease-spring) forwards;
+}
+
+.modal-animate-out {
+  animation: modal-fade-out 180ms var(--ease-standard) forwards;
+}
+
+.modal-backdrop-animate {
+  animation: modal-backdrop-fade-in 180ms var(--ease-standard) forwards;
+}
+
+.modal-backdrop-animate-out {
+  animation: modal-backdrop-fade-out 150ms var(--ease-standard) forwards;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .page-transition {
     animation: none;

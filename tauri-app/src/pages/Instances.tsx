@@ -1,9 +1,9 @@
-import { Archive, Copy, Download, Plus, Search, Settings, Play, Trash2 } from "lucide-react";
-import { type ChangeEvent, useMemo, useRef, useState } from "react";
+import { Lock, Plus, Search, Settings, Play, Sparkles, Gamepad2 } from "lucide-react";
+import { useMemo, useState } from "react";
 import Button from "../components/Button";
 import Card from "../components/Card";
 import { useI18n } from "../i18n";
-import type { Instance, LauncherVersion, PresetPackageStatus } from "../types";
+import type { Instance, LauncherUser, LauncherVersion, PresetPackageStatus } from "../types";
 import { resolveInstanceIconPath } from "../utils/launcher";
 
 type InstancesPageProps = {
@@ -13,16 +13,20 @@ type InstancesPageProps = {
   launchingInstanceId: string | null;
   launchProgressPercent: number | null;
   launchProgressText: string;
+  user: LauncherUser | null;
   presetPackageStatuses: Record<string, PresetPackageStatus | undefined>;
   onDelete: (id: string) => void;
-  onDuplicateInstance: (id: string) => void;
-  onExportInstance: (id: string) => void;
-  onImportInstance: (file: File) => void;
   onGoInstall: () => void;
   onLaunchInstance: (id: string) => void;
   onOpenInstanceSettings: (id: string) => void;
-  onSyncPresetPackage: (id: string) => void;
 };
+
+function canAccessInstance(instance: Instance, user: LauncherUser | null): boolean {
+  if (instance.launcherVersionType === "NOVA") {
+    return Boolean(user?.novaBetaEligible);
+  }
+  return true;
+}
 
 export default function InstancesPage({
   instances,
@@ -31,30 +35,121 @@ export default function InstancesPage({
   launchingInstanceId,
   launchProgressPercent,
   launchProgressText,
+  user,
   presetPackageStatuses,
   onDelete,
-  onDuplicateInstance,
-  onExportInstance,
-  onImportInstance,
   onGoInstall,
   onLaunchInstance,
-  onOpenInstanceSettings,
-  onSyncPresetPackage
+  onOpenInstanceSettings
 }: InstancesPageProps) {
   const { t } = useI18n();
   const [searchQuery, setSearchQuery] = useState("");
-  const importInputRef = useRef<HTMLInputElement | null>(null);
 
   const filteredInstances = useMemo(() => {
     const keyword = searchQuery.trim().toLowerCase();
-    if (keyword === "") return instances;
-    return instances.filter(
-      (instance) =>
-        instance.name.toLowerCase().includes(keyword) ||
-        instance.versionId.toLowerCase().includes(keyword) ||
-        instance.baseVersion.toLowerCase().includes(keyword)
-    );
+    let result = instances;
+    if (keyword !== "") {
+      result = instances.filter(
+        (instance) =>
+          instance.name.toLowerCase().includes(keyword) ||
+          instance.versionId.toLowerCase().includes(keyword) ||
+          instance.baseVersion.toLowerCase().includes(keyword)
+      );
+    }
+    return result;
   }, [instances, searchQuery]);
+
+  // Split into FPSMaster and regular instances
+  const fpsMasterInstances = useMemo(
+    () => filteredInstances.filter((i) => i.preset),
+    [filteredInstances]
+  );
+  const regularInstances = useMemo(
+    () => filteredInstances.filter((i) => !i.preset),
+    [filteredInstances]
+  );
+
+  function renderInstanceCard(instance: Instance) {
+    const icon = resolveInstanceIconPath(instance);
+    const presetStatus = presetPackageStatuses[instance.id];
+    const canAccess = canAccessInstance(instance, user);
+
+    return (
+      <Card as="article" key={instance.id} variant="frost" className={`flex flex-col rounded-2xl p-4 ${!canAccess ? "opacity-60" : ""}`} interactive={false}>
+        <div className="flex items-center gap-3">
+          <div className="relative shrink-0">
+            <div className="h-14 w-14 overflow-hidden rounded-xl border border-white/5 bg-[var(--bg-elevated)]">
+              {icon ? <img src={icon} alt={instance.name} className="h-full w-full object-cover" /> : null}
+              {!canAccess && (
+                <div className="absolute inset-0 flex items-center justify-center bg-black/50">
+                  <Lock size={14} className="text-white/70" />
+                </div>
+              )}
+            </div>
+          </div>
+
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-2">
+              <h3 className={`truncate text-base font-semibold ${!canAccess ? "text-[var(--text-muted)]" : "text-[var(--text-primary)]"}`}>
+                {instance.name}
+              </h3>
+              {!canAccess && <Lock size={12} className="text-[var(--text-muted)] shrink-0" />}
+              {instance.preset && presetStatus && (presetStatus.state === "update-available" || presetStatus.state === "missing") && canAccess && (
+                <span className="shrink-0 rounded-md border border-amber-500/35 bg-amber-500/10 px-2 py-0.5 text-[10px] font-semibold text-amber-400">
+                  待更新
+                </span>
+              )}
+            </div>
+            <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-[var(--text-secondary)]">
+              <span className="rounded-md bg-[var(--bg-elevated)] px-2 py-0.5 text-[10px] font-semibold uppercase text-[var(--text-secondary)]">
+                {instance.baseVersion}
+              </span>
+              <span className={`rounded-md bg-amber-500/8 px-2 py-0.5 text-[10px] font-semibold uppercase ${
+                instance.loader === "forge"
+                  ? "text-amber-400"
+                  : instance.loader === "fabric"
+                    ? "text-cyan-400"
+                    : "text-[var(--text-secondary)]"
+              }`}>
+                {loaderLabel(instance.loader, t)}
+              </span>
+              {!instance.preset && instance.launcherVersionType && (
+                <span className="text-[var(--text-muted)]">{instance.launcherVersionType}</span>
+              )}
+            </div>
+          </div>
+          <div className="ml-auto flex shrink-0 items-center gap-2">
+            <Button
+              variant="primary"
+              size="sm"
+              className="gap-1"
+              launchProgress={busy && launchingInstanceId === instance.id}
+              launchProgressPercent={busy && launchingInstanceId === instance.id ? launchProgressPercent : null}
+              disabled={busy || !canAccess}
+              onClick={() => onLaunchInstance(instance.id)}
+            >
+              <Play size={14} fill="currentColor" />
+              {busy && launchingInstanceId === instance.id && typeof launchProgressPercent === "number"
+                ? `${launchProgressPercent}%`
+                : t("instances.play")}
+            </Button>
+            <button
+              className="shrink-0 rounded-lg p-2 text-[var(--text-muted)] transition-colors hover:bg-[var(--surface-soft)] hover:text-[var(--text-primary)] disabled:cursor-not-allowed disabled:opacity-50"
+              type="button"
+              onClick={() => onOpenInstanceSettings(instance.id)}
+              disabled={!canAccess}
+              title={t("instances.settings")}
+            >
+              <Settings size={16} />
+            </button>
+          </div>
+        </div>
+        {busy && launchingInstanceId === instance.id && (
+          <p className="mt-2 text-center text-[11px] text-[var(--text-muted)]">{launchProgressText || t("launch.progress.preparing")}</p>
+        )}
+      </Card>
+    );
+  }
 
   return (
     <div className="h-full overflow-y-auto p-4 md:p-5 xl:p-6">
@@ -67,26 +162,9 @@ export default function InstancesPage({
           <p className="mt-1 text-[var(--text-secondary)]">{t("instances.subtitle")}</p>
         </div>
         <div className="flex items-center gap-3">
-          <Card as="span" variant="frost" className="inline-flex rounded-full px-3 py-1.5 text-xs text-[var(--text-secondary)]">
+          <Card as="span" variant="frost" className="inline-flex rounded-full px-3 py-1.5 text-xs text-[var(--text-secondary)]" interactive={false}>
             {t("instances.count", { count: filteredInstances.length })}
           </Card>
-          <input
-            ref={importInputRef}
-            type="file"
-            accept=".zip,application/zip"
-            className="hidden"
-            onChange={(event) => handleImportChange(event, onImportInstance)}
-          />
-          <Button
-            variant="secondary"
-            size="lg"
-            className="gap-2"
-            disabled={busy}
-            onClick={() => importInputRef.current?.click()}
-          >
-            <Download size={16} />
-            {t("instances.import")}
-          </Button>
           <Button variant="primary" size="lg" className="gap-2" onClick={onGoInstall}>
             <Plus size={16} />
             {t("instances.createInstall")}
@@ -94,195 +172,59 @@ export default function InstancesPage({
         </div>
       </header>
 
-      <Card as="label" variant="soft" className="relative mb-5 block rounded-2xl px-3 py-2">
-        <Search className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 text-[var(--text-muted)]" size={18} />
+      <div className="relative mb-5">
+        <Search className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 -mt-0.5 text-[var(--text-muted)]" size={18} />
         <input
           type="text"
           placeholder={t("instances.searchPlaceholder")}
           value={searchQuery}
           onChange={(event) => setSearchQuery(event.target.value)}
-          className="w-full rounded-xl border border-[var(--border-medium)] bg-transparent py-3 pl-11 pr-4 text-[var(--text-primary)] transition-colors focus:border-[var(--mc-grass)]/45 focus:outline-none"
+          className="w-full rounded-xl border border-white/10 bg-[var(--surface-soft)] py-3 pl-11 pr-4 text-sm text-[var(--text-primary)] transition-colors focus:border-[var(--mc-grass)]/45 focus:bg-[var(--bg-elevated)] focus:outline-none"
         />
-      </Card>
+      </div>
 
-      <section className="grid grid-cols-1 gap-4 pb-20 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
-        {filteredInstances.map((instance) => {
-          const icon = resolveInstanceIconPath(instance);
-          const presetStatus = presetPackageStatuses[instance.id];
-          const recommendedVersion = instance.launcherVersionType
-            ? launcherVersions[instance.launcherVersionType]
-            : null;
-          const loaderTone =
-            instance.loader === "forge"
-              ? "text-amber-400 border-amber-500/35 bg-amber-500/8"
-              : instance.loader === "fabric"
-                ? "text-cyan-400 border-cyan-500/35 bg-cyan-500/8"
-                : "text-[var(--text-secondary)] border-[var(--border-medium)] bg-[var(--bg-elevated)]";
+      {/* FPSMaster Instances Section */}
+      {fpsMasterInstances.length > 0 && (
+        <div className="mb-6">
+          <div className="mb-3 flex items-center gap-2 px-1">
+            <Sparkles size={16} className="text-[var(--mc-grass)]" />
+            <h2 className="text-sm font-semibold uppercase tracking-[0.16em] text-[var(--mc-grass)]">FPSMaster</h2>
+            <span className="rounded-full bg-[var(--mc-grass)]/10 px-2 py-0.5 text-xs font-semibold text-[var(--mc-grass)]">
+              {fpsMasterInstances.length}
+            </span>
+          </div>
+          <section className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
+            {fpsMasterInstances.map((instance) => renderInstanceCard(instance))}
+          </section>
+        </div>
+      )}
 
-          return (
-            <Card as="article" key={instance.id} variant="frost" className="flex min-h-[272px] flex-col rounded-2xl p-4 md:p-5">
-              <div className="mb-4 flex items-start gap-4">
-                <div className="relative shrink-0">
-                  <div className="h-12 w-12 overflow-hidden rounded-xl border border-[var(--border-medium)] bg-[var(--bg-elevated)] shadow-[inset_0_1px_0_rgba(255,255,255,0.06)]">
-                    {icon ? <img src={icon} alt={instance.name} className="h-full w-full object-cover" /> : null}
-                  </div>
-                  {instance.preset && (
-                    <div className="absolute -bottom-1 -right-1 rounded-md border border-[var(--border-subtle)] bg-[var(--bg-secondary)] px-1.5 py-0.5 text-[10px] font-semibold text-[var(--text-secondary)]">
-                      FPS
-                    </div>
-                  )}
-                </div>
+      {/* Regular Instances Section */}
+      {regularInstances.length > 0 && (
+        <div className="mb-6">
+          <div className="mb-3 flex items-center gap-2 px-1">
+            <Gamepad2 size={16} className="text-[var(--text-secondary)]" />
+            <h2 className="text-sm font-semibold uppercase tracking-[0.16em] text-[var(--text-secondary)]">
+              {t("nav.myGames")}
+            </h2>
+            <span className="rounded-full bg-[var(--bg-elevated)] px-2 py-0.5 text-xs font-semibold text-[var(--text-muted)]">
+              {regularInstances.length}
+            </span>
+          </div>
+          <section className="grid grid-cols-1 gap-4 pb-20 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
+            {regularInstances.map((instance) => renderInstanceCard(instance))}
+          </section>
+        </div>
+      )}
 
-                <div className="min-w-0 flex-1">
-                  <h3 className="truncate text-base font-semibold text-[var(--text-primary)]">{instance.name}</h3>
-                  <div className="mt-2 flex flex-wrap gap-2">
-                    <span className="rounded-md border border-[var(--border-medium)] bg-[var(--bg-elevated)] px-2 py-0.5 text-[10px] font-semibold uppercase text-[var(--text-secondary)]">
-                      {instance.baseVersion}
-                    </span>
-                    <span className={`rounded-md border px-2 py-0.5 text-[10px] font-semibold uppercase ${loaderTone}`}>
-                      {loaderLabel(instance.loader, t)}
-                    </span>
-                    {instance.launcherVersionType && (
-                      <span className="rounded-md border border-[var(--border-medium)] bg-[var(--surface-soft)] px-2 py-0.5 text-[10px] font-semibold uppercase text-[var(--text-secondary)]">
-                        {instance.launcherVersionType}
-                      </span>
-                    )}
-                    {instance.preset && (
-                      <span className="rounded-md border border-[var(--border-medium)] bg-[var(--surface-soft)] px-2 py-0.5 text-[10px] font-semibold uppercase text-[var(--text-secondary)]">
-                        {t("instances.preset")}
-                      </span>
-                    )}
-                  </div>
-                  {instance.loaderVersion && (
-                    <p className="mt-2 truncate text-xs text-[var(--text-secondary)]">
-                      <span className="text-[var(--text-muted)]">{t("install.loaderLabel")}</span>
-                      {loaderLabel(instance.loader, t)} {instance.loaderVersion}
-                    </p>
-                  )}
-                  {instance.preset && presetStatus && (
-                    <div className="mt-3 rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-soft)] p-3 space-y-1.5">
-                      <div className="flex flex-wrap items-center gap-2">
-                        <span className={`rounded-md border px-2 py-0.5 text-[10px] font-semibold uppercase ${resolvePresetStatusTone(presetStatus.state)}`}>
-                          {presetStatusLabel(presetStatus.state, t)}
-                        </span>
-                        {presetStatus.targetVersionTag && (
-                          <span className="truncate text-[10px] text-[var(--text-muted)]">
-                            {t("instances.packageTargetVersion")}: {presetStatus.targetVersionTag}
-                          </span>
-                        )}
-                      </div>
-                      <p className="line-clamp-2 text-[11px] leading-5 text-[var(--text-muted)]">
-                        {describePresetPackageStatus(presetStatus, t)}
-                      </p>
-                      {recommendedVersion && (
-                        <div className="grid grid-cols-2 gap-2 pt-1">
-                          <MiniMeta
-                            label={t("instances.packageChannel")}
-                            value={recommendedVersion.channel || "-"}
-                          />
-                          <MiniMeta
-                            label={t("instances.packagePublishedAt")}
-                            value={formatDate(recommendedVersion.createdAt)}
-                          />
-                        </div>
-                      )}
-                    </div>
-                  )}
-                </div>
-              </div>
-
-              <div className="mt-auto">
-                <div className="grid grid-cols-2 gap-2">
-                  <Button
-                    variant="primary"
-                    size="sm"
-                    className="w-full gap-1"
-                    fullWidth
-                    launchProgress={busy && launchingInstanceId === instance.id}
-                    launchProgressPercent={busy && launchingInstanceId === instance.id ? launchProgressPercent : null}
-                    disabled={busy}
-                    onClick={() => onLaunchInstance(instance.id)}
-                  >
-                    <Play size={13} fill="currentColor" />
-                    {busy && launchingInstanceId === instance.id && typeof launchProgressPercent === "number"
-                      ? `${t("home.launching")} ${launchProgressPercent}%`
-                      : t("instances.play")}
-                  </Button>
-                  <Button
-                    variant="secondary"
-                    size="sm"
-                    className="w-full gap-1"
-                    fullWidth
-                    onClick={() => onOpenInstanceSettings(instance.id)}
-                  >
-                    <Settings size={13} />
-                    {t("instances.settings")}
-                  </Button>
-                </div>
-                <div className="mt-2 grid grid-cols-2 gap-2">
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    className="w-full gap-1"
-                    fullWidth
-                    onClick={() => onDuplicateInstance(instance.id)}
-                    disabled={busy}
-                  >
-                    <Copy size={13} />
-                    {t("instances.copy")}
-                  </Button>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    className="w-full gap-1"
-                    fullWidth
-                    onClick={() => onExportInstance(instance.id)}
-                    disabled={busy}
-                  >
-                    <Archive size={13} />
-                    {t("instances.export")}
-                  </Button>
-                </div>
-                <div className={`mt-2 grid gap-2 ${instance.preset ? "grid-cols-2" : "grid-cols-1"}`}>
-                  {instance.preset && (
-                    <Button
-                      variant={
-                        presetStatus?.state === "update-available" ||
-                        presetStatus?.state === "missing" ||
-                        presetStatus?.state === "error"
-                          ? "secondary"
-                          : "outline"
-                      }
-                      size="sm"
-                      className="w-full gap-1"
-                      fullWidth
-                      onClick={() => onSyncPresetPackage(instance.id)}
-                      disabled={busy}
-                    >
-                      <Download size={13} />
-                      {t("instances.syncPackage")}
-                    </Button>
-                  )}
-                  <Button
-                    variant="danger"
-                    size="sm"
-                    className="w-full gap-1"
-                    fullWidth
-                    onClick={() => onDelete(instance.id)}
-                    disabled={instance.preset}
-                  >
-                    <Trash2 size={13} />
-                    {t("instances.delete")}
-                  </Button>
-                </div>
-                {busy && launchingInstanceId === instance.id && (
-                  <p className="mt-1.5 truncate text-[11px] text-[var(--text-muted)]">{launchProgressText || t("launch.progress.preparing")}</p>
-                )}
-              </div>
-            </Card>
-          );
-        })}
-      </section>
+      {/* Empty state */}
+      {filteredInstances.length === 0 && (
+        <div className="flex flex-col items-center justify-center py-20 text-center">
+          <Gamepad2 size={48} className="mb-4 text-[var(--text-muted)]" />
+          <p className="text-lg font-semibold text-[var(--text-primary)]">{t("instances.noInstances")}</p>
+          <p className="mt-1 text-sm text-[var(--text-secondary)]">{t("instances.noInstancesHint")}</p>
+        </div>
+      )}
     </div>
   );
 }
@@ -305,18 +247,6 @@ function formatDate(raw?: string | null): string {
     return "-";
   }
   return value.toLocaleDateString();
-}
-
-function handleImportChange(
-  event: ChangeEvent<HTMLInputElement>,
-  onImportInstance: (file: File) => void
-) {
-  const file = event.target.files?.[0];
-  event.target.value = "";
-  if (!file) {
-    return;
-  }
-  onImportInstance(file);
 }
 
 function describePresetPackageStatus(
@@ -372,7 +302,7 @@ function presetStatusLabel(
 
 function resolvePresetStatusTone(state: PresetPackageStatus["state"]): string {
   if (state === "ready") {
-    return "border-[var(--mc-grass)]/35 bg-[var(--mc-grass)]/10 text-[var(--mc-grass)]";
+    return "border-[#25b87a]/25 bg-[#25b87a]/10 text-[#25b87a]";
   }
   if (state === "update-available") {
     return "border-amber-500/35 bg-amber-500/10 text-amber-300";
@@ -381,13 +311,13 @@ function resolvePresetStatusTone(state: PresetPackageStatus["state"]): string {
     return "border-cyan-500/35 bg-cyan-500/10 text-cyan-300";
   }
   if (state === "error") {
-    return "border-[var(--accent-danger)]/35 bg-[var(--accent-danger)]/10 text-[var(--accent-danger)]";
+    return "border-[#ff6b8f]/25 bg-[#ff6b8f]/10 text-[#ff6b8f]";
   }
   if (state === "pending-release") {
     return "border-violet-500/35 bg-violet-500/10 text-violet-300";
   }
   if (state === "beta") {
-    return "border-[var(--border-medium)] bg-[var(--surface-soft)] text-[var(--text-secondary)]";
+    return "border-white/10 bg-[var(--surface-soft)] text-[var(--text-secondary)]";
   }
-  return "border-[var(--border-medium)] bg-[var(--surface-soft)] text-[var(--text-secondary)]";
+  return "border-white/10 bg-[var(--surface-soft)] text-[var(--text-secondary)]";
 }

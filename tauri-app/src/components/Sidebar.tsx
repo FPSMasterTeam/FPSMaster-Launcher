@@ -1,4 +1,4 @@
-import { ChevronsLeft, ChevronsRight, Compass, Gamepad2, Home, Settings, User } from "lucide-react";
+import { ChevronsLeft, ChevronsRight, Compass, Crown, Gamepad2, Home, Settings, Trophy } from "lucide-react";
 import AppLogo from "./AppLogo";
 import { useI18n } from "../i18n";
 import type { LauncherUser, Page } from "../types";
@@ -34,14 +34,16 @@ export default function Sidebar({
   const levelText = resolveUserLevel(user, role);
   const roleBadgeClass = resolveRoleBadgeClass(role);
   const accountActive = currentPage === "account-center";
+  const userAvatarUrl = user?.avatarUrl?.trim();
+  const userInitials = getUserInitials(userName);
 
   return (
     <aside
       className={`relative z-20 flex h-full flex-col overflow-hidden bg-[var(--bg-secondary)]/72 backdrop-blur-xl transition-[width] duration-[var(--duration-normal)] ${
-        collapsed ? "w-[76px]" : "w-[76px] lg:w-[244px]"
+        collapsed ? "w-[76px]" : "w-[76px] lg:w-[268px]"
       }`}
     >
-      <div className="border-b border-[var(--border-subtle)] px-2 py-2 lg:px-3">
+      <div className="px-2 py-2 lg:px-3">
         <button
           type="button"
           onClick={() => setPage("home")}
@@ -72,7 +74,7 @@ export default function Sidebar({
               } ${
                 active
                   ? "border-[rgba(var(--accent-rgb),0.25)] bg-[var(--linear-card-bg)] text-[var(--text-primary)] shadow-[0_0_0_1px_rgba(var(--accent-rgb),var(--linear-hover-ring)),0_8px_18px_rgba(2,8,16,0.22),0_0_14px_rgba(var(--accent-rgb),var(--linear-hover-halo))]"
-                  : "border-transparent text-[var(--text-secondary)] hover:border-[var(--border-subtle)] hover:bg-[var(--surface-soft)] hover:text-[var(--text-primary)]"
+                  : "border-transparent text-[var(--text-secondary)] hover:border-white/5 hover:bg-[var(--surface-soft)] hover:text-[var(--text-primary)]"
               }`}
               aria-label={item.label}
               title={item.label}
@@ -85,34 +87,75 @@ export default function Sidebar({
         })}
       </nav>
 
-      <div className="border-t border-[var(--border-subtle)] p-2.5 lg:p-3">
+      <div className="border-t border-white/5 p-2.5 lg:p-3">
         <button
-          className={`group flex min-h-10 w-full items-center rounded-lg border p-2 transition-all duration-[var(--duration-normal)] ${
-            collapsed ? "justify-center" : "justify-center lg:justify-start"
-          } ${
-            accountActive
-              ? "border-[rgba(var(--accent-rgb),0.25)] bg-[var(--linear-card-bg)] text-[var(--text-primary)] shadow-[0_0_0_1px_rgba(var(--accent-rgb),var(--linear-hover-ring)),0_8px_18px_rgba(2,8,16,0.22),0_0_14px_rgba(var(--accent-rgb),var(--linear-hover-halo))]"
-              : "border-transparent hover:border-[var(--border-medium)] hover:bg-[var(--surface-soft)]"
-          }`}
+          className="group relative flex w-full items-center overflow-hidden rounded-xl p-2 transition-all duration-[var(--duration-normal)] hover:bg-[var(--surface-soft)]"
           type="button"
           aria-label={userName}
           onClick={() => setPage("account-center")}
         >
-          <div className="relative flex h-8 w-8 min-h-8 min-w-8 shrink-0 items-center justify-center rounded-lg bg-[var(--bg-elevated)] ring-1 ring-[var(--border-medium)]">
-            <div className="absolute inset-0 rounded-lg bg-[var(--mc-grass)]/20 opacity-0 blur-xl transition-opacity duration-[var(--duration-normal)] group-hover:opacity-40" />
-            <User size={14} className={accountActive ? "text-[var(--mc-grass)]" : "text-[var(--text-primary)]"} />
-          </div>
-          <div className={`ml-3 text-left ${collapsed ? "hidden" : "hidden lg:block"}`}>
-            <p className="whitespace-nowrap text-sm font-semibold text-[var(--text-primary)] transition-colors group-hover:text-[var(--mc-grass)]">{userName}</p>
-            <div className="mt-1 flex items-center gap-2 whitespace-nowrap">
-              <span className="text-xs text-[var(--text-muted)]">{levelText}</span>
-              <span className={`rounded-md border px-1.5 py-0.5 text-[10px] font-semibold tracking-wide ${roleBadgeClass}`}>{roleLabel}</span>
+          {/* Avatar container */}
+          <div className="relative shrink-0">
+            <div className={`relative flex items-center justify-center overflow-hidden rounded-full border transition-all duration-[var(--duration-normal)] ${
+              collapsed ? "h-9 w-9" : "h-10 w-10"
+            } border-white/5`}>
+              {/* Avatar image or initials */}
+              {userAvatarUrl ? (
+                <img
+                  src={userAvatarUrl}
+                  alt={userName}
+                  className="h-full w-full rounded-full object-cover"
+                />
+              ) : (
+                <div className={`flex h-full w-full items-center justify-center rounded-full bg-gradient-to-br from-[var(--mc-grass)] to-emerald-600 text-white font-semibold ${
+                  collapsed ? "text-xs" : "text-sm"
+                }`}>
+                  {userInitials}
+                </div>
+              )}
+
+              {/* Status indicator */}
+              <div className="absolute bottom-0 right-0 h-2.5 w-2.5 rounded-full border-2 border-[var(--bg-elevated)] bg-[var(--mc-grass)]" />
             </div>
+
+            {/* Level badge */}
+            {!collapsed && (
+              <div className="absolute -bottom-1 -right-1 flex items-center justify-center">
+                <div className="flex h-5 w-5 items-center justify-center rounded-full bg-gradient-to-br from-amber-400 to-amber-500 shadow-lg ring-1 ring-[var(--bg-elevated)]">
+                  <Trophy size={9} className="text-amber-900/70" />
+                </div>
+              </div>
+            )}
           </div>
+
+          {/* User info */}
+          {!collapsed && (
+            <div className="ml-3 min-w-0 flex-1 text-left">
+              <div className="flex items-center gap-1.5">
+                <p className="truncate text-sm font-semibold text-[var(--text-primary)]">
+                  {userName}
+                </p>
+                {role === "ADMIN" && (
+                  <Crown size={12} className="shrink-0 text-amber-400" />
+                )}
+              </div>
+              <div className="mt-1.5 flex items-center gap-2">
+                <span className="inline-flex items-center gap-1 rounded-md bg-[var(--mc-grass)]/10 px-2 py-0.5 text-[11px] font-semibold text-[var(--mc-grass)]">
+                  {levelText}
+                </span>
+                {role !== "ADMIN" && (
+                  <span className={`rounded-md border px-1.5 py-0.5 text-[10px] font-semibold tracking-wide ${roleBadgeClass}`}>
+                    {roleLabel}
+                  </span>
+                )}
+              </div>
+            </div>
+          )}
         </button>
 
+        {/* Collapse button */}
         <button
-          className={`mt-2 flex min-h-10 w-full items-center rounded-lg border border-[var(--border-subtle)] bg-[var(--surface-soft)] px-2 py-2 text-[var(--text-muted)] transition-colors hover:text-[var(--text-primary)] ${
+          className={`mt-2 flex min-h-9 w-full items-center rounded-lg bg-[var(--surface-soft)] px-2 py-1.5 text-[var(--text-muted)] transition-all duration-[var(--duration-normal)] hover:bg-[var(--bg-elevated)] hover:text-[var(--text-primary)] ${
             canToggleCollapse ? "" : "cursor-not-allowed opacity-50"
           } ${collapsed ? "justify-center" : "justify-center lg:justify-start"}`}
           type="button"
@@ -120,7 +163,7 @@ export default function Sidebar({
           disabled={!canToggleCollapse}
           title={collapsed ? t("nav.expand") : t("nav.collapse")}
         >
-          {collapsed ? <ChevronsRight size={16} /> : <ChevronsLeft size={16} />}
+          {collapsed ? <ChevronsRight size={15} /> : <ChevronsLeft size={15} />}
           <span className={`ml-2 whitespace-nowrap text-xs font-medium ${collapsed ? "hidden" : "hidden lg:block"}`}>
             {collapsed ? t("nav.expand") : t("nav.collapse")}
           </span>
@@ -140,6 +183,15 @@ function resolveUserName(user: LauncherUser | null, fallback: string): string {
     return email;
   }
   return fallback;
+}
+
+function getUserInitials(username: string): string {
+  const trimmed = username.trim();
+  if (trimmed.length <= 2) {
+    return trimmed.toUpperCase();
+  }
+  // Get first character and last character
+  return (trimmed[0] + trimmed[trimmed.length - 1]).toUpperCase();
 }
 
 function resolveUserRole(user: LauncherUser | null): string {
@@ -176,10 +228,10 @@ function resolveUserLevel(user: LauncherUser | null, role: string): string {
 
 function resolveRoleBadgeClass(role: string): string {
   if (role === "ADMIN") {
-    return "border-[var(--accent-danger)]/40 bg-[var(--accent-danger)]/10 text-[var(--accent-danger)]";
+    return "border-[#ff6b8f]/25 bg-[#ff6b8f]/10 text-[#ff6b8f]";
   }
   if (role === "SPONSOR") {
-    return "border-[var(--mc-grass)]/40 bg-[var(--mc-grass)]/12 text-[var(--mc-grass)]";
+    return "border-[#25b87a]/25 bg-[#25b87a]/12 text-[#25b87a]";
   }
-  return "border-[var(--border-medium)] bg-[var(--bg-elevated)] text-[var(--text-secondary)]";
+  return "bg-[var(--bg-elevated)] text-[var(--text-secondary)]";
 }

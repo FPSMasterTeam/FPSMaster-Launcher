@@ -6,6 +6,13 @@ export default defineConfig({
   clearScreen: false,
   server: {
     port: 1420,
-    strictPort: true
+    strictPort: true,
+    proxy: {
+      "/api": {
+        target: "https://api.fpsmaster.top",
+        changeOrigin: true,
+        secure: true
+      }
+    }
   }
 });

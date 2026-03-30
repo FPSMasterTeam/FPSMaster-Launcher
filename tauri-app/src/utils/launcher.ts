@@ -8,6 +8,7 @@ import type {
   DownloadSource,
   InstallIpcEvent,
   InstallPhaseState,
+  LauncherUser,
   Instance,
   Locale,
   Settings,
@@ -70,9 +71,11 @@ export function loadInstances(): Instance[] {
 export function loadSettings(): Settings {
   try {
     const raw = localStorage.getItem(STORAGE_KEYS.settings);
+    const fallbackPlayerName = resolveDefaultPlayerName();
     if (!raw) {
       return {
         ...DEFAULT_SETTINGS,
+        playerName: fallbackPlayerName,
         language: detectLocaleFromEnvironment()
       };
     }
@@ -90,7 +93,7 @@ export function loadSettings(): Settings {
       playerName:
         typeof parsed.playerName === "string" && parsed.playerName
           ? parsed.playerName
-          : DEFAULT_SETTINGS.playerName,
+          : fallbackPlayerName,
       downloadSource: parseDownloadSource(parsed.downloadSource),
       maxMemoryMb:
         typeof parsed.maxMemoryMb === "number"
@@ -135,9 +138,40 @@ export function loadSettings(): Settings {
   } catch {
     return {
       ...DEFAULT_SETTINGS,
+      playerName: resolveDefaultPlayerName(),
       language: detectLocaleFromEnvironment()
     };
   }
+}
+
+function resolveDefaultPlayerName(): string {
+  try {
+    const authRaw = localStorage.getItem(STORAGE_KEYS.launcherAuth);
+    if (authRaw) {
+      const parsed = JSON.parse(authRaw) as { user?: LauncherUser | null };
+      const username = parsed?.user?.username?.trim();
+      if (username) {
+        return username;
+      }
+    }
+  } catch {
+    // Ignore malformed launcher auth storage
+  }
+
+  try {
+    const prefsRaw = localStorage.getItem(STORAGE_KEYS.launcherLoginPrefs);
+    if (prefsRaw) {
+      const parsed = JSON.parse(prefsRaw) as { usernameOrEmail?: string };
+      const identity = parsed?.usernameOrEmail?.trim();
+      if (identity) {
+        return identity;
+      }
+    }
+  } catch {
+    // Ignore malformed launcher login prefs storage
+  }
+
+  return "";
 }
 
 function parseLocale(input: unknown): Locale {

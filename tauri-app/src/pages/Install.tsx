@@ -71,16 +71,16 @@ export default function InstallPage({
           <h1 className="mt-2 text-3xl font-semibold tracking-tight text-[var(--text-primary)]">{t("install.title")}</h1>
           <p className="mt-1 text-[var(--text-secondary)]">{t("install.subtitle")}</p>
         </div>
-        <Card variant="frost" className="rounded-full px-4 py-2 text-sm text-[var(--text-secondary)]">
+        <Card variant="frost" className="rounded-full px-4 py-2 text-sm text-[var(--text-secondary)]" interactive={false}>
           {catalogLoading ? t("install.syncing") : t("install.versionCount", { count: catalogCount })}
         </Card>
       </header>
 
       <div className="grid grid-cols-1 gap-6 xl:grid-cols-[minmax(0,1.1fr)_minmax(0,0.9fr)]">
-        <Card as="section" variant="frost" className="rounded-xl p-4 md:p-5">
+        <Card as="section" variant="frost" className="rounded-xl p-4 md:p-5" interactive={false}>
           <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
             <h2 className="text-lg font-semibold text-[var(--text-primary)]">{t("install.selectVersion")}</h2>
-            <Card variant="soft" className="flex rounded-xl p-1">
+            <Card variant="soft" className="flex rounded-xl p-1" interactive={false}>
               <button
                 onClick={() => {
                   if (showSnapshots) onToggleSnapshots();
@@ -115,8 +115,8 @@ export default function InstallPage({
                     onClick={() => onSelectMajor(item)}
                     className={`min-h-11 rounded-xl border px-3 py-1.5 text-sm transition-colors ${
                       major === item
-                        ? "border-[var(--mc-grass)]/55 bg-[var(--mc-grass)]/12 text-[var(--text-primary)]"
-                        : "border-[var(--border-medium)] text-[var(--text-secondary)] hover:border-[var(--border-strong)]"
+                        ? "border-[#25b87a]/40 bg-[#25b87a]/12 text-[var(--text-primary)]"
+                        : "border-white/5 text-[var(--text-secondary)] hover:border-white/10"
                     }`}
                     type="button"
                   >
@@ -155,7 +155,7 @@ export default function InstallPage({
           )}
         </Card>
 
-        <Card as="section" variant="strong" className="rounded-xl p-4 md:p-5">
+        <Card as="section" variant="strong" className="rounded-xl p-4 md:p-5" interactive={false}>
           <h2 className="mb-5 text-lg font-semibold text-[var(--text-primary)]">{t("install.modloader")}</h2>
 
           <div className="mb-6 grid grid-cols-3 gap-3">
@@ -169,8 +169,8 @@ export default function InstallPage({
                 onClick={() => onSelectLoader(item.id as Loader)}
                 className={`min-h-28 rounded-2xl border px-2 py-3 transition-all duration-[var(--duration-normal)] ${
                   loader === item.id
-                    ? "border-[var(--mc-grass)]/50 bg-[var(--mc-grass)]/10"
-                    : "border-[var(--border-subtle)] bg-[var(--linear-card-bg)] hover:border-[var(--border-medium)]"
+                    ? "border-[#25b87a]/40 bg-[#25b87a]/10"
+                    : "border-white/5 bg-[var(--linear-card-bg)] hover:border-white/10"
                 }`}
                 type="button"
               >
@@ -191,14 +191,14 @@ export default function InstallPage({
                   ? t("install.loadingLoaderVersions", { loader: loaderLabel(loader) })
                   : t("install.selectLoaderVersion", { loader: loaderLabel(loader) })}
               </p>
-              <Card variant="soft" className="flex max-h-44 flex-wrap gap-2 overflow-y-auto rounded-xl p-2">
+              <Card variant="soft" className="flex max-h-44 flex-wrap gap-2 overflow-y-auto rounded-xl p-2" interactive={false}>
                 {loaderOptions.map((version) => (
                   <button
                     key={version}
                     onClick={() => onSelectLoaderVersion(version)}
                     className={`min-h-11 rounded-lg px-3 py-1.5 text-sm transition-colors ${
                       loaderVersion === version
-                        ? "border border-[var(--mc-grass)]/45 bg-[var(--mc-grass)]/12 text-[var(--text-primary)]"
+                        ? "border border-[#25b87a]/45 bg-[var(--mc-grass)]/12 text-[var(--text-primary)]"
                         : "text-[var(--text-secondary)] hover:bg-[var(--surface-soft)] hover:text-[var(--text-primary)]"
                     }`}
                     type="button"
@@ -256,14 +256,14 @@ function VersionChip({
       onClick={onClick}
       className={`linear-float min-h-11 rounded-xl border px-3 py-2 text-sm font-medium transition-colors ${
         active
-          ? "border-[var(--mc-grass)]/55 bg-[var(--mc-grass)]/12 text-[var(--text-primary)]"
-          : "border-[var(--border-subtle)] bg-[var(--bg-secondary)] text-[var(--text-secondary)] hover:border-[var(--border-medium)] hover:text-[var(--text-primary)]"
+          ? "border-[#25b87a]/40 bg-[#25b87a]/12 text-[var(--text-primary)]"
+          : "border-white/5 bg-[var(--bg-secondary)] text-[var(--text-secondary)] hover:border-white/10 hover:text-[var(--text-primary)]"
       }`}
       type="button"
     >
       <span>{version}</span>
       {installed && (
-        <span className="ml-2 rounded-md border border-[var(--mc-grass)]/35 bg-[var(--mc-grass)]/8 px-1.5 py-0.5 text-[10px] font-semibold text-[var(--mc-grass)]">
+        <span className="ml-2 rounded-md border border-[#25b87a]/25 bg-[#25b87a]/10 px-1.5 py-0.5 text-[10px] font-semibold text-[#25b87a]">
           {installedLabel}
         </span>
       )}

@@ -9,6 +9,8 @@ export const STORAGE_KEYS = {
   launcherSessionId: "fpsmaster.launcherSessionId"
 } as const;
 
+// Rust backend needs the full API URL for invoke() calls
+// Vite proxy only works for direct fetch() calls from frontend
 export const LAUNCHER_API_BASE_URL = "https://api.fpsmaster.top";
 
 export const NEWS_ITEMS: readonly NewsItem[] = [
@@ -20,7 +22,7 @@ export const NEWS_ITEMS: readonly NewsItem[] = [
 
 export const DEFAULT_SETTINGS: Settings = {
   gameDir: "./.minecraft",
-  playerName: "Player",
+  playerName: "",
   downloadSource: "official",
   maxMemoryMb: 4096,
   hideMainOnLaunch: true,

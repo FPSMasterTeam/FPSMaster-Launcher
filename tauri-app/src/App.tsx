@@ -180,6 +180,7 @@ function Launcher() {
   const [windowVisible, setWindowVisible] = useState(false);
   const launcherSessionIdRef = useRef(loadOrCreateLauncherSessionId());
   const launcherAuthTokenRef = useRef<string | null>(launcherAuth?.token?.trim() ?? null);
+  const autoLoginAttemptedRef = useRef(false);
 
   const logCursorRef = useRef<number | null>(null);
   const pollingRef = useRef(false);
@@ -294,6 +295,10 @@ function Launcher() {
     if (launcherAuth?.token || launcherAuthLoading) {
       return;
     }
+    // Only attempt auto-login once per session
+    if (autoLoginAttemptedRef.current) {
+      return;
+    }
     if (!launcherLoginPrefs.autoLogin || !launcherLoginPrefs.rememberPassword) {
       return;
     }
@@ -302,6 +307,7 @@ function Launcher() {
     if (!identity || !password) {
       return;
     }
+    autoLoginAttemptedRef.current = true;
     void loginLauncherAccount({
       ...launcherLoginPrefs,
       usernameOrEmail: identity,
@@ -1073,6 +1079,7 @@ function Launcher() {
         token: normalizedToken,
         user: result.user ?? {}
       });
+      autoLoginAttemptedRef.current = false;
       void cacheLauncherTelemetrySession({
         username: result.user?.username,
         id: result.user?.id ?? null
@@ -1819,44 +1826,6 @@ function Launcher() {
     }
   }
 
-  async function importInstance(file: File) {
-    if (!file.name.toLowerCase().endsWith(".zip")) {
-      setStatus(t("app.status.failed", { error: t("instances.importZipRequired") }));
-      return;
-    }
-
-    setBusy(true);
-    setStatus(t("app.status.instanceImporting"));
-    try {
-      const bytes = Array.from(new Uint8Array(await file.arrayBuffer()));
-      const result = await invoke<InstanceImportResult>("import_instance_archive", {
-        gameDir: settings.gameDir,
-        archiveName: file.name,
-        archiveData: bytes
-      });
-      const importedName = createImportedInstanceName(file.name, instances);
-      const imported: Instance = {
-        id: `instance-${Date.now()}-${Math.floor(Math.random() * 10000)}`,
-        name: importedName,
-        versionId: result.versionId,
-        baseVersion: result.baseVersion,
-        loader: result.loader,
-        loaderVersion: result.loaderVersion,
-        preset: false
-      };
-      setInstances((prev) => [imported, ...prev]);
-      setInstalledVersions((prev) =>
-        prev.includes(result.versionId) ? prev : [result.versionId, ...prev]
-      );
-      setSelected(imported.id);
-      setStatus(t("app.status.instanceImported", { name: imported.name }));
-    } catch (error) {
-      setStatus(t("app.status.failed", { error: formatLaunchError(error) }));
-    } finally {
-      setBusy(false);
-    }
-  }
-
   async function repairInstance(id: string) {
     if (ensureMandatoryLauncherUpdate()) {
       return;
@@ -1903,32 +1872,6 @@ function Launcher() {
     setInstallDialog(null);
   }
 
-  async function syncPresetPackage(instanceId: string) {
-    if (ensureMandatoryLauncherUpdate()) {
-      return;
-    }
-    const target = instances.find((item) => item.id === instanceId);
-    if (!target || !target.preset) {
-      return;
-    }
-    setPresetPackageStatuses((prev) => ({
-      ...prev,
-      [instanceId]: {
-        ...prev[instanceId],
-        state: "syncing",
-        versionTag: prev[instanceId]?.targetVersionTag ?? prev[instanceId]?.versionTag ?? null,
-        lastError: null
-      }
-    }));
-    try {
-      await ensurePresetModsReady(target);
-      await refreshPresetPackageStatuses();
-    } catch (error) {
-      setStatus(t("app.status.failed", { error: formatLaunchError(error) }));
-      await refreshPresetPackageStatuses();
-    }
-  }
-
   function updateSettings(next: Settings) {
     setSettings(next);
   }
@@ -1953,22 +1896,14 @@ function Launcher() {
           launcherUpdateAvailable={launcherAppUpdateAvailable}
           launcherUpdateDownloading={launcherAppUpdateDownloading}
           launcherUpdateDownload={launcherAppUpdateDownload}
-          recommendedVersion={
-            current?.launcherVersionType ? launcherVersions[current.launcherVersionType] : null
-          }
           current={current}
           busy={busy}
           launching={launching}
           launchProgressPercent={launchProgressPercent}
           launchProgressText={launchProgressText}
-          presetPackageStatus={current ? presetPackageStatuses[current.id] : undefined}
+          user={launcherAuth?.user ?? null}
           onSelect={setSelected}
           onLaunch={launch}
-          onSyncPresetPackage={() => {
-            if (current) {
-              void syncPresetPackage(current.id);
-            }
-          }}
           onOpenSettings={() => navigatePage("settings")}
         />
       );
@@ -1987,11 +1922,9 @@ function Launcher() {
           launchingInstanceId={launchingInstanceId}
           launchProgressPercent={launchProgressPercent}
           launchProgressText={launchProgressText}
+          user={launcherAuth?.user ?? null}
           presetPackageStatuses={presetPackageStatuses}
           onDelete={removeInstance}
-          onDuplicateInstance={duplicateInstance}
-          onExportInstance={exportInstance}
-          onImportInstance={importInstance}
           onGoInstall={() => navigatePage("install")}
           onLaunchInstance={async (id) => {
             const target = instances.find((item) => item.id === id);
@@ -2003,7 +1936,6 @@ function Launcher() {
             setSelected(id);
             navigatePage("instance-settings");
           }}
-          onSyncPresetPackage={syncPresetPackage}
         />
       );
     }
@@ -2018,6 +1950,21 @@ function Launcher() {
           onRepair={() => {
             if (current) {
               void repairInstance(current.id);
+            }
+          }}
+          onDelete={() => {
+            if (current) {
+              void removeInstance(current.id);
+            }
+          }}
+          onDuplicate={() => {
+            if (current) {
+              void duplicateInstance(current.id);
+            }
+          }}
+          onExport={() => {
+            if (current) {
+              void exportInstance(current.id);
             }
           }}
         />
@@ -2171,7 +2118,7 @@ async function withTitlebarGuard(action: () => Promise<void>) {
           </div>
         )}
         <div
-          className="fixed left-0 right-0 top-0 z-50 flex h-10 items-center justify-between border-b border-[var(--border-subtle)] bg-[var(--bg-secondary)]/86 px-3 backdrop-blur-xl"
+          className="fixed left-0 right-0 top-0 z-50 flex h-10 items-center justify-between border-b border-white/5 bg-[var(--bg-secondary)]/86 px-3 backdrop-blur-xl"
           data-tauri-drag-region
         >
           <div
@@ -2222,7 +2169,7 @@ async function withTitlebarGuard(action: () => Promise<void>) {
               setPage={navigatePage}
             />
 
-            <main className="relative flex-1 overflow-hidden border-l border-[var(--border-subtle)] bg-[var(--bg-secondary)]/34">
+            <main className="relative flex-1 overflow-hidden border-l border-white/5 bg-[var(--bg-secondary)]/34">
               <div className="pointer-events-none absolute -right-32 -top-24 h-[420px] w-[420px] rounded-full bg-[var(--mc-grass)]/8 blur-[110px] opacity-45" />
               <div className="pointer-events-none absolute -bottom-32 -left-24 h-[360px] w-[360px] rounded-full bg-[var(--mc-grass)]/6 blur-[105px] opacity-35" />
 
@@ -2250,12 +2197,12 @@ async function withTitlebarGuard(action: () => Promise<void>) {
 
         {authenticated && launchError && (
           <div className="fixed inset-0 z-[95] flex items-center justify-center bg-[var(--bg-primary)]/68 p-6 backdrop-blur-md">
-            <Card variant="frost" className="w-full max-w-lg rounded-2xl p-6">
+            <Card variant="frost" className="w-full max-w-lg rounded-2xl p-6" interactive={false}>
               <h3 className="text-xl font-semibold text-[var(--accent-danger)]">
                 {t("launch.error.title")}
               </h3>
               <p className="mt-2 text-sm text-[var(--text-secondary)]">{t("launch.error.subtitle")}</p>
-              <div className="mt-4 rounded-xl border border-[var(--accent-danger)]/40 bg-[var(--accent-danger)]/10 px-4 py-3">
+              <div className="mt-4 rounded-xl border border-[#ff6b8f]/25 bg-[#ff6b8f]/10 px-4 py-3">
                 <p className="text-sm leading-6 text-[var(--text-primary)] break-all">{launchError}</p>
               </div>
               <div className="mt-6 flex justify-end">
@@ -2531,7 +2478,12 @@ function isAuthExpiredError(error: unknown): boolean {
   if (normalized === "token is required" || normalized === "authentication required") {
     return true;
   }
+  // Match "HTTP 401" or "HTTP 401 - message"
   if (/\bhttp\s*401\b/i.test(normalized)) {
+    return true;
+  }
+  // Match "HTTP 403" for auth-related forbidden
+  if (/\bhttp\s*403\b/i.test(normalized)) {
     return true;
   }
   if (/\b(jwt|token)\b.*\b(expired|invalid|revoked)\b/i.test(normalized)) {
@@ -2540,7 +2492,29 @@ function isAuthExpiredError(error: unknown): boolean {
   if (/\b(invalid|expired|missing)\b.*\b(jwt|token|authorization)\b/i.test(normalized)) {
     return true;
   }
-  return normalized.includes("bearer") && normalized.includes("invalid");
+  if (normalized.includes("bearer") && normalized.includes("invalid")) {
+    return true;
+  }
+  // Common auth error messages from APIs
+  const authErrorPatterns = [
+    "unauthorized",
+    "forbidden",
+    "access denied",
+    "not authenticated",
+    "authentication failed",
+    "session expired",
+    "session invalid",
+    "login required",
+    "please login",
+    "请先登录",
+    "未授权",
+    "登录已过期",
+    "登录失效",
+    "认证失败",
+    "token无效",
+    "token过期"
+  ];
+  return authErrorPatterns.some(pattern => normalized.includes(pattern));
 }
 
 function loadOrCreateLauncherSessionId(): string {
@@ -2601,25 +2575,6 @@ function createDuplicatedInstanceName(sourceName: string, instances: Instance[])
     index += 1;
   }
   return `${baseName} ${Date.now()}`;
-}
-
-function createImportedInstanceName(archiveName: string, instances: Instance[]): string {
-  const archiveStem = archiveName.replace(/\.[^/.]+$/, "").trim();
-  const normalizedBase = archiveStem || "Imported Instance";
-  const existingNames = new Set(instances.map((item) => item.name.trim().toLowerCase()));
-  if (!existingNames.has(normalizedBase.toLowerCase())) {
-    return normalizedBase;
-  }
-
-  let index = 2;
-  while (index < 1000) {
-    const candidate = `${normalizedBase} ${index}`;
-    if (!existingNames.has(candidate.toLowerCase())) {
-      return candidate;
-    }
-    index += 1;
-  }
-  return `${normalizedBase} ${Date.now()}`;
 }
 
 function createDuplicatedVersionId(sourceVersionId: string, instances: Instance[]): string {

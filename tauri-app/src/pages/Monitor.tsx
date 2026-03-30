@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { startTransition, useEffect, useMemo, useRef, useState } from "react";
 import Card from "../components/Card";
 import TitleBar from "../components/TitleBar";
 import { useI18n } from "../i18n";
@@ -11,6 +11,11 @@ type MonitorPageProps = {
   params: URLSearchParams;
 };
 
+const MONITOR_LOG_POLL_INTERVAL_MS = 400;
+const MONITOR_RUNTIME_POLL_INTERVAL_MS = 2000;
+const MONITOR_UPTIME_TICK_INTERVAL_MS = 1000;
+const MONITOR_LOG_CHAR_LIMIT = 200_000;
+
 export default function MonitorPage({ params }: MonitorPageProps) {
   const { t } = useI18n();
   const visualSettings = useMemo(() => loadSettings(), []);
@@ -20,7 +25,7 @@ export default function MonitorPage({ params }: MonitorPageProps) {
   const initialCursor = parseIntSafe(params.get("cursor"), 0);
   const version = params.get("version") ?? "unknown";
 
-  const [logs, setLogs] = useState<string[]>([]);
+  const [logText, setLogText] = useState("");
   const [stats, setStats] = useState<GameRuntimeStats | null>(null);
   const [status, setStatus] = useState(t("monitor.connecting"));
   const [tick, setTick] = useState(Date.now());
@@ -28,34 +33,39 @@ export default function MonitorPage({ params }: MonitorPageProps) {
   const [stopping, setStopping] = useState(false);
 
   const cursorRef = useRef<number | null>(initialCursor > 0 ? initialCursor : null);
-  const pollingRef = useRef(false);
+  const logsPollingRef = useRef(false);
+  const runtimePollingRef = useRef(false);
+  const logTextRef = useRef("");
 
   useEffect(() => {
     let active = true;
     const pollLogs = async () => {
-      if (!active || pollingRef.current) return;
-      pollingRef.current = true;
+      if (!active || logsPollingRef.current) return;
+      logsPollingRef.current = true;
       try {
         const args = cursorRef.current === null ? {} : { afterSeq: cursorRef.current };
         const out = await invoke<UiLogPollResult>("poll_ui_logs", args);
         if (!active) return;
         cursorRef.current = out.nextSeq;
         if (out.entries.length === 0) return;
-        setLogs((prev) => {
-          const next = [...prev, ...out.entries.map((entry) => `${prefix(entry)} ${entry.message}`)];
-          return next.length > 4000 ? next.slice(next.length - 4000) : next;
+        const chunk = out.entries.map((entry) => `${prefix(entry)} ${entry.message}`).join("\n");
+        logTextRef.current = appendMonitorLogText(logTextRef.current, chunk);
+        startTransition(() => {
+          setLogText(logTextRef.current);
         });
       } catch {
       } finally {
-        pollingRef.current = false;
+        logsPollingRef.current = false;
       }
     };
 
     const pollRuntime = async () => {
+      if (!active || runtimePollingRef.current) return;
       if (pid <= 0) {
         setStatus(t("monitor.invalidPid"));
         return;
       }
+      runtimePollingRef.current = true;
       try {
         const out = await invoke<GameRuntimeStats>("poll_game_runtime", { pid });
         if (!active) return;
@@ -64,21 +74,26 @@ export default function MonitorPage({ params }: MonitorPageProps) {
       } catch (error) {
         if (!active) return;
         setStatus(t("monitor.runtimePollingFailed", { error: String(error) }));
+      } finally {
+        runtimePollingRef.current = false;
       }
     };
 
     void pollLogs();
     void pollRuntime();
-    const logsTimer = window.setInterval(() => void pollLogs(), 200);
+    const logsTimer = window.setInterval(() => void pollLogs(), MONITOR_LOG_POLL_INTERVAL_MS);
     const runtimeTimer = window.setInterval(() => {
       void pollRuntime();
+    }, MONITOR_RUNTIME_POLL_INTERVAL_MS);
+    const tickTimer = window.setInterval(() => {
       setTick(Date.now());
-    }, 1000);
+    }, MONITOR_UPTIME_TICK_INTERVAL_MS);
 
     return () => {
       active = false;
       window.clearInterval(logsTimer);
       window.clearInterval(runtimeTimer);
+      window.clearInterval(tickTimer);
     };
   }, [pid, t]);
 
@@ -150,7 +165,14 @@ export default function MonitorPage({ params }: MonitorPageProps) {
               <h1 className="mt-1 text-2xl font-semibold text-[var(--text-primary)] md:text-3xl">{`${t("app.name")} ${version}`}</h1>
             </div>
             <div className="flex flex-wrap gap-2">
-              <button className="ghostButton" onClick={() => setLogs([])} type="button">
+              <button
+                className="ghostButton"
+                onClick={() => {
+                  logTextRef.current = "";
+                  setLogText("");
+                }}
+                type="button"
+              >
                 {t("monitor.clearLogs")}
               </button>
               <button className="ghostButton danger" onClick={() => setConfirmAction("stop")} disabled={stopping || !(stats?.running ?? true)} type="button">
@@ -175,7 +197,7 @@ export default function MonitorPage({ params }: MonitorPageProps) {
             <h2 className="text-base font-semibold text-[var(--text-primary)]">{t("monitor.consoleOutput")}</h2>
             <span className="mutedPill">{status}</span>
           </div>
-          <pre className="logBox h-full min-h-0 max-h-none">{logs.join("\n")}</pre>
+          <pre className="logBox h-full min-h-0 max-h-none">{logText}</pre>
         </Card>
       </main>
 
@@ -200,6 +222,21 @@ export default function MonitorPage({ params }: MonitorPageProps) {
       )}
     </div>
   );
+}
+
+function appendMonitorLogText(current: string, chunk: string): string {
+  if (!chunk) {
+    return current;
+  }
+
+  const next = current ? `${current}\n${chunk}` : chunk;
+  if (next.length <= MONITOR_LOG_CHAR_LIMIT) {
+    return next;
+  }
+
+  const trimmed = next.slice(next.length - MONITOR_LOG_CHAR_LIMIT);
+  const firstLineBreak = trimmed.indexOf("\n");
+  return firstLineBreak >= 0 ? trimmed.slice(firstLineBreak + 1) : trimmed;
 }
 
 function StatCard({ label, value }: { label: string; value: string | number }) {
