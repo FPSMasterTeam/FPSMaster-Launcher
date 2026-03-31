@@ -11,7 +11,7 @@ use std::os::windows::process::CommandExt;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use std::{env, fs};
 use tauri::path::BaseDirectory;
 use tauri::menu::{Menu, MenuItem};
@@ -858,11 +858,49 @@ fn hide_main_window_internal(app: &AppHandle) -> Result<(), String> {
     window
         .hide()
         .map_err(|e| format!("Failed to hide main window: {e}"))?;
+
+    // Schedule webview suspend (navigate to blank) after 60 seconds
+    let state = app.state::<LauncherRuntimeState>();
+    let stop_flag = state.webview_suspend_stop.clone();
+    let app_handle = app.clone();
+
+    *state.webview_suspend_scheduled.lock().unwrap() = Some(Instant::now());
+    stop_flag.store(false, Ordering::Relaxed);
+
+    thread::spawn(move || {
+        // Wait 60 seconds, checking stop flag every second
+        for _ in 0..60 {
+            thread::sleep(Duration::from_secs(1));
+            if stop_flag.load(Ordering::Relaxed) {
+                return; // Cancelled
+            }
+        }
+
+        // Navigate to a minimal suspended page (embedded HTML)
+        if let Some(window) = app_handle.get_webview_window("main") {
+            let suspended_html = r#"<!DOCTYPE html><html><head><title>Suspended</title></head><body style="background:#1a1a2e;margin:0;display:flex;align-items:center;justify-content:center;height:100vh;color:rgba(255,255,255,0.5);font-family:sans-serif;"><div style="text-align:center;"><div style="width:32px;height:32px;border:3px solid rgba(255,255,255,0.1);border-top-color:#25b87a;border-radius:50%;animation:spin 0.8s linear infinite;margin:0 auto 16px;"></div><div style="font-size:12px;letter-spacing:0.1em;">FPSMaster Launcher</div></div><style>@keyframes spin{to{transform:rotate(360deg)}}</style></body></html>"#;
+            let _ = window.eval(&format!("document.open();document.write({:?});document.close();", suspended_html));
+            app_handle.state::<LauncherRuntimeState>().webview_suspended.store(true, Ordering::Relaxed);
+        }
+    });
+
     Ok(())
 }
 
 fn show_main_window_internal(app: &AppHandle) -> Result<(), String> {
+    let state = app.state::<LauncherRuntimeState>();
+
+    // Cancel any pending suspend
+    state.webview_suspend_stop.store(true, Ordering::Relaxed);
+    *state.webview_suspend_scheduled.lock().unwrap() = None;
+
     let window = main_window(app)?;
+
+    // If webview was suspended, navigate back to app root
+    if state.webview_suspended.swap(false, Ordering::Relaxed) {
+        let _ = window.eval("window.location.href = '/'");
+    }
+
     if window
         .is_minimized()
         .map_err(|e| format!("Failed to inspect minimized state: {e}"))?
@@ -895,6 +933,9 @@ struct LauncherRuntimeState {
     telemetry_session: Mutex<Option<LauncherTelemetrySession>>,
     heartbeat_running: AtomicBool,
     heartbeat_stop: Arc<AtomicBool>,
+    webview_suspend_scheduled: Mutex<Option<Instant>>,
+    webview_suspend_stop: Arc<AtomicBool>,
+    webview_suspended: AtomicBool,
 }
 
 impl Default for LauncherRuntimeState {
@@ -904,6 +945,9 @@ impl Default for LauncherRuntimeState {
             telemetry_session: Mutex::new(None),
             heartbeat_running: AtomicBool::new(false),
             heartbeat_stop: Arc::new(AtomicBool::new(false)),
+            webview_suspend_scheduled: Mutex::new(None),
+            webview_suspend_stop: Arc::new(AtomicBool::new(false)),
+            webview_suspended: AtomicBool::new(false),
         }
     }
 }
