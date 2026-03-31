@@ -886,8 +886,10 @@ select:focus-visible {
 }
 
 .empty-state {
-  display: grid;
-  place-items: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
   min-height: 220px;
   padding: 24px;
   text-align: center;
@@ -909,7 +911,7 @@ select:focus-visible {
 }
 
 .empty-state-text {
-  margin: 8px auto 0;
+  margin: 0;
   max-width: 44ch;
   font-size: 14px;
   line-height: 1.65;

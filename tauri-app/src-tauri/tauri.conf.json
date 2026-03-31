@@ -19,7 +19,7 @@
         "height": 760,
         "resizable": true,
         "decorations": false,
-        "visible": false
+        "visible": true
       }
     ],
     "security": {

@@ -818,7 +818,7 @@ const translations = {
     "instanceFiles.refresh": "刷新",
     "instanceFiles.repair": "修复实例",
     "instanceFiles.loading": "加载中...",
-    "instanceFiles.empty": "暂无内容。",
+    "instanceFiles.empty": "暂无内容",
     "instanceFiles.loadFailed": "加载失败：{error}",
     "instanceFiles.openFailed": "打开文件夹失败：{error}",
     "instanceFiles.noInstance": "未选择实例。",

@@ -92,22 +92,6 @@
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
     <script>
-      // Show window after a short delay to ensure loading screen is rendered
-      document.addEventListener('DOMContentLoaded', () => {
-        requestAnimationFrame(() => {
-          requestAnimationFrame(() => {
-            if (window.__TAURI__) {
-              window.__TAURI__.invoke('show_main_window').catch(() => {
-                // Fallback
-                if (window.__TAURI__ && window.__TAURI__.Window) {
-                  window.__TAURI__.Window.getByLabel('main')?.show();
-                }
-              });
-            }
-          });
-        });
-      });
-
       // Hide loading screen when React app is ready
       window.addEventListener('load', () => {
         requestAnimationFrame(() => {
