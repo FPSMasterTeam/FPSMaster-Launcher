@@ -75,10 +75,10 @@ export default function InstancesPage({
     const canAccess = canAccessInstance(instance, user);
 
     return (
-      <Card as="article" key={instance.id} variant="frost" className={`flex flex-col rounded-2xl p-4 ${!canAccess ? "opacity-60" : ""}`} interactive={false}>
+      <Card as="article" key={instance.id} variant="frost" className={`page-card page-card-compact flex flex-col rounded-[22px] ${!canAccess ? "opacity-60" : ""}`} interactive={false}>
         <div className="flex items-center gap-3">
           <div className="relative shrink-0">
-            <div className="h-14 w-14 overflow-hidden rounded-xl border border-white/5 bg-[var(--bg-elevated)]">
+            <div className="h-14 w-14 overflow-hidden rounded-[18px] border border-white/5 bg-[var(--bg-elevated)]">
               {icon ? <img src={icon} alt={instance.name} className="h-full w-full object-cover" /> : null}
               {!canAccess && (
                 <div className="absolute inset-0 flex items-center justify-center bg-black/50">
@@ -95,21 +95,21 @@ export default function InstancesPage({
               </h3>
               {!canAccess && <Lock size={12} className="text-[var(--text-muted)] shrink-0" />}
               {instance.preset && presetStatus && (presetStatus.state === "update-available" || presetStatus.state === "missing") && canAccess && (
-                <span className="shrink-0 rounded-md border border-amber-500/35 bg-amber-500/10 px-2 py-0.5 text-[10px] font-semibold text-amber-400">
+                <span className="badge badge-warning shrink-0 rounded-full px-2 py-1 text-[10px]">
                   待更新
                 </span>
               )}
             </div>
             <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-[var(--text-secondary)]">
-              <span className="rounded-md bg-[var(--bg-elevated)] px-2 py-0.5 text-[10px] font-semibold uppercase text-[var(--text-secondary)]">
+              <span className="badge badge-muted rounded-full px-2 py-1 text-[10px]">
                 {instance.baseVersion}
               </span>
-              <span className={`rounded-md bg-amber-500/8 px-2 py-0.5 text-[10px] font-semibold uppercase ${
+              <span className={`badge rounded-full px-2 py-1 text-[10px] ${
                 instance.loader === "forge"
-                  ? "text-amber-400"
+                  ? "badge-warning text-amber-400"
                   : instance.loader === "fabric"
-                    ? "text-cyan-400"
-                    : "text-[var(--text-secondary)]"
+                    ? "border-cyan-500/30 bg-cyan-500/10 text-cyan-300"
+                    : "badge-muted"
               }`}>
                 {loaderLabel(instance.loader, t)}
               </span>
@@ -152,34 +152,34 @@ export default function InstancesPage({
   }
 
   return (
-    <div className="h-full overflow-y-auto p-4 md:p-5 xl:p-6">
-      <header className="mb-6 grid gap-4 md:grid-cols-[minmax(0,1fr)_auto] md:items-center">
-        <div>
-          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[var(--text-muted)]">{t("nav.myGames")}</p>
-          <h1 className="mt-2 text-3xl font-semibold tracking-tight text-[var(--text-primary)]">
+    <div className="page-shell">
+      <header className="page-header mb-6">
+        <div className="page-header-main">
+          <p className="page-eyebrow">{t("nav.myGames")}</p>
+          <h1 className="page-title">
             {t("instances.title")}
           </h1>
-          <p className="mt-1 text-[var(--text-secondary)]">{t("instances.subtitle")}</p>
+          <p className="page-subtitle">{t("instances.subtitle")}</p>
         </div>
-        <div className="flex items-center gap-3">
-          <Card as="span" variant="frost" className="inline-flex rounded-full px-3 py-1.5 text-xs text-[var(--text-secondary)]" interactive={false}>
+        <div className="page-header-actions">
+          <Card as="span" variant="frost" className="page-card page-card-compact inline-flex rounded-full px-3 py-1.5 text-xs text-[var(--text-secondary)]" interactive={false}>
             {t("instances.count", { count: filteredInstances.length })}
           </Card>
-          <Button variant="primary" size="lg" className="gap-2" onClick={onGoInstall}>
+          <Button variant="primary" size="lg" className="gap-2 !rounded-2xl" onClick={onGoInstall}>
             <Plus size={16} />
             {t("instances.createInstall")}
           </Button>
         </div>
       </header>
 
-      <div className="relative mb-5">
-        <Search className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 -mt-0.5 text-[var(--text-muted)]" size={18} />
+      <div className="search-field mb-5">
+        <Search className="search-field-icon" size={18} />
         <input
           type="text"
           placeholder={t("instances.searchPlaceholder")}
           value={searchQuery}
           onChange={(event) => setSearchQuery(event.target.value)}
-          className="w-full rounded-xl border border-white/10 bg-[var(--surface-soft)] py-3 pl-11 pr-4 text-sm text-[var(--text-primary)] transition-colors focus:border-[var(--mc-grass)]/45 focus:bg-[var(--bg-elevated)] focus:outline-none"
+          className="ui-input"
         />
       </div>
 
@@ -189,7 +189,7 @@ export default function InstancesPage({
           <div className="mb-3 flex items-center gap-2 px-1">
             <Sparkles size={16} className="text-[var(--mc-grass)]" />
             <h2 className="text-sm font-semibold uppercase tracking-[0.16em] text-[var(--mc-grass)]">FPSMaster</h2>
-            <span className="rounded-full bg-[var(--mc-grass)]/10 px-2 py-0.5 text-xs font-semibold text-[var(--mc-grass)]">
+            <span className="badge badge-accent rounded-full px-2 py-1 text-xs normal-case tracking-normal">
               {fpsMasterInstances.length}
             </span>
           </div>
@@ -207,7 +207,7 @@ export default function InstancesPage({
             <h2 className="text-sm font-semibold uppercase tracking-[0.16em] text-[var(--text-secondary)]">
               {t("nav.myGames")}
             </h2>
-            <span className="rounded-full bg-[var(--bg-elevated)] px-2 py-0.5 text-xs font-semibold text-[var(--text-muted)]">
+            <span className="badge badge-muted rounded-full px-2 py-1 text-xs normal-case tracking-normal">
               {regularInstances.length}
             </span>
           </div>
@@ -219,10 +219,10 @@ export default function InstancesPage({
 
       {/* Empty state */}
       {filteredInstances.length === 0 && (
-        <div className="flex flex-col items-center justify-center py-20 text-center">
-          <Gamepad2 size={48} className="mb-4 text-[var(--text-muted)]" />
-          <p className="text-lg font-semibold text-[var(--text-primary)]">{t("instances.noInstances")}</p>
-          <p className="mt-1 text-sm text-[var(--text-secondary)]">{t("instances.noInstancesHint")}</p>
+        <div className="empty-state py-20">
+          <Gamepad2 size={48} className="empty-state-icon" />
+          <p className="empty-state-title">{t("instances.noInstances")}</p>
+          <p className="empty-state-text">{t("instances.noInstancesHint")}</p>
         </div>
       )}
     </div>

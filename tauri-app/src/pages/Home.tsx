@@ -1,6 +1,18 @@
-import { AlertTriangle, Calendar, Check, ChevronRight, Gamepad2, Lock, Play, Search, Sparkles, Users, X } from "lucide-react";
+import {
+  AlertTriangle,
+  Calendar,
+  Check,
+  ChevronRight,
+  Gamepad2,
+  Lock,
+  Play,
+  Search,
+  Sparkles,
+  Users,
+  X
+} from "lucide-react";
 import { createPortal } from "react-dom";
-import { type ReactNode, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import Button from "../components/Button";
 import Card from "../components/Card";
 import { useI18n } from "../i18n";
@@ -9,7 +21,6 @@ import type {
   Instance,
   LauncherAppUpdateInfo,
   LauncherUser,
-  LauncherVersion,
   NewsItem,
   ServerItem,
   TelemetryOnlineSummary
@@ -83,19 +94,14 @@ export default function HomePage({
       );
     });
   }, [availableInstances, pickerQuery]);
+
+  const presetInstances = filteredInstances.filter((instance) => instance.preset);
+  const customInstances = filteredInstances.filter((instance) => !instance.preset);
   const launcherUpdateDate = launcherUpdate?.publishedAt
     ? new Date(launcherUpdate.publishedAt).toLocaleDateString()
     : null;
   const selectedLoaderLabel = selectedInstance ? loaderLabel(selectedInstance.loader, t) : null;
   const launcherOnlineCount = launcherOnlineSummary?.launcher ?? null;
-  const onlineBadges = launcherOnlineSummary
-    ? [
-        t("home.online.total", { count: launcherOnlineSummary.total }),
-        t("home.online.launcher", { count: launcherOnlineSummary.launcher }),
-        t("home.online.edge", { count: launcherOnlineSummary.edge }),
-        t("home.online.nova", { count: launcherOnlineSummary.nova })
-      ]
-    : [];
   const activeNewsContent = (activeNews?.content ?? activeNews?.summary ?? "").trim();
 
   const closePicker = () => {
@@ -116,46 +122,48 @@ export default function HomePage({
 
   return (
     <div className="flex h-full flex-col overflow-hidden">
-      <div className="flex-1 overflow-y-auto p-4 md:p-5 xl:p-6">
-        <section className="mb-5">
-          <div className="flex flex-wrap items-center gap-2">
-            <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[var(--text-muted)]">FPSMaster Launcher</p>
-            {typeof launcherOnlineCount === "number" && (
-              <span className="rounded-md bg-[var(--mc-grass)]/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-[var(--mc-grass)]">
-                {t("home.onlineTag", { count: launcherOnlineCount })}
-              </span>
-            )}
-            {onlineBadges.slice(0, 3).map((badge) => (
-              <span
-                key={badge}
-                className="rounded-md bg-[var(--bg-elevated)] px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-[var(--text-secondary)]"
-              >
-                {badge}
-              </span>
-            ))}
+      <div className="page-shell flex-1">
+        <header className="page-header mb-6">
+          <div className="page-header-main">
+            <div className="flex flex-wrap items-center gap-2">
+              <p className="page-eyebrow">FPSMaster Launcher</p>
+              {typeof launcherOnlineCount === "number" && (
+                <span className="badge badge-accent">
+                  {t("home.onlineTag", { count: launcherOnlineCount })}
+                </span>
+              )}
+            </div>
+            <h1 className="page-title">{t("home.welcomeBack")}</h1>
+            <p className="page-subtitle">{t("home.dashboardReady")}</p>
           </div>
-          <h1 className="mt-1 text-2xl font-semibold tracking-tight text-[var(--text-primary)] md:text-3xl">{t("home.welcomeBack")}</h1>
-          <p className="mt-1 text-sm text-[var(--text-secondary)] md:text-[15px]">{t("home.dashboardReady")}</p>
-        </section>
+        </header>
 
         {launcherUpdate && launcherUpdateAvailable && (
-          <section className="mb-4">
-            <Card variant="frost" className="rounded-xl border border-amber-500/25 bg-amber-500/8 p-4 md:p-5" interactive={false}>
-              <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-                <div className="min-w-0">
-                  <div className="flex items-center gap-2 text-sm font-semibold text-[var(--text-primary)]">
-                    <AlertTriangle size={16} className="text-amber-300" />
+          <section className="mb-5">
+            <Card variant="frost" className="page-card rounded-[22px]" interactive={false}>
+              <div className="notice notice-warning">
+                <AlertTriangle size={18} className="mt-0.5 shrink-0 text-amber-300" />
+                <div className="min-w-0 flex-1">
+                  <p className="notice-title">
                     {launcherUpdate.mandatory
                       ? t("home.launcherUpdate.requiredTitle")
                       : t("home.launcherUpdate.availableTitle")}
-                  </div>
-                  <p className="mt-1 text-sm text-[var(--text-secondary)]">
+                  </p>
+                  <p className="notice-text">
                     {t("home.launcherUpdate.summary", { version: launcherUpdate.version })}
                   </p>
-                  <div className="mt-2 flex flex-wrap gap-2 text-[11px] text-[var(--text-muted)]">
-                    <span>{t("settings.launcherUpdateTarget")}: {launcherUpdate.target}</span>
-                    <span>{t("instances.packagePublishedAt")}: {launcherUpdateDate ?? "-"}</span>
-                    {launcherUpdateDownload && <span>{t("settings.launcherUpdateDownloaded", { file: launcherUpdateDownload.fileName })}</span>}
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    <span className="badge badge-warning normal-case tracking-normal">
+                      {t("settings.launcherUpdateTarget")}: {launcherUpdate.target}
+                    </span>
+                    <span className="badge badge-muted normal-case tracking-normal">
+                      {t("instances.packagePublishedAt")}: {launcherUpdateDate ?? "-"}
+                    </span>
+                    {launcherUpdateDownload && (
+                      <span className="badge badge-muted normal-case tracking-normal">
+                        {t("settings.launcherUpdateDownloaded", { file: launcherUpdateDownload.fileName })}
+                      </span>
+                    )}
                   </div>
                 </div>
                 <Button
@@ -163,6 +171,7 @@ export default function HomePage({
                   size="sm"
                   disabled={launcherUpdateDownloading}
                   onClick={onOpenSettings}
+                  className="shrink-0"
                 >
                   {launcherUpdate.mandatory
                     ? t("home.launcherUpdate.requiredAction")
@@ -173,20 +182,25 @@ export default function HomePage({
           </section>
         )}
 
-        <section className="grid grid-cols-1 gap-4 xl:grid-cols-[minmax(0,1.35fr)_minmax(280px,0.92fr)]">
-          <div>
-            <div className="mb-3 flex items-center justify-between gap-2">
-              <h2 className="flex items-center gap-2 text-base font-semibold text-[var(--text-primary)]">
-                <Calendar size={16} className="text-[var(--mc-grass)]" />
-                {t("home.latestNews")}
-              </h2>
-              <button
-                className="text-xs text-[var(--text-muted)] transition-colors hover:text-[var(--text-primary)]"
-                type="button"
-                onClick={() => setActiveNews(launcherNews[0] ?? null)}
-              >
-                {t("home.viewAll")}
-              </button>
+        <section className="page-grid page-grid-two">
+          <Card variant="frost" className="page-card page-card-roomy rounded-[22px]" interactive={false}>
+            <div className="section-header">
+              <div className="section-header-main">
+                <h2 className="section-title flex items-center gap-2">
+                  <Calendar size={18} className="text-[var(--mc-grass)]" />
+                  {t("home.latestNews")}
+                </h2>
+                <p className="section-subtitle">{t("home.news.source")}</p>
+              </div>
+              <div className="section-toolbar">
+                <button
+                  className="segment-chip px-4 !min-h-10"
+                  type="button"
+                  onClick={() => setActiveNews(launcherNews[0] ?? null)}
+                >
+                  {t("home.viewAll")}
+                </button>
+              </div>
             </div>
             {launcherNews.length > 0 ? (
               <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
@@ -197,157 +211,163 @@ export default function HomePage({
                     className="text-left"
                     onClick={() => setActiveNews(news)}
                   >
-                    <Card as="article" variant="soft" className="group h-full rounded-xl p-4" interactive={false}>
-                    <div className="mb-2 flex flex-wrap items-center gap-2">
-                      <div className="inline-flex items-center rounded-md bg-[var(--bg-elevated)] px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-[var(--text-muted)]">
-                        {news.pinned ? t("home.news.pinnedTag") : t("home.news.tag")}
-                      </div>
-                      {news.publishedAt && (
-                        <span className="text-[11px] text-[var(--text-muted)]">
-                          {new Date(news.publishedAt).toLocaleDateString()}
+                    <Card
+                      as="article"
+                      variant="soft"
+                      className="page-card page-card-compact h-full rounded-[20px]"
+                      interactive={false}
+                    >
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className={`badge ${news.pinned ? "badge-accent" : "badge-muted"}`}>
+                          {news.pinned ? t("home.news.pinnedTag") : t("home.news.tag")}
                         </span>
-                      )}
-                    </div>
-                    <h3 className="text-base font-semibold leading-tight text-[var(--text-primary)] transition-colors group-hover:text-[var(--mc-grass)]">
-                      {news.title}
-                    </h3>
-                    <p className="mt-1.5 text-sm leading-6 text-[var(--text-secondary)]">
-                      {news.summary}
-                    </p>
-                    <p className="mt-3 text-xs font-medium text-[var(--mc-grass)]">{t("home.news.open")}</p>
+                        {news.publishedAt && (
+                          <span className="text-xs text-[var(--text-muted)]">
+                            {new Date(news.publishedAt).toLocaleDateString()}
+                          </span>
+                        )}
+                      </div>
+                      <h3 className="mt-3 text-base font-semibold leading-tight text-[var(--text-primary)]">
+                        {news.title}
+                      </h3>
+                      <p className="mt-2 text-sm leading-6 text-[var(--text-secondary)]">
+                        {news.summary}
+                      </p>
+                      <p className="mt-4 text-xs font-semibold uppercase tracking-[0.12em] text-[var(--mc-grass)]">
+                        {t("home.news.open")}
+                      </p>
                     </Card>
                   </button>
                 ))}
               </div>
             ) : (
-              <Card variant="soft" className="rounded-xl border border-dashed p-5 text-sm text-[var(--text-secondary)]" interactive={false}>
-                {t("home.dashboardReady")}
-              </Card>
+              <div className="empty-state">
+                <Calendar size={42} className="empty-state-icon" />
+                <p className="empty-state-title">{t("home.latestNews")}</p>
+                <p className="empty-state-text">{t("home.dashboardReady")}</p>
+              </div>
             )}
-          </div>
+          </Card>
 
-          <div className="space-y-4">
-            <Card variant="frost" className="rounded-xl p-3.5 md:p-4" interactive={false}>
-              <h2 className="mb-2 flex items-center gap-2 text-sm font-semibold text-[var(--text-primary)]">
-                <Users size={16} className="text-[var(--mc-grass)]" />
-                {t("home.topServers")}
-              </h2>
-              {launcherServers.length > 0 ? (
-                <div className="space-y-1.5">
-                  {launcherServers.map((server) => (
-                    <button
-                      key={server.id ?? server.address}
-                      className="linear-float flex min-h-11 w-full cursor-pointer items-center rounded-lg border border-transparent px-2.5 py-2 text-left transition-all duration-[var(--duration-normal)] hover:border-white/5 hover:bg-[var(--surface-soft)]"
-                      type="button"
-                    >
-                      <div className="flex h-8 w-8 items-center justify-center overflow-hidden rounded-md bg-[var(--bg-elevated)] text-[10px] font-semibold uppercase text-[var(--text-muted)]">
-                        {server.iconPath ? <img src={server.iconPath} alt={server.name} className="h-full w-full object-cover" /> : server.name.slice(0, 1)}
-                      </div>
-                      <div className="ml-2.5 min-w-0 flex-1">
-                        <p className="truncate text-sm font-semibold text-[var(--text-primary)]">{server.name}</p>
-                        <p className="truncate text-[11px] text-[var(--text-muted)]">{server.address}</p>
-                      </div>
-                      <span className="rounded-md bg-[var(--bg-elevated)] px-2 py-0.5 text-[10px] font-semibold uppercase text-[var(--text-secondary)]">
-                        {server.mode}
-                      </span>
-                    </button>
-                  ))}
-                </div>
-              ) : (
-                <div className="rounded-lg border border-dashed border-white/5 px-3 py-4 text-center text-xs text-[var(--text-muted)]">
-                  {t("home.dashboardReady")}
-                </div>
-              )}
-              <button className="mt-1.5 flex w-full items-center justify-center gap-1 rounded-lg px-2 py-1.5 text-xs font-medium text-[var(--text-muted)] transition-colors hover:text-[var(--text-primary)]" type="button">
-                {t("home.moreServers")} <ChevronRight size={12} />
-              </button>
-            </Card>
-          </div>
+          <Card variant="frost" className="page-card page-card-roomy rounded-[22px]" interactive={false}>
+            <div className="section-header">
+              <div className="section-header-main">
+                <h2 className="section-title flex items-center gap-2">
+                  <Users size={18} className="text-[var(--mc-grass)]" />
+                  {t("home.topServers")}
+                </h2>
+                <p className="section-subtitle">{t("home.moreServers")}</p>
+              </div>
+            </div>
+            {launcherServers.length > 0 ? (
+              <div className="surface-list">
+                {launcherServers.map((server) => (
+                  <button
+                    key={server.id ?? server.address}
+                    className="surface-list-item w-full text-left"
+                    type="button"
+                  >
+                    <div className="icon-tile h-10 w-10 rounded-[14px]">
+                      {server.iconPath ? (
+                        <img src={server.iconPath} alt={server.name} className="h-full w-full object-cover" />
+                      ) : (
+                        server.name.slice(0, 1)
+                      )}
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate text-sm font-semibold text-[var(--text-primary)]">{server.name}</p>
+                      <p className="truncate text-xs text-[var(--text-muted)]">{server.address}</p>
+                    </div>
+                    <span className="badge badge-muted">{server.mode}</span>
+                  </button>
+                ))}
+              </div>
+            ) : (
+              <div className="empty-state min-h-[180px]">
+                <Users size={40} className="empty-state-icon" />
+                <p className="empty-state-title">{t("home.topServers")}</p>
+                <p className="empty-state-text">{t("home.dashboardReady")}</p>
+              </div>
+            )}
+          </Card>
         </section>
       </div>
 
-      <footer className="border-t border-white/5 bg-[var(--bg-secondary)]/86 px-4 py-3 backdrop-blur-xl md:px-5 xl:px-6">
-        <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_minmax(240px,300px)] md:items-center md:gap-4">
+      <footer className="sticky-footer-bar px-4 py-3 md:px-5 xl:px-6">
+        <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_minmax(260px,320px)] md:items-stretch md:gap-4">
           <button
-            className="group flex min-h-12 w-full cursor-pointer items-center gap-3 rounded-xl border border-white/5 bg-[var(--surface-soft)] px-4 py-2 text-left transition-all hover:border-white/20 hover:bg-[var(--bg-elevated)] hover:shadow-lg"
+            className="surface-list-item group min-h-[56px] w-full rounded-[18px] text-left"
             onClick={() => setPickerOpen(true)}
             type="button"
           >
-            <div className="relative h-9 w-9 shrink-0 overflow-hidden rounded-xl border-2 border-[#25b87a]/30 bg-[var(--bg-elevated)] shadow-sm">
-              {selectedInstanceIcon ? <img src={selectedInstanceIcon} alt={selectedInstance?.name ?? "instance"} className="h-full w-full object-cover" /> : null}
+            <div className="icon-tile relative h-8 w-8 rounded-[12px] border-[rgba(var(--accent-rgb),0.24)]">
+              {selectedInstanceIcon ? (
+                <img src={selectedInstanceIcon} alt={selectedInstance?.name ?? "instance"} className="h-full w-full object-cover" />
+              ) : null}
               {selectedInstance && !canAccessInstance(selectedInstance, user) && (
                 <div className="absolute inset-0 flex items-center justify-center bg-black/50">
-                  <Lock size={12} className="text-white/70" />
+                  <Lock size={14} className="text-white/70" />
                 </div>
               )}
             </div>
             <div className="min-w-0 flex-1">
-              <div className="flex items-center justify-between">
-                <p className={`truncate text-sm font-semibold ${selectedInstance && !canAccessInstance(selectedInstance, user) ? "text-[var(--text-muted)]" : "text-[var(--text-primary)]"}`}>
-                  {selectedInstance ? selectedInstance.name : t("home.noInstance")}
+              <p className={`truncate text-sm font-semibold ${selectedInstance && !canAccessInstance(selectedInstance, user) ? "text-[var(--text-muted)]" : "text-[var(--text-primary)]"}`}>
+                {selectedInstance ? selectedInstance.name : t("home.noInstance")}
+              </p>
+              {selectedInstance && (
+                <p className="truncate text-[11px] text-[var(--text-muted)]">
+                  {[selectedInstance.baseVersion, selectedLoaderLabel, selectedInstance.launcherVersionType]
+                    .filter(Boolean)
+                    .join(" · ")}
                 </p>
-                <div className="flex items-center gap-1.5 text-[11px] text-[var(--text-muted)]">
-                  {selectedInstance && (
-                    <>
-                      <span className="rounded-md bg-[var(--mc-grass)]/10 px-1.5 py-0.5 font-semibold text-[var(--mc-grass)]">{selectedInstance.baseVersion}</span>
-                      <span className={`rounded-md px-1.5 py-0.5 font-semibold ${
-                        selectedInstance.loader === "forge"
-                          ? "bg-amber-500/10 text-amber-400"
-                          : selectedInstance.loader === "fabric"
-                            ? "bg-cyan-500/10 text-cyan-400"
-                            : "bg-white/10 text-[var(--text-secondary)]"
-                      }`}>{selectedLoaderLabel}</span>
-                      {selectedInstance.launcherVersionType && (
-                        <span className="rounded-md bg-white/10 px-1.5 py-0.5 font-semibold text-[var(--text-secondary)]">{selectedInstance.launcherVersionType}</span>
-                      )}
-                    </>
-                  )}
-                  <ChevronRight size={14} className="text-[var(--text-muted)] group-hover:text-[var(--text-primary)] transition-colors" />
-                </div>
-              </div>
+              )}
             </div>
+            <ChevronRight size={16} className="shrink-0 text-[var(--text-muted)] transition-colors group-hover:text-[var(--text-primary)]" />
           </button>
 
-          <div className="relative flex items-center">
-            <Button
-              variant="primary"
-              size="lg"
-              className="w-full justify-center"
-              disabled={busy || !selectedInstance || !canAccessInstance(selectedInstance, user)}
-              launchProgress={launching}
-              launchProgressPercent={launchProgressPercent}
-              onClick={onLaunch}
-            >
-              <span className="flex w-full flex-col items-center justify-center text-center leading-tight">
-                <span className="flex items-center justify-center gap-2.5">
-                  <Play fill="currentColor" size={16} />
-                  {launching
-                    ? `${t("home.launching")}${typeof launchProgressPercent === "number" ? ` ${launchProgressPercent}%` : ""}`
-                    : t("home.launch")}
-                </span>
-                {launching && (
-                  <span className="mt-1 text-[11px] font-medium text-white/85">
-                    {launchProgressText || t("launch.progress.preparing")}
-                  </span>
-                )}
+          <Button
+            variant="primary"
+            size="lg"
+            className="min-h-[56px] w-full justify-center !rounded-[18px]"
+            disabled={busy || !selectedInstance || !canAccessInstance(selectedInstance, user)}
+            launchProgress={launching}
+            launchProgressPercent={launchProgressPercent}
+            onClick={onLaunch}
+          >
+            <span className="flex w-full flex-col items-center justify-center text-center leading-tight">
+              <span className="flex items-center justify-center gap-2.5">
+                <Play fill="currentColor" size={16} />
+                {launching
+                  ? `${t("home.launching")}${typeof launchProgressPercent === "number" ? ` ${launchProgressPercent}%` : ""}`
+                  : t("home.launch")}
               </span>
-            </Button>
-          </div>
+              {launching && (
+                <span className="mt-1 text-[11px] font-medium text-white/85">
+                  {launchProgressText || t("launch.progress.preparing")}
+                </span>
+              )}
+            </span>
+          </Button>
         </div>
       </footer>
 
       {(pickerOpen || pickerClosing) &&
         typeof document !== "undefined" &&
         createPortal(
-          <div className={`fixed inset-0 z-[90] flex items-center justify-center bg-[var(--bg-primary)]/66 p-4 backdrop-blur-xl ${pickerClosing ? "modal-backdrop-animate-out" : "modal-backdrop-animate"}`}>
-            <Card variant="strong" className={`${pickerClosing ? "modal-animate-out" : "modal-animate"} flex h-[78vh] w-full max-w-4xl min-h-[420px] max-h-[720px] flex-col rounded-2xl p-4 md:p-5`} interactive={false}>
-              <div className="mb-3 flex items-start justify-between gap-3">
+          <div className={`modal-shell ${pickerClosing ? "modal-backdrop-animate-out" : "modal-backdrop-animate"}`}>
+            <Card
+              variant="strong"
+              className={`${pickerClosing ? "modal-animate-out" : "modal-animate"} modal-card page-card w-full max-w-4xl`}
+              interactive={false}
+            >
+              <div className="modal-header">
                 <div>
-                  <h3 className="text-xl font-semibold text-[var(--text-primary)]">{t("home.instancePickerTitle")}</h3>
-                  <p className="mt-0.5 text-sm text-[var(--text-secondary)]">{t("home.instancePickerSubtitle")}</p>
+                  <p className="page-eyebrow">{t("home.selectedInstance")}</p>
+                  <h3 className="page-title !mt-1 !text-[30px]">{t("home.instancePickerTitle")}</h3>
+                  <p className="page-subtitle !mt-2">{t("home.instancePickerSubtitle")}</p>
                 </div>
                 <button
-                  className="min-h-10 rounded-lg bg-[var(--surface-soft)] p-2 text-[var(--text-secondary)] transition-colors hover:bg-[var(--bg-elevated)] hover:text-[var(--text-primary)]"
+                  className="modal-close"
                   onClick={closePicker}
                   type="button"
                   aria-label={t("home.instancePickerClose")}
@@ -356,152 +376,81 @@ export default function HomePage({
                 </button>
               </div>
 
-              <label className="relative mb-3 block">
-                <Search className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-[var(--text-muted)]" size={15} />
+              <label className="search-field mb-4 block">
+                <Search className="search-field-icon" size={16} />
                 <input
                   value={pickerQuery}
                   onChange={(event) => setPickerQuery(event.target.value)}
                   type="text"
-                  className="min-h-10 w-full rounded-lg border border-white/5 bg-[var(--bg-secondary)] py-2 pl-9 pr-3 text-sm text-[var(--text-primary)] focus:border-[var(--mc-grass)]/45 focus:outline-none"
+                  className="ui-input"
                   placeholder={t("instances.searchPlaceholder")}
                 />
               </label>
 
-              <div className="min-h-0 flex-1 overflow-y-auto pr-1">
-                <div className="space-y-4">
-                  {/* FPSMaster Instances Section */}
-                  {filteredInstances.filter(i => i.preset).length > 0 && (
+              <div className="modal-body pr-1">
+                <div className="page-stack">
+                  {presetInstances.length > 0 && (
                     <div>
-                      <div className="mb-2 flex items-center gap-2 px-1">
-                        <Sparkles size={14} className="text-[var(--mc-grass)]" />
-                        <h4 className="text-xs font-semibold uppercase tracking-[0.16em] text-[var(--mc-grass)]">FPSMaster</h4>
+                      <div className="mb-3 flex items-center gap-2 px-1">
+                        <Sparkles size={16} className="text-[var(--mc-grass)]" />
+                        <h4 className="text-sm font-semibold uppercase tracking-[0.16em] text-[var(--mc-grass)]">FPSMaster</h4>
+                        <span className="badge badge-accent normal-case tracking-normal">{presetInstances.length}</span>
                       </div>
-                      <div className="space-y-2">
-                        {filteredInstances.filter(i => i.preset).map((instance) => {
-                          const active = selectedInstance?.id === instance.id;
-                          const icon = resolveInstanceIconPath(instance);
-                          const canAccess = canAccessInstance(instance, user);
-                          return (
-                            <button
-                              key={instance.id}
-                              onClick={() => {
-                                if (canAccess) {
-                                  onSelect(instance.id);
-                                  setPickerOpen(false);
-                                }
-                              }}
-                              type="button"
-                              disabled={!canAccess}
-                              className={`flex min-h-14 w-full items-center gap-3 rounded-xl border px-4 py-2.5 text-left transition-all ${
-                                !canAccess
-                                  ? "cursor-not-allowed border-white/5 bg-[var(--surface-soft)] opacity-50"
-                                  : active
-                                    ? "cursor-pointer border-[#25b87a]/50 bg-[#25b87a]/12 shadow-[0_0_20px_rgba(37,184,122,0.15)]"
-                                    : "cursor-pointer border-white/5 bg-[var(--surface-soft)] hover:border-[#25b87a]/30 hover:bg-[var(--bg-elevated)]"
-                              }`}
-                            >
-                              <div className="relative h-11 w-11 overflow-hidden rounded-xl border-2 border-[#25b87a]/30 bg-[var(--bg-elevated)] shadow-sm">
-                                {icon ? <img src={icon} alt={instance.name} className="h-full w-full object-cover" /> : null}
-                                {!canAccess && (
-                                  <div className="absolute inset-0 flex items-center justify-center bg-black/50">
-                                    <Lock size={14} className="text-white/70" />
-                                  </div>
-                                )}
-                              </div>
-                              <div className="min-w-0 flex-1">
-                                <p className={`truncate text-base font-bold ${!canAccess ? "text-[var(--text-muted)]" : "text-[var(--text-primary)]"}`}>
-                                  {instance.name}
-                                </p>
-                                <div className="mt-1 flex flex-wrap items-center gap-2 text-xs">
-                                  <span className="rounded-md bg-[var(--mc-grass)]/10 px-2 py-0.5 font-semibold text-[var(--mc-grass)]">{instance.baseVersion}</span>
-                                  <span className={`rounded-md px-2 py-0.5 font-semibold ${
-                                    instance.loader === "forge"
-                                      ? "bg-amber-500/10 text-amber-400"
-                                      : instance.loader === "fabric"
-                                        ? "bg-cyan-500/10 text-cyan-400"
-                                        : "bg-white/10 text-[var(--text-secondary)]"
-                                  }`}>{loaderLabel(instance.loader, t)}</span>
-                                  {instance.launcherVersionType && (
-                                    <span className="rounded-md bg-white/10 px-2 py-0.5 font-semibold text-[var(--text-secondary)]">{instance.launcherVersionType}</span>
-                                  )}
-                                </div>
-                              </div>
-                              {active && canAccess && <Check size={16} className="text-[var(--mc-grass)]" />}
-                              {!canAccess && <Lock size={14} className="text-[var(--text-muted)]" />}
-                            </button>
-                          );
-                        })}
+                      <div className="surface-list">
+                        {presetInstances.map((instance) => (
+                          <InstanceSelectRow
+                            key={instance.id}
+                            instance={instance}
+                            active={selectedInstance?.id === instance.id}
+                            selectable={canAccessInstance(instance, user)}
+                            user={user}
+                            t={t}
+                            onSelect={() => {
+                              onSelect(instance.id);
+                              setPickerOpen(false);
+                            }}
+                          />
+                        ))}
                       </div>
                     </div>
                   )}
 
-                  {/* Other Instances Section */}
-                  {filteredInstances.filter(i => !i.preset).length > 0 && (
+                  {customInstances.length > 0 && (
                     <div>
-                      <div className="mb-2 flex items-center gap-2 px-1">
-                        <Gamepad2 size={14} className="text-[var(--text-muted)]" />
-                        <h4 className="text-xs font-semibold uppercase tracking-[0.16em] text-[var(--text-muted)]">其他实例</h4>
+                      <div className="mb-3 flex items-center gap-2 px-1">
+                        <Gamepad2 size={16} className="text-[var(--text-secondary)]" />
+                        <h4 className="text-sm font-semibold uppercase tracking-[0.16em] text-[var(--text-secondary)]">
+                          {t("nav.myGames")}
+                        </h4>
+                        <span className="badge badge-muted normal-case tracking-normal">{customInstances.length}</span>
                       </div>
-                      <div className="grid grid-cols-2 gap-2">
-                        {filteredInstances.filter(i => !i.preset).map((instance) => {
-                          const active = selectedInstance?.id === instance.id;
-                          const icon = resolveInstanceIconPath(instance);
-                          const canAccess = canAccessInstance(instance, user);
-                          return (
-                            <button
-                              key={instance.id}
-                              onClick={() => {
-                                if (canAccess) {
-                                  onSelect(instance.id);
-                                  setPickerOpen(false);
-                                }
-                              }}
-                              type="button"
-                              disabled={!canAccess}
-                              className={`flex min-h-14 w-full items-center gap-2 rounded-xl border px-3 py-2.5 text-left transition-all ${
-                                !canAccess
-                                  ? "cursor-not-allowed border-white/5 bg-[var(--surface-soft)] opacity-50"
-                                  : active
-                                    ? "cursor-pointer border-[rgba(var(--accent-rgb),0.36)] bg-[rgba(var(--accent-rgb),0.14)]"
-                                    : "cursor-pointer border-white/5 bg-[var(--surface-soft)] hover:border-white/20 hover:bg-[var(--bg-elevated)]"
-                              }`}
-                            >
-                              <div className="relative h-9 w-9 shrink-0 overflow-hidden rounded-lg border border-white/5 bg-[var(--bg-elevated)]">
-                                {icon ? <img src={icon} alt={instance.name} className="h-full w-full object-cover" /> : null}
-                                {!canAccess && (
-                                  <div className="absolute inset-0 flex items-center justify-center bg-black/50">
-                                    <Lock size={12} className="text-white/70" />
-                                  </div>
-                                )}
-                              </div>
-                              <div className="min-w-0 flex-1">
-                                <p className={`truncate text-sm font-semibold ${!canAccess ? "text-[var(--text-muted)]" : "text-[var(--text-primary)]"}`}>
-                                  {instance.name}
-                                </p>
-                                <div className="mt-0.5 flex items-center gap-1.5 truncate text-[11px] text-[var(--text-muted)]">
-                                  <span>{instance.baseVersion}</span>
-                                  <span>·</span>
-                                  <span className={instance.loader === "forge" ? "text-amber-400" : instance.loader === "fabric" ? "text-cyan-400" : ""}>
-                                    {loaderLabel(instance.loader, t)}
-                                  </span>
-                                  {instance.launcherVersionType && (
-                                    <>
-                                      <span>·</span>
-                                      <span>{instance.launcherVersionType}</span>
-                                    </>
-                                  )}
-                                </div>
-                              </div>
-                              {active && canAccess && <Check size={14} className="text-[var(--mc-grass)] shrink-0" />}
-                            </button>
-                          );
-                        })}
+                      <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
+                        {customInstances.map((instance) => (
+                          <InstanceSelectRow
+                            key={instance.id}
+                            instance={instance}
+                            active={selectedInstance?.id === instance.id}
+                            selectable={canAccessInstance(instance, user)}
+                            user={user}
+                            compact
+                            t={t}
+                            onSelect={() => {
+                              onSelect(instance.id);
+                              setPickerOpen(false);
+                            }}
+                          />
+                        ))}
                       </div>
                     </div>
                   )}
                 </div>
+
                 {filteredInstances.length === 0 && (
-                  <p className="pt-3 text-sm text-[var(--text-muted)]">{t("home.noInstance")}</p>
+                  <div className="empty-state mt-2 min-h-[180px]">
+                    <Search size={38} className="empty-state-icon" />
+                    <p className="empty-state-title">{t("home.noInstance")}</p>
+                    <p className="empty-state-text">{t("instances.searchPlaceholder")}</p>
+                  </div>
                 )}
               </div>
             </Card>
@@ -511,21 +460,27 @@ export default function HomePage({
 
       {(activeNews || newsClosing) &&
         typeof document !== "undefined" &&
+        activeNews &&
         createPortal(
-          <div className={`fixed inset-0 z-[92] flex items-center justify-center bg-[var(--bg-primary)]/72 p-4 backdrop-blur-xl ${newsClosing ? "modal-backdrop-animate-out" : "modal-backdrop-animate"}`}>
-            <Card variant="strong" className={`${newsClosing ? "modal-animate-out" : "modal-animate"} flex h-[78vh] w-full max-w-3xl min-h-[380px] max-h-[760px] flex-col rounded-2xl p-4 md:p-5`} interactive={false}>
-              <div className="mb-3 flex items-start justify-between gap-3">
+          <div className={`modal-shell ${newsClosing ? "modal-backdrop-animate-out" : "modal-backdrop-animate"}`} onClick={closeNews}>
+            <Card
+              variant="strong"
+              className={`${newsClosing ? "modal-animate-out" : "modal-animate"} modal-card page-card w-full max-w-3xl`}
+              interactive={false}
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="modal-header">
                 <div className="min-w-0">
-                  <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[var(--text-muted)]">{t("home.news.dialogTitle")}</p>
-                  <h3 className="mt-1 text-xl font-semibold text-[var(--text-primary)]">{activeNews.title}</h3>
-                  <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-[var(--text-muted)]">
+                  <p className="page-eyebrow">{t("home.news.dialogTitle")}</p>
+                  <h3 className="page-title !mt-1 !text-[28px]">{activeNews.title}</h3>
+                  <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-[var(--text-muted)]">
                     {activeNews.publishedAt && <span>{new Date(activeNews.publishedAt).toLocaleString()}</span>}
                     {activeNews.author && <span>{t("home.news.author")} · {activeNews.author}</span>}
-                    {activeNews.category && <span>{activeNews.category}</span>}
+                    {activeNews.category && <span className="badge badge-muted normal-case tracking-normal">{activeNews.category}</span>}
                   </div>
                 </div>
                 <button
-                  className="min-h-10 rounded-lg bg-[var(--surface-soft)] p-2 text-[var(--text-secondary)] transition-colors hover:bg-[var(--bg-elevated)] hover:text-[var(--text-primary)]"
+                  className="modal-close"
                   onClick={closeNews}
                   type="button"
                   aria-label={t("home.news.dialogClose")}
@@ -534,10 +489,12 @@ export default function HomePage({
                 </button>
               </div>
 
-              <div className="min-h-0 flex-1 overflow-y-auto rounded-xl bg-[var(--surface-soft)] p-4">
-                <p className="text-sm leading-7 whitespace-pre-wrap text-[var(--text-secondary)]">
-                  {activeNewsContent || t("home.news.dialogEmpty")}
-                </p>
+              <div className="modal-body">
+                <div className="surface-panel surface-panel-soft rounded-[20px] p-4">
+                  <p className="text-sm leading-7 whitespace-pre-wrap text-[var(--text-secondary)]">
+                    {activeNewsContent || t("home.news.dialogEmpty")}
+                  </p>
+                </div>
               </div>
             </Card>
           </div>,
@@ -547,11 +504,81 @@ export default function HomePage({
   );
 }
 
-function MetaBadge({ children }: { children: ReactNode }) {
+function InstanceSelectRow({
+  instance,
+  active,
+  selectable,
+  user,
+  compact = false,
+  t,
+  onSelect
+}: {
+  instance: Instance;
+  active: boolean;
+  selectable: boolean;
+  user: LauncherUser | null;
+  compact?: boolean;
+  t: ReturnType<typeof useI18n>["t"];
+  onSelect: () => void;
+}) {
+  const icon = resolveInstanceIconPath(instance);
+
   return (
-    <span className="rounded-md bg-[var(--bg-elevated)] px-2 py-0.5 text-[10px] font-semibold uppercase text-[var(--text-secondary)]">
-      {children}
-    </span>
+    <button
+      onClick={() => {
+        if (selectable) {
+          onSelect();
+        }
+      }}
+      type="button"
+      disabled={!selectable}
+      className={`surface-list-item w-full text-left ${active ? "is-active" : ""} ${!selectable ? "cursor-not-allowed opacity-50" : ""}`}
+    >
+      <div className={`icon-tile relative ${compact ? "h-10 w-10 rounded-[14px]" : ""}`}>
+        {icon ? <img src={icon} alt={instance.name} className="h-full w-full object-cover" /> : null}
+        {!selectable && (
+          <div className="absolute inset-0 flex items-center justify-center bg-black/50">
+            <Lock size={compact ? 12 : 14} className="text-white/70" />
+          </div>
+        )}
+      </div>
+      <div className="min-w-0 flex-1">
+        <p className={`truncate ${compact ? "text-sm" : "text-base"} font-semibold ${!selectable ? "text-[var(--text-muted)]" : "text-[var(--text-primary)]"}`}>
+          {instance.name}
+        </p>
+        {compact ? (
+          <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-[var(--text-muted)]">
+            <span>{instance.baseVersion}</span>
+            <span>·</span>
+            <span>{loaderLabel(instance.loader, t)}</span>
+            {instance.launcherVersionType && (
+              <>
+                <span>·</span>
+                <span>{instance.launcherVersionType}</span>
+              </>
+            )}
+          </div>
+        ) : (
+          <div className="mt-2 flex flex-wrap gap-2">
+            <span className="badge badge-accent normal-case tracking-normal">{instance.baseVersion}</span>
+            <span className={`badge normal-case tracking-normal ${
+              instance.loader === "forge"
+                ? "badge-warning"
+                : instance.loader === "fabric"
+                  ? "border-cyan-500/30 bg-cyan-500/10 text-cyan-300"
+                  : "badge-muted"
+            }`}>
+              {loaderLabel(instance.loader, t)}
+            </span>
+            {instance.launcherVersionType && (
+              <span className="badge badge-muted normal-case tracking-normal">{instance.launcherVersionType}</span>
+            )}
+          </div>
+        )}
+      </div>
+      {active && selectable && <Check size={compact ? 14 : 16} className="shrink-0 text-[var(--mc-grass)]" />}
+      {!selectable && <Lock size={compact ? 12 : 14} className="shrink-0 text-[var(--text-muted)]" />}
+    </button>
   );
 }
 

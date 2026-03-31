@@ -1,6 +1,7 @@
 import {
   Cpu,
   Download,
+  FolderOpen,
   Globe,
   ImagePlus,
   LogOut,
@@ -11,6 +12,7 @@ import {
   SunMedium,
   Trash2
 } from "lucide-react";
+import { open } from "@tauri-apps/plugin-dialog";
 import { type ChangeEvent, type KeyboardEvent, type ReactNode, useEffect, useRef, useState } from "react";
 import Button from "../components/Button";
 import Card from "../components/Card";
@@ -62,8 +64,63 @@ export default function SettingsPage({
 }: SettingsPageProps) {
   const { locale, setLocale, t } = useI18n();
   const [backgroundError, setBackgroundError] = useState("");
+  const [gameDirError, setGameDirError] = useState("");
   const [customAccentDraft, setCustomAccentDraft] = useState(settings.customAccentHex);
   const backgroundInputRef = useRef<HTMLInputElement>(null);
+
+  function isAbsolutePath(path: string): boolean {
+    const trimmed = path.trim();
+    if (trimmed === "") return false;
+    // Windows absolute path (e.g., C:\...)
+    if (/^[A-Za-z]:\\/.test(trimmed)) return true;
+    // Windows UNC path or root-relative
+    if (/^\\\\/.test(trimmed)) return true;
+    // Unix absolute path
+    if (trimmed.startsWith("/")) return true;
+    return false;
+  }
+
+  function validateGameDir(path: string): { valid: boolean; error: string } {
+    const trimmed = path.trim();
+    if (trimmed === "") {
+      return { valid: false, error: t("settings.gameDirEmpty") || "Game directory cannot be empty" };
+    }
+    if (!isAbsolutePath(trimmed)) {
+      return { valid: false, error: t("settings.gameDirMustBeAbsolute") || "Game directory must be an absolute path" };
+    }
+    return { valid: true, error: "" };
+  }
+
+  async function handleSelectGameDir() {
+    try {
+      const selected = await open({
+        directory: true,
+        multiple: false,
+        title: t("settings.selectGameDir") || "Select Game Directory"
+      });
+      if (selected && typeof selected === "string") {
+        const validation = validateGameDir(selected);
+        if (validation.valid) {
+          onChange({ ...settings, gameDir: selected });
+          setGameDirError("");
+        } else {
+          setGameDirError(validation.error);
+        }
+      }
+    } catch {
+      // User cancelled the dialog
+    }
+  }
+
+  function handleGameDirChange(value: string) {
+    onChange({ ...settings, gameDir: value });
+    const validation = validateGameDir(value);
+    if (!validation.valid && value.trim() !== "") {
+      setGameDirError(validation.error);
+    } else {
+      setGameDirError("");
+    }
+  }
 
   const themeModes: ThemeMode[] = ["dark", "light"];
   const downloadSources: DownloadSource[] = ["official", "bmclapi"];
@@ -149,19 +206,21 @@ export default function SettingsPage({
   }
 
   return (
-    <div className="h-full overflow-y-auto p-4 md:p-5 xl:p-6">
-      <header className="mb-6">
-        <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[var(--text-muted)]">{t("nav.settings")}</p>
-        <h1 className="mt-2 text-3xl font-semibold tracking-tight text-[var(--text-primary)]">{t("settings.title")}</h1>
-        <p className="mt-1 text-[var(--text-secondary)]">{t("settings.subtitle")}</p>
+    <div className="page-shell">
+      <header className="page-header mb-6">
+        <div className="page-header-main">
+          <p className="page-eyebrow">{t("nav.settings")}</p>
+          <h1 className="page-title">{t("settings.title")}</h1>
+          <p className="page-subtitle">{t("settings.subtitle")}</p>
+        </div>
       </header>
 
       {launcherUser ? (
-        <Card as="section" variant="strong" className="mb-6 rounded-xl p-4 md:p-5" interactive={false}>
-          <SectionTitle icon={<Globe size={18} className="text-[var(--mc-grass)]" />} title={t("settings.launcherAuth.title")} subtitle={t("settings.launcherAuth.subtitle")} />
+        <Card as="section" variant="strong" className="page-card mb-6 rounded-[22px]" interactive={false}>
+          <SectionTitle icon={<Palette size={18} className="text-[var(--mc-grass)]" />} title={t("settings.launcherAuth.title")} subtitle={t("settings.launcherAuth.subtitle")} />
           <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
             <div>
-              <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[var(--text-muted)]">{t("settings.launcherAuth.loggedInAs")}</p>
+              <p className="field-label !mb-1">{t("settings.launcherAuth.loggedInAs")}</p>
               <p className="mt-1 text-base font-semibold text-[var(--text-primary)]">{launcherUser.username || launcherUser.email || launcherUser.id || "-"}</p>
             </div>
             <Button variant="ghost" size="sm" className="gap-2 self-start" onClick={onLogoutLauncherAccount}>
@@ -172,65 +231,47 @@ export default function SettingsPage({
         </Card>
       ) : null}
 
-      <div className="grid grid-cols-1 gap-6 xl:grid-cols-[minmax(0,1.05fr)_minmax(0,0.95fr)]">
+      <div className="page-grid page-grid-two">
         <div className="space-y-6">
-          <Card as="section" variant="strong" className="rounded-2xl p-5 md:p-6" interactive={false}>
-            <SectionTitle icon={<Cpu size={18} className="text-[var(--mc-grass)]" />} title={t("settings.javaMemory")} subtitle={t("settings.runtimeConfig")} />
-            <div className="grid grid-cols-1 gap-5 md:grid-cols-2">
+          <Card as="section" variant="strong" className="page-card page-card-roomy rounded-[22px]" interactive={false}>
+            <SectionTitle icon={<Cpu size={18} className="text-[var(--mc-grass)]" />} title={t("settings.runtimeConfig")} subtitle={t("settings.runtimeConfigDesc")} />
+            <div className="field-grid field-grid-two">
               <div className="md:col-span-2">
                 <FieldLabel>{t("settings.playerName")}</FieldLabel>
                 <input
                   type="text"
                   value={settings.playerName}
                   onChange={(event) => onChange({ ...settings, playerName: event.target.value })}
-                  className="w-full rounded-2xl border border-white/10 bg-[var(--bg-secondary)] px-4 py-3 text-sm text-[var(--text-primary)] focus:border-[var(--mc-grass)]/45 focus:outline-none"
+                  className="ui-input"
                 />
               </div>
 
               <div className="md:col-span-2">
                 <FieldLabel>{t("settings.gameDirectory")}</FieldLabel>
-                <input
-                  type="text"
-                  value={settings.gameDir}
-                  onChange={(event) => onChange({ ...settings, gameDir: event.target.value })}
-                  className="w-full rounded-2xl border border-white/10 bg-[var(--bg-secondary)] px-4 py-3 text-sm text-[var(--text-primary)] focus:border-[var(--mc-grass)]/45 focus:outline-none"
-                />
-              </div>
-
-              <div>
-                <FieldLabel>{t("settings.downloadSource")}</FieldLabel>
-                <Select value={settings.downloadSource} onValueChange={(value) => onChange({ ...settings, downloadSource: value as DownloadSource })}>
-                  <Select.Trigger>
-                    <Select.Value />
-                  </Select.Trigger>
-                  <Select.Content>
-                    {downloadSources.map((source) => (
-                      <Select.Item key={source} value={source}>
-                        {t(`settings.downloadSource.${source}` as const)}
-                      </Select.Item>
-                    ))}
-                  </Select.Content>
-                </Select>
-              </div>
-
-              <div>
-                <FieldLabel>{t("settings.language")}</FieldLabel>
-                <Select value={locale} onValueChange={(value) => setLocale(value as "en-US" | "zh-CN")}>
-                  <Select.Trigger>
-                    <Select.Value />
-                  </Select.Trigger>
-                  <Select.Content>
-                    {LOCALE_OPTIONS.map((item) => (
-                      <Select.Item key={item} value={item}>
-                        {t(`language.${item}` as const)}
-                      </Select.Item>
-                    ))}
-                  </Select.Content>
-                </Select>
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    value={settings.gameDir}
+                    onChange={(event) => handleGameDirChange(event.target.value)}
+                    className={`ui-input ${gameDirError ? "border-[var(--accent-danger)]" : ""}`}
+                  />
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    className="gap-2 shrink-0"
+                    onClick={handleSelectGameDir}
+                  >
+                    <FolderOpen size={14} />
+                    {t("settings.browse") || "Browse"}
+                  </Button>
+                </div>
+                {gameDirError && (
+                  <p className="mt-1 text-xs text-[var(--accent-danger)]">{gameDirError}</p>
+                )}
               </div>
             </div>
 
-            <div className="mt-6 rounded-2xl border border-white/5 bg-[var(--surface-soft)]/85 p-4">
+            <div className="surface-panel surface-panel-soft mt-6 rounded-[20px] p-4">
               <div className="mb-2 flex items-center justify-between">
                 <FieldLabel>{t("settings.heapAllocation")}</FieldLabel>
                 <span className="font-mono text-sm font-semibold text-[var(--mc-grass)]">{settings.maxMemoryMb} MB</span>
@@ -251,8 +292,42 @@ export default function SettingsPage({
             </div>
           </Card>
 
-          <Card as="section" variant="frost" className="rounded-2xl p-5 md:p-6" interactive={false}>
+          <Card as="section" variant="frost" className="page-card page-card-roomy rounded-[22px]" interactive={false}>
             <SectionTitle icon={<Monitor size={18} className="text-[var(--mc-grass)]" />} title={t("settings.general")} subtitle={t("settings.behaviorAppearance")} />
+            <div className="field-grid field-grid-two mb-5">
+              <div>
+                <FieldLabel>{t("settings.language")}</FieldLabel>
+                <Select value={locale} onValueChange={(value) => setLocale(value as "en-US" | "zh-CN")}>
+                  <Select.Trigger className="ui-select-trigger">
+                    <Select.Value />
+                  </Select.Trigger>
+                  <Select.Content>
+                    {LOCALE_OPTIONS.map((item) => (
+                      <Select.Item key={item} value={item}>
+                        {t(`language.${item}` as const)}
+                      </Select.Item>
+                    ))}
+                  </Select.Content>
+                </Select>
+              </div>
+
+              <div>
+                <FieldLabel>{t("settings.downloadSource")}</FieldLabel>
+                <Select value={settings.downloadSource} onValueChange={(value) => onChange({ ...settings, downloadSource: value as DownloadSource })}>
+                  <Select.Trigger className="ui-select-trigger">
+                    <Select.Value />
+                  </Select.Trigger>
+                  <Select.Content>
+                    {downloadSources.map((source) => (
+                      <Select.Item key={source} value={source}>
+                        {t(`settings.downloadSource.${source}` as const)}
+                      </Select.Item>
+                    ))}
+                  </Select.Content>
+                </Select>
+              </div>
+            </div>
+
             <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
               <ToggleRow
                 title={t("settings.keepOpen")}
@@ -277,15 +352,15 @@ export default function SettingsPage({
         </div>
 
         <div className="space-y-6">
-          <Card as="section" variant="frost" className="rounded-2xl p-5 md:p-6" interactive={false}>
+          <Card as="section" variant="frost" className="page-card page-card-roomy rounded-[22px]" interactive={false}>
             <SectionTitle icon={<Palette size={18} className="text-[var(--mc-grass)]" />} title={t("settings.themeMode")} subtitle={t("settings.behaviorAppearance")} />
             <div className="space-y-5">
-              <div className="rounded-2xl border border-white/8 bg-[var(--surface-soft)] p-4 md:p-5">
+              <div className="surface-panel surface-panel-soft rounded-[20px] p-4 md:p-5">
                 <div className="flex flex-wrap items-center gap-2">
-                  <span className="rounded-full border border-white/10 bg-[var(--bg-secondary)] px-3 py-1 text-[11px] font-medium text-[var(--text-secondary)]">
+                  <span className="badge badge-muted normal-case tracking-normal">
                     {activeThemeLabel}
                   </span>
-                  <span className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-[var(--bg-secondary)] px-3 py-1 text-[11px] font-medium text-[var(--text-secondary)]">
+                  <span className="badge badge-muted normal-case tracking-normal inline-flex gap-2">
                     <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: activeAccentColor }} />
                     {activeAccentLabel}
                   </span>
@@ -293,7 +368,7 @@ export default function SettingsPage({
 
                 <div className="mt-4">
                   <FieldLabel>{t("settings.themeMode")}</FieldLabel>
-                  <div className="grid grid-cols-2 gap-3">
+                  <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
                     {themeModes.map((mode) => {
                       const selected = settings.themeMode === mode;
                       const isDark = mode === "dark";
@@ -302,31 +377,19 @@ export default function SettingsPage({
                           key={mode}
                           type="button"
                           onClick={() => onChange({ ...settings, themeMode: mode })}
-                          className={`rounded-xl border px-4 py-3 text-left transition-colors ${
-                            selected
-                              ? "border-[var(--mc-grass)]/35 bg-[var(--bg-secondary)]"
-                              : "border-white/10 bg-[var(--bg-secondary)] hover:border-white/20"
-                          }`}
+                          className={`theme-option-card ${selected ? "is-active" : ""}`}
                         >
                           <div className="flex items-center justify-between gap-3">
                             <div className="flex items-center gap-3">
-                              <span
-                                className={`flex h-9 w-9 items-center justify-center rounded-xl border ${
-                                  selected ? "border-[var(--mc-grass)]/30 bg-[var(--mc-grass)]/10" : "border-white/10 bg-[var(--bg-elevated)]"
-                                }`}
-                              >
+                              <span className={`icon-tile h-9 w-9 rounded-[14px] ${selected ? "border-[rgba(var(--accent-rgb),0.24)] bg-[rgba(var(--accent-rgb),0.12)]" : ""}`}>
                                 {isDark ? <MoonStar size={16} className="text-[var(--text-primary)]" /> : <SunMedium size={16} className="text-[var(--text-primary)]" />}
                               </span>
                               <div>
                                 <p className="text-sm font-semibold text-[var(--text-primary)]">{t(`settings.theme.${mode}` as const)}</p>
-                                <p className="text-xs text-[var(--text-muted)]">{isDark ? "Higher contrast" : "Brighter surface"}</p>
+                                <p className="text-xs text-[var(--text-muted)]">{isDark ? t("settings.theme.dark") : t("settings.theme.light")}</p>
                               </div>
                             </div>
-                            <span
-                              className={`h-3 w-3 rounded-full border ${
-                                selected ? "border-[var(--mc-grass)] bg-[var(--mc-grass)]" : "border-white/15 bg-transparent"
-                              }`}
-                            />
+                            <span className={`selection-indicator ${selected ? "is-active" : ""}`} />
                           </div>
                         </button>
                       );
@@ -347,14 +410,10 @@ export default function SettingsPage({
                           key={accent.id}
                           type="button"
                           onClick={() => onChange({ ...settings, themeAccent: accent.id })}
-                          className={`rounded-xl border px-3 py-3 text-left transition-colors ${
-                            selected
-                              ? "border-[var(--mc-grass)]/35 bg-[var(--bg-secondary)]"
-                              : "border-white/10 bg-[var(--bg-secondary)] hover:border-white/20"
-                          }`}
+                          className={`theme-option-card ${selected ? "is-active" : ""}`}
                         >
                           <div className="flex items-center gap-3">
-                            <span className="h-8 w-8 rounded-full border border-white/10" style={{ backgroundColor: accent.swatch }} />
+                            <span className="h-8 w-8 rounded-full border border-[rgba(255,255,255,0.1)]" style={{ backgroundColor: accent.swatch }} />
                             <div className="min-w-0">
                               <p className="truncate text-sm font-medium text-[var(--text-primary)]">{t(`settings.accent.${accent.id}` as const)}</p>
                             </div>
@@ -365,47 +424,39 @@ export default function SettingsPage({
                   </div>
                 </div>
 
-                <div className="mt-5 rounded-xl border border-white/10 bg-[var(--bg-secondary)] p-4">
+                <div className="surface-panel mt-5 rounded-[18px] p-4">
                   <button type="button" onClick={() => onChange({ ...settings, themeAccent: "custom" })} className="flex w-full items-center justify-between gap-3 text-left">
                     <div>
                       <p className="text-sm font-semibold text-[var(--text-primary)]">{t("settings.customAccent")}</p>
                       <p className="mt-1 text-xs text-[var(--text-muted)]">{t("settings.customAccentHint")}</p>
                     </div>
                     <div className="flex items-center gap-3">
-                      <span className="h-8 w-8 rounded-full border border-white/10" style={{ backgroundColor: settings.customAccentHex }} />
-                      <span
-                        className={`h-3 w-3 rounded-full border ${
-                          settings.themeAccent === "custom" ? "border-[var(--mc-grass)] bg-[var(--mc-grass)]" : "border-white/15 bg-transparent"
-                        }`}
-                      />
+                      <span className="h-8 w-8 rounded-full border border-[rgba(255,255,255,0.1)]" style={{ backgroundColor: settings.customAccentHex }} />
+                      <span className={`selection-indicator ${settings.themeAccent === "custom" ? "is-active" : ""}`} />
                     </div>
                   </button>
 
                   {settings.themeAccent === "custom" ? (
-                    <div className="mt-4 grid grid-cols-1 gap-3 border-t border-white/10 pt-4 md:grid-cols-[88px_minmax(0,1fr)]">
+                    <div className="mt-4 grid grid-cols-1 gap-3 border-t border-[rgba(255,255,255,0.1)] pt-4 md:grid-cols-[88px_minmax(0,1fr)]">
                       <div>
-                        <label className="mb-2 block text-xs font-semibold uppercase tracking-wide text-[var(--text-muted)]">
-                          {t("settings.customAccent")}
-                        </label>
+                        <label className="field-label">{t("settings.customAccent")}</label>
                         <input
                           type="color"
                           value={settings.customAccentHex}
                           onChange={(event) => applyCustomAccent(event.target.value)}
-                          className="h-11 w-full cursor-pointer rounded-xl border border-white/10 bg-[var(--bg-elevated)] p-1"
+                          className="h-11 w-full cursor-pointer rounded-xl border border-[rgba(255,255,255,0.1)] bg-[var(--bg-elevated)] p-1"
                           aria-label={t("settings.customAccent")}
                         />
                       </div>
                       <div>
-                        <label className="mb-2 block text-xs font-semibold uppercase tracking-wide text-[var(--text-muted)]">
-                          {t("settings.customAccentHex")}
-                        </label>
+                        <label className="field-label">{t("settings.customAccentHex")}</label>
                         <input
                           type="text"
                           value={customAccentDraft}
                           onChange={(event) => setCustomAccentDraft(event.target.value)}
                           onBlur={commitCustomAccentDraft}
                           onKeyDown={onCustomAccentKeyDown}
-                          className="h-11 w-full rounded-xl border border-white/10 bg-[var(--bg-elevated)] px-3 text-sm text-[var(--text-primary)] focus:border-[var(--mc-grass)]/45 focus:outline-none"
+                          className="ui-input"
                         />
                       </div>
                     </div>
@@ -415,145 +466,24 @@ export default function SettingsPage({
             </div>
           </Card>
 
-          <Card as="section" variant="strong" className="rounded-xl p-4 md:p-5" interactive={false}>
-            <SectionTitle
-              icon={<Download size={18} className="text-[var(--mc-grass)]" />}
-              title={t("settings.launcherUpdates")}
-              subtitle={t("settings.launcherUpdatesDesc")}
-            />
-            <div className="space-y-4">
-              <div className="grid grid-cols-2 gap-2">
-                <InfoTile label={t("settings.launcherCurrentVersion")} value={launcherCurrentVersion} />
-                <InfoTile
-                  label={t("settings.launcherLatestVersion")}
-                  value={launcherUpdate?.version ?? "--"}
-                  tone={launcherUpdateAvailable ? "highlight" : "default"}
-                />
-              </div>
-
-              {launcherUpdate && (
-                <div className="grid grid-cols-2 gap-2">
-                  <InfoTile label={t("settings.launcherUpdateTarget")} value={launcherUpdate.target} />
-                  <InfoTile
-                    label={t("settings.launcherUpdatePublishedAt")}
-                    value={formatPublishedAt(launcherUpdate.publishedAt, t("settings.launcherUpdateUnknownDate"))}
-                  />
-                </div>
-              )}
-
-              <div className="rounded-2xl border border-[var(--border-subtle)] bg-[var(--bg-secondary)] p-4">
-                <p className="text-sm font-semibold text-[var(--text-primary)]">
-                  {launcherUpdate
-                    ? launcherUpdateAvailable
-                      ? t("settings.launcherUpdateAvailable", { version: launcherUpdate.version })
-                      : t("settings.launcherUpToDate")
-                    : t("settings.launcherUpdateNotConfigured")}
-                </p>
-                <p className="mt-1 text-xs leading-5 text-[var(--text-muted)]">
-                  {launcherUpdate
-                    ? launcherUpdateAvailable
-                      ? launcherUpdate.mandatory
-                        ? t("settings.launcherUpdateMandatory")
-                        : t("settings.launcherUpdateOptional")
-                      : t("settings.launcherUpdateCurrentHint")
-                    : t("settings.launcherUpdateConfigHint")}
-                </p>
-                {launcherUpdate?.notes && (
-                  <p className="mt-3 whitespace-pre-wrap text-xs leading-6 text-[var(--text-secondary)]">
-                    {launcherUpdate.notes.trim()}
-                  </p>
-                )}
-                {launcherUpdate && (launcherUpdate.fileSize || launcherUpdate.checksum) && (
-                  <div className="mt-3 flex flex-wrap gap-2 text-[11px] text-[var(--text-muted)]">
-                    {launcherUpdate.fileSize ? (
-                      <span className="rounded-md border border-white/5 bg-[var(--surface-soft)] px-2 py-1">
-                        {t("settings.launcherUpdateSize", { size: formatFileSize(launcherUpdate.fileSize) })}
-                      </span>
-                    ) : null}
-                    {launcherUpdate.checksum ? (
-                      <span className="rounded-md border border-white/5 bg-[var(--surface-soft)] px-2 py-1">
-                        SHA-256: {launcherUpdate.checksum}
-                      </span>
-                    ) : null}
-                  </div>
-                )}
-                {launcherUpdateDownload && (
-                  <p className="mt-3 text-xs text-[var(--text-secondary)]">
-                    {t("settings.launcherUpdateDownloaded", { file: launcherUpdateDownload.fileName })}
-                  </p>
-                )}
-              </div>
-
-              <div className="flex flex-wrap gap-2">
-                <Button
-                  variant="secondary"
-                  size="sm"
-                  className="gap-2"
-                  disabled={launcherUpdateChecking || launcherUpdateDownloading}
-                  onClick={onRefreshLauncherUpdate}
-                >
-                  <RefreshCw size={14} />
-                  {launcherUpdateChecking ? t("settings.launcherUpdateChecking") : t("settings.launcherUpdateCheck")}
-                </Button>
-                <Button
-                  variant="primary"
-                  size="sm"
-                  className="gap-2"
-                  disabled={!launcherUpdateAvailable || launcherUpdateDownloading}
-                  onClick={onInstallLauncherUpdate}
-                >
-                  <Download size={14} />
-                  {launcherUpdateDownloading ? t("settings.launcherUpdatePreparing") : t("settings.launcherUpdateInstall")}
-                </Button>
-              </div>
-            </div>
-          </Card>
-
-          <Card as="section" variant="strong" className="rounded-2xl p-5 md:p-6" interactive={false}>
-            <SectionTitle
-              icon={<Globe size={18} className="text-[var(--mc-grass)]" />}
-              title={t("settings.contentSources")}
-              subtitle={t("settings.contentSourcesDesc")}
-            />
-            <div className="space-y-2">
-              <FieldLabel>{t("settings.curseforgeApiKey")}</FieldLabel>
-              <input
-                type="password"
-                value={settings.curseforgeApiKey}
-                onChange={(event) => onChange({ ...settings, curseforgeApiKey: event.target.value })}
-                placeholder="cf-api-***"
-                className="w-full rounded-xl border border-white/10 bg-[var(--bg-secondary)] px-4 py-2.5 text-sm text-[var(--text-primary)]"
-              />
-              <p className="text-xs leading-5 text-[var(--text-muted)]">{t("settings.curseforgeApiKeyHint")}</p>
-            </div>
-          </Card>
-
-          <Card as="section" variant="frost" className="rounded-2xl p-5 md:p-6" interactive={false}>
+          <Card as="section" variant="frost" className="page-card page-card-roomy rounded-[22px]" interactive={false}>
             <SectionTitle icon={<ImagePlus size={18} className="text-[var(--mc-grass)]" />} title={t("settings.background")} subtitle={t("settings.backgroundDesc")} />
 
             <div className="space-y-4">
               <div>
                 <FieldLabel>{t("settings.backgroundMode")}</FieldLabel>
-                <div className="grid grid-cols-2 gap-2">
+                <div className="segment-control w-fit">
                   <button
                     type="button"
                     onClick={() => switchBackgroundSource("local")}
-                    className={`min-h-11 rounded-xl border px-3 py-2 text-sm font-medium transition-colors ${
-                      settings.backgroundSource === "local"
-                        ? "border-[#25b87a]/40 bg-[#25b87a]/12 text-[var(--text-primary)]"
-                        : "border-white/10 bg-[var(--bg-secondary)] text-[var(--text-secondary)] hover:border-[var(--border-strong)]"
-                    }`}
+                    className={`segment-chip ${settings.backgroundSource === "local" ? "is-active" : ""}`}
                   >
                     {t("settings.backgroundMode.local")}
                   </button>
                   <button
                     type="button"
                     onClick={() => switchBackgroundSource("web-random")}
-                    className={`min-h-11 rounded-xl border px-3 py-2 text-sm font-medium transition-colors ${
-                      settings.backgroundSource === "web-random"
-                        ? "border-[#25b87a]/40 bg-[#25b87a]/12 text-[var(--text-primary)]"
-                        : "border-white/10 bg-[var(--bg-secondary)] text-[var(--text-secondary)] hover:border-[var(--border-strong)]"
-                    }`}
+                    className={`segment-chip ${settings.backgroundSource === "web-random" ? "is-active" : ""}`}
                   >
                     {t("settings.backgroundMode.web")}
                   </button>
@@ -639,6 +569,95 @@ export default function SettingsPage({
               {backgroundError && <p className="text-xs text-[var(--accent-danger)]">{backgroundError}</p>}
             </div>
           </Card>
+
+          <Card as="section" variant="strong" className="page-card rounded-[22px]" interactive={false}>
+            <SectionTitle
+              icon={<Download size={18} className="text-[var(--mc-grass)]" />}
+              title={t("settings.launcherUpdates")}
+              subtitle={t("settings.launcherUpdatesDesc")}
+            />
+            <div className="space-y-4">
+              <div className="grid grid-cols-2 gap-2">
+                <InfoTile label={t("settings.launcherCurrentVersion")} value={launcherCurrentVersion} />
+                <InfoTile
+                  label={t("settings.launcherLatestVersion")}
+                  value={launcherUpdate?.version ?? "--"}
+                  tone={launcherUpdateAvailable ? "highlight" : "default"}
+                />
+              </div>
+
+              {launcherUpdate ? (
+                <div className="surface-panel rounded-[20px] p-4">
+                  <p className="text-sm font-semibold text-[var(--text-primary)]">
+                    {launcherUpdateAvailable ? t("settings.launcherUpdateAvailable", { version: launcherUpdate.version }) : t("settings.launcherUpToDate")}
+                  </p>
+                  <p className="mt-1 text-xs leading-5 text-[var(--text-muted)]">
+                    {launcherUpdateAvailable
+                      ? launcherUpdate.mandatory
+                        ? t("settings.launcherUpdateMandatory")
+                        : t("settings.launcherUpdateOptional")
+                      : t("settings.launcherUpdateCurrentHint")}
+                  </p>
+
+                  <div className="mt-3 grid grid-cols-2 gap-2">
+                    <InfoTile label={t("settings.launcherUpdateTarget")} value={launcherUpdate.target} />
+                    <InfoTile
+                      label={t("settings.launcherUpdatePublishedAt")}
+                      value={formatPublishedAt(launcherUpdate.publishedAt, t("settings.launcherUpdateUnknownDate"))}
+                    />
+                  </div>
+
+                  {launcherUpdate.notes && (
+                    <p className="mt-3 whitespace-pre-wrap text-xs leading-6 text-[var(--text-secondary)]">
+                      {launcherUpdate.notes.trim()}
+                    </p>
+                  )}
+                  {(launcherUpdate.fileSize || launcherUpdate.checksum) && (
+                    <div className="mt-3 flex flex-wrap gap-2 text-[11px] text-[var(--text-muted)]">
+                      {launcherUpdate.fileSize ? (
+                        <span className="badge badge-muted normal-case tracking-normal">
+                          {t("settings.launcherUpdateSize", { size: formatFileSize(launcherUpdate.fileSize) })}
+                        </span>
+                      ) : null}
+                      {launcherUpdate.checksum ? (
+                        <span className="badge badge-muted normal-case tracking-normal">
+                          SHA-256: {launcherUpdate.checksum}
+                        </span>
+                      ) : null}
+                    </div>
+                  )}
+                  {launcherUpdateDownload && (
+                    <p className="mt-3 text-xs text-[var(--text-secondary)]">
+                      {t("settings.launcherUpdateDownloaded", { file: launcherUpdateDownload.fileName })}
+                    </p>
+                  )}
+                </div>
+              ) : null}
+
+              <div className="flex flex-wrap gap-2">
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  className="gap-2"
+                  disabled={launcherUpdateChecking || launcherUpdateDownloading}
+                  onClick={onRefreshLauncherUpdate}
+                >
+                  <RefreshCw size={14} />
+                  {launcherUpdateChecking ? t("settings.launcherUpdateChecking") : t("settings.launcherUpdateCheck")}
+                </Button>
+                <Button
+                  variant="primary"
+                  size="sm"
+                  className="gap-2"
+                  disabled={!launcherUpdateAvailable || launcherUpdateDownloading}
+                  onClick={onInstallLauncherUpdate}
+                >
+                  <Download size={14} />
+                  {launcherUpdateDownloading ? t("settings.launcherUpdatePreparing") : t("settings.launcherUpdateInstall")}
+                </Button>
+              </div>
+            </div>
+          </Card>
         </div>
       </div>
 
@@ -653,18 +672,18 @@ export default function SettingsPage({
 
 function SectionTitle({ icon, title, subtitle }: { icon: ReactNode; title: string; subtitle: string }) {
   return (
-    <div className="mb-5 flex items-center gap-3">
-      <div className="flex h-10 w-10 items-center justify-center rounded-xl border border-white/10 bg-[var(--bg-elevated)]">{icon}</div>
-      <div>
-        <h2 className="text-base font-semibold text-[var(--text-primary)]">{title}</h2>
-        <p className="text-xs text-[var(--text-muted)]">{subtitle}</p>
+    <div className="mb-5 flex items-start gap-3">
+      <div className="icon-tile h-10 w-10 rounded-[14px] shrink-0">{icon}</div>
+      <div className="min-w-0">
+        <h2 className="section-title text-base">{title}</h2>
+        <p className="section-subtitle !mt-1">{subtitle}</p>
       </div>
     </div>
   );
 }
 
 function FieldLabel({ children }: { children: string }) {
-  return <label className="mb-2 block text-xs font-semibold uppercase tracking-wide text-[var(--text-muted)]">{children}</label>;
+  return <label className="field-label">{children}</label>;
 }
 
 function InfoTile({
@@ -677,9 +696,9 @@ function InfoTile({
   tone?: "default" | "highlight";
 }) {
   return (
-    <div className={`rounded-xl border px-3 py-2 ${tone === "highlight" ? "border-[#25b87a]/25 bg-[#25b87a]/10" : "border-white/5 bg-[var(--surface-soft)]"}`}>
-      <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--text-muted)]">{label}</p>
-      <p className="mt-1 truncate text-sm font-semibold text-[var(--text-primary)]">{value}</p>
+    <div className={`metric-tile ${tone === "highlight" ? "!border-[rgba(var(--accent-rgb),0.24)] !bg-[rgba(var(--accent-rgb),0.1)]" : ""}`}>
+      <p className="metric-label">{label}</p>
+      <p className="metric-value truncate">{value}</p>
     </div>
   );
 }
@@ -697,7 +716,7 @@ function ToggleRow({
 }) {
   return (
     <button
-      className="flex min-h-12 w-full items-center justify-between rounded-2xl border border-white/5 bg-[var(--bg-secondary)] p-4 text-left transition-colors hover:border-white/10"
+      className="toggle-card"
       onClick={onToggle}
       type="button"
     >
@@ -705,9 +724,7 @@ function ToggleRow({
         <h4 className="text-sm font-semibold text-[var(--text-primary)]">{title}</h4>
         <p className="text-xs text-[var(--text-muted)]">{subtitle}</p>
       </div>
-      <div className={`relative h-6 w-11 rounded-full border transition-colors ${enabled ? "border-[#25b87a]/50 bg-[#25b87a]/20" : "border-white/10 bg-[var(--bg-elevated)]"}`}>
-        <div className={`absolute bottom-1 top-1 w-4 rounded-full transition-all ${enabled ? "right-1 bg-[var(--mc-grass)]" : "left-1 bg-[var(--text-muted)]"}`} />
-      </div>
+      <div className={`toggle-switch ${enabled ? "is-on" : ""}`} />
     </button>
   );
 }
@@ -766,23 +783,4 @@ function normalizeHexColor(input: string): string | null {
     return `#${r}${r}${g}${g}${b}${b}`.toLowerCase();
   }
   return null;
-}
-
-function toAlpha(hex: string, alpha: number): string {
-  const normalized = normalizeHexColor(hex);
-  if (!normalized) {
-    return `rgba(37, 184, 122, ${clampUnit(alpha)})`;
-  }
-  const value = normalized.slice(1);
-  const r = Number.parseInt(value.slice(0, 2), 16);
-  const g = Number.parseInt(value.slice(2, 4), 16);
-  const b = Number.parseInt(value.slice(4, 6), 16);
-  return `rgba(${r}, ${g}, ${b}, ${clampUnit(alpha)})`;
-}
-
-function clampUnit(value: number): number {
-  if (!Number.isFinite(value)) {
-    return 0;
-  }
-  return Math.max(0, Math.min(1, value));
 }

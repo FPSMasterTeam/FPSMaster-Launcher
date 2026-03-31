@@ -30,16 +30,18 @@ export default function AccountCenterPage({ launcherDashboard }: AccountCenterPa
   const userLevelNum = parseLevelNumber(userLevel);
 
   return (
-    <div className="h-full overflow-y-auto p-4 md:p-5 xl:p-6">
-      <header className="mb-6">
-        <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[var(--text-muted)]">{t("account.eyebrow")}</p>
-        <h1 className="mt-2 text-3xl font-semibold tracking-tight text-[var(--text-primary)]">{t("account.title")}</h1>
-        <p className="mt-1 text-[var(--text-secondary)]">{t("account.subtitle")}</p>
+    <div className="page-shell">
+      <header className="page-header mb-6">
+        <div className="page-header-main">
+          <p className="page-eyebrow">{t("account.eyebrow")}</p>
+          <h1 className="page-title">{t("account.title")}</h1>
+          <p className="page-subtitle">{t("account.subtitle")}</p>
+        </div>
       </header>
 
-      <div className="grid grid-cols-1 gap-6 xl:grid-cols-[minmax(0,1.05fr)_minmax(320px,0.95fr)]">
+      <div className="page-grid page-grid-two">
         {/* Main Profile Card */}
-        <Card variant="frost" className="overflow-hidden rounded-xl p-5 md:p-6" interactive={false}>
+        <Card variant="frost" className="page-card overflow-hidden rounded-[22px] md:p-6" interactive={false}>
           {/* Profile Header with Avatar */}
           <div className="flex items-start gap-4">
             {/* Enhanced Avatar */}
@@ -73,7 +75,7 @@ export default function AccountCenterPage({ launcherDashboard }: AccountCenterPa
                   {profileUser?.username ?? t("nav.player")}
                 </h2>
                 {isAdmin && (
-                  <div className="flex items-center gap-1 rounded-full bg-amber-500/10 px-2 py-0.5 ring-1 ring-amber-500/30">
+                  <div className="badge badge-warning gap-1 rounded-full px-2 py-1">
                     <Crown size={12} className="text-amber-400" />
                     <span className="text-[10px] font-semibold text-amber-400">ADMIN</span>
                   </div>
@@ -86,19 +88,19 @@ export default function AccountCenterPage({ launcherDashboard }: AccountCenterPa
 
               {/* User Level Display - No "Level" label */}
               <div className="mt-3 flex items-center gap-3">
-                <div className="flex items-center gap-1.5 rounded-md bg-[var(--mc-grass)]/10 px-2 py-1 ring-1 ring-[var(--mc-grass)]/20">
+                <div className="badge badge-accent gap-1.5 rounded-full px-3 py-1.5 normal-case tracking-normal">
                   <Sparkles size={11} className="text-[var(--mc-grass)]" />
                   <span className="text-sm font-bold text-[var(--mc-grass)]">{userLevel}</span>
                 </div>
 
                 {/* Role Badge - Only show for non-admin users */}
                 {!isAdmin && !isSponsor && (
-                  <div className="rounded-md bg-[var(--bg-elevated)] px-2 py-1 text-xs font-semibold text-[var(--text-secondary)]">
+                  <div className="badge badge-muted rounded-full px-3 py-1 normal-case tracking-normal text-xs">
                     普通会员
                   </div>
                 )}
                 {isSponsor && (
-                  <div className="rounded-md border border-[#25b87a]/25 bg-[#25b87a]/10 px-2 py-1 text-xs font-semibold text-[#25b87a]">
+                  <div className="badge badge-accent rounded-full px-3 py-1 normal-case tracking-normal text-xs">
                     Pro会员
                   </div>
                 )}
@@ -116,13 +118,13 @@ export default function AccountCenterPage({ launcherDashboard }: AccountCenterPa
         </Card>
 
         {/* Activity Card */}
-        <Card variant="frost" className="overflow-hidden rounded-xl p-5 md:p-6" interactive={false}>
+        <Card variant="frost" className="page-card overflow-hidden rounded-[22px] md:p-6" interactive={false}>
           <div className="flex items-center justify-between gap-2">
             <h2 className="flex items-center gap-2 text-lg font-semibold text-[var(--text-primary)]">
               <Clock size={18} className="text-[var(--mc-grass)]" />
               {t("account.activity")}
             </h2>
-            <span className="rounded-md bg-[var(--bg-elevated)] px-2 py-1 text-[11px] font-semibold text-[var(--text-secondary)]">
+            <span className="badge badge-muted rounded-full px-3 py-1 text-[11px] normal-case tracking-normal">
               {t("account.totalHours", { hours: profileStats?.totalPlayHours ?? 0 })}
             </span>
           </div>
@@ -133,7 +135,7 @@ export default function AccountCenterPage({ launcherDashboard }: AccountCenterPa
 
           {/* Weekly Playtime Visual */}
           {playtimeChart.length > 0 ? (
-            <div className="mt-4 rounded-xl bg-[var(--surface-soft)] p-4">
+            <div className="surface-panel surface-panel-soft mt-4 rounded-[18px] p-4">
               <div className="mb-2 flex items-center justify-between">
                 <span className="text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)]">{t("account.weeklyActivity")}</span>
                 <Calendar size={14} className="text-[var(--text-muted)]" />
@@ -166,8 +168,8 @@ export default function AccountCenterPage({ launcherDashboard }: AccountCenterPa
               </div>
             </div>
           ) : (
-            <div className="mt-4 rounded-xl border border-dashed border-white/5 bg-[var(--surface-soft)] p-4 text-center text-sm text-[var(--text-muted)]">
-              {t("account.noStats")}
+            <div className="empty-state mt-4 min-h-[180px]">
+              <p className="empty-state-text !mt-0">{t("account.noStats")}</p>
             </div>
           )}
         </Card>
@@ -178,12 +180,12 @@ export default function AccountCenterPage({ launcherDashboard }: AccountCenterPa
 
 function Metric({ label, value, icon }: { label: string; value: string; icon?: React.ReactNode }) {
   return (
-    <div className="rounded-xl bg-[var(--surface-soft)] px-3 py-3 transition-colors hover:bg-[var(--bg-elevated)]">
-      <div className="flex items-center gap-2 text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--text-muted)]">
+    <div className="metric-tile">
+      <div className="metric-label">
         {icon}
         <span>{label}</span>
       </div>
-      <p className="mt-2 truncate text-sm font-semibold text-[var(--text-primary)]">{value}</p>
+      <p className="metric-value truncate">{value}</p>
     </div>
   );
 }

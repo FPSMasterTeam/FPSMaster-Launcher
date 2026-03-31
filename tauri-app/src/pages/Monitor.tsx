@@ -11,10 +11,11 @@ type MonitorPageProps = {
   params: URLSearchParams;
 };
 
-const MONITOR_LOG_POLL_INTERVAL_MS = 400;
-const MONITOR_RUNTIME_POLL_INTERVAL_MS = 2000;
+const MONITOR_LOG_POLL_INTERVAL_MS = 800;
+const MONITOR_RUNTIME_POLL_INTERVAL_MS = 1000;
 const MONITOR_UPTIME_TICK_INTERVAL_MS = 1000;
-const MONITOR_LOG_CHAR_LIMIT = 200_000;
+const MONITOR_LOG_FLUSH_INTERVAL_MS = 300;
+const MONITOR_LOG_LINE_LIMIT = 1200;
 
 export default function MonitorPage({ params }: MonitorPageProps) {
   const { t } = useI18n();
@@ -25,7 +26,7 @@ export default function MonitorPage({ params }: MonitorPageProps) {
   const initialCursor = parseIntSafe(params.get("cursor"), 0);
   const version = params.get("version") ?? "unknown";
 
-  const [logText, setLogText] = useState("");
+  const [logLines, setLogLines] = useState<string[]>([]);
   const [stats, setStats] = useState<GameRuntimeStats | null>(null);
   const [status, setStatus] = useState(t("monitor.connecting"));
   const [tick, setTick] = useState(Date.now());
@@ -35,10 +36,40 @@ export default function MonitorPage({ params }: MonitorPageProps) {
   const cursorRef = useRef<number | null>(initialCursor > 0 ? initialCursor : null);
   const logsPollingRef = useRef(false);
   const runtimePollingRef = useRef(false);
-  const logTextRef = useRef("");
+  const logLinesRef = useRef<string[]>([]);
+  const pendingLogLinesRef = useRef<string[]>([]);
+  const flushLogsScheduledRef = useRef<number | null>(null);
+  const logViewportRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (flushLogsScheduledRef.current !== null) {
+        window.clearTimeout(flushLogsScheduledRef.current);
+        flushLogsScheduledRef.current = null;
+      }
+    };
+  }, []);
 
   useEffect(() => {
     let active = true;
+    const flushPendingLogs = () => {
+      if (!active) return;
+      flushLogsScheduledRef.current = null;
+      if (pendingLogLinesRef.current.length === 0) return;
+      logLinesRef.current = appendMonitorLogLines(logLinesRef.current, pendingLogLinesRef.current);
+      pendingLogLinesRef.current = [];
+      startTransition(() => {
+        setLogLines(logLinesRef.current);
+      });
+    };
+
+    const scheduleLogFlush = () => {
+      if (flushLogsScheduledRef.current !== null) {
+        return;
+      }
+      flushLogsScheduledRef.current = window.setTimeout(flushPendingLogs, MONITOR_LOG_FLUSH_INTERVAL_MS);
+    };
+
     const pollLogs = async () => {
       if (!active || logsPollingRef.current) return;
       logsPollingRef.current = true;
@@ -48,11 +79,9 @@ export default function MonitorPage({ params }: MonitorPageProps) {
         if (!active) return;
         cursorRef.current = out.nextSeq;
         if (out.entries.length === 0) return;
-        const chunk = out.entries.map((entry) => `${prefix(entry)} ${entry.message}`).join("\n");
-        logTextRef.current = appendMonitorLogText(logTextRef.current, chunk);
-        startTransition(() => {
-          setLogText(logTextRef.current);
-        });
+        const lines = out.entries.map((entry) => `${prefix(entry)} ${entry.message}`);
+        pendingLogLinesRef.current.push(...lines);
+        scheduleLogFlush();
       } catch {
       } finally {
         logsPollingRef.current = false;
@@ -91,15 +120,27 @@ export default function MonitorPage({ params }: MonitorPageProps) {
 
     return () => {
       active = false;
+      if (flushLogsScheduledRef.current !== null) {
+        window.clearTimeout(flushLogsScheduledRef.current);
+        flushLogsScheduledRef.current = null;
+      }
       window.clearInterval(logsTimer);
       window.clearInterval(runtimeTimer);
       window.clearInterval(tickTimer);
     };
   }, [pid, t]);
 
+  useEffect(() => {
+    const viewport = logViewportRef.current;
+    if (!viewport) return;
+    viewport.scrollTop = viewport.scrollHeight;
+  }, [logLines]);
+
   const uptimeMs = stats?.running === false ? null : stats?.elapsedMs ?? Math.max(0, tick - startedAt);
   const uptime = uptimeMs === null ? "N/A" : formatDuration(uptimeMs);
   const memory = stats?.memoryMb === null || stats?.memoryMb === undefined ? "N/A" : `${stats.memoryMb} MB`;
+  const runtimeStateLabel = stats?.running ? t("monitor.running") : t("monitor.exited");
+  const pidLabel = pid > 0 ? pid : "N/A";
 
   async function backToLauncher() {
     await invoke("show_main_window");
@@ -154,66 +195,82 @@ export default function MonitorPage({ params }: MonitorPageProps) {
         </div>
       )}
       <div className="relative z-10">
-        <TitleBar title={`${t("app.name")} Runtime ${version}`} subtitle={t("monitor.subtitle")} />
+        <TitleBar title={version} />
       </div>
 
-      <main className="relative z-10 flex min-h-0 flex-1 flex-col gap-3 p-3 md:p-4">
-        <Card as="section" variant="frost" className="rounded-xl p-3.5 md:p-4" interactive={false}>
-          <div className="flex flex-wrap items-start justify-between gap-3">
-            <div>
-              <p className="text-xs font-semibold uppercase tracking-[0.16em] text-[var(--text-muted)]">{t("monitor.brandTag")}</p>
-              <h1 className="mt-1 text-2xl font-semibold text-[var(--text-primary)] md:text-3xl">{`${t("app.name")} ${version}`}</h1>
+      <main className="monitorWorkspace monitorWorkspaceCompact">
+        <Card as="section" variant="frost" className="monitorHeroCard monitorHeroCardCompact page-card rounded-[22px]" interactive={false}>
+          <div className="monitorHeroHeader monitorHeroHeaderCompact">
+            <div className="monitorHeroIdentity">
+              <p className="page-eyebrow">{t("monitor.brandTag")}</p>
+              <h1 className="monitorHeroTitle monitorHeroTitleCompact">{version}</h1>
             </div>
-            <div className="flex flex-wrap gap-2">
+            <div className="monitorActionRow">
               <button
-                className="ghostButton"
+                className="icon-button monitorUtilityButton !w-auto px-3"
                 onClick={() => {
-                  logTextRef.current = "";
-                  setLogText("");
+                  logLinesRef.current = [];
+                  pendingLogLinesRef.current = [];
+                  setLogLines([]);
                 }}
                 type="button"
               >
                 {t("monitor.clearLogs")}
               </button>
-              <button className="ghostButton danger" onClick={() => setConfirmAction("stop")} disabled={stopping || !(stats?.running ?? true)} type="button">
-                {t("monitor.endGame")}
-              </button>
-              <button className="primaryAction" onClick={() => setConfirmAction("back")} disabled={stopping} type="button">
+              <button className="icon-button monitorUtilityButton !w-auto px-3" onClick={() => setConfirmAction("back")} disabled={stopping} type="button">
                 {t("monitor.backLauncher")}
+              </button>
+              <button
+                className="icon-button icon-button-danger monitorUtilityButton !w-auto px-3"
+                onClick={() => setConfirmAction("stop")}
+                disabled={stopping || !(stats?.running ?? true)}
+                type="button"
+              >
+                {t("monitor.endGame")}
               </button>
             </div>
           </div>
+          <div className="monitorSummaryStrip">
+            <span className={`monitorStateBadge ${stats?.running ? "is-running" : "is-exited"}`}>{runtimeStateLabel}</span>
+            <MetricRow label={t("monitor.memory")} value={memory} compact />
+            <MetricRow label={t("monitor.uptime")} value={uptime} compact />
+            <MetricRow label={t("monitor.pid")} value={pidLabel} compact />
+            <span className="monitorStatusInline">{status}</span>
+          </div>
         </Card>
 
-        <section className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-          <StatCard label={t("monitor.pid")} value={pid > 0 ? pid : "N/A"} />
-          <StatCard label={t("monitor.status")} value={stats?.running ? t("monitor.running") : t("monitor.exited")} />
-          <StatCard label={t("monitor.memory")} value={memory} />
-          <StatCard label={t("monitor.uptime")} value={uptime} />
-        </section>
-
-        <Card as="section" variant="frost" className="flex min-h-0 flex-1 flex-col rounded-xl p-3.5" interactive={false}>
-          <div className="mb-3 flex items-center justify-between gap-2">
-            <h2 className="text-base font-semibold text-[var(--text-primary)]">{t("monitor.consoleOutput")}</h2>
-            <span className="mutedPill">{status}</span>
+        <Card as="section" variant="frost" className="monitorConsoleCard monitorConsoleCardExpanded page-card rounded-[22px]" interactive={false}>
+          <div className="monitorConsoleHead monitorConsoleHeadCompact">
+            <h2 className="monitorConsoleTitle">{t("monitor.consoleOutput")}</h2>
           </div>
-          <pre className="logBox h-full min-h-0 max-h-none">{logText}</pre>
+          <div ref={logViewportRef} className="logBox monitorConsoleBody monitorConsoleBodyExpanded">
+            <div className="monitorLogList">
+              {logLines.map((line, index) => (
+                <div key={`${index}-${line.slice(0, 32)}`} className="monitorLogLine">
+                  {line}
+                </div>
+              ))}
+            </div>
+          </div>
         </Card>
       </main>
 
       {confirmAction && (
-        <section className="modalOverlay">
-          <Card variant="strong" className="w-full max-w-[680px] rounded-xl p-4" interactive={false}>
-            <div className="panelHead">
-              <h2>{t("monitor.confirmTitle")}</h2>
-              <span className="mutedPill">{pid > 0 ? `pid=${pid}` : "pid=N/A"}</span>
+        <section className="modal-shell">
+          <Card variant="strong" className="modal-card page-card w-full max-w-[680px]" interactive={false}>
+            <div className="modal-header !mb-3">
+              <div>
+                <p className="page-eyebrow">{t("monitor.confirmTitle")}</p>
+                <h2 className="section-title mt-1">{version}</h2>
+              </div>
+              <span className="badge badge-muted normal-case tracking-normal">{pid > 0 ? `pid=${pid}` : "pid=N/A"}</span>
             </div>
-            <p className="minorHint">{t("monitor.confirmMessage")}</p>
+            <p className="notice-text !mt-0">{t("monitor.confirmMessage")}</p>
             <div className="modalActions">
-              <button className="ghostButton" onClick={() => setConfirmAction(null)} disabled={stopping} type="button">
+              <button className="icon-button !w-auto px-3" onClick={() => setConfirmAction(null)} disabled={stopping} type="button">
                 {t("monitor.cancel")}
               </button>
-              <button className="primaryAction" onClick={() => void confirmAndExecute()} disabled={stopping} type="button">
+              <button className="segment-chip is-active !min-h-10 px-4" onClick={() => void confirmAndExecute()} disabled={stopping} type="button">
                 {confirmAction === "back" ? t("monitor.confirmBack") : t("monitor.confirmStop")}
               </button>
             </div>
@@ -224,26 +281,30 @@ export default function MonitorPage({ params }: MonitorPageProps) {
   );
 }
 
-function appendMonitorLogText(current: string, chunk: string): string {
-  if (!chunk) {
+function appendMonitorLogLines(current: string[], incoming: string[]): string[] {
+  if (incoming.length === 0) {
     return current;
   }
-
-  const next = current ? `${current}\n${chunk}` : chunk;
-  if (next.length <= MONITOR_LOG_CHAR_LIMIT) {
+  const next = current.length === 0 ? incoming : [...current, ...incoming];
+  if (next.length <= MONITOR_LOG_LINE_LIMIT) {
     return next;
   }
-
-  const trimmed = next.slice(next.length - MONITOR_LOG_CHAR_LIMIT);
-  const firstLineBreak = trimmed.indexOf("\n");
-  return firstLineBreak >= 0 ? trimmed.slice(firstLineBreak + 1) : trimmed;
+  return next.slice(next.length - MONITOR_LOG_LINE_LIMIT);
 }
 
-function StatCard({ label, value }: { label: string; value: string | number }) {
+function MetricRow({
+  label,
+  value,
+  compact = false
+}: {
+  label: string;
+  value: string | number;
+  compact?: boolean;
+}) {
   return (
-    <Card variant="soft" className="rounded-2xl p-3" interactive={false}>
-      <p className="text-xs uppercase tracking-wide text-[var(--text-muted)]">{label}</p>
-      <p className="mt-1 text-lg font-semibold text-[var(--text-primary)]">{value}</p>
-    </Card>
+    <div className={`monitorMetricRow ${compact ? "is-compact" : ""}`}>
+      <span className="monitorMetricLabel">{label}</span>
+      <strong className="monitorMetricValue">{value}</strong>
+    </div>
   );
 }

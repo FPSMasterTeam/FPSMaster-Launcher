@@ -1,14 +1,19 @@
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256, Sha512};
 use std::collections::{HashMap, VecDeque};
 use std::io::{BufRead, BufReader, Cursor, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use std::{env, fs};
+use tauri::path::BaseDirectory;
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Emitter, Manager, WebviewWindow, WindowEvent};
@@ -708,10 +713,17 @@ struct UiLogStore {
 
 static UI_LOG_STORE: OnceLock<Mutex<UiLogStore>> = OnceLock::new();
 static GAME_RUNTIME_STARTS: OnceLock<Mutex<HashMap<i64, std::time::Instant>>> = OnceLock::new();
+static GAME_RUNTIME_CACHE: OnceLock<Mutex<HashMap<i64, CachedGameRuntimeStats>>> = OnceLock::new();
+static GAME_RUNTIME_SAMPLER_STARTED: OnceLock<()> = OnceLock::new();
+static JAVA_CORE_RESOURCE_JAR: OnceLock<PathBuf> = OnceLock::new();
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 const TRAY_SHOW_ID: &str = "tray_show";
 const TRAY_HIDE_ID: &str = "tray_hide";
 const TRAY_QUIT_ID: &str = "tray_quit";
-#[derive(Debug, Serialize)]
+const GAME_RUNTIME_CACHE_TTL_MS: u128 = 2500;
+const GAME_RUNTIME_SAMPLE_INTERVAL_MS: u64 = 1000;
+#[derive(Debug, Clone, Serialize)]
 struct GameRuntimeStats {
     pid: i64,
     running: bool,
@@ -719,6 +731,12 @@ struct GameRuntimeStats {
     memory_mb: Option<u64>,
     #[serde(rename = "elapsedMs")]
     elapsed_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone)]
+struct CachedGameRuntimeStats {
+    stats: GameRuntimeStats,
+    captured_at_ms: u128,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -736,6 +754,82 @@ fn ui_log_store() -> &'static Mutex<UiLogStore> {
 
 fn game_runtime_starts() -> &'static Mutex<HashMap<i64, std::time::Instant>> {
     GAME_RUNTIME_STARTS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn game_runtime_cache() -> &'static Mutex<HashMap<i64, CachedGameRuntimeStats>> {
+    GAME_RUNTIME_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn ensure_game_runtime_sampler() {
+    GAME_RUNTIME_SAMPLER_STARTED.get_or_init(|| {
+        thread::spawn(|| loop {
+            sample_game_runtime_cache();
+            thread::sleep(Duration::from_millis(GAME_RUNTIME_SAMPLE_INTERVAL_MS));
+        });
+    });
+}
+
+fn sample_game_runtime_cache() {
+    let tracked = if let Ok(store) = game_runtime_starts().lock() {
+        store
+            .iter()
+            .map(|(pid, started_at)| (*pid, started_at.elapsed().as_millis()))
+            .collect::<Vec<_>>()
+    } else {
+        Vec::new()
+    };
+
+    if tracked.is_empty() {
+        return;
+    }
+
+    let now_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    let mut stale = Vec::new();
+    let mut sampled = Vec::new();
+
+    for (pid, elapsed_raw) in tracked {
+        match query_process_memory_kb(pid) {
+            Ok(Some(memory_kb)) => {
+                sampled.push((
+                    pid,
+                    GameRuntimeStats {
+                        pid,
+                        running: true,
+                        memory_mb: Some(memory_kb / 1024),
+                        elapsed_ms: u64::try_from(elapsed_raw).ok(),
+                    },
+                ));
+            }
+            Ok(None) => stale.push(pid),
+            Err(_) => {}
+        }
+    }
+
+    if let Ok(mut cache) = game_runtime_cache().lock() {
+        for (pid, stats) in sampled {
+            cache.insert(
+                pid,
+                CachedGameRuntimeStats {
+                    stats,
+                    captured_at_ms: now_ms,
+                },
+            );
+        }
+        for pid in &stale {
+            cache.remove(pid);
+        }
+    }
+
+    if !stale.is_empty() {
+        if let Ok(mut store) = game_runtime_starts().lock() {
+            for pid in stale {
+                store.remove(&pid);
+            }
+        }
+    }
 }
 
 fn push_ui_log(source: &str, level: &str, message: &str) {
@@ -799,6 +893,8 @@ fn is_autostart_launch() -> bool {
 struct LauncherRuntimeState {
     minimize_to_tray: AtomicBool,
     telemetry_session: Mutex<Option<LauncherTelemetrySession>>,
+    heartbeat_running: AtomicBool,
+    heartbeat_stop: Arc<AtomicBool>,
 }
 
 impl Default for LauncherRuntimeState {
@@ -806,6 +902,8 @@ impl Default for LauncherRuntimeState {
         Self {
             minimize_to_tray: AtomicBool::new(true),
             telemetry_session: Mutex::new(None),
+            heartbeat_running: AtomicBool::new(false),
+            heartbeat_stop: Arc::new(AtomicBool::new(false)),
         }
     }
 }
@@ -927,23 +1025,33 @@ fn poll_game_runtime(pid: i64) -> Result<GameRuntimeStats, String> {
         return Err("Invalid pid".to_string());
     }
 
-    let memory_kb = query_process_memory_kb(pid)?;
-    let running = memory_kb.is_some();
-    let memory_mb = memory_kb.map(|kb| kb / 1024);
-    let elapsed_ms = if let Ok(store) = game_runtime_starts().lock() {
-        store
-            .get(&pid)
-            .map(|start| start.elapsed().as_millis())
-            .and_then(|value| u64::try_from(value).ok())
-    } else {
-        None
-    };
-
+    ensure_game_runtime_sampler();
+    let now_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    if let Ok(cache) = game_runtime_cache().lock() {
+        if let Some(cached) = cache.get(&pid) {
+            if now_ms.saturating_sub(cached.captured_at_ms) <= GAME_RUNTIME_CACHE_TTL_MS {
+                return Ok(cached.stats.clone());
+            }
+        }
+    }
+    if let Ok(store) = game_runtime_starts().lock() {
+        if let Some(start) = store.get(&pid) {
+            return Ok(GameRuntimeStats {
+                pid,
+                running: true,
+                memory_mb: None,
+                elapsed_ms: u64::try_from(start.elapsed().as_millis()).ok(),
+            });
+        }
+    }
     Ok(GameRuntimeStats {
         pid,
-        running,
-        memory_mb,
-        elapsed_ms,
+        running: false,
+        memory_mb: None,
+        elapsed_ms: None,
     })
 }
 
@@ -1050,6 +1158,7 @@ fn terminate_game_process(pid: i64, force: Option<bool>) -> Result<bool, String>
     {
         let mut command = Command::new("taskkill");
         command.arg("/PID").arg(pid.to_string()).arg("/T");
+        apply_windows_silent_spawn(&mut command);
         if hard {
             command.arg("/F");
         }
@@ -1885,6 +1994,127 @@ fn launcher_cache_telemetry_session(
 #[tauri::command]
 fn launcher_offline_telemetry_session(app: tauri::AppHandle) {
     flush_launcher_telemetry_session(&app);
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct LauncherHeartbeatRequest {
+    #[serde(rename = "clientName")]
+    client_name: String,
+    #[serde(rename = "clientKind")]
+    client_kind: String,
+    #[serde(rename = "sessionId")]
+    session_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    username: Option<String>,
+    #[serde(rename = "playerUuid", skip_serializing_if = "Option::is_none")]
+    player_uuid: Option<String>,
+}
+
+fn post_launcher_heartbeat(session: &LauncherTelemetrySession) -> Result<(), String> {
+    let client = reqwest::blocking::Client::builder()
+        .connect_timeout(Duration::from_secs(3))
+        .timeout(Duration::from_secs(10))
+        .build()
+        .map_err(|e| format!("Failed to build heartbeat HTTP client: {e}"))?;
+    let normalized_base = normalize_api_base_url(&session.base_url)?;
+    let url = reqwest::Url::parse(&format!("{normalized_base}/api/v1/telemetry/heartbeat"))
+        .map_err(|e| format!("Invalid heartbeat endpoint URL: {e}"))?;
+    let payload = LauncherHeartbeatRequest {
+        client_name: session.client_name.clone(),
+        client_kind: session.client_kind.clone(),
+        session_id: session.session_id.clone(),
+        username: session.username.clone(),
+        player_uuid: session.player_uuid.clone(),
+    };
+    let response = client
+        .post(url)
+        .json(&payload)
+        .send()
+        .map_err(|e| format!("Failed to send heartbeat request: {e}"))?;
+    if response.status().is_success() {
+        Ok(())
+    } else {
+        Err(format!(
+            "Heartbeat request failed with HTTP {}",
+            response.status()
+        ))
+    }
+}
+
+#[tauri::command]
+fn start_launcher_heartbeat(app: tauri::AppHandle) -> Result<(), String> {
+    let state = app.state::<LauncherRuntimeState>();
+    // Check if already running
+    if state.heartbeat_running.load(Ordering::Relaxed) {
+        return Ok(());
+    }
+
+    // Get session
+    let session = state
+        .telemetry_session
+        .lock()
+        .map_err(|e| format!("Failed to lock telemetry session: {e}"))?
+        .clone()
+        .ok_or("No telemetry session cached")?;
+
+    // Set running flag
+    state.heartbeat_running.store(true, Ordering::Relaxed);
+    state.heartbeat_stop.store(false, Ordering::Relaxed);
+
+    let stop_flag = state.heartbeat_stop.clone();
+    let app_handle = app.clone();
+
+    thread::spawn(move || {
+        let mut interval = Duration::from_secs(90); // Base interval: 90 seconds
+        let mut counter = 0u32;
+
+        loop {
+            if stop_flag.load(Ordering::Relaxed) {
+                break;
+            }
+
+            // Send heartbeat
+            if let Err(err) = post_launcher_heartbeat(&session) {
+                push_ui_log("launcher", "warn", &format!("heartbeat failed: {}", err));
+            }
+
+            // Sleep with jitter
+            let jitter = (rand::random::<u64>() % 15) as u64; // 0-14 seconds jitter
+            let sleep_duration = interval + Duration::from_secs(jitter);
+            thread::sleep(sleep_duration);
+
+            counter += 1;
+            // Every 10 heartbeats (~15 minutes), verify session still exists
+            if counter >= 10 {
+                counter = 0;
+                let still_valid = app_handle
+                    .state::<LauncherRuntimeState>()
+                    .heartbeat_running
+                    .load(Ordering::Relaxed);
+                if !still_valid {
+                    break;
+                }
+            }
+        }
+
+        // Clear running flag when stopped
+        let _ = app
+            .state::<LauncherRuntimeState>()
+            .heartbeat_running
+            .compare_exchange(true, false, Ordering::Relaxed, Ordering::Relaxed);
+    });
+
+    Ok(())
+}
+
+#[tauri::command]
+fn stop_launcher_heartbeat(app: tauri::AppHandle) {
+    app.state::<LauncherRuntimeState>()
+        .heartbeat_stop
+        .store(true, Ordering::Relaxed);
+    app.state::<LauncherRuntimeState>()
+        .heartbeat_running
+        .store(false, Ordering::Relaxed);
 }
 
 fn launcher_list_news_blocking(
@@ -2981,10 +3211,10 @@ fn install_launcher_version_mods_blocking(
             manifest_source,
             &normalized_tag,
             &mods_dir,
-            clean_existing.unwrap_or(true),
+            clean_existing.unwrap_or(false),
         )?
     } else {
-        if clean_existing.unwrap_or(true) {
+        if clean_existing.unwrap_or(false) {
             clear_directory_contents(&mods_dir)?;
         }
 
@@ -3373,7 +3603,7 @@ fn normalize_curseforge_api_key(raw: &str) -> Result<String, String> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
         // Built-in CurseForge API key
-        Ok("$2a$10$o8pygPrhvKBHuuh5imL2W.LCNFhB15zBYAExXx/TqTx/Zp5px2lxu".to_string())
+        Ok("$2a$10$4WrBbsNhZaZsxMjHlq48K.yP.NOT6GYZs.SVD/OBmOJJk229Ffb7m".to_string())
     } else {
         Ok(trimmed.to_string())
     }
@@ -5221,7 +5451,6 @@ fn launch_vanilla_blocking(
     if normalized_command.is_empty() {
         return Err("Launch command is empty".to_string());
     }
-    normalized_command[0] = prefer_java_with_console(&normalized_command[0]);
     let runtime_dir = resolve_version_runtime_dir(&game_dir_path, &version_id)?;
     rewrite_launch_game_dir_argument(&mut normalized_command, &runtime_dir);
 
@@ -5240,6 +5469,7 @@ fn launch_vanilla_blocking(
     if let Ok(mut store) = game_runtime_starts().lock() {
         store.insert(pid, std::time::Instant::now());
     }
+    ensure_game_runtime_sampler();
     let _ = window.emit(
         "game-log",
         CoreLogEvent {
@@ -5323,6 +5553,9 @@ fn clear_runtime_pid(pid: i64) {
     if let Ok(mut store) = game_runtime_starts().lock() {
         store.remove(&pid);
     }
+    if let Ok(mut cache) = game_runtime_cache().lock() {
+        cache.remove(&pid);
+    }
 }
 
 fn detect_active_game_pid() -> Option<i64> {
@@ -5391,27 +5624,6 @@ fn resolve_launch_plan_blocking(
     let output = run_java_core(Some(window), &refs)?;
     serde_json::from_str::<LaunchPlan>(&output)
         .map_err(|e| format!("Invalid launch plan output: {e}"))
-}
-
-fn prefer_java_with_console(executable: &str) -> String {
-    if !cfg!(windows) {
-        return executable.to_string();
-    }
-
-    let lower = executable.to_lowercase();
-    if !lower.ends_with("javaw.exe") {
-        return executable.to_string();
-    }
-
-    let java_path = Path::new(executable)
-        .with_file_name("java.exe")
-        .to_string_lossy()
-        .to_string();
-    if Path::new(&java_path).exists() {
-        return java_path;
-    }
-
-    executable.to_string()
 }
 
 fn normalize_game_command_tokens(command: Vec<String>) -> Vec<String> {
@@ -5640,14 +5852,15 @@ fn toggle_mod_disabled(
 fn open_path_in_explorer(path: &Path) -> Result<(), String> {
     #[cfg(windows)]
     {
-        let status = Command::new("explorer")
-            .arg(path)
-            .status()
+        // Windows explorer returns non-zero exit code even when successful.
+        // Just spawn the process and ignore the exit status.
+        let mut command = Command::new("explorer");
+        command.arg(path);
+        apply_windows_silent_spawn(&mut command);
+        command
+            .spawn()
             .map_err(|e| format!("Failed to open folder with explorer: {e}"))?;
-        if status.success() {
-            return Ok(());
-        }
-        return Err(format!("Explorer returned non-zero status: {status}"));
+        return Ok(());
     }
 
     #[cfg(target_os = "macos")]
@@ -5678,8 +5891,10 @@ fn open_path_in_explorer(path: &Path) -> Result<(), String> {
 fn open_file_with_system(path: &Path) -> Result<(), String> {
     #[cfg(windows)]
     {
-        let status = Command::new("cmd")
-            .args(["/C", "start", "", &path.to_string_lossy()])
+        let mut command = Command::new("cmd");
+        command.args(["/C", "start", "", &path.to_string_lossy()]);
+        apply_windows_silent_spawn(&mut command);
+        let status = command
             .status()
             .map_err(|e| format!("Failed to open file with start: {e}"))?;
         if status.success() {
@@ -5772,6 +5987,7 @@ fn spawn_game_process(
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    apply_windows_silent_spawn(&mut command);
 
     command
         .spawn()
@@ -5813,8 +6029,10 @@ fn query_process_memory_kb(pid: i64) -> Result<Option<u64>, String> {
 
 fn query_windows_process_memory_kb(pid: i64) -> Result<Option<u64>, String> {
     let filter = format!("PID eq {pid}");
-    let output = Command::new("tasklist")
-        .args(["/FI", &filter, "/FO", "CSV", "/NH"])
+    let mut command = Command::new("tasklist");
+    command.args(["/FI", &filter, "/FO", "CSV", "/NH"]);
+    apply_windows_silent_spawn(&mut command);
+    let output = command
         .output()
         .map_err(|e| format!("Failed to query tasklist: {e}"))?;
 
@@ -5921,10 +6139,9 @@ fn build_platform_command(
     current_dir: Option<&Path>,
 ) -> Command {
     if cfg!(windows) {
-        let mut command = Command::new("cmd");
-        command.arg("/C");
-        command.arg(executable);
+        let mut command = Command::new(executable);
         command.args(args);
+        apply_windows_silent_spawn(&mut command);
         if let Some(dir) = current_dir {
             command.current_dir(dir);
         }
@@ -5938,6 +6155,14 @@ fn build_platform_command(
     }
     command
 }
+
+#[cfg(windows)]
+fn apply_windows_silent_spawn(command: &mut Command) {
+    command.creation_flags(CREATE_NO_WINDOW);
+}
+
+#[cfg(not(windows))]
+fn apply_windows_silent_spawn(_command: &mut Command) {}
 
 fn pump_game_stream<R: Read + Send + 'static>(
     stream: R,
@@ -6190,9 +6415,6 @@ fn run_java_core(window: Option<&tauri::Window>, args: &[&str]) -> Result<String
     full_args.extend(args.iter().map(|x| (*x).to_string()));
     let command_preview = format_quoted_command("java", &full_args);
     emit_log(window, "info", &format!("run: {command_preview}"));
-    if cfg!(windows) {
-        emit_log(window, "info", "spawn shell: cmd /C");
-    }
 
     let mut java_cmd = build_platform_command("java", &full_args, None);
     let mut child = java_cmd
@@ -6272,7 +6494,7 @@ fn run_java_core(window: Option<&tauri::Window>, args: &[&str]) -> Result<String
         let concise = summarize_command_failure(&stdout_text, &stderr_text);
         return Err(format!(
             "java-core command failed. shell={}; command={command_preview}; error={concise}",
-            if cfg!(windows) { "cmd /C" } else { "direct" },
+            "direct",
         ));
     }
 
@@ -6497,12 +6719,30 @@ fn emit_log(window: Option<&tauri::Window>, level: &str, message: &str) {
 }
 
 fn java_core_jar_path() -> Result<PathBuf, String> {
-    let candidates = [
+    let mut candidates = Vec::new();
+
+    if let Some(resource_jar) = JAVA_CORE_RESOURCE_JAR.get() {
+        candidates.push(resource_jar.clone());
+    }
+
+    if let Ok(exe_path) = std::env::current_exe() {
+        if let Some(exe_dir) = exe_path.parent() {
+            candidates.extend([
+                exe_dir.join("resources").join("java").join("java-core.jar"),
+                exe_dir.join("java").join("java-core.jar"),
+                exe_dir.join("src-tauri").join("resources").join("java").join("java-core.jar"),
+            ]);
+        }
+    }
+
+    candidates.extend([
+        PathBuf::from("src-tauri/resources/java/java-core.jar"),
+        PathBuf::from("./src-tauri/resources/java/java-core.jar"),
         PathBuf::from("../java-core/build/libs/fpsmaster-launcher-core-0.1.0-all.jar"),
         PathBuf::from("../java-core/build/libs/fpsmaster-launcher-core-0.1.0.jar"),
         PathBuf::from("../../java-core/build/libs/fpsmaster-launcher-core-0.1.0-all.jar"),
         PathBuf::from("../../java-core/build/libs/fpsmaster-launcher-core-0.1.0.jar"),
-    ];
+    ]);
 
     for candidate in candidates {
         if candidate.exists() {
@@ -6514,7 +6754,7 @@ fn java_core_jar_path() -> Result<PathBuf, String> {
     }
 
     Err(
-        "java-core jar not found. Build java-core first with gradlew -p java-core build"
+        "java-core jar not found. Run `npm run prepare:java-core` or build the installer so Tauri bundles `java-core.jar` automatically."
             .to_string(),
     )
 }
@@ -7497,6 +7737,16 @@ fn locate_java_binary(runtime_root: &Path) -> Option<PathBuf> {
 fn main() {
     tauri::Builder::default()
         .manage(LauncherRuntimeState::default())
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            // Callback when a second instance is launched
+            // Show and focus the main window
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.show();
+                let _ = window.set_focus();
+                let _ = window.unminimize();
+            }
+        }))
         .plugin({
             #[cfg(target_os = "macos")]
             {
@@ -7514,6 +7764,13 @@ fn main() {
         })
         .setup(|app| {
             let _ = app.path().app_data_dir();
+            if let Ok(resource_jar) =
+                app.path()
+                    .resolve("java/java-core.jar", BaseDirectory::Resource)
+            {
+                let _ = JAVA_CORE_RESOURCE_JAR
+                    .set(strip_windows_verbatim_prefix(resource_jar.as_path()));
+            }
             create_tray(&app.handle())?;
             let launched_from_autostart = is_autostart_launch();
             if let Some(window) = app.get_webview_window("main") {
@@ -7547,6 +7804,8 @@ fn main() {
             quit_launcher_app,
             launcher_cache_telemetry_session,
             launcher_offline_telemetry_session,
+            start_launcher_heartbeat,
+            stop_launcher_heartbeat,
             modrinth_search_projects,
             install_modrinth_project,
             curseforge_search_projects,

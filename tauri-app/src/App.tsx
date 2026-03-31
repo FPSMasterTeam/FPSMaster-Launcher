@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { TauriEvent } from "@tauri-apps/api/event";
 import { listen } from "@tauri-apps/api/event";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Minus, Square, X } from "lucide-react";
@@ -97,12 +98,12 @@ const DEFAULT_LOGIN_PREFS: LauncherLoginPrefs = {
 
 type LauncherVersionMap = Record<LauncherVersionType, LauncherVersion | null>;
 
-const CURRENT_LAUNCHER_VERSION = "0.2.0";
-const LAUNCHER_HEARTBEAT_INTERVAL_MS = 90_000;
-const LAUNCHER_BACKGROUND_HEARTBEAT_INTERVAL_MS = 120_000;
+const CURRENT_LAUNCHER_VERSION = "0.2.1";
 const LAUNCHER_ONLINE_REFRESH_INTERVAL_MS = 90_000;
-const LAUNCHER_HEARTBEAT_JITTER_MS = 12_000;
 const LAUNCHER_ONLINE_REFRESH_JITTER_MS = 8_000;
+const LAUNCHER_LOG_POLL_INTERVAL_MS = 500;
+const LAUNCHER_RUNTIME_POLL_INTERVAL_MS = 1000;
+const LAUNCH_PREPARE_STEPS = 4;
 
 const EMPTY_LAUNCHER_VERSIONS: LauncherVersionMap = {
   EDGE: null,
@@ -174,6 +175,7 @@ function Launcher() {
   const [launchError, setLaunchError] = useState<string | null>(null);
   const [launchProgressPercent, setLaunchProgressPercent] = useState<number | null>(null);
   const [launchProgressText, setLaunchProgressText] = useState("");
+  const [monitorWindowOpen, setMonitorWindowOpen] = useState(false);
 
   const [installDialog, setInstallDialog] = useState<InstallDialogState | null>(null);
   const [titlebarBusy, setTitlebarBusy] = useState(false);
@@ -187,6 +189,7 @@ function Launcher() {
   const loaderRequestRef = useRef(0);
   const lastInstallPageRef = useRef(false);
   const launchingInstanceRef = useRef<string | null>(null);
+  const installDialogRef = useRef<InstallDialogState | null>(null);
 
   const t = useMemo(() => createTranslator(settings.language), [settings.language]);
   const launcherAppUpdateAvailable = useMemo(
@@ -339,16 +342,18 @@ function Launcher() {
     }
 
     let active = true;
-    const runHeartbeat = async () => {
+
+    // Start heartbeat in Rust backend
+    const startHeartbeat = async () => {
       try {
-        await cacheLauncherTelemetrySession();
-        await postLauncherHeartbeat(token);
+        await invoke("start_launcher_heartbeat");
       } catch (error) {
         if (active && isAuthExpiredError(error)) {
           handleAuthExpired(t("login.sessionExpired"));
         }
       }
     };
+
     const loadOnline = async () => {
       if (backgroundMode) {
         return;
@@ -369,16 +374,7 @@ function Launcher() {
       }
     };
 
-    let heartbeatTimer: number | null = null;
     let onlineTimer: number | null = null;
-    const scheduleHeartbeat = () => {
-      heartbeatTimer = window.setTimeout(async () => {
-        await runHeartbeat();
-        if (active) {
-          scheduleHeartbeat();
-        }
-      }, nextRecurringDelay(backgroundMode ? LAUNCHER_BACKGROUND_HEARTBEAT_INTERVAL_MS : LAUNCHER_HEARTBEAT_INTERVAL_MS, LAUNCHER_HEARTBEAT_JITTER_MS));
-    };
     const scheduleOnlineRefresh = () => {
       onlineTimer = window.setTimeout(async () => {
         await loadOnline();
@@ -388,17 +384,16 @@ function Launcher() {
       }, nextRecurringDelay(LAUNCHER_ONLINE_REFRESH_INTERVAL_MS, LAUNCHER_ONLINE_REFRESH_JITTER_MS));
     };
 
-    void runHeartbeat();
-    scheduleHeartbeat();
+    void startHeartbeat();
     if (!backgroundMode) {
       void loadOnline();
       scheduleOnlineRefresh();
     }
+
     return () => {
       active = false;
-      if (heartbeatTimer !== null) {
-        window.clearTimeout(heartbeatTimer);
-      }
+      // Stop heartbeat when token changes or component unmounts
+      invoke("stop_launcher_heartbeat").catch(() => {});
       if (onlineTimer !== null) {
         window.clearTimeout(onlineTimer);
       }
@@ -463,6 +458,10 @@ function Launcher() {
   }, [launchingInstanceId]);
 
   useEffect(() => {
+    installDialogRef.current = installDialog;
+  }, [installDialog]);
+
+  useEffect(() => {
     const inInstall = page === "install";
     if (inInstall && !lastInstallPageRef.current) {
       void refreshCatalog();
@@ -489,8 +488,10 @@ function Launcher() {
     void refreshLoader();
   }, [page, loader, installVersion]);
 
+  const shouldPollUiLogs = windowVisible && !monitorWindowOpen && (launchingInstanceId !== null || installDialog !== null);
+
   useEffect(() => {
-    if (!windowVisible) {
+    if (!shouldPollUiLogs) {
       return;
     }
     let active = true;
@@ -525,16 +526,17 @@ function Launcher() {
     };
 
     void poll();
-    const timer = window.setInterval(() => void poll(), 250);
+    const timer = window.setInterval(() => void poll(), LAUNCHER_LOG_POLL_INTERVAL_MS);
     return () => {
       active = false;
       window.clearInterval(timer);
     };
-  }, [windowVisible]);
+  }, [shouldPollUiLogs, launchingInstanceId, installDialog]);
 
   useEffect(() => {
     if (activeGamePid === null || activeGamePid <= 0) return;
     if (!windowVisible) return;
+    if (monitorWindowOpen) return;
     let active = true;
     const probe = async () => {
       try {
@@ -550,12 +552,12 @@ function Launcher() {
     };
 
     void probe();
-    const timer = window.setInterval(() => void probe(), 2000);
+    const timer = window.setInterval(() => void probe(), LAUNCHER_RUNTIME_POLL_INTERVAL_MS);
     return () => {
       active = false;
       window.clearInterval(timer);
     };
-  }, [activeGamePid, windowVisible]);
+  }, [activeGamePid, windowVisible, monitorWindowOpen]);
 
   useEffect(() => {
     void syncAutostart(settings.launchOnStartup);
@@ -928,9 +930,6 @@ function Launcher() {
       if (isLauncherAppUpdateMissing(errorText)) {
         setLauncherAppUpdate(null);
         setLauncherAppUpdateDownload(null);
-        if (!silent) {
-          setStatus(t("settings.launcherUpdateNotConfigured"));
-        }
       } else if (!silent) {
         setStatus(t("app.status.failed", { error: errorText }));
       }
@@ -961,27 +960,6 @@ function Launcher() {
       setStatus(t("app.status.failed", { error: formatLaunchError(error) }));
     } finally {
       setLauncherAppUpdateDownloading(false);
-    }
-  }
-
-  async function postLauncherHeartbeat(token: string): Promise<void> {
-    const response = await fetch(`${LAUNCHER_API_BASE_URL}/api/v1/telemetry/heartbeat`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${token}`
-      },
-      body: JSON.stringify({
-        clientName: "fpsmaster-launcher",
-        clientKind: "LAUNCHER",
-        sessionId: launcherSessionIdRef.current,
-        username: launcherAuth?.user?.username ?? settings.playerName,
-        playerUuid: launcherAuth?.user?.id ?? null
-      })
-    });
-
-    if (!response.ok) {
-      throw new Error(`heartbeat failed with HTTP ${response.status}`);
     }
   }
 
@@ -1197,7 +1175,7 @@ function Launcher() {
         checksum: targetVersion.checksum,
         manifestUrl: targetVersion.manifestUrl,
         versionTag: targetVersion.versionName,
-        cleanExisting: true
+        cleanExisting: false
       });
       setPresetPackageStatuses((prev) => ({
         ...prev,
@@ -1447,14 +1425,22 @@ function Launcher() {
 
     setLaunchError(null);
     setLaunchingInstanceId(target.id);
-    setLaunchProgressPercent(null);
-    setLaunchProgressText(t("launch.progress.preparing"));
+    setLaunchProgressPercent(0);
+    setLaunchProgressText(t("launch.progress.checkInstance"));
     setBusy(true);
     setStatus(t("app.status.launching", { name: target.name }));
     let launchResult: LaunchExecutionResult | null = null;
     try {
+      setLaunchProgressPercent(0);
+      setLaunchProgressText(t("launch.progress.checkInstance"));
       const prepared = await ensureInstanceReadyForLaunch(target);
+
+      setLaunchProgressPercent(Math.round((1 / LAUNCH_PREPARE_STEPS) * 100));
+      setLaunchProgressText(t("launch.progress.prepareRuntime"));
       const jdk = await ensureJdk(settings.gameDir, prepared.versionId);
+
+      setLaunchProgressPercent(Math.round((2 / LAUNCH_PREPARE_STEPS) * 100));
+      setLaunchProgressText(t("launch.progress.buildCommand"));
       launchResult = await invoke<LaunchExecutionResult>("launch_vanilla", {
         gameDir: settings.gameDir,
         versionId: prepared.versionId,
@@ -1466,6 +1452,8 @@ function Launcher() {
         downloadSource: settings.downloadSource,
         waitForExit: false
       });
+      setLaunchProgressPercent(100);
+      setLaunchProgressText(t("launch.progress.startingGame"));
     } catch (error) {
       const errorText = formatLaunchError(error);
       setStatus(t("app.status.launchFailed", { error: errorText }));
@@ -1485,12 +1473,16 @@ function Launcher() {
     }
 
     try {
-      await openMonitor(
+      const monitorWindow = await openMonitor(
         launchResult.pid,
-        launchResult.versionId,
+        target.name,
         logCursorRef.current ?? 0,
         settings.language
       );
+      setMonitorWindowOpen(true);
+      void monitorWindow.once(TauriEvent.WINDOW_DESTROYED, () => {
+        setMonitorWindowOpen(false);
+      });
       if (settings.hideMainOnLaunch) {
         await getCurrentWindow().hide();
       }
@@ -2368,13 +2360,6 @@ function findMessageInUnknown(value: unknown): string | null {
 function parseLaunchProgressLog(message: string): { percent?: number; text: string } | null {
   const text = message.trim();
   if (!text) return null;
-  const lower = text.toLowerCase();
-  const isJdkLog =
-    lower.includes("jdk") ||
-    lower.includes("ensure_jdk") ||
-    lower.includes("temurin") ||
-    lower.includes("adoptium");
-  if (!isJdkLog) return null;
 
   const match = text.match(/JDK download progress:\s*(\d+)%/);
   if (match) {
@@ -2387,7 +2372,23 @@ function parseLaunchProgressLog(message: string): { percent?: number; text: stri
   if (text.startsWith("JDK download succeeded") || text.startsWith("JDK ready") || text.startsWith("JDK already exists")) {
     return { percent: 100, text };
   }
-  return { text };
+
+  if (text.startsWith("Downloading JDK ")) {
+    return { percent: 30, text };
+  }
+
+  if (text.startsWith("Extracting JDK archive")) {
+    return { percent: 60, text };
+  }
+
+  if (text.startsWith("launch game:")) {
+    return { percent: 90, text: text.replace(/^launch game:\s*/i, "Starting game process") };
+  }
+
+  if (text.startsWith("[process] started pid=")) {
+    return { percent: 100, text: "Game process started" };
+  }
+  return null;
 }
 
 async function ensureJdk(gameDir: string, versionId: string): Promise<JdkEnsureResult> {
@@ -2408,11 +2409,11 @@ async function syncTrayBehavior(minimizeToTray: boolean): Promise<void> {
   }
 }
 
-async function openMonitor(pid: number, versionId: string, cursor: number, locale: Locale) {
+async function openMonitor(pid: number, instanceName: string, cursor: number, locale: Locale) {
   const params = new URLSearchParams({
     view: "monitor",
     pid: String(pid),
-    version: versionId,
+    version: instanceName,
     startedAt: String(Date.now()),
     cursor: String(cursor),
     lang: locale
@@ -2420,7 +2421,7 @@ async function openMonitor(pid: number, versionId: string, cursor: number, local
 
   const monitorLabel = `runtime-monitor-${Date.now()}-${Math.floor(Math.random() * 10000)}`;
   const win = new WebviewWindow(monitorLabel, {
-    title: `FPSMaster Runtime - ${versionId}`,
+    title: `Runtime - ${instanceName}`,
     width: 980,
     height: 720,
     minWidth: 760,
@@ -2435,6 +2436,8 @@ async function openMonitor(pid: number, versionId: string, cursor: number, local
       reject(new Error(String((event as { payload?: unknown }).payload ?? "create monitor failed")));
     });
   });
+
+  return win;
 }
 
 function loadLauncherAuthState(): LauncherAuthState | null {

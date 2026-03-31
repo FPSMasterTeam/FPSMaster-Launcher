@@ -197,12 +197,12 @@ export default function InstanceSettingsPage({
 
   if (!instance) {
     return (
-      <div className="h-full overflow-y-auto p-4 md:p-5 xl:p-6">
-        <Card variant="frost" className="max-w-xl rounded-xl p-5" interactive={false}>
-          <h1 className="text-2xl font-semibold text-[var(--text-primary)]">{t("instanceFiles.title")}</h1>
-          <p className="mt-2 text-sm text-[var(--text-secondary)]">{t("instanceFiles.noInstance")}</p>
+      <div className="page-shell">
+        <Card variant="frost" className="page-card max-w-xl rounded-[22px]" interactive={false}>
+          <h1 className="page-title !mt-0 !text-[28px]">{t("instanceFiles.title")}</h1>
+          <p className="page-subtitle">{t("instanceFiles.noInstance")}</p>
           <div className="mt-5">
-            <Button variant="secondary" size="sm" className="gap-2" onClick={onBack}>
+            <Button variant="secondary" size="sm" className="gap-2 !rounded-2xl" onClick={onBack}>
               <ArrowLeft size={14} />
               {t("instanceFiles.back")}
             </Button>
@@ -213,36 +213,36 @@ export default function InstanceSettingsPage({
   }
 
   return (
-    <div className="h-full overflow-y-auto p-4 md:p-5 xl:p-6">
-      <header className="mb-6 grid gap-4 md:grid-cols-[minmax(0,1fr)_auto] md:items-start">
-        <div>
-          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[var(--text-muted)]">{t("instanceFiles.title")}</p>
-          <h1 className="mt-2 text-3xl font-semibold tracking-tight text-[var(--text-primary)]">{instance.name}</h1>
-          <p className="mt-1 text-[var(--text-secondary)]">{t("instanceFiles.subtitle", { name: instance.name })}</p>
+    <div className="page-shell">
+      <header className="page-header mb-6">
+        <div className="page-header-main">
+          <p className="page-eyebrow">{t("instanceFiles.title")}</p>
+          <h1 className="page-title">{instance.name}</h1>
+          <p className="page-subtitle">{t("instanceFiles.subtitle", { name: instance.name })}</p>
           <div className="mt-3 flex flex-wrap gap-2">
             <MetaBadge>{instance.baseVersion}</MetaBadge>
             <MetaBadge>{loaderLabel(instance.loader, t)}</MetaBadge>
             {instance.launcherVersionType && <MetaBadge>{instance.launcherVersionType}</MetaBadge>}
           </div>
         </div>
-        <div className="flex items-center gap-2">
-          <Button variant="outline" size="sm" className="gap-2" disabled={busy} onClick={onRepair}>
+        <div className="page-header-actions">
+          <Button variant="outline" size="sm" className="gap-2 !rounded-2xl" disabled={busy} onClick={onRepair}>
             <RefreshCw size={14} className={busy ? "animate-spin" : ""} />
             {t("instanceFiles.repair")}
           </Button>
-          <Button variant="outline" size="sm" className="gap-2" disabled={busy} onClick={onDuplicate}>
+          <Button variant="outline" size="sm" className="gap-2 !rounded-2xl" disabled={busy} onClick={onDuplicate}>
             <Copy size={14} />
             {t("instances.copy")}
           </Button>
-          <Button variant="outline" size="sm" className="gap-2" disabled={busy} onClick={onExport}>
+          <Button variant="outline" size="sm" className="gap-2 !rounded-2xl" disabled={busy} onClick={onExport}>
             <Archive size={14} />
             {t("instances.export")}
           </Button>
-          <Button variant="danger" size="sm" className="gap-2" disabled={busy || instance?.preset} onClick={onDelete}>
+          <Button variant="danger" size="sm" className="gap-2 !rounded-2xl" disabled={busy || instance?.preset} onClick={onDelete}>
             <Trash2 size={14} />
             {t("instances.delete")}
           </Button>
-          <Button variant="secondary" size="sm" className="gap-2" onClick={onBack}>
+          <Button variant="secondary" size="sm" className="gap-2 !rounded-2xl" onClick={onBack}>
             <ArrowLeft size={14} />
             {t("instanceFiles.back")}
           </Button>
@@ -250,7 +250,7 @@ export default function InstanceSettingsPage({
       </header>
 
       {/* Tab Navigation */}
-      <div className="mb-6 flex items-center gap-2 overflow-x-auto pb-1">
+      <div className="segment-control mb-6 flex items-center gap-2 overflow-x-auto rounded-[20px] pb-1">
         {SECTIONS.map((section) => {
           const isActive = activeTab === section.id;
           const state = sections[section.id];
@@ -259,11 +259,7 @@ export default function InstanceSettingsPage({
               key={section.id}
               type="button"
               onClick={() => setActiveTab(section.id)}
-              className={`relative flex shrink-0 items-center gap-2 rounded-xl border px-4 py-2.5 text-sm font-medium transition-colors ${
-                isActive
-                  ? "border-[rgba(var(--accent-rgb),0.36)] bg-[rgba(var(--accent-rgb),0.14)] text-[var(--text-primary)]"
-                  : "border-white/5 bg-[var(--surface-soft)] text-[var(--text-secondary)] hover:border-white/10 hover:text-[var(--text-primary)]"
-              }`}
+              className={`segment-chip relative shrink-0 ${isActive ? "is-active" : ""}`}
             >
               {section.icon}
               <span>{sectionLabel(section.id)}</span>
@@ -279,21 +275,24 @@ export default function InstanceSettingsPage({
       {(() => {
         const state = sections[activeTab];
         return (
-          <Card variant="frost" className="rounded-xl p-4 md:p-5" interactive={false}>
-            <div className="mb-4 flex items-center justify-between gap-2">
-              <h2 className="text-lg font-semibold text-[var(--text-primary)]">{sectionLabel(activeTab)}</h2>
-              <div className="flex items-center gap-2">
+          <Card variant="frost" className="page-card rounded-[22px]" interactive={false}>
+            <div className="section-header">
+              <div className="section-header-main">
+                <h2 className="section-title">{sectionLabel(activeTab)}</h2>
+                <p className="section-subtitle">{instance.versionId}</p>
+              </div>
+              <div className="section-toolbar">
                 <Button
                   variant="outline"
                   size="sm"
-                  className="gap-1"
+                  className="gap-1 !rounded-2xl"
                   disabled={state.loading}
                   onClick={() => void refreshSection(activeTab, instance.versionId)}
                 >
                   <RefreshCw size={14} className={state.loading ? "animate-spin" : ""} />
                   {t("instanceFiles.refresh")}
                 </Button>
-                <Button variant="secondary" size="sm" className="gap-1" onClick={() => void openSection(activeTab)}>
+                <Button variant="secondary" size="sm" className="gap-1 !rounded-2xl" onClick={() => void openSection(activeTab)}>
                   <FolderOpen size={14} />
                   {t("instanceFiles.openFolder")}
                 </Button>
@@ -303,11 +302,15 @@ export default function InstanceSettingsPage({
             {state.loading ? (
               <p className="text-sm text-[var(--text-secondary)]">{t("instanceFiles.loading")}</p>
             ) : state.error ? (
-              <p className="break-all text-sm text-[var(--accent-danger)]">{state.error}</p>
+              <div className="notice notice-danger">
+                <div>
+                  <p className="notice-text !mt-0 break-all">{state.error}</p>
+                </div>
+              </div>
             ) : state.entries.length === 0 ? (
-              <div className="rounded-xl border border-dashed border-white/5 bg-[var(--surface-soft)] p-8 text-center">
-                <FolderOpen size={32} className="mx-auto mb-3 text-[var(--text-muted)]" />
-                <p className="text-sm text-[var(--text-muted)]">{t("instanceFiles.empty")}</p>
+              <div className="empty-state min-h-[220px]">
+                <FolderOpen size={32} className="empty-state-icon" />
+                <p className="empty-state-text !mt-0">{t("instanceFiles.empty")}</p>
               </div>
             ) : (
               <div className="max-h-[400px] overflow-y-auto">
@@ -317,10 +320,10 @@ export default function InstanceSettingsPage({
                     return (
                       <li
                         key={entry.name}
-                        className={`group relative flex items-center gap-2 rounded-xl border px-3 py-2.5 transition-colors ${
+                        className={`surface-panel group relative flex items-center gap-2 rounded-[18px] px-3 py-2.5 transition-colors ${
                           entry.disabled
-                            ? "border-white/5 bg-[var(--surface-soft)]/50 opacity-60"
-                            : "border-white/5 bg-[var(--surface-soft)] hover:border-white/10"
+                            ? "opacity-60"
+                            : "hover:border-[var(--border-medium)]"
                         }`}
                       >
                         {entry.isDir ? (
@@ -380,7 +383,7 @@ function loaderLabel(
 
 function MetaBadge({ children }: { children: ReactNode }) {
   return (
-    <span className="rounded-md bg-[var(--bg-elevated)] px-2 py-0.5 text-[10px] font-semibold uppercase text-[var(--text-secondary)]">
+    <span className="badge badge-muted rounded-full px-2 py-1 text-[10px]">
       {children}
     </span>
   );

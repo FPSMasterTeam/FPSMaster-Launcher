@@ -44,18 +44,13 @@ export default function Sidebar({
       }`}
     >
       <div className="px-2 py-2 lg:px-3">
-        <button
-          type="button"
-          onClick={() => setPage("home")}
-          className={`flex min-h-10 w-full items-center rounded-lg px-2 transition-colors hover:bg-[var(--surface-soft)] ${collapsed ? "justify-center" : "justify-center lg:justify-start"}`}
-          aria-label={t("nav.dashboard")}
-        >
+        <div className={`flex min-h-10 w-full items-center rounded-lg px-2 ${collapsed ? "justify-center" : "justify-center lg:justify-start"}`}>
           <AppLogo size={28} className="rounded-lg" />
           <div className={`ml-3 min-w-0 ${collapsed ? "hidden" : "hidden lg:block"}`}>
             <p className="truncate text-sm font-semibold text-[var(--text-primary)]">FPSMaster</p>
             <p className="truncate text-[10px] uppercase tracking-[0.12em] text-[var(--text-muted)]">Launcher</p>
           </div>
-        </button>
+        </div>
       </div>
 
       <nav className="flex-1 space-y-1 px-2 py-2 lg:px-3">
