@@ -29,6 +29,7 @@ import InstallPage from "./pages/Install";
 import InstancesPage from "./pages/Instances";
 import LoginPage from "./pages/Login";
 import MonitorPage from "./pages/Monitor";
+import ServersPage from "./pages/Servers";
 import ContentPage from "./pages/Content";
 import MandatoryUpdatePage from "./pages/MandatoryUpdate";
 import AccountCenterPage from "./pages/AccountCenter";
@@ -865,6 +866,119 @@ function Launcher() {
       if (!silent) {
         setStatus(t("app.status.failed", { error: formatLaunchError(error) }));
       }
+    }
+  }
+
+  async function refreshLauncherServers(silent = false): Promise<void> {
+    try {
+      const token = (launcherAuth?.token ?? "").trim();
+      const headers: Record<string, string> = {
+        "Content-Type": "application/json"
+      };
+      if (token) {
+        headers["Authorization"] = `Bearer ${token}`;
+      }
+      const response = await fetch(`${LAUNCHER_API_BASE_URL}/api/v1/launcher/servers`, {
+        headers
+      });
+      const raw = await response.json();
+      const data = (raw as { success?: boolean; data?: ServerItem[] })?.data ?? [];
+      setLauncherServers(data);
+      if (!silent) {
+        setStatus(t("app.status.loadedServers", { count: data.length }));
+      }
+    } catch (error) {
+      if (!silent) {
+        setStatus(t("app.status.failed", { error: formatLaunchError(error) }));
+      }
+    }
+  }
+
+  async function launchToServer(serverAddress: string): Promise<void> {
+    if (!current) {
+      setStatus(t("servers.noInstance"));
+      return;
+    }
+    if (ensureMandatoryLauncherUpdate()) {
+      return;
+    }
+
+    setLaunchError(null);
+    setLaunchingInstanceId(current.id);
+    setLaunchProgressPercent(0);
+    setLaunchProgressText(t("launch.progress.checkInstance"));
+    setBusy(true);
+    setStatus(t("app.status.launching", { name: current.name }));
+    let launchResult: LaunchExecutionResult | null = null;
+    try {
+      setLaunchProgressPercent(0);
+      setLaunchProgressText(t("launch.progress.checkInstance"));
+      const prepared = await ensureInstanceReadyForLaunch(current);
+
+      setLaunchProgressPercent(Math.round((1 / LAUNCH_PREPARE_STEPS) * 100));
+      setLaunchProgressText(t("launch.progress.prepareRuntime"));
+      const jdk = await ensureJdk(settings.gameDir, prepared.versionId);
+
+      setLaunchProgressPercent(Math.round((2 / LAUNCH_PREPARE_STEPS) * 100));
+      setLaunchProgressText(t("launch.progress.buildCommand"));
+      launchResult = await invoke<LaunchExecutionResult>("launch_vanilla", {
+        gameDir: settings.gameDir,
+        versionId: prepared.versionId,
+        playerName: settings.playerName,
+        uuid: "00000000-0000-0000-0000-000000000000",
+        accessToken: "offline",
+        maxMemoryMb: settings.maxMemoryMb,
+        javaPath: jdk.javaPath,
+        downloadSource: settings.downloadSource,
+        waitForExit: false,
+        serverAddress: serverAddress
+      });
+      setLaunchProgressPercent(100);
+      setLaunchProgressText(t("launch.progress.startingGame"));
+    } catch (error) {
+      const errorText = formatLaunchError(error);
+      setStatus(t("app.status.launchFailed", { error: errorText }));
+      setLaunchError(errorText);
+      setBusy(false);
+      setLaunchingInstanceId(null);
+      return;
+    }
+
+    if (!launchResult) {
+      const errorText = t("app.status.launchMissingResult");
+      setStatus(errorText);
+      setLaunchError(errorText);
+      setBusy(false);
+      setLaunchingInstanceId(null);
+      return;
+    }
+
+    try {
+      const monitorWindow = await openMonitor(
+        launchResult.pid,
+        current.name,
+        logCursorRef.current ?? 0,
+        settings.language
+      );
+      setMonitorWindowOpen(true);
+      void monitorWindow.once(TauriEvent.WINDOW_DESTROYED, () => {
+        setMonitorWindowOpen(false);
+      });
+      if (settings.hideMainOnLaunch) {
+        await getCurrentWindow().hide();
+      }
+      setActiveGamePid(launchResult.pid);
+      setStatus(t("app.status.gameStarted", { pid: launchResult.pid }));
+    } catch (error) {
+      setStatus(
+        t("app.status.gameStartedMonitorFailed", {
+          pid: launchResult.pid,
+          error: String(error)
+        })
+      );
+    } finally {
+      setBusy(false);
+      setLaunchingInstanceId(null);
     }
   }
 
@@ -1897,6 +2011,23 @@ function Launcher() {
           onSelect={setSelected}
           onLaunch={launch}
           onOpenSettings={() => navigatePage("settings")}
+          onOpenServers={() => navigatePage("servers")}
+        />
+      );
+    }
+
+    if (page === "servers") {
+      return (
+        <ServersPage
+          servers={launcherServers}
+          currentInstance={current}
+          busy={busy}
+          launching={launching}
+          launchProgressPercent={launchProgressPercent}
+          launchProgressText={launchProgressText}
+          user={launcherAuth?.user ?? null}
+          onLaunch={launchToServer}
+          onRefreshServers={() => refreshLauncherServers(false)}
         />
       );
     }

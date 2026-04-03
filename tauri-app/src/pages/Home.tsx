@@ -45,6 +45,7 @@ type HomePageProps = {
   onSelect: (id: string) => void;
   onLaunch: () => void;
   onOpenSettings: () => void;
+  onOpenServers: () => void;
 };
 
 function canAccessInstance(instance: Instance, user: LauncherUser | null): boolean {
@@ -71,7 +72,8 @@ export default function HomePage({
   user,
   onSelect,
   onLaunch,
-  onOpenSettings
+  onOpenSettings,
+  onOpenServers
 }: HomePageProps) {
   const { t } = useI18n();
   const selectedInstance = current ?? availableInstances[0] ?? null;
@@ -257,6 +259,15 @@ export default function HomePage({
                   {t("home.topServers")}
                 </h2>
                 <p className="section-subtitle">{t("home.moreServers")}</p>
+              </div>
+              <div className="section-toolbar">
+                <button
+                  className="segment-chip px-4 !min-h-10"
+                  type="button"
+                  onClick={onOpenServers}
+                >
+                  {t("home.viewAll")}
+                </button>
               </div>
             </div>
             {launcherServers.length > 0 ? (

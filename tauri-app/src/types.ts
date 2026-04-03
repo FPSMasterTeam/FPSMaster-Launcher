@@ -1,4 +1,4 @@
-export type Page = "home" | "instances" | "install" | "content" | "settings" | "instance-settings" | "mandatory-update" | "account-center";
+export type Page = "home" | "instances" | "install" | "servers" | "content" | "settings" | "instance-settings" | "mandatory-update" | "account-center";
 export type Loader = "vanilla" | "forge" | "fabric";
 export type PhaseStatus = "pending" | "running" | "done" | "error";
 export type Locale = "en-US" | "zh-CN";
@@ -78,7 +78,11 @@ export type ServerItem = {
   address: string;
   mode: string;
   iconPath?: string;
+  iconUrl?: string;
   description?: string;
+  detailedDescription?: string;
+  serverGroup?: string;
+  displayOrder?: number;
 };
 
 export type LaunchExecutionResult = {

@@ -1,4 +1,4 @@
-import { ChevronsLeft, ChevronsRight, Compass, Crown, Gamepad2, Home, Settings, Trophy } from "lucide-react";
+import { ChevronsLeft, ChevronsRight, Compass, Crown, Gamepad2, Home, Server, Settings, Trophy } from "lucide-react";
 import AppLogo from "./AppLogo";
 import { useI18n } from "../i18n";
 import type { LauncherUser, Page } from "../types";
@@ -24,6 +24,7 @@ export default function Sidebar({
   const navItems = [
     { id: "home" as const, icon: Home, label: t("nav.dashboard") },
     { id: "instances" as const, icon: Gamepad2, label: t("nav.myGames") },
+    { id: "servers" as const, icon: Server, label: t("nav.servers") },
     { id: "content" as const, icon: Compass, label: t("nav.content") },
     { id: "settings" as const, icon: Settings, label: t("nav.settings") }
   ];

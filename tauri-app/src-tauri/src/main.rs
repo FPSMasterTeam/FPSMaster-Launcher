@@ -5440,6 +5440,7 @@ async fn launch_vanilla(
     java_path: Option<String>,
     download_source: Option<String>,
     wait_for_exit: Option<bool>,
+    server_address: Option<String>,
 ) -> Result<LaunchExecutionResult, String> {
     tauri::async_runtime::spawn_blocking(move || {
         launch_vanilla_blocking(
@@ -5453,6 +5454,7 @@ async fn launch_vanilla(
             java_path,
             download_source,
             wait_for_exit,
+            server_address,
         )
     })
     .await
@@ -5470,6 +5472,7 @@ fn launch_vanilla_blocking(
     java_path: Option<String>,
     download_source: Option<String>,
     wait_for_exit: Option<bool>,
+    server_address: Option<String>,
 ) -> Result<LaunchExecutionResult, String> {
     if let Some(pid) = detect_active_game_pid() {
         return Err(format!(
@@ -5489,6 +5492,7 @@ fn launch_vanilla_blocking(
         max_memory_mb,
         java_path.as_deref(),
         download_source.as_deref(),
+        server_address.as_deref(),
     )?;
 
     let mut normalized_command = normalize_game_command_tokens(plan.command.clone());
@@ -5642,6 +5646,7 @@ fn resolve_launch_plan_blocking(
     max_memory_mb: i32,
     java_path: Option<&str>,
     download_source: Option<&str>,
+    server_address: Option<&str>,
 ) -> Result<LaunchPlan, String> {
     let mut command = vec![
         "build-launch-plan".to_string(),
@@ -5661,6 +5666,10 @@ fn resolve_launch_plan_blocking(
     if let Some(java) = java_path {
         command.push("--java".to_string());
         command.push(java.to_string());
+    }
+    if let Some(server) = server_address {
+        command.push("--server".to_string());
+        command.push(server.to_string());
     }
     push_download_source_arg(&mut command, download_source);
 

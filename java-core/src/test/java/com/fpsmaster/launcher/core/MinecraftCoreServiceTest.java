@@ -57,7 +57,8 @@ class MinecraftCoreServiceTest {
                 "00000000-0000-0000-0000-000000000000",
                 "offline",
                 Path.of("java"),
-                1024
+                1024,
+                ""
         ));
 
         assertFalse(plan.command().contains("--demo"));
@@ -77,7 +78,8 @@ class MinecraftCoreServiceTest {
                 "00000000-0000-0000-0000-000000000000",
                 "offline",
                 Path.of("java"),
-                1024
+                1024,
+                ""
         );
 
         MinecraftCoreService.LaunchPlan firstPlan = service.buildVanillaLaunchPlan(request);
@@ -101,7 +103,8 @@ class MinecraftCoreServiceTest {
                 "00000000-0000-0000-0000-000000000000",
                 "offline",
                 currentJavaExecutable(),
-                256
+                256,
+                ""
         ), true);
 
         assertTrue(Files.isDirectory(nativesBaseDir));
@@ -121,7 +124,8 @@ class MinecraftCoreServiceTest {
                 "00000000-0000-0000-0000-000000000000",
                 "offline",
                 currentJavaExecutable(),
-                256
+                256,
+                ""
         ), false);
 
         long deadline = System.nanoTime() + 5_000_000_000L;

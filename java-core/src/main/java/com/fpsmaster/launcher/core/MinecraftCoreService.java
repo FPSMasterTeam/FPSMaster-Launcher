@@ -210,6 +210,11 @@ public final class MinecraftCoreService {
         jvmArgs.add("-Xmx" + request.maxMemoryMb() + "M");
         jvmArgs.add("-Djava.library.path=" + nativesDir.toAbsolutePath());
 
+        // Pass FPSMaster auth token via system property for client-side authentication
+        if (request.fpsAuthToken() != null && !request.fpsAuthToken().isEmpty()) {
+            jvmArgs.add("-Dfpsmaster.auth.token=" + request.fpsAuthToken());
+        }
+
         if (versionJson.has("arguments") && versionJson.getAsJsonObject("arguments").has("jvm")) {
             jvmArgs.addAll(resolveArgumentArray(
                     versionJson.getAsJsonObject("arguments").getAsJsonArray("jvm"),
@@ -233,6 +238,12 @@ public final class MinecraftCoreService {
                     gameArgs.add(replaceVariables(token, variables));
                 }
             }
+        }
+
+        // Add --server parameter if serverAddress is provided
+        if (request.serverAddress() != null && !request.serverAddress().isBlank()) {
+            gameArgs.add("--server");
+            gameArgs.add(request.serverAddress());
         }
 
         List<String> fullCommand = new ArrayList<>(jvmArgs);
@@ -776,7 +787,7 @@ public final class MinecraftCoreService {
     private Map<String, Boolean> buildRuleFeatures() {
         Map<String, Boolean> features = new HashMap<>();
         features.put("is_demo_user", false);
-        features.put("has_custom_resolution", false);
+        features.put("has_custom_resolution", true);
         features.put("has_quick_plays_support", false);
         features.put("is_quick_play_singleplayer", false);
         features.put("is_quick_play_multiplayer", false);
@@ -806,8 +817,8 @@ public final class MinecraftCoreService {
         variables.put("${auth_session}", request.accessToken());
         variables.put("${game_assets}", gameDir.resolve("assets").resolve("virtual").resolve("legacy").toString());
         variables.put("${library_directory}", gameDir.resolve("libraries").toString());
-        variables.put("${resolution_width}", "854");
-        variables.put("${resolution_height}", "480");
+        variables.put("${resolution_width}", "1200");
+        variables.put("${resolution_height}", "680");
         variables.put("${classpath_separator}", OsUtils.classPathSeparator());
         variables.put("${primary_jar}", gameDir.resolve("versions").resolve(request.versionId()).resolve(request.versionId() + ".jar").toString());
         return variables;
@@ -1533,8 +1544,18 @@ public final class MinecraftCoreService {
             String uuid,
             String accessToken,
             Path javaExecutable,
-            int maxMemoryMb
+            int maxMemoryMb,
+            String fpsAuthToken,
+            String serverAddress
     ) {
+        public LaunchRequest {
+            if (fpsAuthToken == null) {
+                fpsAuthToken = "";
+            }
+            if (serverAddress == null) {
+                serverAddress = "";
+            }
+        }
     }
 
     public record InstallResult(String versionId, Path versionJsonPath, int librariesDownloaded, int assetsDownloaded) {
