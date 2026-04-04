@@ -1,8 +1,10 @@
+import { getVersion as getAppVersion } from "@tauri-apps/api/app";
 import { invoke } from "@tauri-apps/api/core";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { TauriEvent } from "@tauri-apps/api/event";
 import { listen } from "@tauri-apps/api/event";
+import packageInfo from "../package.json";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Minus, Square, X } from "lucide-react";
 import AppLogo from "./components/AppLogo";
@@ -35,6 +37,7 @@ import MandatoryUpdatePage from "./pages/MandatoryUpdate";
 import AccountCenterPage from "./pages/AccountCenter";
 import SettingsPage from "./pages/Settings";
 import type {
+  LauncherAppUpdateChannel,
   DownloadedLauncherUpdate,
   FabricInstallResult,
   ForgeInstallResult,
@@ -60,11 +63,12 @@ import type {
   JdkEnsureResult,
   LauncherDashboard,
   LauncherHomePayload,
-  LauncherLoginPrefs,
-  Locale,
-  LaunchExecutionResult,
-  Loader,
-  Page,
+    LauncherLoginPrefs,
+    Locale,
+    LaunchExecutionResult,
+    Loader,
+    MinecraftAccount,
+    Page,
   PresetPackageStatus,
   ServerItem,
   Settings,
@@ -82,6 +86,7 @@ import {
   loadInstances,
   loadSettings,
   parseInstallIpc,
+  resolveBackgroundAssetUrl,
   resolveInstallVersion
 } from "./utils/launcher";
 
@@ -99,7 +104,7 @@ const DEFAULT_LOGIN_PREFS: LauncherLoginPrefs = {
 
 type LauncherVersionMap = Record<LauncherVersionType, LauncherVersion | null>;
 
-const CURRENT_LAUNCHER_VERSION = "0.2.1";
+const FALLBACK_LAUNCHER_VERSION = packageInfo.version;
 const LAUNCHER_ONLINE_REFRESH_INTERVAL_MS = 90_000;
 const LAUNCHER_ONLINE_REFRESH_JITTER_MS = 8_000;
 const LAUNCHER_LOG_POLL_INTERVAL_MS = 500;
@@ -140,14 +145,22 @@ function Launcher() {
     localStorage.getItem(STORAGE_KEYS.selected) ?? PRESET_INSTANCES[0].id
   );
   const [settings, setSettings] = useState<Settings>(loadSettings);
+  const [minecraftAccounts, setMinecraftAccounts] = useState<MinecraftAccount[]>(() =>
+    loadMinecraftAccounts(loadSettings().playerName)
+  );
+  const [selectedMinecraftAccountId, setSelectedMinecraftAccountId] = useState<string | null>(() =>
+    loadSelectedMinecraftAccountId()
+  );
   const [launcherAuth, setLauncherAuth] = useState<LauncherAuthState | null>(loadLauncherAuthState);
   const [launcherLoginPrefs, setLauncherLoginPrefs] = useState<LauncherLoginPrefs>(loadLauncherLoginPrefs);
   const [launcherVersions, setLauncherVersions] = useState<LauncherVersionMap>(EMPTY_LAUNCHER_VERSIONS);
+  const [currentLauncherVersion, setCurrentLauncherVersion] = useState(FALLBACK_LAUNCHER_VERSION);
   const [launcherNews, setLauncherNews] = useState<NewsItem[]>([]);
   const [launcherServers, setLauncherServers] = useState<ServerItem[]>([]);
   const [launcherDashboard, setLauncherDashboard] = useState<LauncherDashboard | null>(null);
   const [launcherOnlineSummary, setLauncherOnlineSummary] = useState<TelemetryOnlineSummary | null>(null);
   const [launcherAppUpdate, setLauncherAppUpdate] = useState<LauncherAppUpdateInfo | null>(null);
+  const [launcherAppUpdateChannels, setLauncherAppUpdateChannels] = useState<LauncherAppUpdateChannel[]>([]);
   const [launcherAppUpdateChecking, setLauncherAppUpdateChecking] = useState(false);
   const [launcherAppUpdateDownloading, setLauncherAppUpdateDownloading] = useState(false);
   const [launcherAppUpdateDownload, setLauncherAppUpdateDownload] = useState<DownloadedLauncherUpdate | null>(null);
@@ -196,8 +209,8 @@ function Launcher() {
   const launcherAppUpdateAvailable = useMemo(
     () =>
       launcherAppUpdate !== null &&
-      compareMajor(launcherAppUpdate.version, CURRENT_LAUNCHER_VERSION) > 0,
-    [launcherAppUpdate]
+      compareMajor(launcherAppUpdate.version, currentLauncherVersion) > 0,
+    [currentLauncherVersion, launcherAppUpdate]
   );
   const launcherMandatoryUpdateRequired =
     launcherAppUpdateAvailable && Boolean(launcherAppUpdate?.mandatory);
@@ -206,13 +219,19 @@ function Launcher() {
     () => instances.find((item) => item.id === selected) ?? instances[0] ?? null,
     [instances, selected]
   );
+  const currentMinecraftAccount = useMemo(() => {
+    if (minecraftAccounts.length === 0) {
+      return null;
+    }
+    return minecraftAccounts.find((item) => item.id === selectedMinecraftAccountId) ?? minecraftAccounts[0];
+  }, [minecraftAccounts, selectedMinecraftAccountId]);
   const grouped = useMemo(() => groupByMajor(catalog), [catalog]);
   const majors = useMemo(() => Object.keys(grouped).sort((a, b) => compareMajor(b, a)), [grouped]);
   const majorVersions = major ? grouped[major] ?? [] : [];
   const effectiveSidebarCollapsed = compactLayout ? true : sidebarCollapsed;
   const backgroundMode = settings.minimizeToTray && !windowVisible;
   const activeBackgroundUrl =
-    settings.backgroundSource === "web-random" ? settings.backgroundWebUrl : settings.backgroundImage;
+    resolveBackgroundAssetUrl(settings);
   const snapshots = useMemo(() => catalog.filter(isSnapshot), [catalog]);
   const authenticated = Boolean(launcherAuth?.token?.trim());
   const launching = busy && launchingInstanceId !== null;
@@ -249,12 +268,37 @@ function Launcher() {
   }
 
   useEffect(() => {
+    getAppVersion()
+      .then((version) => {
+        const normalizedVersion = version.trim();
+        if (normalizedVersion) {
+          setCurrentLauncherVersion(normalizedVersion);
+        }
+      })
+      .catch(() => {
+        setCurrentLauncherVersion(FALLBACK_LAUNCHER_VERSION);
+      });
+  }, []);
+
+  useEffect(() => {
     localStorage.setItem(STORAGE_KEYS.instances, JSON.stringify(instances));
   }, [instances]);
 
   useEffect(() => {
     localStorage.setItem(STORAGE_KEYS.settings, JSON.stringify(settings));
   }, [settings]);
+
+  useEffect(() => {
+    localStorage.setItem(STORAGE_KEYS.minecraftAccounts, JSON.stringify(minecraftAccounts));
+  }, [minecraftAccounts]);
+
+  useEffect(() => {
+    if (selectedMinecraftAccountId) {
+      localStorage.setItem(STORAGE_KEYS.selectedMinecraftAccount, selectedMinecraftAccountId);
+      return;
+    }
+    localStorage.removeItem(STORAGE_KEYS.selectedMinecraftAccount);
+  }, [selectedMinecraftAccountId]);
 
   useEffect(() => {
     if (launcherAuth) {
@@ -402,6 +446,28 @@ function Launcher() {
   }, [launcherAuth?.token, launcherAuth?.user?.username, backgroundMode]);
 
   useEffect(() => {
+    if (minecraftAccounts.length === 0) {
+      const fallback = createOfflineMinecraftAccount(
+        settings.playerName.trim() || launcherAuth?.user?.username?.trim() || "Player"
+      );
+      setMinecraftAccounts([fallback]);
+      setSelectedMinecraftAccountId(fallback.id);
+      return;
+    }
+    if (!selectedMinecraftAccountId || !minecraftAccounts.some((item) => item.id === selectedMinecraftAccountId)) {
+      setSelectedMinecraftAccountId(minecraftAccounts[0].id);
+    }
+  }, [launcherAuth?.user?.username, minecraftAccounts, selectedMinecraftAccountId, settings.playerName]);
+
+  useEffect(() => {
+    const nextPlayerName = currentMinecraftAccount?.username?.trim();
+    if (!nextPlayerName || settings.playerName === nextPlayerName) {
+      return;
+    }
+    setSettings((prev) => ({ ...prev, playerName: nextPlayerName }));
+  }, [currentMinecraftAccount?.username, settings.playerName]);
+
+  useEffect(() => {
     let disposed = false;
     let unlistenVisible: (() => void) | undefined;
     let unlistenHidden: (() => void) | undefined;
@@ -439,8 +505,12 @@ function Launcher() {
   }, [backgroundMode, launcherAuth?.token]);
 
   useEffect(() => {
-    void refreshLauncherAppUpdate(true);
+    void refreshLauncherAppUpdateChannels();
   }, []);
+
+  useEffect(() => {
+    void refreshLauncherAppUpdate(true);
+  }, [settings.launcherUpdateChannel]);
 
   useEffect(() => {
     applyTheme(settings.themeMode, settings.themeAccent, settings.customAccentHex);
@@ -584,12 +654,9 @@ function Launcher() {
         const resolved = await invoke<string>("get_default_game_dir");
         if (!active || !resolved) return;
         setDefaultGameDir(resolved);
-        const hasStoredSettings = Boolean(localStorage.getItem(STORAGE_KEYS.settings));
-        if (!hasStoredSettings) {
-          setSettings((prev) =>
-            isLegacyDefaultGameDir(prev.gameDir) ? { ...prev, gameDir: resolved } : prev
-          );
-        }
+        setSettings((prev) =>
+          isLegacyDefaultGameDir(prev.gameDir) ? { ...prev, gameDir: resolved } : prev
+        );
       } catch {
       }
     };
@@ -662,7 +729,7 @@ function Launcher() {
 
     for (const item of entries) {
       if (item.versionType !== "EDGE" && item.versionType !== "NOVA") continue;
-      if (!isLauncherVersionCompatible(item.minLauncherVersion)) continue;
+      if (!isLauncherVersionCompatible(currentLauncherVersion, item.minLauncherVersion)) continue;
       const current = out[item.versionType];
       const shouldReplace =
         !current ||
@@ -911,6 +978,8 @@ function Launcher() {
     setStatus(t("app.status.launching", { name: current.name }));
     let launchResult: LaunchExecutionResult | null = null;
     try {
+      const readyAccount = await ensureMinecraftAccountReadyForLaunch(currentMinecraftAccount);
+      const launchIdentity = resolveMinecraftLaunchIdentity(readyAccount, settings.playerName);
       setLaunchProgressPercent(0);
       setLaunchProgressText(t("launch.progress.checkInstance"));
       const prepared = await ensureInstanceReadyForLaunch(current);
@@ -924,9 +993,9 @@ function Launcher() {
       launchResult = await invoke<LaunchExecutionResult>("launch_vanilla", {
         gameDir: settings.gameDir,
         versionId: prepared.versionId,
-        playerName: settings.playerName,
-        uuid: "00000000-0000-0000-0000-000000000000",
-        accessToken: "offline",
+        playerName: launchIdentity.playerName,
+        uuid: launchIdentity.uuid,
+        accessToken: launchIdentity.accessToken,
         maxMemoryMb: settings.maxMemoryMb,
         javaPath: jdk.javaPath,
         downloadSource: settings.downloadSource,
@@ -1022,11 +1091,23 @@ function Launcher() {
     }
   }
 
+  async function refreshLauncherAppUpdateChannels(): Promise<void> {
+    try {
+      const items = await invoke<LauncherAppUpdateChannel[]>("launcher_list_app_update_channels", {
+        baseUrl: LAUNCHER_API_BASE_URL
+      });
+      setLauncherAppUpdateChannels(items);
+    } catch {
+      setLauncherAppUpdateChannels([]);
+    }
+  }
+
   async function refreshLauncherAppUpdate(silent = false): Promise<void> {
     setLauncherAppUpdateChecking(true);
     try {
       const info = await invoke<LauncherAppUpdateInfo>("launcher_get_app_update", {
-        baseUrl: LAUNCHER_API_BASE_URL
+        baseUrl: LAUNCHER_API_BASE_URL,
+        channel: settings.launcherUpdateChannel
       });
       setLauncherAppUpdate(info);
       setLauncherAppUpdateDownload((prev) =>
@@ -1034,7 +1115,7 @@ function Launcher() {
       );
       if (!silent) {
         setStatus(
-          compareMajor(info.version, CURRENT_LAUNCHER_VERSION) > 0
+          compareMajor(info.version, currentLauncherVersion) > 0
             ? t("settings.launcherUpdateAvailable", { version: info.version })
             : t("settings.launcherUpToDate")
         );
@@ -1251,7 +1332,7 @@ function Launcher() {
       return;
     }
 
-    if (!isLauncherVersionCompatible(targetVersion.minLauncherVersion)) {
+    if (!isLauncherVersionCompatible(currentLauncherVersion, targetVersion.minLauncherVersion)) {
       const errorText = t("app.status.launcherUpgradeRequired", {
         required: targetVersion.minLauncherVersion ?? "-"
       });
@@ -1545,6 +1626,8 @@ function Launcher() {
     setStatus(t("app.status.launching", { name: target.name }));
     let launchResult: LaunchExecutionResult | null = null;
     try {
+      const readyAccount = await ensureMinecraftAccountReadyForLaunch(currentMinecraftAccount);
+      const launchIdentity = resolveMinecraftLaunchIdentity(readyAccount, settings.playerName);
       setLaunchProgressPercent(0);
       setLaunchProgressText(t("launch.progress.checkInstance"));
       const prepared = await ensureInstanceReadyForLaunch(target);
@@ -1558,9 +1641,9 @@ function Launcher() {
       launchResult = await invoke<LaunchExecutionResult>("launch_vanilla", {
         gameDir: settings.gameDir,
         versionId: prepared.versionId,
-        playerName: settings.playerName,
-        uuid: "00000000-0000-0000-0000-000000000000",
-        accessToken: "offline",
+        playerName: launchIdentity.playerName,
+        uuid: launchIdentity.uuid,
+        accessToken: launchIdentity.accessToken,
         maxMemoryMb: settings.maxMemoryMb,
         javaPath: jdk.javaPath,
         downloadSource: settings.downloadSource,
@@ -1979,6 +2062,21 @@ function Launcher() {
   }
 
   function updateSettings(next: Settings) {
+    if (currentMinecraftAccount?.type === "offline" && next.playerName !== settings.playerName) {
+      const normalizedName = next.playerName.trim();
+      if (normalizedName) {
+        setMinecraftAccounts((prev) =>
+          prev.map((account) =>
+            account.id === currentMinecraftAccount.id
+              ? {
+                  ...account,
+                  username: normalizedName
+                }
+              : account
+          )
+        );
+      }
+    }
     setSettings(next);
   }
 
@@ -1988,6 +2086,95 @@ function Launcher() {
       ...prev,
       maxMemoryMb: Number.isFinite(next) ? clamp(next, 1024, 16384) : prev.maxMemoryMb
     }));
+  }
+
+  function addOfflineMinecraftAccount(username: string) {
+    const normalizedName = username.trim();
+    if (!normalizedName) {
+      return;
+    }
+    setMinecraftAccounts((prev) => {
+      const existing = prev.find(
+        (account) =>
+          account.type === "offline" &&
+          account.username.localeCompare(normalizedName, undefined, { sensitivity: "accent" }) === 0
+      );
+      const nextAccount = existing ?? createOfflineMinecraftAccount(normalizedName);
+      setSelectedMinecraftAccountId(nextAccount.id);
+      setSettings((currentSettings) => ({ ...currentSettings, playerName: normalizedName }));
+      return existing ? prev : [nextAccount, ...prev];
+    });
+  }
+
+  function saveMinecraftAccount(account: MinecraftAccount) {
+    const normalizedAccount = normalizeMinecraftAccount(account) ?? account;
+    setMinecraftAccounts((prev) => {
+      const next = [...prev];
+      const existingIndex = next.findIndex(
+        (item) =>
+          item.id === normalizedAccount.id ||
+          (item.type === "microsoft" &&
+            normalizedAccount.type === "microsoft" &&
+            item.uuid.trim().toLowerCase() === normalizedAccount.uuid.trim().toLowerCase())
+      );
+      if (existingIndex >= 0) {
+        next[existingIndex] = {
+          ...next[existingIndex],
+          ...normalizedAccount
+        };
+        return next;
+      }
+      return [normalizedAccount, ...next];
+    });
+    setSelectedMinecraftAccountId(normalizedAccount.id);
+    setSettings((currentSettings) => ({
+      ...currentSettings,
+      playerName: normalizedAccount.username
+    }));
+  }
+
+  function deleteMinecraftAccount(accountId: string) {
+    setMinecraftAccounts((prev) => {
+      const next = prev.filter((account) => account.id !== accountId);
+      if (next.length > 0) {
+        if (selectedMinecraftAccountId === accountId) {
+          const fallback = next[0];
+          setSelectedMinecraftAccountId(fallback.id);
+          setSettings((currentSettings) => ({ ...currentSettings, playerName: fallback.username }));
+        }
+        return next;
+      }
+
+      const fallback = createOfflineMinecraftAccount(settings.playerName.trim() || "Player");
+      setSelectedMinecraftAccountId(fallback.id);
+      setSettings((currentSettings) => ({ ...currentSettings, playerName: fallback.username }));
+      return [fallback];
+    });
+  }
+
+  async function ensureMinecraftAccountReadyForLaunch(
+    account: MinecraftAccount | null
+  ): Promise<MinecraftAccount | null> {
+    if (!account || account.type !== "microsoft") {
+      return account;
+    }
+
+    const expiresAt = typeof account.expiresAt === "number" ? account.expiresAt : null;
+    const hasAccessToken = account.accessToken.trim().length > 0;
+    const shouldRefresh = !hasAccessToken || (expiresAt !== null && expiresAt <= Date.now() + 60_000);
+
+    if (!shouldRefresh) {
+      return account;
+    }
+
+    const refreshToken = account.refreshToken?.trim();
+    if (!refreshToken) {
+      throw new Error(t("minecraftAccount.microsoftRefreshRequired"));
+    }
+
+    const refreshedAccount = await refreshMinecraftAccount(refreshToken);
+    saveMinecraftAccount(refreshedAccount);
+    return refreshedAccount;
   }
 
   function renderPage() {
@@ -2008,10 +2195,17 @@ function Launcher() {
           launchProgressPercent={launchProgressPercent}
           launchProgressText={launchProgressText}
           user={launcherAuth?.user ?? null}
+          minecraftAccounts={minecraftAccounts}
+          currentMinecraftAccount={currentMinecraftAccount}
           onSelect={setSelected}
           onLaunch={launch}
+          onLaunchToServer={launchToServer}
           onOpenSettings={() => navigatePage("settings")}
           onOpenServers={() => navigatePage("servers")}
+          onSelectMinecraftAccount={setSelectedMinecraftAccountId}
+          onAddOfflineMinecraftAccount={addOfflineMinecraftAccount}
+          onSaveMicrosoftMinecraftAccount={saveMinecraftAccount}
+          onDeleteMinecraftAccount={deleteMinecraftAccount}
         />
       );
     }
@@ -2154,8 +2348,9 @@ function Launcher() {
     return (
       <SettingsPage
         settings={settings}
-        launcherCurrentVersion={CURRENT_LAUNCHER_VERSION}
+        launcherCurrentVersion={currentLauncherVersion}
         launcherUpdate={launcherAppUpdate}
+        launcherUpdateChannels={launcherAppUpdateChannels}
         launcherUpdateAvailable={launcherAppUpdateAvailable}
         launcherUpdateChecking={launcherAppUpdateChecking}
         launcherUpdateDownloading={launcherAppUpdateDownloading}
@@ -2341,12 +2536,15 @@ async function withTitlebarGuard(action: () => Promise<void>) {
   );
 }
 
-function isLauncherVersionCompatible(minLauncherVersion?: null | string): boolean {
+function isLauncherVersionCompatible(
+  currentLauncherVersion: string,
+  minLauncherVersion?: null | string,
+): boolean {
   const required = (minLauncherVersion ?? "").trim();
   if (!required) {
     return true;
   }
-  return compareSemanticVersion(CURRENT_LAUNCHER_VERSION, required) >= 0;
+    return compareSemanticVersion(currentLauncherVersion, required) >= 0;
 }
 
 function compareSemanticVersion(current: string, required: string): number {
@@ -2526,6 +2724,10 @@ async function ensureJdk(gameDir: string, versionId: string): Promise<JdkEnsureR
   return invoke<JdkEnsureResult>("ensure_jdk", { gameDir, versionId });
 }
 
+async function refreshMinecraftAccount(refreshToken: string): Promise<MinecraftAccount> {
+  return invoke<MinecraftAccount>("refresh_minecraft_account", { refreshToken });
+}
+
 async function syncAutostart(enabled: boolean): Promise<void> {
   try {
     await invoke("set_launch_on_startup", { enabled });
@@ -2604,6 +2806,124 @@ function loadLauncherLoginPrefs(): LauncherLoginPrefs {
   } catch {
     return DEFAULT_LOGIN_PREFS;
   }
+}
+
+function loadMinecraftAccounts(fallbackPlayerName: string): MinecraftAccount[] {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEYS.minecraftAccounts);
+    if (!raw) {
+      return [createOfflineMinecraftAccount(fallbackPlayerName.trim() || "Player")];
+    }
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) {
+      return [createOfflineMinecraftAccount(fallbackPlayerName.trim() || "Player")];
+    }
+    const accounts = parsed
+      .map(normalizeMinecraftAccount)
+      .filter((value): value is MinecraftAccount => value !== null);
+    if (accounts.length > 0) {
+      return accounts;
+    }
+  } catch {
+    // Ignore malformed minecraft account storage
+  }
+  return [createOfflineMinecraftAccount(fallbackPlayerName.trim() || "Player")];
+}
+
+function loadSelectedMinecraftAccountId(): string | null {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEYS.selectedMinecraftAccount)?.trim();
+    return raw || null;
+  } catch {
+    return null;
+  }
+}
+
+function normalizeMinecraftAccount(raw: unknown): MinecraftAccount | null {
+  if (!raw || typeof raw !== "object") {
+    return null;
+  }
+  const value = raw as Partial<MinecraftAccount>;
+  const type = value.type === "microsoft" ? "microsoft" : "offline";
+  const username = typeof value.username === "string" ? value.username.trim() : "";
+  if (!username) {
+    return null;
+  }
+  const uuid =
+    typeof value.uuid === "string" && value.uuid.trim()
+      ? value.uuid
+      : "00000000-0000-0000-0000-000000000000";
+  return {
+    id:
+      typeof value.id === "string" && value.id.trim()
+        ? value.id
+        : type === "microsoft"
+          ? createMicrosoftAccountId(uuid)
+          : createSessionId(),
+    type,
+    username,
+    uuid,
+    accessToken:
+      typeof value.accessToken === "string" && value.accessToken.trim()
+        ? value.accessToken
+        : type === "offline"
+          ? "offline"
+          : "",
+    refreshToken:
+      typeof value.refreshToken === "string" && value.refreshToken.trim()
+        ? value.refreshToken
+        : null,
+    xuid: typeof value.xuid === "string" && value.xuid.trim() ? value.xuid : null,
+    expiresAt: typeof value.expiresAt === "number" ? value.expiresAt : null,
+    addedAt: typeof value.addedAt === "number" ? value.addedAt : Date.now()
+  };
+}
+
+function createOfflineMinecraftAccount(username: string): MinecraftAccount {
+  return {
+    id: createSessionId(),
+    type: "offline",
+    username: username.trim() || "Player",
+    uuid: "00000000-0000-0000-0000-000000000000",
+    accessToken: "offline",
+    refreshToken: null,
+    xuid: null,
+    expiresAt: null,
+    addedAt: Date.now()
+  };
+}
+
+function createMicrosoftAccountId(uuid: string): string {
+  return `microsoft-${uuid.trim().toLowerCase()}`;
+}
+
+function resolveMinecraftLaunchIdentity(
+  account: MinecraftAccount | null,
+  fallbackPlayerName: string
+): { playerName: string; uuid: string; accessToken: string } {
+  const fallbackName = fallbackPlayerName.trim() || "Player";
+  if (!account) {
+    return {
+      playerName: fallbackName,
+      uuid: "00000000-0000-0000-0000-000000000000",
+      accessToken: "offline"
+    };
+  }
+  if (account.type === "microsoft") {
+    if (!account.uuid.trim() || !account.accessToken.trim()) {
+      throw new Error("Minecraft premium account is not logged in yet");
+    }
+    return {
+      playerName: account.username,
+      uuid: account.uuid,
+      accessToken: account.accessToken
+    };
+  }
+  return {
+    playerName: account.username,
+    uuid: account.uuid || "00000000-0000-0000-0000-000000000000",
+    accessToken: account.accessToken || "offline"
+  };
 }
 
 function isAuthExpiredError(error: unknown): boolean {

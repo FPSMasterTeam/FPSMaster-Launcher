@@ -3,6 +3,7 @@ import { Archive, ArrowLeft, Copy, File, Folder, FolderOpen, MoreHorizontal, Ref
 import { type ReactNode, useEffect, useState } from "react";
 import Button from "../components/Button";
 import Card from "../components/Card";
+import { resolvePresetVersionId } from "../constants";
 import { useI18n } from "../i18n";
 import type { Instance, InstanceSectionEntry } from "../types";
 
@@ -64,6 +65,9 @@ export default function InstanceSettingsPage({
   const { t } = useI18n();
   const [sections, setSections] = useState<Record<InstanceSection, SectionState>>(emptySectionState);
   const [activeTab, setActiveTab] = useState<InstanceSection>("saves");
+  const effectiveVersionId = instance && instance.preset
+    ? (resolvePresetVersionId(instance.id) ?? instance.versionId)
+    : instance?.versionId ?? "";
 
   function sectionLabel(section: InstanceSection): string {
     if (section === "saves") return t("instanceFiles.saves");
@@ -115,7 +119,7 @@ export default function InstanceSettingsPage({
     try {
       await invoke("open_instance_section", {
         gameDir,
-        versionId: instance.versionId,
+        versionId: effectiveVersionId,
         section
       });
     } catch (error) {
@@ -134,7 +138,7 @@ export default function InstanceSettingsPage({
     try {
       await invoke("delete_instance_section_entry", {
         gameDir,
-        versionId: instance.versionId,
+        versionId: effectiveVersionId,
         section,
         entryName
       });
@@ -156,12 +160,12 @@ export default function InstanceSettingsPage({
     try {
       await invoke("toggle_mod_disabled", {
         gameDir,
-        versionId: instance.versionId,
+        versionId: effectiveVersionId,
         modName: entryName,
         disable: !currentlyDisabled
       });
       // Refresh the mods section after toggling
-      await refreshSection("mods", instance.versionId);
+      await refreshSection("mods", effectiveVersionId);
     } catch (error) {
       setSections((prev) => ({
         ...prev,
@@ -180,7 +184,7 @@ export default function InstanceSettingsPage({
     }
 
     let cancelled = false;
-    const currentVersionId = instance.versionId;
+    const currentVersionId = effectiveVersionId;
     setSections(emptySectionState());
 
     for (const section of SECTIONS) {
@@ -193,7 +197,7 @@ export default function InstanceSettingsPage({
     return () => {
       cancelled = true;
     };
-  }, [instance, gameDir, t]);
+  }, [effectiveVersionId, instance, gameDir, t]);
 
   if (!instance) {
     return (
@@ -279,7 +283,7 @@ export default function InstanceSettingsPage({
             <div className="section-header">
               <div className="section-header-main">
                 <h2 className="section-title">{sectionLabel(activeTab)}</h2>
-                <p className="section-subtitle">{instance.versionId}</p>
+                <p className="section-subtitle">{effectiveVersionId}</p>
               </div>
               <div className="section-toolbar">
                 <Button
@@ -287,7 +291,7 @@ export default function InstanceSettingsPage({
                   size="sm"
                   className="gap-1 !rounded-2xl"
                   disabled={state.loading}
-                  onClick={() => void refreshSection(activeTab, instance.versionId)}
+                  onClick={() => void refreshSection(activeTab, effectiveVersionId)}
                 >
                   <RefreshCw size={14} className={state.loading ? "animate-spin" : ""} />
                   {t("instanceFiles.refresh")}

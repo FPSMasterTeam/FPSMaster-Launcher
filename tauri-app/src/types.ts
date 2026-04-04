@@ -13,9 +13,11 @@ export type ThemeAccent =
   | "amber"
   | "sky"
   | "lime"
+  | "background"
   | "custom";
-export type BackgroundSource = "local" | "web-random";
+export type BackgroundSource = "local" | "web-random" | "system";
 export type LauncherVersionType = "EDGE" | "NOVA";
+export type MinecraftAccountType = "offline" | "microsoft";
 export type ContentSource = "modrinth" | "curseforge" | "local";
 export type OnlineContentSource = Exclude<ContentSource, "local">;
 export type ContentProjectType = "mod" | "resourcepack" | "shader" | "world";
@@ -37,10 +39,54 @@ export type Instance = {
   preset: boolean;
 };
 
+export type MinecraftAccount = {
+  id: string;
+  type: MinecraftAccountType;
+  username: string;
+  uuid: string;
+  accessToken: string;
+  refreshToken?: string | null;
+  xuid?: string | null;
+  expiresAt?: number | null;
+  addedAt: number;
+};
+
+export type MinecraftAuthConfig = {
+  configured: boolean;
+  clientIdSource?: string | null;
+  configurationHint?: string | null;
+};
+
+export type MinecraftDeviceLoginStart = {
+  deviceCode: string;
+  userCode: string;
+  verificationUri: string;
+  verificationUriComplete?: string | null;
+  expiresIn: number;
+  expiresAt: number;
+  interval: number;
+  message?: string | null;
+};
+
+export type MinecraftDeviceLoginPollStatus =
+  | "pending"
+  | "slow_down"
+  | "completed"
+  | "expired"
+  | "denied";
+
+export type MinecraftDeviceLoginPollResult = {
+  status: MinecraftDeviceLoginPollStatus;
+  interval?: number | null;
+  account?: MinecraftAccount | null;
+  error?: string | null;
+};
+
 export type Settings = {
   gameDir: string;
   playerName: string;
   downloadSource: DownloadSource;
+  launcherUpdateChannel: string;
   maxMemoryMb: number;
   hideMainOnLaunch: boolean;
   minimizeToTray: boolean;
@@ -376,6 +422,11 @@ export type LauncherAppUpdateInfo = {
   checksum?: string | null;
   fileSize?: number | null;
   target: string;
+};
+
+export type LauncherAppUpdateChannel = {
+  code: string;
+  name: string;
 };
 
 export type DownloadedLauncherUpdate = {

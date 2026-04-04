@@ -1,25 +1,47 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+use base64::Engine;
+use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256, Sha512};
 use std::collections::{HashMap, VecDeque};
 use std::io::{BufRead, BufReader, Cursor, Read, Seek, SeekFrom, Write};
-use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::net::TcpListener;
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use std::{env, fs};
-use tauri::path::BaseDirectory;
 use tauri::menu::{Menu, MenuItem};
+use tauri::path::BaseDirectory;
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
-use tauri::{AppHandle, Emitter, Manager, WebviewWindow, WindowEvent};
+use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder, WindowEvent};
 #[cfg(target_os = "macos")]
 use tauri_plugin_autostart::MacosLauncher;
 use tauri_plugin_autostart::ManagerExt;
+#[cfg(windows)]
+use windows::core::{HSTRING, PWSTR};
+#[cfg(windows)]
+use windows::Win32::Foundation::{POINT, RECT, RPC_E_CHANGED_MODE};
+#[cfg(windows)]
+use windows::Win32::Graphics::Gdi::{
+    GetMonitorInfoW, MonitorFromPoint, MONITOR_DEFAULTTOPRIMARY, MONITORINFO,
+};
+#[cfg(windows)]
+use windows::Win32::System::Com::{
+    CoCreateInstance, CoInitializeEx, CoTaskMemFree, CoUninitialize, CLSCTX_ALL,
+    COINIT_APARTMENTTHREADED,
+};
+#[cfg(windows)]
+use windows::Win32::UI::Shell::{DesktopWallpaper, IDesktopWallpaper};
+
+const DEFAULT_MINECRAFT_MICROSOFT_CLIENT_ID: &str = "6a3728d6-27a3-4180-99bb-479895b8f88e";
+const DEFAULT_MINECRAFT_MICROSOFT_REDIRECT_URL: &str = "http://localhost:29111/auth-response";
+const MINECRAFT_MICROSOFT_SCOPE: &str = "XboxLive.signin offline_access openid profile email";
 
 #[derive(Debug, Serialize, Deserialize)]
 struct InstallResult {
@@ -101,6 +123,133 @@ struct LauncherLoginResult {
     user: serde_json::Value,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MinecraftAuthConfigStatus {
+    configured: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    client_id_source: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    configuration_hint: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MinecraftAccountPayload {
+    id: String,
+    #[serde(rename = "type")]
+    account_type: String,
+    username: String,
+    uuid: String,
+    access_token: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    refresh_token: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    xuid: Option<String>,
+    expires_at: i64,
+    added_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MinecraftDeviceLoginStart {
+    device_code: String,
+    user_code: String,
+    verification_uri: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    verification_uri_complete: Option<String>,
+    expires_in: u64,
+    expires_at: i64,
+    interval: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    message: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MinecraftDeviceLoginPollResult {
+    status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    interval: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    account: Option<MinecraftAccountPayload>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct MicrosoftDeviceCodeResponse {
+    device_code: String,
+    user_code: String,
+    verification_uri: String,
+    #[serde(default)]
+    verification_uri_complete: Option<String>,
+    expires_in: u64,
+    #[serde(default)]
+    interval: Option<u64>,
+    #[serde(default)]
+    message: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct MicrosoftTokenSuccessResponse {
+    access_token: String,
+    #[serde(default)]
+    refresh_token: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct MicrosoftTokenErrorResponse {
+    error: String,
+    #[serde(default)]
+    error_description: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct XboxAuthResponse {
+    #[serde(rename = "Token")]
+    token: String,
+    #[serde(rename = "DisplayClaims")]
+    display_claims: XboxDisplayClaims,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct XboxDisplayClaims {
+    #[serde(rename = "xui", default)]
+    users: Vec<XboxUserClaim>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct XboxUserClaim {
+    #[serde(default)]
+    uhs: Option<String>,
+    #[serde(default)]
+    xid: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct MinecraftLoginResponse {
+    access_token: String,
+    expires_in: u64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct MinecraftProfileResponse {
+    id: String,
+    name: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct MinecraftEntitlementsResponse {
+    #[serde(default)]
+    items: Vec<MinecraftEntitlementItem>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct MinecraftEntitlementItem {
+    name: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct LauncherVersion {
     #[serde(default)]
@@ -180,7 +329,11 @@ struct LauncherNewsItem {
     content: Option<String>,
     #[serde(default)]
     author: Option<String>,
-    #[serde(default, deserialize_with = "category_option::deserialize", serialize_with = "category_option::serialize")]
+    #[serde(
+        default,
+        deserialize_with = "category_option::deserialize",
+        serialize_with = "category_option::serialize"
+    )]
     category: Option<String>,
     #[serde(rename = "publishedAt", default)]
     published_at: Option<String>,
@@ -285,6 +438,12 @@ struct LauncherAppUpdateInfo {
     #[serde(rename = "fileSize", default)]
     file_size: Option<u64>,
     target: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct LauncherAppUpdateChannel {
+    code: String,
+    name: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -879,8 +1038,14 @@ fn hide_main_window_internal(app: &AppHandle) -> Result<(), String> {
         // Navigate to a minimal suspended page (embedded HTML)
         if let Some(window) = app_handle.get_webview_window("main") {
             let suspended_html = r#"<!DOCTYPE html><html><head><title>Suspended</title></head><body style="background:#1a1a2e;margin:0;display:flex;align-items:center;justify-content:center;height:100vh;color:rgba(255,255,255,0.5);font-family:sans-serif;"><div style="text-align:center;"><div style="width:32px;height:32px;border:3px solid rgba(255,255,255,0.1);border-top-color:#25b87a;border-radius:50%;animation:spin 0.8s linear infinite;margin:0 auto 16px;"></div><div style="font-size:12px;letter-spacing:0.1em;">FPSMaster Launcher</div></div><style>@keyframes spin{to{transform:rotate(360deg)}}</style></body></html>"#;
-            let _ = window.eval(&format!("document.open();document.write({:?});document.close();", suspended_html));
-            app_handle.state::<LauncherRuntimeState>().webview_suspended.store(true, Ordering::Relaxed);
+            let _ = window.eval(&format!(
+                "document.open();document.write({:?});document.close();",
+                suspended_html
+            ));
+            app_handle
+                .state::<LauncherRuntimeState>()
+                .webview_suspended
+                .store(true, Ordering::Relaxed);
         }
     });
 
@@ -989,11 +1154,7 @@ impl From<&LauncherTelemetrySession> for LauncherTelemetryOfflineRequest {
 }
 
 fn cache_launcher_telemetry_session(app: &AppHandle, session: LauncherTelemetrySession) {
-    if let Ok(mut guard) = app
-        .state::<LauncherRuntimeState>()
-        .telemetry_session
-        .lock()
-    {
+    if let Ok(mut guard) = app.state::<LauncherRuntimeState>().telemetry_session.lock() {
         *guard = Some(session);
     }
 }
@@ -1313,11 +1474,34 @@ fn rename_version_profile(
         rewrite_version_profile_id(&to_json, to_id)?;
         return Ok(to_id.to_string());
     }
+    if is_launcher_preset_version_id(to_id) {
+        if to_dir.exists() {
+            if retarget_version_runtime(&to_dir, from_id, to_id).is_ok() {
+                return Ok(to_id.to_string());
+            }
+            if from_dir.exists() {
+                copy_directory_contents(&from_dir, &to_dir)?;
+                retarget_version_runtime(&to_dir, from_id, to_id)?;
+                let _ = fs::remove_dir_all(&from_dir);
+            }
+            return Ok(to_id.to_string());
+        }
+        if !from_dir.exists() {
+            return Ok(to_id.to_string());
+        }
+    }
     if to_dir.exists() {
-        return Err(format!(
-            "Target version directory already exists but profile json is missing: {}",
-            to_dir.display()
-        ));
+        if !from_dir.exists() {
+            return Err(format!(
+                "Target version directory already exists but profile json is missing, and source version directory was not found: {}",
+                to_dir.display()
+            ));
+        }
+
+        copy_directory_contents(&from_dir, &to_dir)?;
+        retarget_version_runtime(&to_dir, from_id, to_id)?;
+        let _ = fs::remove_dir_all(&from_dir);
+        return Ok(to_id.to_string());
     }
     if !from_dir.exists() {
         return Err(format!(
@@ -1336,6 +1520,10 @@ fn rename_version_profile(
     retarget_version_runtime(&to_dir, from_id, to_id)?;
 
     Ok(to_id.to_string())
+}
+
+fn is_launcher_preset_version_id(version_id: &str) -> bool {
+    matches!(version_id, "FPSMaster-Edge" | "FPSMaster-Nova")
 }
 
 #[tauri::command]
@@ -1424,11 +1612,8 @@ fn export_instance_archive(
             exports_dir.display()
         )
     })?;
-    let archive_path = exports_dir.join(format!(
-        "{}-{}.zip",
-        safe_archive_name,
-        now_epoch_millis()
-    ));
+    let archive_path =
+        exports_dir.join(format!("{}-{}.zip", safe_archive_name, now_epoch_millis()));
 
     write_instance_archive(&source_dir, &archive_path, &safe_archive_name)?;
     let _ = open_path_in_explorer(&exports_dir);
@@ -1490,7 +1675,8 @@ fn import_instance_archive_blocking(
         .ok_or_else(|| "Imported instance profile path is invalid".to_string())?
         .to_path_buf();
     let metadata = parse_instance_profile_metadata(&source_json)?;
-    let fallback_version_id = archive_file_stem(&archive_name).unwrap_or_else(|| metadata.version_id.clone());
+    let fallback_version_id =
+        archive_file_stem(&archive_name).unwrap_or_else(|| metadata.version_id.clone());
     let resolved_target_version_id = normalize_version_identifier(
         target_version_id
             .as_deref()
@@ -1510,7 +1696,11 @@ fn import_instance_archive_blocking(
 
     move_or_copy_directory(&source_root, &target_dir)?;
     let _ = fs::remove_dir_all(&stage_root);
-    retarget_version_runtime(&target_dir, &metadata.version_id, &resolved_target_version_id)?;
+    retarget_version_runtime(
+        &target_dir,
+        &metadata.version_id,
+        &resolved_target_version_id,
+    )?;
 
     Ok(InstanceImportResult {
         version_id: resolved_target_version_id,
@@ -1557,18 +1747,18 @@ fn repair_instance_runtime_blocking(
 
     if normalized_loader == "fabric" {
         if resolved_loader_version.is_none() {
-            let loader_versions = list_fabric_loaders_blocking_core(
-                Some(&window),
-                &normalized_base_version,
-                None,
-            )?;
+            let loader_versions =
+                list_fabric_loaders_blocking_core(Some(&window), &normalized_base_version, None)?;
             resolved_loader_version = loader_versions
                 .into_iter()
                 .find(|value| !value.trim().is_empty());
         }
-        let selected_loader_version = resolved_loader_version
-            .clone()
-            .ok_or_else(|| format!("No fabric loader version available for {}", normalized_base_version))?;
+        let selected_loader_version = resolved_loader_version.clone().ok_or_else(|| {
+            format!(
+                "No fabric loader version available for {}",
+                normalized_base_version
+            )
+        })?;
         let fabric = install_fabric_blocking_core(
             Some(&window),
             &game_dir_path,
@@ -1579,11 +1769,8 @@ fn repair_instance_runtime_blocking(
         source_version_id = fabric.profile_id;
     } else if normalized_loader == "forge" {
         if resolved_loader_version.is_none() {
-            let forge_versions = list_forge_versions_blocking_core(
-                Some(&window),
-                &normalized_base_version,
-                None,
-            )?;
+            let forge_versions =
+                list_forge_versions_blocking_core(Some(&window), &normalized_base_version, None)?;
             resolved_loader_version = forge_versions
                 .into_iter()
                 .find(|value| !value.trim().is_empty());
@@ -1762,6 +1949,29 @@ fn get_default_game_dir() -> Result<String, String> {
 }
 
 #[tauri::command]
+fn get_system_wallpaper() -> Result<Option<String>, String> {
+    let path = match get_system_wallpaper_path()? {
+        Some(path) => path,
+        None => return Ok(None),
+    };
+    Ok(Some(read_image_file_as_data_url(Path::new(&path))?))
+}
+
+#[tauri::command]
+fn extract_background_theme_accent(
+    background_source: String,
+    background_image: String,
+    background_web_url: String,
+) -> Result<String, String> {
+    let image_bytes = load_background_image_bytes(
+        background_source.trim(),
+        background_image.trim(),
+        background_web_url.trim(),
+    )?;
+    extract_theme_accent_hex_from_bytes(&image_bytes)
+}
+
+#[tauri::command]
 async fn ensure_jdk(
     window: tauri::Window,
     game_dir: String,
@@ -1796,97 +2006,8 @@ fn ensure_jdk_blocking(
         .map_err(|e| format!("Failed to parse java runtime requirement: {e}"))?;
 
     let major = requirement.major_version.max(8);
-    let runtime_root = game_dir_path.join("runtime").join(format!("jdk-{major}"));
-    fs::create_dir_all(&runtime_root).map_err(|e| format!("Failed creating runtime dir: {e}"))?;
-
-    if let Some(java_path) = locate_java_binary(&runtime_root) {
-        emit_log(
-            Some(&window),
-            "info",
-            &format!(
-                "JDK already exists major={major} path={}",
-                java_path.to_string_lossy()
-            ),
-        );
-        return Ok(JdkEnsureResult {
-            major_version: major,
-            java_path: java_path.to_string_lossy().to_string(),
-            cached: true,
-        });
-    }
-
-    let archive_ext = if cfg!(windows) { "zip" } else { "tar.gz" };
-    let archive_path = runtime_root.join(format!("jdk-{major}.{archive_ext}"));
-    let sources = jdk_download_sources(major);
-    if sources.is_empty() {
-        return Err("No JDK download source configured".to_string());
-    }
-
-    let mut source_errors: Vec<String> = Vec::new();
-    let mut downloaded = false;
-    for (index, source) in sources.iter().enumerate() {
-        emit_log(
-            Some(&window),
-            "info",
-            &format!(
-                "Downloading JDK {major} [{}/{}] {}: {}",
-                index + 1,
-                sources.len(),
-                source.name,
-                source.url
-            ),
-        );
-
-        match download_file_blocking(Some(&window), &source.name, &source.url, &archive_path) {
-            Ok(()) => {
-                downloaded = true;
-                emit_log(
-                    Some(&window),
-                    "info",
-                    &format!("JDK download succeeded from {}", source.name),
-                );
-                break;
-            }
-            Err(err) => {
-                source_errors.push(format!("{} => {}", source.name, err));
-                emit_log(
-                    Some(&window),
-                    "stderr",
-                    &format!(
-                        "JDK source {} failed: {}. Switching to next source...",
-                        source.name, err
-                    ),
-                );
-                let _ = fs::remove_file(&archive_path);
-            }
-        }
-    }
-
-    if !downloaded {
-        let merged_error = format!(
-            "Failed downloading JDK archive from all sources: {}",
-            source_errors.join(" | ")
-        );
-        emit_log(Some(&window), "stderr", &merged_error);
-        return Err(merged_error);
-    }
-
-    emit_log(
-        Some(&window),
-        "info",
-        &format!("Extracting JDK archive {}", archive_path.to_string_lossy()),
-    );
-    if cfg!(windows) {
-        extract_zip(&archive_path, &runtime_root)
-            .map_err(|e| format!("Failed extracting JDK zip: {e}"))?;
-    } else {
-        extract_tar_gz(&archive_path, &runtime_root)
-            .map_err(|e| format!("Failed extracting JDK tar.gz: {e}"))?;
-    }
-    let _ = fs::remove_file(&archive_path);
-
-    let java_path = locate_java_binary(&runtime_root)
-        .ok_or_else(|| "JDK extracted but java executable not found".to_string())?;
+    let runtime_root = managed_jdk_runtime_root(&game_dir_path, major);
+    let java_path = ensure_managed_jdk_runtime(Some(&window), &runtime_root, major)?;
 
     emit_log(
         Some(&window),
@@ -1992,10 +2113,20 @@ async fn launcher_get_home(
 #[tauri::command]
 async fn launcher_get_app_update(
     base_url: String,
+    channel: Option<String>,
 ) -> Result<LauncherAppUpdateInfo, String> {
-    tauri::async_runtime::spawn_blocking(move || launcher_get_app_update_blocking(base_url))
+    tauri::async_runtime::spawn_blocking(move || launcher_get_app_update_blocking(base_url, channel))
         .await
         .map_err(|e| format!("Failed to join launcher app update task: {e}"))?
+}
+
+#[tauri::command]
+async fn launcher_list_app_update_channels(
+    base_url: String,
+) -> Result<Vec<LauncherAppUpdateChannel>, String> {
+    tauri::async_runtime::spawn_blocking(move || launcher_list_app_update_channels_blocking(base_url))
+        .await
+        .map_err(|e| format!("Failed to join launcher app update channels task: {e}"))?
 }
 
 #[tauri::command]
@@ -2022,16 +2153,60 @@ fn open_downloaded_file(file_path: String) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn get_minecraft_auth_config() -> MinecraftAuthConfigStatus {
+    resolve_minecraft_auth_config_status()
+}
+
+#[tauri::command]
+async fn start_minecraft_device_login() -> Result<MinecraftDeviceLoginStart, String> {
+    tauri::async_runtime::spawn_blocking(start_minecraft_device_login_blocking)
+        .await
+        .map_err(|e| format!("Failed to join Minecraft device login task: {e}"))?
+}
+
+#[tauri::command]
+async fn start_minecraft_browser_login(app: tauri::AppHandle) -> Result<MinecraftAccountPayload, String> {
+    tauri::async_runtime::spawn_blocking(move || start_minecraft_browser_login_blocking(app))
+        .await
+        .map_err(|e| format!("Failed to join Minecraft browser login task: {e}"))?
+}
+
+#[tauri::command]
+async fn poll_minecraft_device_login(
+    device_code: String,
+) -> Result<MinecraftDeviceLoginPollResult, String> {
+    tauri::async_runtime::spawn_blocking(move || poll_minecraft_device_login_blocking(device_code))
+        .await
+        .map_err(|e| format!("Failed to join Minecraft device login polling task: {e}"))?
+}
+
+#[tauri::command]
+async fn refresh_minecraft_account(
+    refresh_token: String,
+) -> Result<MinecraftAccountPayload, String> {
+    tauri::async_runtime::spawn_blocking(move || refresh_minecraft_account_blocking(refresh_token))
+        .await
+        .map_err(|e| format!("Failed to join Minecraft refresh task: {e}"))?
+}
+
+#[tauri::command]
+fn open_external_link(url: String) -> Result<(), String> {
+    let parsed = reqwest::Url::parse(url.trim())
+        .map_err(|e| format!("Invalid external URL: {e}"))?;
+    match parsed.scheme() {
+        "http" | "https" => open_target_with_system(parsed.as_str()),
+        other => Err(format!("Unsupported external URL scheme: {other}")),
+    }
+}
+
+#[tauri::command]
 fn quit_launcher_app(app: tauri::AppHandle) {
     flush_launcher_telemetry_session(&app);
     app.exit(0);
 }
 
 #[tauri::command]
-fn launcher_cache_telemetry_session(
-    app: tauri::AppHandle,
-    session: LauncherTelemetrySession,
-) {
+fn launcher_cache_telemetry_session(app: tauri::AppHandle, session: LauncherTelemetrySession) {
     cache_launcher_telemetry_session(&app, session);
 }
 
@@ -2248,13 +2423,22 @@ fn launcher_get_home_blocking(
 
 fn launcher_get_app_update_blocking(
     base_url: String,
+    channel: Option<String>,
 ) -> Result<LauncherAppUpdateInfo, String> {
     let normalized_base = normalize_api_base_url(&base_url)?;
     let client = build_blocking_http_client()?;
     let mut url = reqwest::Url::parse(&format!("{normalized_base}/api/v1/launcher/app-update"))
         .map_err(|e| format!("Invalid launcher app update endpoint URL: {e}"))?;
-    url.query_pairs_mut()
-        .append_pair("target", &current_launcher_update_target());
+    {
+        let mut query = url.query_pairs_mut();
+        query.append_pair("target", &current_launcher_update_target());
+        if let Some(normalized_channel) = channel
+            .map(|item| item.trim().to_lowercase())
+            .filter(|item| !item.is_empty())
+        {
+            query.append_pair("channel", &normalized_channel);
+        }
+    }
 
     let response = client
         .get(url)
@@ -2265,6 +2449,27 @@ fn launcher_get_app_update_blocking(
         .text()
         .map_err(|e| format!("Failed to read launcher app update response: {e}"))?;
     parse_launcher_app_update_response(status, &text)
+}
+
+fn launcher_list_app_update_channels_blocking(
+    base_url: String,
+) -> Result<Vec<LauncherAppUpdateChannel>, String> {
+    let normalized_base = normalize_api_base_url(&base_url)?;
+    let client = build_blocking_http_client()?;
+    let url = reqwest::Url::parse(&format!(
+        "{normalized_base}/api/v1/launcher/app-update/channels"
+    ))
+    .map_err(|e| format!("Invalid launcher app update channels endpoint URL: {e}"))?;
+
+    let response = client
+        .get(url)
+        .send()
+        .map_err(|e| format!("Launcher app update channels request failed: {e}"))?;
+    let status = response.status();
+    let text = response
+        .text()
+        .map_err(|e| format!("Failed to read launcher app update channels response: {e}"))?;
+    parse_api_envelope(status, &text, "launcher app update channels")
 }
 
 fn download_launcher_app_update_blocking(
@@ -2289,8 +2494,12 @@ fn download_launcher_app_update_blocking(
         .app_data_dir()
         .map_err(|e| format!("Failed to resolve app data directory: {e}"))?
         .join("updates");
-    fs::create_dir_all(&updates_dir)
-        .map_err(|e| format!("Failed to create launcher update directory {}: {e}", updates_dir.display()))?;
+    fs::create_dir_all(&updates_dir).map_err(|e| {
+        format!(
+            "Failed to create launcher update directory {}: {e}",
+            updates_dir.display()
+        )
+    })?;
     let target_path = updates_dir.join(&file_name);
     download_file_quiet_blocking(&client, &normalized_download_url, &target_path)
         .map_err(|e| format!("Failed to download launcher installer: {e}"))?;
@@ -2489,7 +2698,13 @@ async fn check_installed_content_updates(
     api_key: Option<String>,
 ) -> Result<Vec<InstalledContentUpdate>, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        check_installed_content_updates_blocking(game_dir, version_id, game_version, loader, api_key)
+        check_installed_content_updates_blocking(
+            game_dir,
+            version_id,
+            game_version,
+            loader,
+            api_key,
+        )
     })
     .await
     .map_err(|e| format!("Failed to join content updates task: {e}"))?
@@ -2533,7 +2748,8 @@ fn modrinth_search_projects_blocking(
         .append_pair("index", "downloads")
         .append_pair("facets", &facets);
     if !normalized_query.is_empty() {
-        url.query_pairs_mut().append_pair("query", &normalized_query);
+        url.query_pairs_mut()
+            .append_pair("query", &normalized_query);
     }
 
     let response = client
@@ -2622,7 +2838,7 @@ fn install_modrinth_project_blocking(
         window.as_ref(),
         Some(&project_key),
     )
-        .map_err(|err| format!("Failed to download Modrinth file {}: {err}", file.filename))?;
+    .map_err(|err| format!("Failed to download Modrinth file {}: {err}", file.filename))?;
 
     if let Some(expected_size) = file.size {
         let actual_size = fs::metadata(&download_path)
@@ -2684,7 +2900,8 @@ fn install_modrinth_project_blocking(
         });
     }
 
-    let next_target_path = build_content_target_path(&runtime_root, &normalized_project_type, &file.filename)?;
+    let next_target_path =
+        build_content_target_path(&runtime_root, &normalized_project_type, &file.filename)?;
     if let Some(existing) = existing_item.as_ref() {
         let same_target = resolve_managed_content_path(&runtime_root, &existing.installed_path)?
             .map(|path| path == next_target_path)
@@ -2759,7 +2976,11 @@ fn curseforge_search_projects_blocking(
         if !normalized_query.is_empty() {
             query_pairs.append_pair("searchFilter", &normalized_query);
         }
-        if let Some(version) = game_version.as_deref().map(str::trim).filter(|value| !value.is_empty()) {
+        if let Some(version) = game_version
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
             query_pairs.append_pair("gameVersion", version);
         }
         if normalized_project_type == "mod" {
@@ -2871,7 +3092,12 @@ fn install_curseforge_project_blocking(
         window.as_ref(),
         Some(&project_key),
     )
-        .map_err(|err| format!("Failed to download CurseForge file {}: {err}", file.file_name))?;
+    .map_err(|err| {
+        format!(
+            "Failed to download CurseForge file {}: {err}",
+            file.file_name
+        )
+    })?;
 
     let version_label = resolve_curseforge_version_label(&file);
     if normalized_project_type == "world" {
@@ -2910,7 +3136,8 @@ fn install_curseforge_project_blocking(
         });
     }
 
-    let next_target_path = build_content_target_path(&runtime_root, &normalized_project_type, &file.file_name)?;
+    let next_target_path =
+        build_content_target_path(&runtime_root, &normalized_project_type, &file.file_name)?;
     if let Some(existing) = existing_item.as_ref() {
         let same_target = resolve_managed_content_path(&runtime_root, &existing.installed_path)?
             .map(|path| path == next_target_path)
@@ -3064,8 +3291,12 @@ fn install_world_archive_with_metadata(
     let game_dir_path = resolve_game_dir_path(&game_dir)?;
     let runtime_root = resolve_version_runtime_dir(&game_dir_path, version_id.trim())?;
     let saves_dir = runtime_root.join("saves");
-    fs::create_dir_all(&saves_dir)
-        .map_err(|e| format!("Failed to create saves directory {}: {e}", saves_dir.display()))?;
+    fs::create_dir_all(&saves_dir).map_err(|e| {
+        format!(
+            "Failed to create saves directory {}: {e}",
+            saves_dir.display()
+        )
+    })?;
 
     let resolved_world_name = resolve_world_name(world_name.as_deref(), &archive_name)?;
     let stage_root = env::temp_dir().join(format!(
@@ -3262,25 +3493,43 @@ fn install_launcher_version_mods_blocking(
             clear_directory_contents(&mods_dir)?;
         }
 
-        let archive_path = env::temp_dir().join(format!(
-            "fpsmaster-launcher-mods-{}-{}.zip",
+        let download_file_name = infer_download_file_name(&normalized_url, &normalized_tag);
+        let temp_download_path = env::temp_dir().join(format!(
+            "fpsmaster-launcher-mods-{}-{}-{}",
             std::process::id(),
-            now_epoch_millis()
+            now_epoch_millis(),
+            download_file_name
         ));
         let download_result =
-            download_file_blocking(None, "launcher-mods", &normalized_url, &archive_path);
+            download_file_blocking(None, "launcher-mods", &normalized_url, &temp_download_path);
         if let Err(err) = download_result {
-            let _ = fs::remove_file(&archive_path);
+            let _ = fs::remove_file(&temp_download_path);
             return Err(format!("Failed to download launcher package: {err}"));
         }
         if let Some(expected_checksum) = checksum.as_deref() {
-            verify_file_sha256(&archive_path, expected_checksum)
+            verify_file_sha256(&temp_download_path, expected_checksum)
                 .map_err(|err| format!("Launcher package checksum mismatch: {err}"))?;
         }
 
-        let extract_result = extract_launcher_mod_archive(&archive_path, &mods_dir);
-        let _ = fs::remove_file(&archive_path);
-        extract_result?
+        if is_jar_file_name(&download_file_name) {
+            let relative_path = PathBuf::from(&download_file_name);
+            let target_path = mods_dir.join(&relative_path);
+            fs::copy(&temp_download_path, &target_path).map_err(|e| {
+                format!(
+                    "Failed to install launcher mod {}: {e}",
+                    target_path.to_string_lossy()
+                )
+            })?;
+            let _ = fs::remove_file(&temp_download_path);
+            vec![build_launcher_installed_file_record(
+                &target_path,
+                &relative_path,
+            )?]
+        } else {
+            let extract_result = extract_launcher_mod_archive(&temp_download_path, &mods_dir);
+            let _ = fs::remove_file(&temp_download_path);
+            extract_result?
+        }
     };
 
     let marker = LauncherModsInstallMarker {
@@ -3666,7 +3915,10 @@ fn curseforge_class_id_for_project_type(project_type: &str) -> Result<u64, Strin
 }
 
 fn curseforge_mod_loader_type(loader: Option<&str>) -> Option<u32> {
-    match loader.map(str::trim).map(|value| value.to_ascii_lowercase()) {
+    match loader
+        .map(str::trim)
+        .map(|value| value.to_ascii_lowercase())
+    {
         Some(value) if value == "forge" => Some(1),
         Some(value) if value == "fabric" => Some(4),
         _ => None,
@@ -3694,7 +3946,9 @@ fn map_curseforge_search_item(
     let display_categories = item
         .categories
         .iter()
-        .filter(|category| category.class_id != curseforge_class_id_for_project_type(project_type).ok())
+        .filter(|category| {
+            category.class_id != curseforge_class_id_for_project_type(project_type).ok()
+        })
         .map(|category| category.name.trim().to_string())
         .filter(|value| !value.is_empty())
         .collect::<Vec<_>>();
@@ -3742,10 +3996,7 @@ fn fetch_curseforge_project_files(
     {
         let mut query_pairs = url.query_pairs_mut();
         query_pairs.append_pair("gameVersion", game_version.trim());
-        query_pairs.append_pair(
-            "pageSize",
-            if project_type == "mod" { "30" } else { "20" },
-        );
+        query_pairs.append_pair("pageSize", if project_type == "mod" { "30" } else { "20" });
         if project_type == "mod" {
             if let Some(mod_loader_type) = curseforge_mod_loader_type(loader) {
                 query_pairs.append_pair("modLoaderType", &mod_loader_type.to_string());
@@ -3812,9 +4063,7 @@ fn fetch_curseforge_file_download_url(
     Ok(download_url)
 }
 
-fn choose_best_curseforge_file(
-    mut files: Vec<CurseForgeFile>,
-) -> Result<CurseForgeFile, String> {
+fn choose_best_curseforge_file(mut files: Vec<CurseForgeFile>) -> Result<CurseForgeFile, String> {
     if files.is_empty() {
         return Err("No compatible CurseForge file found for the current instance".to_string());
     }
@@ -3924,7 +4173,9 @@ fn check_single_installed_content_update(
                 latest_version_id: None,
                 latest_version_number: None,
                 changelog: None,
-                error: Some("CurseForge API key is not configured in the launcher environment".to_string()),
+                error: Some(
+                    "CurseForge API key is not configured in the launcher environment".to_string(),
+                ),
                 checked_at_epoch_sec,
             };
         }
@@ -4322,9 +4573,7 @@ fn remove_installed_content_item(
                 && item.content_type == content_type
         })
         .ok_or_else(|| {
-            format!(
-                "Installed content record not found for {source}:{content_type}:{project_id}"
-            )
+            format!("Installed content record not found for {source}:{content_type}:{project_id}")
         })?;
 
     let removed = items.remove(position);
@@ -4349,7 +4598,8 @@ fn resolve_managed_content_path(
         runtime_root.join(candidate)
     };
 
-    let canonical_runtime = fs::canonicalize(runtime_root).unwrap_or_else(|_| runtime_root.to_path_buf());
+    let canonical_runtime =
+        fs::canonicalize(runtime_root).unwrap_or_else(|_| runtime_root.to_path_buf());
     if resolved.exists() {
         let canonical_target = fs::canonicalize(&resolved).map_err(|e| {
             format!(
@@ -4409,7 +4659,10 @@ fn resolve_world_name(world_name: Option<&str>, archive_name: &str) -> Result<St
                 .map(|value| value.to_string_lossy().to_string())
                 .unwrap_or_else(|| "Imported World".to_string())
         });
-    let sanitized = sanitize_file_name(&base).trim().trim_matches('.').to_string();
+    let sanitized = sanitize_file_name(&base)
+        .trim()
+        .trim_matches('.')
+        .to_string();
     if sanitized.is_empty() {
         return Err("World name cannot be empty".to_string());
     }
@@ -4576,8 +4829,12 @@ fn find_instance_profile_json(root_dir: &Path) -> Result<PathBuf, String> {
     let mut queue = VecDeque::from([root_dir.to_path_buf()]);
     let mut fallback: Option<PathBuf> = None;
     while let Some(current) = queue.pop_front() {
-        let entries = fs::read_dir(&current)
-            .map_err(|e| format!("Failed to inspect imported instance directory {}: {e}", current.display()))?;
+        let entries = fs::read_dir(&current).map_err(|e| {
+            format!(
+                "Failed to inspect imported instance directory {}: {e}",
+                current.display()
+            )
+        })?;
         for entry in entries {
             let entry = entry.map_err(|e| e.to_string())?;
             let path = entry.path();
@@ -4615,13 +4872,25 @@ fn find_instance_profile_json(root_dir: &Path) -> Result<PathBuf, String> {
 }
 
 fn parse_instance_profile_metadata(json_path: &Path) -> Result<InstanceProfileMetadata, String> {
-    let profile_json_text = fs::read_to_string(json_path)
-        .map_err(|e| format!("Failed to read instance profile {}: {e}", json_path.display()))?;
-    let profile_json: serde_json::Value = serde_json::from_str(&profile_json_text)
-        .map_err(|e| format!("Failed to parse instance profile {}: {e}", json_path.display()))?;
-    let object = profile_json
-        .as_object()
-        .ok_or_else(|| format!("Instance profile {} is not a JSON object", json_path.display()))?;
+    let profile_json_text = fs::read_to_string(json_path).map_err(|e| {
+        format!(
+            "Failed to read instance profile {}: {e}",
+            json_path.display()
+        )
+    })?;
+    let profile_json: serde_json::Value =
+        serde_json::from_str(&profile_json_text).map_err(|e| {
+            format!(
+                "Failed to parse instance profile {}: {e}",
+                json_path.display()
+            )
+        })?;
+    let object = profile_json.as_object().ok_or_else(|| {
+        format!(
+            "Instance profile {} is not a JSON object",
+            json_path.display()
+        )
+    })?;
 
     let version_id = object
         .get("id")
@@ -4730,13 +4999,10 @@ fn detect_loader_version_from_profile_id(
     None
 }
 
-fn extract_world_archive_to_stage(
-    archive_data: &[u8],
-    stage_root: &Path,
-) -> Result<usize, String> {
+fn extract_world_archive_to_stage(archive_data: &[u8], stage_root: &Path) -> Result<usize, String> {
     let cursor = Cursor::new(archive_data.to_vec());
-    let mut archive = zip::ZipArchive::new(cursor)
-        .map_err(|e| format!("Invalid world archive ZIP: {e}"))?;
+    let mut archive =
+        zip::ZipArchive::new(cursor).map_err(|e| format!("Invalid world archive ZIP: {e}"))?;
     let mut extracted_entries = 0usize;
 
     for index in 0..archive.len() {
@@ -4781,12 +5047,8 @@ fn extract_world_archive_to_stage(
                 out_path.display()
             )
         })?;
-        std::io::copy(&mut entry, &mut output).map_err(|e| {
-            format!(
-                "Failed to extract world file {}: {e}",
-                out_path.display()
-            )
-        })?;
+        std::io::copy(&mut entry, &mut output)
+            .map_err(|e| format!("Failed to extract world file {}: {e}", out_path.display()))?;
         output.flush().map_err(|e| {
             format!(
                 "Failed to flush extracted world file {}: {e}",
@@ -4954,7 +5216,12 @@ fn emit_content_install_progress(
     };
     let percent = total_bytes
         .filter(|value| *value > 0)
-        .map(|value| downloaded_bytes.saturating_mul(100).min(value.saturating_mul(100)) / value)
+        .map(|value| {
+            downloaded_bytes
+                .saturating_mul(100)
+                .min(value.saturating_mul(100))
+                / value
+        })
         .and_then(|value| u8::try_from(value).ok());
     let _ = target_window.emit(
         "content-install-progress",
@@ -5310,7 +5577,10 @@ fn normalize_sha512_value(raw: &str) -> Option<String> {
 }
 
 fn push_download_source_arg(command: &mut Vec<String>, download_source: Option<&str>) {
-    let Some(source) = download_source.map(str::trim).filter(|value| !value.is_empty()) else {
+    let Some(source) = download_source
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
         return;
     };
     command.push("--download-source".to_string());
@@ -5840,19 +6110,11 @@ fn delete_instance_section_entry(
     }
 
     if entry_path.is_dir() {
-        fs::remove_dir_all(&entry_path).map_err(|e| {
-            format!(
-                "Failed to delete directory {}: {e}",
-                entry_path.display()
-            )
-        })?;
+        fs::remove_dir_all(&entry_path)
+            .map_err(|e| format!("Failed to delete directory {}: {e}", entry_path.display()))?;
     } else {
-        fs::remove_file(&entry_path).map_err(|e| {
-            format!(
-                "Failed to delete file {}: {e}",
-                entry_path.display()
-            )
-        })?;
+        fs::remove_file(&entry_path)
+            .map_err(|e| format!("Failed to delete file {}: {e}", entry_path.display()))?;
     }
 
     Ok(())
@@ -5877,26 +6139,19 @@ fn toggle_mod_disabled(
         // Disable by adding .disabled extension
         let new_name = format!("{}.disabled", mod_name);
         let new_path = mods_dir.join(&new_name);
-        fs::rename(&mod_path, &new_path).map_err(|e| {
-            format!(
-                "Failed to disable mod {}: {e}",
-                mod_name
-            )
-        })?;
+        fs::rename(&mod_path, &new_path)
+            .map_err(|e| format!("Failed to disable mod {}: {e}", mod_name))?;
     } else {
         // Enable by removing .disabled extension
         if !mod_name.ends_with(".disabled") {
             return Err(format!("Mod is not disabled: {}", mod_name));
         }
-        let new_name = mod_name.strip_suffix(".disabled")
+        let new_name = mod_name
+            .strip_suffix(".disabled")
             .ok_or_else(|| "Invalid mod name".to_string())?;
         let new_path = mods_dir.join(new_name);
-        fs::rename(&mod_path, &new_path).map_err(|e| {
-            format!(
-                "Failed to enable mod {}: {e}",
-                mod_name
-            )
-        })?;
+        fs::rename(&mod_path, &new_path)
+            .map_err(|e| format!("Failed to enable mod {}: {e}", mod_name))?;
     }
 
     Ok(())
@@ -6209,6 +6464,138 @@ fn build_platform_command(
     command
 }
 
+fn resolve_java_core_executable(
+    window: Option<&tauri::Window>,
+    args: &[&str],
+) -> Result<PathBuf, String> {
+    let game_dir = extract_cli_option_path(args, &["--game-dir", "--gameDir"])?
+        .unwrap_or(default_game_dir_path()?);
+    let runtime_root = managed_jdk_runtime_root(&game_dir, 17);
+    ensure_managed_jdk_runtime(window, &runtime_root, 17)
+}
+
+fn extract_cli_option_path(args: &[&str], names: &[&str]) -> Result<Option<PathBuf>, String> {
+    let mut index = 0;
+    while index < args.len() {
+        let current = args[index];
+        for name in names {
+            if current == *name {
+                if index + 1 >= args.len() {
+                    return Err(format!("Missing value for {}", name));
+                }
+                return Ok(Some(resolve_game_dir_path(args[index + 1])?));
+            }
+            if let Some(value) = current.strip_prefix(&format!("{name}=")) {
+                return Ok(Some(resolve_game_dir_path(value)?));
+            }
+        }
+        index += 1;
+    }
+    Ok(None)
+}
+
+fn managed_jdk_runtime_root(game_dir: &Path, major: i32) -> PathBuf {
+    game_dir.join("runtime").join(format!("jdk-{major}"))
+}
+
+fn ensure_managed_jdk_runtime(
+    window: Option<&tauri::Window>,
+    runtime_root: &Path,
+    major: i32,
+) -> Result<PathBuf, String> {
+    fs::create_dir_all(runtime_root).map_err(|e| {
+        format!(
+            "Failed creating runtime dir {}: {e}",
+            runtime_root.display()
+        )
+    })?;
+
+    if let Some(java_path) = locate_java_binary(runtime_root) {
+        emit_log(
+            window,
+            "info",
+            &format!(
+                "Managed JDK already exists major={major} path={}",
+                java_path.to_string_lossy()
+            ),
+        );
+        return Ok(java_path);
+    }
+
+    let archive_ext = if cfg!(windows) { "zip" } else { "tar.gz" };
+    let archive_path = runtime_root.join(format!("jdk-{major}.{archive_ext}"));
+    let sources = jdk_download_sources(major);
+    if sources.is_empty() {
+        return Err("No JDK download source configured".to_string());
+    }
+
+    let mut source_errors: Vec<String> = Vec::new();
+    let mut downloaded = false;
+    for (index, source) in sources.iter().enumerate() {
+        emit_log(
+            window,
+            "info",
+            &format!(
+                "Downloading JDK {major} [{}/{}] {}: {}",
+                index + 1,
+                sources.len(),
+                source.name,
+                source.url
+            ),
+        );
+
+        match download_file_blocking(window, &source.name, &source.url, &archive_path) {
+            Ok(()) => {
+                downloaded = true;
+                emit_log(
+                    window,
+                    "info",
+                    &format!("JDK download succeeded from {}", source.name),
+                );
+                break;
+            }
+            Err(err) => {
+                source_errors.push(format!("{} => {}", source.name, err));
+                emit_log(
+                    window,
+                    "stderr",
+                    &format!(
+                        "JDK source {} failed: {}. Switching to next source...",
+                        source.name, err
+                    ),
+                );
+                let _ = fs::remove_file(&archive_path);
+            }
+        }
+    }
+
+    if !downloaded {
+        let merged_error = format!(
+            "Failed downloading JDK archive from all sources: {}",
+            source_errors.join(" | ")
+        );
+        emit_log(window, "stderr", &merged_error);
+        return Err(merged_error);
+    }
+
+    emit_log(
+        window,
+        "info",
+        &format!("Extracting JDK archive {}", archive_path.to_string_lossy()),
+    );
+    if cfg!(windows) {
+        extract_zip(&archive_path, runtime_root)
+            .map_err(|e| format!("Failed extracting JDK zip: {e}"))?;
+    } else {
+        extract_tar_gz(&archive_path, runtime_root)
+            .map_err(|e| format!("Failed extracting JDK tar.gz: {e}"))?;
+    }
+    let _ = fs::remove_file(&archive_path);
+
+    locate_java_binary(runtime_root)
+        .ok_or_else(|| "JDK extracted but java executable not found".to_string())
+}
+
 #[cfg(windows)]
 fn apply_windows_silent_spawn(command: &mut Command) {
     command.creation_flags(CREATE_NO_WINDOW);
@@ -6258,7 +6645,11 @@ async fn list_fabric_loaders(
     game_version: String,
     download_source: Option<String>,
 ) -> Result<Vec<String>, String> {
-    list_fabric_loaders_blocking_core(Some(&window), game_version.trim(), download_source.as_deref())
+    list_fabric_loaders_blocking_core(
+        Some(&window),
+        game_version.trim(),
+        download_source.as_deref(),
+    )
 }
 
 fn list_fabric_loaders_blocking_core(
@@ -6356,7 +6747,11 @@ async fn list_forge_versions(
     game_version: String,
     download_source: Option<String>,
 ) -> Result<Vec<String>, String> {
-    list_forge_versions_blocking_core(Some(&window), game_version.trim(), download_source.as_deref())
+    list_forge_versions_blocking_core(
+        Some(&window),
+        game_version.trim(),
+        download_source.as_deref(),
+    )
 }
 
 fn list_forge_versions_blocking_core(
@@ -6390,10 +6785,21 @@ async fn install_forge(
     download_source: Option<String>,
     ipc_session: Option<String>,
 ) -> Result<ForgeInstallResult, String> {
-    let java_exe = java_path.unwrap_or_else(|| "java".to_string());
-    let game_dir = resolve_game_dir_path(&game_dir)?
+    let game_dir_path = resolve_game_dir_path(&game_dir)?;
+    let java_exe = match java_path
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+    {
+        Some(value) => value,
+        None => ensure_managed_jdk_runtime(
+            Some(&window),
+            &managed_jdk_runtime_root(&game_dir_path, 17),
+            17,
+        )?
         .to_string_lossy()
-        .to_string();
+        .to_string(),
+    };
+    let game_dir = game_dir_path.to_string_lossy().to_string();
     let mut command = vec![
         "install-forge".to_string(),
         "--game-dir".to_string(),
@@ -6464,12 +6870,15 @@ async fn run_java_core_async(
 
 fn run_java_core(window: Option<&tauri::Window>, args: &[&str]) -> Result<String, String> {
     let jar = java_core_jar_path()?;
+    let java_executable = resolve_java_core_executable(window, args)?;
     let mut full_args: Vec<String> = vec!["-jar".to_string(), jar.to_string_lossy().to_string()];
     full_args.extend(args.iter().map(|x| (*x).to_string()));
-    let command_preview = format_quoted_command("java", &full_args);
+    let command_preview =
+        format_quoted_command(java_executable.to_string_lossy().as_ref(), &full_args);
     emit_log(window, "info", &format!("run: {command_preview}"));
 
-    let mut java_cmd = build_platform_command("java", &full_args, None);
+    let mut java_cmd =
+        build_platform_command(java_executable.to_string_lossy().as_ref(), &full_args, None);
     let mut child = java_cmd
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -6783,7 +7192,11 @@ fn java_core_jar_path() -> Result<PathBuf, String> {
             candidates.extend([
                 exe_dir.join("resources").join("java").join("java-core.jar"),
                 exe_dir.join("java").join("java-core.jar"),
-                exe_dir.join("src-tauri").join("resources").join("java").join("java-core.jar"),
+                exe_dir
+                    .join("src-tauri")
+                    .join("resources")
+                    .join("java")
+                    .join("java-core.jar"),
             ]);
         }
     }
@@ -7023,6 +7436,827 @@ fn download_file_blocking(
     Err(last_error)
 }
 
+fn resolve_minecraft_auth_config_status() -> MinecraftAuthConfigStatus {
+    match resolve_minecraft_client_id() {
+        Ok((_, source)) => MinecraftAuthConfigStatus {
+            configured: true,
+            client_id_source: Some(source),
+            configuration_hint: None,
+        },
+        Err(_) => MinecraftAuthConfigStatus {
+            configured: false,
+            client_id_source: None,
+            configuration_hint: Some(minecraft_auth_configuration_hint()),
+        },
+    }
+}
+
+fn start_minecraft_device_login_blocking() -> Result<MinecraftDeviceLoginStart, String> {
+    let (client_id, _) = resolve_minecraft_client_id()?;
+    let client = build_minecraft_auth_http_client()?;
+    let response = client
+        .post("https://login.microsoftonline.com/consumers/oauth2/v2.0/devicecode")
+        .form(&[
+            ("client_id", client_id.as_str()),
+            ("scope", MINECRAFT_MICROSOFT_SCOPE),
+        ])
+        .send()
+        .map_err(|e| format!("Failed to start Microsoft device login: {e}"))?;
+    let status = response.status();
+    let text = response
+        .text()
+        .map_err(|e| format!("Failed to read Microsoft device login response: {e}"))?;
+    if !status.is_success() {
+        return Err(parse_microsoft_error_response(
+            status,
+            &text,
+            "Failed to start Microsoft device login",
+        ));
+    }
+    let payload: MicrosoftDeviceCodeResponse = serde_json::from_str(&text)
+        .map_err(|e| format!("Failed to decode Microsoft device login response: {e}"))?;
+    let interval = payload.interval.unwrap_or(5).max(1);
+    Ok(MinecraftDeviceLoginStart {
+        device_code: payload.device_code,
+        user_code: payload.user_code,
+        verification_uri: payload.verification_uri,
+        verification_uri_complete: payload.verification_uri_complete,
+        expires_in: payload.expires_in,
+        expires_at: unix_timestamp_millis().saturating_add(
+            i64::try_from(payload.expires_in.saturating_mul(1000)).unwrap_or(i64::MAX),
+        ),
+        interval,
+        message: payload.message,
+    })
+}
+
+fn start_minecraft_browser_login_blocking(app: AppHandle) -> Result<MinecraftAccountPayload, String> {
+    let (client_id, _) = resolve_minecraft_client_id()?;
+    let redirect_url = resolve_minecraft_redirect_url()?;
+    let client = build_minecraft_auth_http_client()?;
+    let state = create_oauth_random_token(24);
+    let code_verifier = create_oauth_random_token(64);
+    let code_challenge = create_pkce_code_challenge(&code_verifier);
+
+    let listener = bind_minecraft_redirect_listener(&redirect_url)?;
+    let authorize_url = build_minecraft_authorize_url(
+        &client_id,
+        &redirect_url,
+        &state,
+        &code_challenge,
+    )?;
+
+    let auth_window_label = format!("minecraft-auth-{}", create_oauth_random_token(8));
+    let auth_window_data_dir =
+        open_minecraft_auth_window(&app, &auth_window_label, authorize_url.as_str())?;
+    let code = match wait_for_minecraft_oauth_callback(
+        listener,
+        &redirect_url,
+        &state,
+        &app,
+        &auth_window_label,
+    ) {
+        Ok(code) => {
+            close_auth_window(&app, &auth_window_label, Some(&auth_window_data_dir));
+            code
+        }
+        Err(error) => {
+            close_auth_window(&app, &auth_window_label, Some(&auth_window_data_dir));
+            return Err(error);
+        }
+    };
+
+    let response = client
+        .post("https://login.microsoftonline.com/consumers/oauth2/v2.0/token")
+        .form(&[
+            ("grant_type", "authorization_code"),
+            ("client_id", client_id.as_str()),
+            ("code", code.as_str()),
+            ("redirect_uri", redirect_url.as_str()),
+            ("code_verifier", code_verifier.as_str()),
+            ("scope", MINECRAFT_MICROSOFT_SCOPE),
+        ])
+        .send()
+        .map_err(|e| format!("Failed to exchange Microsoft authorization code: {e}"))?;
+    let status = response.status();
+    let text = response
+        .text()
+        .map_err(|e| format!("Failed to read Microsoft authorization response: {e}"))?;
+    if !status.is_success() {
+        close_auth_window(&app, &auth_window_label, Some(&auth_window_data_dir));
+        return Err(parse_microsoft_error_response(
+            status,
+            &text,
+            "Microsoft browser login failed",
+        ));
+    }
+    let token: MicrosoftTokenSuccessResponse = serde_json::from_str(&text)
+        .map_err(|e| format!("Failed to decode Microsoft authorization response: {e}"))?;
+    let result = complete_minecraft_microsoft_account(&client, token.access_token, token.refresh_token);
+    close_auth_window(&app, &auth_window_label, Some(&auth_window_data_dir));
+    result
+}
+
+fn poll_minecraft_device_login_blocking(
+    device_code: String,
+) -> Result<MinecraftDeviceLoginPollResult, String> {
+    let trimmed_device_code = device_code.trim().to_string();
+    if trimmed_device_code.is_empty() {
+        return Err("Minecraft device code is empty".to_string());
+    }
+    let (client_id, _) = resolve_minecraft_client_id()?;
+    let client = build_minecraft_auth_http_client()?;
+    let response = client
+        .post("https://login.microsoftonline.com/consumers/oauth2/v2.0/token")
+        .form(&[
+            ("grant_type", "urn:ietf:params:oauth:grant-type:device_code"),
+            ("client_id", client_id.as_str()),
+            ("device_code", trimmed_device_code.as_str()),
+        ])
+        .send()
+        .map_err(|e| format!("Failed to poll Microsoft device login: {e}"))?;
+    let status = response.status();
+    let text = response
+        .text()
+        .map_err(|e| format!("Failed to read Microsoft token response: {e}"))?;
+    if status.is_success() {
+        let token: MicrosoftTokenSuccessResponse = serde_json::from_str(&text)
+            .map_err(|e| format!("Failed to decode Microsoft token response: {e}"))?;
+        let account = complete_minecraft_microsoft_account(
+            &client,
+            token.access_token,
+            token.refresh_token,
+        )?;
+        return Ok(MinecraftDeviceLoginPollResult {
+            status: "completed".to_string(),
+            interval: None,
+            account: Some(account),
+            error: None,
+        });
+    }
+
+    let error_response: MicrosoftTokenErrorResponse = serde_json::from_str(&text).map_err(|e| {
+        format!(
+            "{} ({e})",
+            parse_microsoft_error_response(status, &text, "Failed to poll Microsoft device login")
+        )
+    })?;
+    let error_code = error_response.error.trim().to_ascii_lowercase();
+    let error_text = normalize_microsoft_error_description(
+        error_response.error_description.as_deref(),
+        "Microsoft device login has not completed yet.",
+    );
+    match error_code.as_str() {
+        "authorization_pending" => Ok(MinecraftDeviceLoginPollResult {
+            status: "pending".to_string(),
+            interval: Some(5),
+            account: None,
+            error: Some(error_text),
+        }),
+        "slow_down" => Ok(MinecraftDeviceLoginPollResult {
+            status: "slow_down".to_string(),
+            interval: Some(8),
+            account: None,
+            error: Some(error_text),
+        }),
+        "authorization_declined" | "access_denied" => Ok(MinecraftDeviceLoginPollResult {
+            status: "denied".to_string(),
+            interval: None,
+            account: None,
+            error: Some(normalize_microsoft_error_description(
+                error_response.error_description.as_deref(),
+                "Microsoft device login was cancelled.",
+            )),
+        }),
+        "expired_token" | "bad_verification_code" => Ok(MinecraftDeviceLoginPollResult {
+            status: "expired".to_string(),
+            interval: None,
+            account: None,
+            error: Some(normalize_microsoft_error_description(
+                error_response.error_description.as_deref(),
+                "Microsoft device login code expired. Please start again.",
+            )),
+        }),
+        _ => Err(format!(
+            "Microsoft device login failed: {}",
+            normalize_microsoft_error_description(
+                error_response.error_description.as_deref(),
+                &error_response.error
+            )
+        )),
+    }
+}
+
+fn refresh_minecraft_account_blocking(
+    refresh_token: String,
+) -> Result<MinecraftAccountPayload, String> {
+    let trimmed_refresh_token = refresh_token.trim().to_string();
+    if trimmed_refresh_token.is_empty() {
+        return Err("Minecraft refresh token is empty".to_string());
+    }
+    let (client_id, _) = resolve_minecraft_client_id()?;
+    let client = build_minecraft_auth_http_client()?;
+    let response = client
+        .post("https://login.microsoftonline.com/consumers/oauth2/v2.0/token")
+        .form(&[
+            ("grant_type", "refresh_token"),
+            ("client_id", client_id.as_str()),
+            ("refresh_token", trimmed_refresh_token.as_str()),
+            ("scope", MINECRAFT_MICROSOFT_SCOPE),
+        ])
+        .send()
+        .map_err(|e| format!("Failed to refresh Microsoft login: {e}"))?;
+    let status = response.status();
+    let text = response
+        .text()
+        .map_err(|e| format!("Failed to read Microsoft refresh response: {e}"))?;
+    if !status.is_success() {
+        let fallback = "Microsoft premium account refresh failed. Please sign in again.";
+        let error = serde_json::from_str::<MicrosoftTokenErrorResponse>(&text)
+            .ok()
+            .map(|value| {
+                normalize_microsoft_error_description(value.error_description.as_deref(), fallback)
+            })
+            .unwrap_or_else(|| parse_microsoft_error_response(status, &text, fallback));
+        return Err(error);
+    }
+    let token: MicrosoftTokenSuccessResponse = serde_json::from_str(&text)
+        .map_err(|e| format!("Failed to decode Microsoft refresh response: {e}"))?;
+    complete_minecraft_microsoft_account(
+        &client,
+        token.access_token,
+        token.refresh_token.or(Some(trimmed_refresh_token)),
+    )
+}
+
+fn complete_minecraft_microsoft_account(
+    client: &reqwest::blocking::Client,
+    microsoft_access_token: String,
+    refresh_token: Option<String>,
+) -> Result<MinecraftAccountPayload, String> {
+    let xbox_response = client
+        .post("https://user.auth.xboxlive.com/user/authenticate")
+        .json(&serde_json::json!({
+            "Properties": {
+                "AuthMethod": "RPS",
+                "SiteName": "user.auth.xboxlive.com",
+                "RpsTicket": format!("d={microsoft_access_token}"),
+            },
+            "RelyingParty": "http://auth.xboxlive.com",
+            "TokenType": "JWT",
+        }))
+        .send()
+        .map_err(|e| format!("Failed to authenticate with Xbox Live: {e}"))?;
+    let xbox_status = xbox_response.status();
+    let xbox_text = xbox_response
+        .text()
+        .map_err(|e| format!("Failed to read Xbox Live authentication response: {e}"))?;
+    if !xbox_status.is_success() {
+        return Err(parse_microsoft_error_response(
+            xbox_status,
+            &xbox_text,
+            "Xbox Live authentication failed",
+        ));
+    }
+    let xbox_payload: XboxAuthResponse = serde_json::from_str(&xbox_text)
+        .map_err(|e| format!("Failed to decode Xbox Live authentication response: {e}"))?;
+    let xbox_user = xbox_payload
+        .display_claims
+        .users
+        .into_iter()
+        .next()
+        .ok_or_else(|| "Xbox Live authentication response did not include a user hash".to_string())?;
+    let user_hash = xbox_user
+        .uhs
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| "Xbox Live authentication response did not include a user hash".to_string())?;
+
+    let xsts_response = client
+        .post("https://xsts.auth.xboxlive.com/xsts/authorize")
+        .json(&serde_json::json!({
+            "Properties": {
+                "SandboxId": "RETAIL",
+                "UserTokens": [xbox_payload.token],
+            },
+            "RelyingParty": "rp://api.minecraftservices.com/",
+            "TokenType": "JWT",
+        }))
+        .send()
+        .map_err(|e| format!("Failed to authorize XSTS token: {e}"))?;
+    let xsts_status = xsts_response.status();
+    let xsts_text = xsts_response
+        .text()
+        .map_err(|e| format!("Failed to read XSTS response: {e}"))?;
+    if !xsts_status.is_success() {
+        return Err(parse_microsoft_error_response(
+            xsts_status,
+            &xsts_text,
+            "Minecraft premium account is not eligible for Xbox authorization",
+        ));
+    }
+    let xsts_payload: XboxAuthResponse = serde_json::from_str(&xsts_text)
+        .map_err(|e| format!("Failed to decode XSTS response: {e}"))?;
+    let xsts_user = xsts_payload
+        .display_claims
+        .users
+        .into_iter()
+        .next()
+        .unwrap_or(XboxUserClaim {
+            uhs: Some(user_hash.clone()),
+            xid: None,
+        });
+
+    let minecraft_login_response = client
+        .post("https://api.minecraftservices.com/authentication/login_with_xbox")
+        .json(&serde_json::json!({
+            "identityToken": format!("XBL3.0 x={};{}", user_hash, xsts_payload.token),
+        }))
+        .send()
+        .map_err(|e| format!("Failed to sign in to Minecraft Services: {e}"))?;
+    let minecraft_login_status = minecraft_login_response.status();
+    let minecraft_login_text = minecraft_login_response
+        .text()
+        .map_err(|e| format!("Failed to read Minecraft Services login response: {e}"))?;
+    if !minecraft_login_status.is_success() {
+        return Err(parse_microsoft_error_response(
+            minecraft_login_status,
+            &minecraft_login_text,
+            "Minecraft Services login failed",
+        ));
+    }
+    let minecraft_login_payload: MinecraftLoginResponse = serde_json::from_str(&minecraft_login_text)
+        .map_err(|e| format!("Failed to decode Minecraft Services login response: {e}"))?;
+
+    let entitlements_response = client
+        .get("https://api.minecraftservices.com/entitlements/mcstore")
+        .bearer_auth(&minecraft_login_payload.access_token)
+        .send()
+        .map_err(|e| format!("Failed to fetch Minecraft entitlements: {e}"))?;
+    let entitlements_status = entitlements_response.status();
+    let entitlements_text = entitlements_response
+        .text()
+        .map_err(|e| format!("Failed to read Minecraft entitlements response: {e}"))?;
+    if !entitlements_status.is_success() {
+        let fallback = if entitlements_status.as_u16() == 403 {
+            "Minecraft Services API access was denied. Make sure this Azure app has been granted Minecraft API access."
+        } else {
+            "Failed to fetch Minecraft entitlements"
+        };
+        return Err(parse_microsoft_error_response(
+            entitlements_status,
+            &entitlements_text,
+            fallback,
+        ));
+    }
+    let entitlements_payload: MinecraftEntitlementsResponse = serde_json::from_str(&entitlements_text)
+        .map_err(|e| format!("Failed to decode Minecraft entitlements response: {e}"))?;
+    let has_minecraft_license = entitlements_payload.items.iter().any(|item| {
+        let name = item.name.trim();
+        name.eq_ignore_ascii_case("product_minecraft") || name.eq_ignore_ascii_case("game_minecraft")
+    });
+    if !has_minecraft_license {
+        return Err(
+            "This Microsoft account does not own Minecraft Java Edition, or its entitlement is unavailable."
+                .to_string(),
+        );
+    }
+
+    let profile_response = client
+        .get("https://api.minecraftservices.com/minecraft/profile")
+        .bearer_auth(&minecraft_login_payload.access_token)
+        .send()
+        .map_err(|e| format!("Failed to fetch Minecraft profile: {e}"))?;
+    let profile_status = profile_response.status();
+    let profile_text = profile_response
+        .text()
+        .map_err(|e| format!("Failed to read Minecraft profile response: {e}"))?;
+    if !profile_status.is_success() {
+        let fallback = match profile_status.as_u16() {
+            403 => {
+                "Minecraft Services API access was denied. Make sure this Azure app has been granted Minecraft API access."
+            }
+            404 => "This Microsoft account does not have a Minecraft Java Edition profile yet.",
+            _ => "Failed to fetch Minecraft profile",
+        };
+        return Err(parse_microsoft_error_response(profile_status, &profile_text, fallback));
+    }
+    let profile_payload: MinecraftProfileResponse = serde_json::from_str(&profile_text)
+        .map_err(|e| format!("Failed to decode Minecraft profile response: {e}"))?;
+    let now = unix_timestamp_millis();
+    let expires_at = now.saturating_add(
+        i64::try_from(minecraft_login_payload.expires_in.saturating_mul(1000))
+            .unwrap_or(i64::MAX),
+    );
+    Ok(MinecraftAccountPayload {
+        id: create_microsoft_account_id(&profile_payload.id),
+        account_type: "microsoft".to_string(),
+        username: profile_payload.name,
+        uuid: profile_payload.id,
+        access_token: minecraft_login_payload.access_token,
+        refresh_token,
+        xuid: xsts_user.xid.filter(|value| !value.trim().is_empty()),
+        expires_at,
+        added_at: now,
+    })
+}
+
+fn resolve_minecraft_redirect_url() -> Result<String, String> {
+    if let Some(value) = read_runtime_env("FPSMASTER_MINECRAFT_REDIRECT_URL") {
+        return validate_minecraft_redirect_url(&value);
+    }
+    if let Some(value) = read_runtime_env("MICROSOFT_REDIRECT_URL") {
+        return validate_minecraft_redirect_url(&value);
+    }
+    if let Some(value) = option_env!("FPSMASTER_MINECRAFT_REDIRECT_URL")
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        return validate_minecraft_redirect_url(value);
+    }
+    if let Some(value) = option_env!("MICROSOFT_REDIRECT_URL")
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        return validate_minecraft_redirect_url(value);
+    }
+    validate_minecraft_redirect_url(DEFAULT_MINECRAFT_MICROSOFT_REDIRECT_URL)
+}
+
+fn validate_minecraft_redirect_url(raw: &str) -> Result<String, String> {
+    let parsed = reqwest::Url::parse(raw.trim())
+        .map_err(|e| format!("Invalid Minecraft redirect URL: {e}"))?;
+    if parsed.scheme() != "http" && parsed.scheme() != "https" {
+        return Err("Minecraft redirect URL must use http or https".to_string());
+    }
+    if parsed.host_str().is_none() {
+        return Err("Minecraft redirect URL must include a host".to_string());
+    }
+    Ok(parsed.to_string())
+}
+
+fn bind_minecraft_redirect_listener(redirect_url: &str) -> Result<TcpListener, String> {
+    let parsed = reqwest::Url::parse(redirect_url)
+        .map_err(|e| format!("Invalid Minecraft redirect URL: {e}"))?;
+    let host = parsed
+        .host_str()
+        .ok_or_else(|| "Minecraft redirect URL is missing host".to_string())?;
+    let port = parsed
+        .port_or_known_default()
+        .ok_or_else(|| "Minecraft redirect URL is missing port".to_string())?;
+    let bind_target = format!("{host}:{port}");
+    let listener = TcpListener::bind(&bind_target)
+        .map_err(|e| format!("Failed to bind Minecraft OAuth redirect listener on {bind_target}: {e}"))?;
+    listener
+        .set_nonblocking(true)
+        .map_err(|e| format!("Failed to configure Minecraft OAuth redirect listener: {e}"))?;
+    Ok(listener)
+}
+
+fn build_minecraft_authorize_url(
+    client_id: &str,
+    redirect_url: &str,
+    state: &str,
+    code_challenge: &str,
+) -> Result<reqwest::Url, String> {
+    let mut url = reqwest::Url::parse("https://login.microsoftonline.com/consumers/oauth2/v2.0/authorize")
+        .map_err(|e| format!("Failed to prepare Microsoft authorize URL: {e}"))?;
+    url.query_pairs_mut()
+        .append_pair("client_id", client_id)
+        .append_pair("response_type", "code")
+        .append_pair("redirect_uri", redirect_url)
+        .append_pair("response_mode", "query")
+        .append_pair("scope", MINECRAFT_MICROSOFT_SCOPE)
+        .append_pair("state", state)
+        .append_pair("code_challenge", code_challenge)
+        .append_pair("code_challenge_method", "S256");
+    Ok(url)
+}
+
+fn wait_for_minecraft_oauth_callback(
+    listener: TcpListener,
+    redirect_url: &str,
+    expected_state: &str,
+    app: &AppHandle,
+    auth_window_label: &str,
+) -> Result<String, String> {
+    let redirect_base = reqwest::Url::parse(redirect_url)
+        .map_err(|e| format!("Invalid Minecraft redirect URL: {e}"))?;
+    let deadline = Instant::now() + Duration::from_secs(300);
+    loop {
+        if app.get_webview_window(auth_window_label).is_none() {
+            return Err("Microsoft login window was closed before authentication completed.".to_string());
+        }
+        if Instant::now() >= deadline {
+            return Err("Timed out waiting for Microsoft browser login callback".to_string());
+        }
+        match listener.accept() {
+            Ok((mut stream, _)) => {
+                let mut request_line = String::new();
+                {
+                    let mut reader = BufReader::new(&mut stream);
+                    reader
+                        .read_line(&mut request_line)
+                        .map_err(|e| format!("Failed to read Microsoft OAuth callback request: {e}"))?;
+                }
+                let path = request_line
+                    .split_whitespace()
+                    .nth(1)
+                    .ok_or_else(|| "Microsoft OAuth callback request line is invalid".to_string())?;
+                let callback_url = reqwest::Url::parse(&format!(
+                    "{}://{}{}",
+                    redirect_base.scheme(),
+                    redirect_base
+                        .host_str()
+                        .ok_or_else(|| "Minecraft redirect URL is missing host".to_string())?,
+                    if let Some(port) = redirect_base.port() {
+                        format!(":{port}{path}")
+                    } else {
+                        path.to_string()
+                    }
+                ))
+                    .or_else(|_| reqwest::Url::parse(&format!("http://callback{path}")))
+                    .map_err(|e| format!("Failed to parse Microsoft OAuth callback URL: {e}"))?;
+
+                let query: HashMap<String, String> = callback_url.query_pairs().into_owned().collect();
+                if let Some(error) = query.get("error") {
+                    let description = query
+                        .get("error_description")
+                        .map(String::as_str)
+                        .unwrap_or(error);
+                    let message = normalize_microsoft_error_description(
+                        Some(description),
+                        "Microsoft login was cancelled.",
+                    );
+                    let _ = write_browser_callback_page(
+                        &mut stream,
+                        400,
+                        "Microsoft login failed",
+                        &message,
+                    );
+                    return Err(message);
+                }
+                let returned_state = query
+                    .get("state")
+                    .map(String::as_str)
+                    .unwrap_or_default();
+                if returned_state != expected_state {
+                    let message = "Microsoft login callback state did not match the launcher session.";
+                    let _ = write_browser_callback_page(
+                        &mut stream,
+                        400,
+                        "Microsoft login failed",
+                        message,
+                    );
+                    return Err(message.to_string());
+                }
+                let code = query
+                    .get("code")
+                    .cloned()
+                    .ok_or_else(|| "Microsoft login callback did not contain an authorization code".to_string())?;
+                let _ = write_browser_callback_page(
+                    &mut stream,
+                    200,
+                    "Microsoft login completed",
+                    "You can return to FPSMaster Launcher now.",
+                );
+                return Ok(code);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                thread::sleep(Duration::from_millis(150));
+            }
+            Err(error) => {
+                return Err(format!("Failed while waiting for Microsoft OAuth callback: {error}"));
+            }
+        }
+    }
+}
+
+fn open_minecraft_auth_window(
+    app: &AppHandle,
+    label: &str,
+    authorize_url: &str,
+) -> Result<PathBuf, String> {
+    if let Some(existing) = app.get_webview_window(label) {
+        let _ = existing.close();
+    }
+    let url = reqwest::Url::parse(authorize_url)
+        .map_err(|e| format!("Invalid Microsoft authorize URL: {e}"))?;
+    let data_dir = create_minecraft_auth_data_directory(label)?;
+    WebviewWindowBuilder::new(app, label, WebviewUrl::External(url))
+        .title("Microsoft Login")
+        .inner_size(980.0, 760.0)
+        .min_inner_size(720.0, 560.0)
+        .resizable(true)
+        .focused(true)
+        .center()
+        .incognito(true)
+        .data_directory(data_dir.clone())
+        .build()
+        .map_err(|e| format!("Failed to create Microsoft login window: {e}"))?;
+    Ok(data_dir)
+}
+
+fn close_auth_window(app: &AppHandle, label: &str, data_dir: Option<&Path>) {
+    if let Some(window) = app.get_webview_window(label) {
+        let _ = window.close();
+    }
+    if let Some(path) = data_dir {
+        cleanup_minecraft_auth_data_directory(path);
+    }
+}
+
+fn create_minecraft_auth_data_directory(label: &str) -> Result<PathBuf, String> {
+    let dir = env::temp_dir()
+        .join("fpsmaster-launcher")
+        .join("microsoft-auth")
+        .join(label);
+    if dir.exists() {
+        fs::remove_dir_all(&dir)
+            .map_err(|e| format!("Failed to reset Microsoft auth data directory: {e}"))?;
+    }
+    fs::create_dir_all(&dir)
+        .map_err(|e| format!("Failed to create Microsoft auth data directory: {e}"))?;
+    Ok(dir)
+}
+
+fn cleanup_minecraft_auth_data_directory(path: &Path) {
+    for _ in 0..8 {
+        if !path.exists() {
+            return;
+        }
+        match fs::remove_dir_all(path) {
+            Ok(_) => return,
+            Err(_) => thread::sleep(Duration::from_millis(120)),
+        }
+    }
+}
+
+fn write_browser_callback_page(
+    stream: &mut std::net::TcpStream,
+    status_code: u16,
+    title: &str,
+    message: &str,
+) -> Result<(), String> {
+    let body = format!(
+        "<!DOCTYPE html><html><head><meta charset=\"utf-8\"><title>{}</title></head><body style=\"font-family:Segoe UI,sans-serif;background:#10161c;color:#eef3f7;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;\"><div style=\"max-width:480px;padding:32px;border-radius:20px;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.08);box-shadow:0 18px 40px rgba(0,0,0,0.22);\"><h1 style=\"margin:0 0 12px;font-size:22px;\">{}</h1><p style=\"margin:0;font-size:14px;line-height:1.7;color:#c7d2de;\">{}</p></div></body></html>",
+        title, title, message
+    );
+    let response = format!(
+        "HTTP/1.1 {} OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        status_code,
+        body.len(),
+        body
+    );
+    stream
+        .write_all(response.as_bytes())
+        .map_err(|e| format!("Failed to write Microsoft OAuth callback response: {e}"))
+}
+
+fn create_oauth_random_token(bytes_len: usize) -> String {
+    let mut bytes = vec![0_u8; bytes_len];
+    rand::thread_rng().fill_bytes(&mut bytes);
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
+}
+
+fn create_pkce_code_challenge(code_verifier: &str) -> String {
+    let digest = Sha256::digest(code_verifier.as_bytes());
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(digest)
+}
+
+fn build_minecraft_auth_http_client() -> Result<reqwest::blocking::Client, String> {
+    reqwest::blocking::Client::builder()
+        .connect_timeout(Duration::from_secs(10))
+        .timeout(Duration::from_secs(20))
+        .build()
+        .map_err(|e| format!("Failed to build Minecraft auth HTTP client: {e}"))
+}
+
+fn resolve_minecraft_client_id() -> Result<(String, String), String> {
+    if let Some(value) = read_runtime_env("FPSMASTER_MINECRAFT_CLIENT_ID") {
+        return Ok((
+            value,
+            "environment:FPSMASTER_MINECRAFT_CLIENT_ID".to_string(),
+        ));
+    }
+    if let Some(value) = read_runtime_env("MICROSOFT_CLIENT_ID") {
+        return Ok((value, "environment:MICROSOFT_CLIENT_ID".to_string()));
+    }
+    if let Some(value) = option_env!("FPSMASTER_MINECRAFT_CLIENT_ID")
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        return Ok((
+            value.to_string(),
+            "build:FPSMASTER_MINECRAFT_CLIENT_ID".to_string(),
+        ));
+    }
+    if let Some(value) = option_env!("MICROSOFT_CLIENT_ID")
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        return Ok((value.to_string(), "build:MICROSOFT_CLIENT_ID".to_string()));
+    }
+    Ok((
+        DEFAULT_MINECRAFT_MICROSOFT_CLIENT_ID.to_string(),
+        "builtin:DEFAULT_MINECRAFT_MICROSOFT_CLIENT_ID".to_string(),
+    ))
+}
+
+fn read_runtime_env(key: &str) -> Option<String> {
+    env::var(key)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn minecraft_auth_configuration_hint() -> String {
+    "Minecraft premium login is not configured. Set FPSMASTER_MINECRAFT_CLIENT_ID (or MICROSOFT_CLIENT_ID) before launching the launcher.".to_string()
+}
+
+fn normalize_microsoft_error_description(raw: Option<&str>, fallback: &str) -> String {
+    raw.map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+        .map(|value| value.replace("\r\n", " ").replace('\n', " "))
+        .unwrap_or_else(|| fallback.to_string())
+}
+
+fn parse_microsoft_error_response(
+    status: reqwest::StatusCode,
+    text: &str,
+    fallback: &str,
+) -> String {
+    if let Ok(payload) = serde_json::from_str::<MicrosoftTokenErrorResponse>(text) {
+        return format!(
+            "{}: {}",
+            fallback,
+            normalize_microsoft_error_description(
+                payload.error_description.as_deref(),
+                &payload.error
+            )
+        );
+    }
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return format!("{fallback}: HTTP {status}");
+    }
+    format!("{fallback}: {trimmed}")
+}
+
+fn create_microsoft_account_id(uuid: &str) -> String {
+    format!("microsoft-{}", uuid.trim().to_ascii_lowercase())
+}
+
+fn unix_timestamp_millis() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+        .try_into()
+        .unwrap_or(i64::MAX)
+}
+
+fn open_target_with_system(target: &str) -> Result<(), String> {
+    let trimmed = target.trim();
+    if trimmed.is_empty() {
+        return Err("External target is empty".to_string());
+    }
+
+    #[cfg(windows)]
+    {
+        let mut command = Command::new("rundll32.exe");
+        command.arg("url.dll,FileProtocolHandler").arg(trimmed);
+        apply_windows_silent_spawn(&mut command);
+        command
+            .spawn()
+            .map_err(|e| format!("Failed to open target with rundll32.exe: {e}"))?;
+        return Ok(());
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let status = Command::new("open")
+            .arg(trimmed)
+            .status()
+            .map_err(|e| format!("Failed to open target with open: {e}"))?;
+        if status.success() {
+            return Ok(());
+        }
+        return Err(format!("open returned non-zero status: {status}"));
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        let status = Command::new("xdg-open")
+            .arg(trimmed)
+            .status()
+            .map_err(|e| format!("Failed to open target with xdg-open: {e}"))?;
+        if status.success() {
+            return Ok(());
+        }
+        return Err(format!("xdg-open returned non-zero status: {status}"));
+    }
+}
+
 fn normalize_api_base_url(base_url: &str) -> Result<String, String> {
     let trimmed = base_url.trim().trim_end_matches('/');
     if trimmed.is_empty() {
@@ -7062,6 +8296,14 @@ fn infer_download_file_name(download_url: &str, version: &str) -> String {
             .unwrap_or(fallback),
         Err(_) => fallback,
     }
+}
+
+fn is_jar_file_name(file_name: &str) -> bool {
+    Path::new(file_name)
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(|value| value.eq_ignore_ascii_case("jar"))
+        .unwrap_or(false)
 }
 
 fn parse_launcher_login_response(
@@ -7117,7 +8359,10 @@ fn parse_launcher_versions_response(
             }
             return Err(msg);
         }
-        return Err(format!("versions list failed with HTTP {}", status.as_u16()));
+        return Err(format!(
+            "versions list failed with HTTP {}",
+            status.as_u16()
+        ));
     }
 
     extract_launcher_versions(&value)
@@ -7162,7 +8407,10 @@ fn parse_launcher_dashboard_response(
             }
             return Err(msg);
         }
-        return Err(format!("launcher dashboard failed with HTTP {}", status.as_u16()));
+        return Err(format!(
+            "launcher dashboard failed with HTTP {}",
+            status.as_u16()
+        ));
     }
 
     serde_json::from_value::<LauncherDashboard>(value)
@@ -7188,7 +8436,10 @@ fn parse_launcher_home_response(
             }
             return Err(msg);
         }
-        return Err(format!("launcher home failed with HTTP {}", status.as_u16()));
+        return Err(format!(
+            "launcher home failed with HTTP {}",
+            status.as_u16()
+        ));
     }
 
     serde_json::from_value::<LauncherHomePayload>(value)
@@ -7199,7 +8450,9 @@ fn parse_launcher_app_update_response(
     status: reqwest::StatusCode,
     body: &str,
 ) -> Result<LauncherAppUpdateInfo, String> {
-    if let Ok(item) = parse_api_envelope::<LauncherAppUpdateInfo>(status, body, "launcher app update") {
+    if let Ok(item) =
+        parse_api_envelope::<LauncherAppUpdateInfo>(status, body, "launcher app update")
+    {
         return Ok(item);
     }
 
@@ -7528,8 +8781,12 @@ fn build_launcher_installed_file_record(
     path: &Path,
     relative_path: &Path,
 ) -> Result<LauncherInstalledFileRecord, String> {
-    let metadata = fs::metadata(path)
-        .map_err(|e| format!("Failed to inspect installed launcher file {}: {e}", path.display()))?;
+    let metadata = fs::metadata(path).map_err(|e| {
+        format!(
+            "Failed to inspect installed launcher file {}: {e}",
+            path.display()
+        )
+    })?;
     let checksum = compute_file_sha256_hex(path)?;
     Ok(LauncherInstalledFileRecord {
         path: relative_path.to_string_lossy().replace('\\', "/"),
@@ -7787,6 +9044,398 @@ fn locate_java_binary(runtime_root: &Path) -> Option<PathBuf> {
     None
 }
 
+#[cfg(windows)]
+struct ComScope {
+    should_uninitialize: bool,
+}
+
+#[cfg(windows)]
+impl Drop for ComScope {
+    fn drop(&mut self) {
+        if self.should_uninitialize {
+            unsafe {
+                CoUninitialize();
+            }
+        }
+    }
+}
+
+#[cfg(windows)]
+fn initialize_com_scope() -> Result<ComScope, String> {
+    let result = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) };
+    if result.is_ok() {
+        return Ok(ComScope {
+            should_uninitialize: true,
+        });
+    }
+    if result == RPC_E_CHANGED_MODE {
+        return Ok(ComScope {
+            should_uninitialize: false,
+        });
+    }
+    Err(format!("Failed to initialize COM: {result}"))
+}
+
+#[cfg(windows)]
+fn pwstr_to_string(value: PWSTR) -> Result<String, String> {
+    if value.is_null() {
+        return Ok(String::new());
+    }
+    let text = unsafe { value.to_string() }.map_err(|e| format!("Invalid UTF-16 string: {e}"))?;
+    unsafe {
+        CoTaskMemFree(Some(value.0 as _));
+    }
+    Ok(text)
+}
+
+#[cfg(windows)]
+fn get_primary_monitor_rect() -> Result<RECT, String> {
+    let monitor = unsafe { MonitorFromPoint(POINT { x: 0, y: 0 }, MONITOR_DEFAULTTOPRIMARY) };
+    let mut monitor_info = MONITORINFO {
+        cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+        ..Default::default()
+    };
+    let ok = unsafe { GetMonitorInfoW(monitor, &mut monitor_info as *mut MONITORINFO) };
+    if ok.as_bool() {
+        Ok(monitor_info.rcMonitor)
+    } else {
+        Err("Failed to query primary monitor information".to_string())
+    }
+}
+
+#[cfg(windows)]
+fn rect_contains_origin(rect: &RECT) -> bool {
+    rect.left <= 0 && rect.top <= 0 && rect.right > 0 && rect.bottom > 0
+}
+
+#[cfg(windows)]
+fn get_system_wallpaper_path() -> Result<Option<String>, String> {
+    let _com_scope = initialize_com_scope()?;
+    let wallpaper: IDesktopWallpaper =
+        unsafe { CoCreateInstance(&DesktopWallpaper, None, CLSCTX_ALL) }
+            .map_err(|e| format!("Failed to create DesktopWallpaper COM instance: {e}"))?;
+
+    let slideshow_state = unsafe { wallpaper.GetStatus() }
+        .map_err(|e| format!("Failed to query wallpaper slideshow state: {e}"))?;
+    if (slideshow_state.0 & 0x02) != 0 {
+        return Ok(None);
+    }
+
+    let primary_rect = get_primary_monitor_rect()?;
+    let monitor_count = unsafe { wallpaper.GetMonitorDevicePathCount() }
+        .map_err(|e| format!("Failed to enumerate wallpaper monitors: {e}"))?;
+
+    let mut fallback_monitor_id: Option<String> = None;
+    for index in 0..monitor_count {
+        let monitor_id = pwstr_to_string(
+            unsafe { wallpaper.GetMonitorDevicePathAt(index) }
+                .map_err(|e| format!("Failed to read wallpaper monitor id: {e}"))?,
+        )?;
+        let monitor_id_text = HSTRING::from(monitor_id.as_str());
+        if fallback_monitor_id.is_none() {
+            fallback_monitor_id = Some(monitor_id.clone());
+        }
+        let monitor_rect = unsafe { wallpaper.GetMonitorRECT(&monitor_id_text) }
+            .map_err(|e| format!("Failed to query wallpaper monitor rect: {e}"))?;
+        if monitor_rect == primary_rect || rect_contains_origin(&monitor_rect) {
+            let path = pwstr_to_string(
+                unsafe { wallpaper.GetWallpaper(&monitor_id_text) }
+                    .map_err(|e| format!("Failed to query primary wallpaper path: {e}"))?,
+            )?;
+            return normalize_system_wallpaper_path(path);
+        }
+    }
+
+    if let Some(monitor_id) = fallback_monitor_id {
+        let monitor_id_text = HSTRING::from(monitor_id.as_str());
+        let path = pwstr_to_string(
+            unsafe { wallpaper.GetWallpaper(&monitor_id_text) }
+                .map_err(|e| format!("Failed to query wallpaper path: {e}"))?,
+        )?;
+        return normalize_system_wallpaper_path(path);
+    }
+
+    Ok(None)
+}
+
+#[cfg(windows)]
+fn normalize_system_wallpaper_path(path: String) -> Result<Option<String>, String> {
+    let trimmed = path.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    let resolved = PathBuf::from(trimmed);
+    if !resolved.is_file() {
+        return Ok(None);
+    }
+    Ok(Some(
+        strip_windows_verbatim_prefix(&resolved)
+            .to_string_lossy()
+            .to_string(),
+    ))
+}
+
+fn read_image_file_as_data_url(path: &Path) -> Result<String, String> {
+    let bytes = fs::read(path).map_err(|e| format!("Failed to read wallpaper image: {e}"))?;
+    let mime = detect_image_mime(path, &bytes)?;
+    let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
+    Ok(format!("data:{mime};base64,{encoded}"))
+}
+
+fn detect_image_mime(path: &Path, bytes: &[u8]) -> Result<&'static str, String> {
+    if bytes.len() >= 3 && bytes[0] == 0xFF && bytes[1] == 0xD8 && bytes[2] == 0xFF {
+        return Ok("image/jpeg");
+    }
+    if bytes.len() >= 8
+        && bytes[0] == 0x89
+        && bytes[1] == 0x50
+        && bytes[2] == 0x4E
+        && bytes[3] == 0x47
+        && bytes[4] == 0x0D
+        && bytes[5] == 0x0A
+        && bytes[6] == 0x1A
+        && bytes[7] == 0x0A
+    {
+        return Ok("image/png");
+    }
+    if bytes.len() >= 6 && (&bytes[0..6] == b"GIF87a" || &bytes[0..6] == b"GIF89a") {
+        return Ok("image/gif");
+    }
+    if bytes.len() >= 2 && bytes[0] == 0x42 && bytes[1] == 0x4D {
+        return Ok("image/bmp");
+    }
+    if bytes.len() >= 12 && &bytes[0..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
+        return Ok("image/webp");
+    }
+    if let Some(ext) = path.extension().and_then(|value| value.to_str()) {
+        match ext.to_ascii_lowercase().as_str() {
+            "jpg" | "jpeg" => return Ok("image/jpeg"),
+            "png" => return Ok("image/png"),
+            "gif" => return Ok("image/gif"),
+            "bmp" => return Ok("image/bmp"),
+            "webp" => return Ok("image/webp"),
+            _ => {}
+        }
+    }
+    Err(format!(
+        "Unsupported wallpaper image format: {}",
+        path.display()
+    ))
+}
+
+fn load_background_image_bytes(
+    background_source: &str,
+    background_image: &str,
+    background_web_url: &str,
+) -> Result<Vec<u8>, String> {
+    match background_source {
+        "web-random" => load_remote_image_bytes(background_web_url),
+        "local" | "system" => load_inline_image_bytes(background_image),
+        other => Err(format!("Unsupported background source: {other}")),
+    }
+}
+
+fn load_inline_image_bytes(value: &str) -> Result<Vec<u8>, String> {
+    if value.is_empty() {
+        return Err("Background image is empty".to_string());
+    }
+    if value.starts_with("data:") {
+        return decode_data_url_bytes(value);
+    }
+    fs::read(value).map_err(|e| format!("Failed to read background image file: {e}"))
+}
+
+fn load_remote_image_bytes(url: &str) -> Result<Vec<u8>, String> {
+    if url.is_empty() {
+        return Err("Background image URL is empty".to_string());
+    }
+    let client = build_blocking_http_client()?;
+    let response = client
+        .get(url)
+        .header(reqwest::header::ACCEPT, "image/*,*/*;q=0.8")
+        .send()
+        .map_err(|e| format!("Failed to fetch background image: {e}"))?;
+    if !response.status().is_success() {
+        return Err(format!(
+            "Failed to fetch background image: HTTP {}",
+            response.status()
+        ));
+    }
+    response
+        .bytes()
+        .map(|bytes| bytes.to_vec())
+        .map_err(|e| format!("Failed to read background image response: {e}"))
+}
+
+fn decode_data_url_bytes(value: &str) -> Result<Vec<u8>, String> {
+    let (metadata, payload) = value
+        .split_once(',')
+        .ok_or_else(|| "Invalid data URL".to_string())?;
+    if !metadata.ends_with(";base64") {
+        return Err("Unsupported data URL encoding".to_string());
+    }
+    base64::engine::general_purpose::STANDARD
+        .decode(payload.trim())
+        .map_err(|e| format!("Invalid base64 data URL: {e}"))
+}
+
+#[derive(Default, Clone, Copy)]
+struct AccentBucket {
+    total_weight: f64,
+    total_r: f64,
+    total_g: f64,
+    total_b: f64,
+    count: u32,
+}
+
+fn extract_theme_accent_hex_from_bytes(bytes: &[u8]) -> Result<String, String> {
+    let image = image::load_from_memory(bytes)
+        .map_err(|e| format!("Failed to decode background image: {e}"))?;
+    let thumbnail = image.thumbnail(96, 96).to_rgba8();
+    let mut buckets: HashMap<(u8, u8, u8), AccentBucket> = HashMap::new();
+    let mut fallback = AccentBucket::default();
+
+    for pixel in thumbnail.pixels() {
+        let [r, g, b, a] = pixel.0;
+        if a < 24 {
+            continue;
+        }
+        let alpha = a as f64 / 255.0;
+        let (hue, saturation, lightness) = rgb_to_hsl_components(r, g, b);
+        let bucket_key = ((r / 24).min(10), (g / 24).min(10), (b / 24).min(10));
+
+        let fallback_weight = alpha * (0.25 + lightness.max(0.08));
+        accumulate_accent_bucket(&mut fallback, r, g, b, fallback_weight);
+
+        if lightness < 0.08 || lightness > 0.92 {
+            continue;
+        }
+
+        let hue_weight = if hue.is_finite() { 1.0 } else { 0.7 };
+        let vividness = (0.25 + saturation * 0.75) * hue_weight;
+        let balance = (1.0 - (lightness - 0.56).abs() * 1.4).clamp(0.1, 1.0);
+        let weight = alpha * vividness * balance;
+        if weight <= 0.0 {
+            continue;
+        }
+        let bucket = buckets.entry(bucket_key).or_default();
+        accumulate_accent_bucket(bucket, r, g, b, weight);
+    }
+
+    let mut best = buckets
+        .values()
+        .filter(|bucket| bucket.count > 0 && bucket.total_weight > 0.0)
+        .max_by(|left, right| left.total_weight.total_cmp(&right.total_weight))
+        .copied()
+        .unwrap_or_default();
+
+    if best.count == 0 || best.total_weight <= 0.0 {
+        best = fallback;
+    }
+    if best.count == 0 || best.total_weight <= 0.0 {
+        return Err("Background image did not contain any usable pixels".to_string());
+    }
+
+    let rgb = normalize_theme_accent_color(resolve_bucket_rgb(best));
+    Ok(format!("#{:02x}{:02x}{:02x}", rgb.0, rgb.1, rgb.2))
+}
+
+fn accumulate_accent_bucket(bucket: &mut AccentBucket, r: u8, g: u8, b: u8, weight: f64) {
+    if weight <= 0.0 {
+        return;
+    }
+    bucket.total_weight += weight;
+    bucket.total_r += r as f64 * weight;
+    bucket.total_g += g as f64 * weight;
+    bucket.total_b += b as f64 * weight;
+    bucket.count += 1;
+}
+
+fn resolve_bucket_rgb(bucket: AccentBucket) -> (u8, u8, u8) {
+    if bucket.total_weight <= 0.0 {
+        return (37, 184, 122);
+    }
+    (
+        (bucket.total_r / bucket.total_weight).round().clamp(0.0, 255.0) as u8,
+        (bucket.total_g / bucket.total_weight).round().clamp(0.0, 255.0) as u8,
+        (bucket.total_b / bucket.total_weight).round().clamp(0.0, 255.0) as u8,
+    )
+}
+
+fn normalize_theme_accent_color(rgb: (u8, u8, u8)) -> (u8, u8, u8) {
+    let (h, s, l) = rgb_to_hsl_components(rgb.0, rgb.1, rgb.2);
+    let normalized_h = if h.is_finite() { h } else { 148.0 / 360.0 };
+    let normalized_s = s.clamp(0.42, 0.82);
+    let normalized_l = l.clamp(0.38, 0.60);
+    hsl_to_rgb_components(normalized_h, normalized_s, normalized_l)
+}
+
+fn rgb_to_hsl_components(r: u8, g: u8, b: u8) -> (f64, f64, f64) {
+    let rf = r as f64 / 255.0;
+    let gf = g as f64 / 255.0;
+    let bf = b as f64 / 255.0;
+
+    let max = rf.max(gf.max(bf));
+    let min = rf.min(gf.min(bf));
+    let lightness = (max + min) / 2.0;
+    let delta = max - min;
+
+    if delta.abs() < f64::EPSILON {
+        return (f64::NAN, 0.0, lightness);
+    }
+
+    let saturation = delta / (1.0 - (2.0 * lightness - 1.0).abs()).max(f64::EPSILON);
+    let hue = if (max - rf).abs() < f64::EPSILON {
+        ((gf - bf) / delta).rem_euclid(6.0)
+    } else if (max - gf).abs() < f64::EPSILON {
+        ((bf - rf) / delta) + 2.0
+    } else {
+        ((rf - gf) / delta) + 4.0
+    } / 6.0;
+
+    (hue, saturation.clamp(0.0, 1.0), lightness.clamp(0.0, 1.0))
+}
+
+fn hsl_to_rgb_components(h: f64, s: f64, l: f64) -> (u8, u8, u8) {
+    if s <= f64::EPSILON {
+        let value = (l * 255.0).round().clamp(0.0, 255.0) as u8;
+        return (value, value, value);
+    }
+
+    let q = if l < 0.5 {
+        l * (1.0 + s)
+    } else {
+        l + s - l * s
+    };
+    let p = 2.0 * l - q;
+
+    let convert = |mut t: f64| {
+        if t < 0.0 {
+            t += 1.0;
+        }
+        if t > 1.0 {
+            t -= 1.0;
+        }
+        let channel = if t < 1.0 / 6.0 {
+            p + (q - p) * 6.0 * t
+        } else if t < 0.5 {
+            q
+        } else if t < 2.0 / 3.0 {
+            p + (q - p) * (2.0 / 3.0 - t) * 6.0
+        } else {
+            p
+        };
+        (channel * 255.0).round().clamp(0.0, 255.0) as u8
+    };
+
+    (convert(h + 1.0 / 3.0), convert(h), convert(h - 1.0 / 3.0))
+}
+
+#[cfg(not(windows))]
+fn get_system_wallpaper_path() -> Result<Option<String>, String> {
+    Ok(None)
+}
+
 fn main() {
     tauri::Builder::default()
         .manage(LauncherRuntimeState::default())
@@ -7817,9 +9466,9 @@ fn main() {
         })
         .setup(|app| {
             let _ = app.path().app_data_dir();
-            if let Ok(resource_jar) =
-                app.path()
-                    .resolve("java/java-core.jar", BaseDirectory::Resource)
+            if let Ok(resource_jar) = app
+                .path()
+                .resolve("java/java-core.jar", BaseDirectory::Resource)
             {
                 let _ = JAVA_CORE_RESOURCE_JAR
                     .set(strip_windows_verbatim_prefix(resource_jar.as_path()));
@@ -7852,8 +9501,15 @@ fn main() {
             launcher_get_dashboard,
             launcher_get_home,
             launcher_get_app_update,
+            launcher_list_app_update_channels,
             download_launcher_app_update,
             open_downloaded_file,
+            get_minecraft_auth_config,
+            start_minecraft_device_login,
+            start_minecraft_browser_login,
+            poll_minecraft_device_login,
+            refresh_minecraft_account,
+            open_external_link,
             quit_launcher_app,
             launcher_cache_telemetry_session,
             launcher_offline_telemetry_session,
@@ -7891,6 +9547,8 @@ fn main() {
             delete_instance_section_entry,
             toggle_mod_disabled,
             get_default_game_dir,
+            get_system_wallpaper,
+            extract_background_theme_accent,
             show_main_window,
             hide_main_window,
             quit_launcher_app,

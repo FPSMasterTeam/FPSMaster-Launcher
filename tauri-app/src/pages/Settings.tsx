@@ -12,6 +12,7 @@ import {
   SunMedium,
   Trash2
 } from "lucide-react";
+import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { type ChangeEvent, type KeyboardEvent, type ReactNode, useEffect, useRef, useState } from "react";
 import Button from "../components/Button";
@@ -22,17 +23,20 @@ import type {
   BackgroundSource,
   DownloadSource,
   DownloadedLauncherUpdate,
+  LauncherAppUpdateChannel,
   LauncherAppUpdateInfo,
   LauncherUser,
   Settings,
   ThemeAccent,
   ThemeMode
 } from "../types";
+import { resolveBackgroundAssetUrl } from "../utils/launcher";
 
 type SettingsPageProps = {
   settings: Settings;
   launcherCurrentVersion: string;
   launcherUpdate: LauncherAppUpdateInfo | null;
+  launcherUpdateChannels: LauncherAppUpdateChannel[];
   launcherUpdateAvailable: boolean;
   launcherUpdateChecking: boolean;
   launcherUpdateDownloading: boolean;
@@ -50,6 +54,7 @@ export default function SettingsPage({
   settings,
   launcherCurrentVersion,
   launcherUpdate,
+  launcherUpdateChannels,
   launcherUpdateAvailable,
   launcherUpdateChecking,
   launcherUpdateDownloading,
@@ -64,9 +69,13 @@ export default function SettingsPage({
 }: SettingsPageProps) {
   const { locale, setLocale, t } = useI18n();
   const [backgroundError, setBackgroundError] = useState("");
+  const [accentError, setAccentError] = useState("");
   const [gameDirError, setGameDirError] = useState("");
+  const [backgroundAccentLoading, setBackgroundAccentLoading] = useState(false);
   const [customAccentDraft, setCustomAccentDraft] = useState(settings.customAccentHex);
+  const [showLauncherUpdateNotes, setShowLauncherUpdateNotes] = useState(false);
   const backgroundInputRef = useRef<HTMLInputElement>(null);
+  const backgroundAccentRequestRef = useRef(0);
 
   function isAbsolutePath(path: string): boolean {
     const trimmed = path.trim();
@@ -107,8 +116,8 @@ export default function SettingsPage({
           setGameDirError(validation.error);
         }
       }
-    } catch {
-      // User cancelled the dialog
+    } catch (error) {
+      setGameDirError(`打开目录选择器失败：${String(error)}`);
     }
   }
 
@@ -136,12 +145,54 @@ export default function SettingsPage({
     { id: "custom", swatch: settings.customAccentHex }
   ];
   const presetAccentOptions = accentOptions.filter((accent) => accent.id !== "custom");
-  const activeAccentColor = accentOptions.find((accent) => accent.id === settings.themeAccent)?.swatch ?? "#25b87a";
+  const activeAccentColor =
+    settings.themeAccent === "background"
+      ? settings.customAccentHex
+      : accentOptions.find((accent) => accent.id === settings.themeAccent)?.swatch ?? "#25b87a";
   const activeThemeLabel = t(`settings.theme.${settings.themeMode}` as const);
   const activeAccentLabel = t(`settings.accent.${settings.themeAccent}` as const);
 
-  const activeBackgroundUrl = settings.backgroundSource === "web-random" ? settings.backgroundWebUrl : settings.backgroundImage;
+  const activeBackgroundUrl = resolveBackgroundAssetUrl(settings);
   const hasBackground = activeBackgroundUrl.trim() !== "";
+
+  async function requestBackgroundAccent(targetSettings: Settings, activateBackgroundAccent: boolean) {
+    const requestId = backgroundAccentRequestRef.current + 1;
+    backgroundAccentRequestRef.current = requestId;
+    setAccentError("");
+    setBackgroundAccentLoading(true);
+    try {
+      const nextAccent = await invoke<string>("extract_background_theme_accent", {
+        backgroundSource: targetSettings.backgroundSource,
+        backgroundImage: targetSettings.backgroundImage,
+        backgroundWebUrl: targetSettings.backgroundWebUrl
+      });
+      if (backgroundAccentRequestRef.current !== requestId) {
+        return;
+      }
+      onChange({
+        ...targetSettings,
+        themeAccent: activateBackgroundAccent ? "background" : targetSettings.themeAccent,
+        customAccentHex: nextAccent
+      });
+      setCustomAccentDraft(nextAccent);
+    } catch (error) {
+      if (backgroundAccentRequestRef.current !== requestId) {
+        return;
+      }
+      setAccentError(t("settings.backgroundAccentFailed", { error: String(error) }));
+    } finally {
+      if (backgroundAccentRequestRef.current === requestId) {
+        setBackgroundAccentLoading(false);
+      }
+    }
+  }
+
+  function applyBackgroundSettings(nextSettings: Settings) {
+    onChange(nextSettings);
+    if (nextSettings.themeAccent === "background") {
+      void requestBackgroundAccent(nextSettings, false);
+    }
+  }
 
   async function handleBackgroundFile(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
@@ -157,36 +208,92 @@ export default function SettingsPage({
     }
     try {
       const dataUrl = await readFileAsDataUrl(file);
-      onChange({ ...settings, backgroundSource: "local", backgroundImage: dataUrl });
+      applyBackgroundSettings({ ...settings, backgroundSource: "local", backgroundImage: dataUrl });
       setBackgroundError("");
     } catch {
       setBackgroundError(t("settings.backgroundReadError"));
     }
   }
 
-  function switchBackgroundSource(source: BackgroundSource) {
+  async function switchBackgroundSource(source: BackgroundSource) {
     if (source === "web-random") {
-      onChange({
+      applyBackgroundSettings({
         ...settings,
         backgroundSource: "web-random",
         backgroundWebUrl: settings.backgroundWebUrl || buildRandomBackgroundUrl()
       });
+      setBackgroundError("");
+      return;
+    }
+    if (source === "system") {
+      try {
+        const wallpaperPath = await invoke<string | null>("get_system_wallpaper");
+        applyBackgroundSettings({
+          ...settings,
+          backgroundSource: "system",
+          backgroundImage: wallpaperPath ?? ""
+        });
+        setBackgroundError(wallpaperPath ? "" : t("settings.backgroundSystemUnavailable"));
+      } catch (error) {
+        onChange({
+          ...settings,
+          backgroundSource: "system",
+          backgroundImage: ""
+        });
+        setBackgroundError(t("settings.backgroundSystemLoadFailed", { error: String(error) }));
+      }
       return;
     }
     onChange({ ...settings, backgroundSource: "local" });
+    setBackgroundError("");
   }
 
   function refreshRandomWebBackground() {
-    onChange({ ...settings, backgroundSource: "web-random", backgroundWebUrl: buildRandomBackgroundUrl() });
+    applyBackgroundSettings({
+      ...settings,
+      backgroundSource: "web-random",
+      backgroundWebUrl: buildRandomBackgroundUrl()
+    });
+  }
+
+  function handleBackgroundWebUrlChange(value: string) {
+    onChange({ ...settings, backgroundSource: "web-random", backgroundWebUrl: value });
+  }
+
+  function commitBackgroundWebUrl() {
+    const trimmedUrl = settings.backgroundWebUrl.trim();
+    if (trimmedUrl === "") {
+      return;
+    }
+    const nextSettings = {
+      ...settings,
+      backgroundSource: "web-random",
+      backgroundWebUrl: trimmedUrl
+    };
+    onChange(nextSettings);
+    if (nextSettings.themeAccent === "background") {
+      void requestBackgroundAccent(nextSettings, false);
+    }
+  }
+
+  function onBackgroundWebUrlKeyDown(event: KeyboardEvent<HTMLInputElement>) {
+    if (event.key !== "Enter") return;
+    event.preventDefault();
+    commitBackgroundWebUrl();
   }
 
   useEffect(() => {
     setCustomAccentDraft(settings.customAccentHex);
   }, [settings.customAccentHex]);
 
+  useEffect(() => {
+    setShowLauncherUpdateNotes(false);
+  }, [launcherUpdate?.version, launcherUpdate?.notes]);
+
   function applyCustomAccent(hex: string) {
     const normalized = normalizeHexColor(hex);
     if (!normalized) return;
+    setAccentError("");
     onChange({
       ...settings,
       themeAccent: "custom",
@@ -204,6 +311,32 @@ export default function SettingsPage({
     event.preventDefault();
     commitCustomAccentDraft();
   }
+
+  function activateBackgroundAccent() {
+    if (!hasBackground) {
+      setAccentError(t("settings.backgroundNoImage"));
+      return;
+    }
+    void requestBackgroundAccent(settings, true);
+  }
+
+  const launcherUpdatePublishedAt = launcherUpdate
+    ? formatPublishedAt(launcherUpdate.publishedAt, t("settings.launcherUpdateUnknownDate"))
+    : "--";
+  const hasLauncherUpdateNotes = Boolean(launcherUpdate?.notes?.trim());
+  const availableLauncherChannels = (() => {
+    const normalizedCurrent = settings.launcherUpdateChannel.trim() || "release";
+    const items = launcherUpdateChannels
+      .filter((item) => item.code.trim() !== "")
+      .map((item) => ({
+        code: item.code.trim(),
+        name: item.name.trim() || item.code.trim()
+      }));
+    if (items.some((item) => item.code === normalizedCurrent)) {
+      return items;
+    }
+    return [{ code: normalizedCurrent, name: normalizedCurrent }, ...items];
+  })();
 
   return (
     <div className="page-shell">
@@ -236,16 +369,6 @@ export default function SettingsPage({
           <Card as="section" variant="strong" className="page-card page-card-roomy rounded-[22px]" interactive={false}>
             <SectionTitle icon={<Cpu size={18} className="text-[var(--mc-grass)]" />} title={t("settings.runtimeConfig")} subtitle={t("settings.runtimeConfigDesc")} />
             <div className="field-grid field-grid-two">
-              <div className="md:col-span-2">
-                <FieldLabel>{t("settings.playerName")}</FieldLabel>
-                <input
-                  type="text"
-                  value={settings.playerName}
-                  onChange={(event) => onChange({ ...settings, playerName: event.target.value })}
-                  className="ui-input"
-                />
-              </div>
-
               <div className="md:col-span-2">
                 <FieldLabel>{t("settings.gameDirectory")}</FieldLabel>
                 <div className="flex gap-2">
@@ -409,7 +532,10 @@ export default function SettingsPage({
                         <button
                           key={accent.id}
                           type="button"
-                          onClick={() => onChange({ ...settings, themeAccent: accent.id })}
+                          onClick={() => {
+                            setAccentError("");
+                            onChange({ ...settings, themeAccent: accent.id });
+                          }}
                           className={`theme-option-card ${selected ? "is-active" : ""}`}
                         >
                           <div className="flex items-center gap-3">
@@ -425,7 +551,14 @@ export default function SettingsPage({
                 </div>
 
                 <div className="surface-panel mt-5 rounded-[18px] p-4">
-                  <button type="button" onClick={() => onChange({ ...settings, themeAccent: "custom" })} className="flex w-full items-center justify-between gap-3 text-left">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setAccentError("");
+                      onChange({ ...settings, themeAccent: "custom" });
+                    }}
+                    className="flex w-full items-center justify-between gap-3 text-left"
+                  >
                     <div>
                       <p className="text-sm font-semibold text-[var(--text-primary)]">{t("settings.customAccent")}</p>
                       <p className="mt-1 text-xs text-[var(--text-muted)]">{t("settings.customAccentHint")}</p>
@@ -462,6 +595,37 @@ export default function SettingsPage({
                     </div>
                   ) : null}
                 </div>
+
+                <div className="surface-panel mt-5 rounded-[18px] p-4">
+                  <button type="button" onClick={activateBackgroundAccent} className="flex w-full items-center justify-between gap-3 text-left">
+                    <div>
+                      <p className="text-sm font-semibold text-[var(--text-primary)]">{t("settings.backgroundAccent")}</p>
+                      <p className="mt-1 text-xs text-[var(--text-muted)]">{t("settings.backgroundAccentHint")}</p>
+                    </div>
+                    <div className="flex items-center gap-3">
+                      <span className="h-8 w-8 rounded-full border border-[rgba(255,255,255,0.1)]" style={{ backgroundColor: settings.customAccentHex }} />
+                      <span className={`selection-indicator ${settings.themeAccent === "background" ? "is-active" : ""}`} />
+                    </div>
+                  </button>
+
+                  {settings.themeAccent === "background" ? (
+                    <div className="mt-4 flex flex-wrap items-center gap-3 border-t border-[rgba(255,255,255,0.1)] pt-4">
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        className="gap-2"
+                        disabled={!hasBackground || backgroundAccentLoading}
+                        onClick={activateBackgroundAccent}
+                      >
+                        <Palette size={14} />
+                        {backgroundAccentLoading ? t("settings.backgroundAccentLoading") : t("settings.backgroundAccentRefresh")}
+                      </Button>
+                      <span className="text-xs text-[var(--text-muted)]">{settings.customAccentHex}</span>
+                    </div>
+                  ) : null}
+                </div>
+
+                {accentError ? <p className="text-xs text-[var(--accent-danger)]">{accentError}</p> : null}
               </div>
             </div>
           </Card>
@@ -487,6 +651,13 @@ export default function SettingsPage({
                   >
                     {t("settings.backgroundMode.web")}
                   </button>
+                  <button
+                    type="button"
+                    onClick={() => void switchBackgroundSource("system")}
+                    className={`segment-chip ${settings.backgroundSource === "system" ? "is-active" : ""}`}
+                  >
+                    {t("settings.backgroundMode.system")}
+                  </button>
                 </div>
               </div>
 
@@ -505,10 +676,15 @@ export default function SettingsPage({
                     <ImagePlus size={14} />
                     {t("settings.backgroundUpload")}
                   </Button>
-                ) : (
+                ) : settings.backgroundSource === "web-random" ? (
                   <Button variant="secondary" size="sm" className="flex-1 gap-2" onClick={refreshRandomWebBackground}>
                     <Globe size={14} />
                     {t("settings.backgroundRefreshWeb")}
+                  </Button>
+                ) : (
+                  <Button variant="secondary" size="sm" className="flex-1 gap-2" onClick={() => void switchBackgroundSource("system")}>
+                    <Monitor size={14} />
+                    {t("settings.backgroundRefreshSystem")}
                   </Button>
                 )}
                 <Button
@@ -528,6 +704,22 @@ export default function SettingsPage({
                   {t("settings.backgroundClear")}
                 </Button>
               </div>
+
+              {settings.backgroundSource === "web-random" ? (
+                <div>
+                  <FieldLabel>{t("settings.backgroundUrl")}</FieldLabel>
+                  <input
+                    type="url"
+                    value={settings.backgroundWebUrl}
+                    onChange={(event) => handleBackgroundWebUrlChange(event.target.value)}
+                    onBlur={commitBackgroundWebUrl}
+                    onKeyDown={onBackgroundWebUrlKeyDown}
+                    className="ui-input"
+                    placeholder="https://picsum.photos/1920/1080?random=..."
+                  />
+                  <p className="mt-1 text-xs text-[var(--text-muted)]">{t("settings.backgroundUrlHint")}</p>
+                </div>
+              ) : null}
 
               <div>
                 <div className="mb-1 flex items-center justify-between">
@@ -564,7 +756,11 @@ export default function SettingsPage({
               </div>
 
               <p className="text-xs leading-5 text-[var(--text-muted)]">
-                {settings.backgroundSource === "web-random" ? t("settings.backgroundWebHint") : t("settings.backgroundHint")}
+                {settings.backgroundSource === "web-random"
+                  ? t("settings.backgroundWebHint")
+                  : settings.backgroundSource === "system"
+                    ? t("settings.backgroundSystemHint")
+                    : t("settings.backgroundHint")}
               </p>
               {backgroundError && <p className="text-xs text-[var(--accent-danger)]">{backgroundError}</p>}
             </div>
@@ -577,26 +773,48 @@ export default function SettingsPage({
               subtitle={t("settings.launcherUpdatesDesc")}
             />
             <div className="space-y-4">
-              <div className="grid grid-cols-2 gap-2">
-                <InfoTile label={t("settings.launcherCurrentVersion")} value={launcherCurrentVersion} />
-                <InfoTile
-                  label={t("settings.launcherLatestVersion")}
-                  value={launcherUpdate?.version ?? "--"}
-                  tone={launcherUpdateAvailable ? "highlight" : "default"}
-                />
+              <div>
+                <FieldLabel>{t("settings.launcherUpdateChannel")}</FieldLabel>
+                <Select
+                  value={settings.launcherUpdateChannel}
+                  onValueChange={(value) => onChange({ ...settings, launcherUpdateChannel: value })}
+                >
+                  <Select.Trigger className="ui-select-trigger">
+                    <Select.Value />
+                  </Select.Trigger>
+                  <Select.Content>
+                    {availableLauncherChannels.map((item) => (
+                      <Select.Item key={item.code} value={item.code}>
+                        {item.name}
+                      </Select.Item>
+                    ))}
+                  </Select.Content>
+                </Select>
               </div>
 
-              {launcherUpdate ? (
+              <div className="grid grid-cols-3 gap-2">
+                <InfoTile label={t("settings.launcherCurrentVersion")} value={launcherCurrentVersion} />
+                <InfoTile
+                  label={t("settings.launcherUpdateStatus")}
+                  value={
+                    launcherUpdateAvailable
+                      ? t("settings.launcherUpdateStatusAvailable")
+                      : t("settings.launcherUpdateStatusUpToDate")
+                  }
+                  tone={launcherUpdateAvailable ? "highlight" : "default"}
+                />
+                <InfoTile label={t("settings.launcherUpdatePublishedAt")} value={launcherUpdatePublishedAt} />
+              </div>
+
+              {launcherUpdate && launcherUpdateAvailable ? (
                 <div className="surface-panel rounded-[20px] p-4">
                   <p className="text-sm font-semibold text-[var(--text-primary)]">
-                    {launcherUpdateAvailable ? t("settings.launcherUpdateAvailable", { version: launcherUpdate.version }) : t("settings.launcherUpToDate")}
+                    {t("settings.launcherUpdateAvailable", { version: launcherUpdate.version })}
                   </p>
                   <p className="mt-1 text-xs leading-5 text-[var(--text-muted)]">
-                    {launcherUpdateAvailable
-                      ? launcherUpdate.mandatory
-                        ? t("settings.launcherUpdateMandatory")
-                        : t("settings.launcherUpdateOptional")
-                      : t("settings.launcherUpdateCurrentHint")}
+                    {launcherUpdate.mandatory
+                      ? t("settings.launcherUpdateMandatory")
+                      : t("settings.launcherUpdateOptional")}
                   </p>
 
                   <div className="mt-3 grid grid-cols-2 gap-2">
@@ -634,6 +852,14 @@ export default function SettingsPage({
                 </div>
               ) : null}
 
+              {!launcherUpdateAvailable && hasLauncherUpdateNotes && showLauncherUpdateNotes ? (
+                <div className="surface-panel rounded-[20px] p-4">
+                  <p className="whitespace-pre-wrap text-xs leading-6 text-[var(--text-secondary)]">
+                    {launcherUpdate?.notes?.trim()}
+                  </p>
+                </div>
+              ) : null}
+
               <div className="flex flex-wrap gap-2">
                 <Button
                   variant="secondary"
@@ -645,16 +871,29 @@ export default function SettingsPage({
                   <RefreshCw size={14} />
                   {launcherUpdateChecking ? t("settings.launcherUpdateChecking") : t("settings.launcherUpdateCheck")}
                 </Button>
-                <Button
-                  variant="primary"
-                  size="sm"
-                  className="gap-2"
-                  disabled={!launcherUpdateAvailable || launcherUpdateDownloading}
-                  onClick={onInstallLauncherUpdate}
-                >
-                  <Download size={14} />
-                  {launcherUpdateDownloading ? t("settings.launcherUpdatePreparing") : t("settings.launcherUpdateInstall")}
-                </Button>
+                {launcherUpdateAvailable ? (
+                  <Button
+                    variant="primary"
+                    size="sm"
+                    className="gap-2"
+                    disabled={!launcherUpdateAvailable || launcherUpdateDownloading}
+                    onClick={onInstallLauncherUpdate}
+                  >
+                    <Download size={14} />
+                    {launcherUpdateDownloading ? t("settings.launcherUpdatePreparing") : t("settings.launcherUpdateInstall")}
+                  </Button>
+                ) : null}
+                {!launcherUpdateAvailable && hasLauncherUpdateNotes ? (
+                  <button
+                    type="button"
+                    className="text-sm text-[var(--mc-grass)] transition-opacity hover:opacity-80"
+                    onClick={() => setShowLauncherUpdateNotes((prev) => !prev)}
+                  >
+                    {showLauncherUpdateNotes
+                      ? t("settings.launcherUpdateHideNotes")
+                      : t("settings.launcherUpdateViewNotes")}
+                  </button>
+                ) : null}
               </div>
             </div>
           </Card>

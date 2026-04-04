@@ -15,11 +15,14 @@ import { createPortal } from "react-dom";
 import { useMemo, useState } from "react";
 import Button from "../components/Button";
 import Card from "../components/Card";
+import MinecraftProfileCard from "../components/MinecraftProfileCard";
+import ServerDialog from "../components/ServerDialog";
 import { useI18n } from "../i18n";
 import type {
   DownloadedLauncherUpdate,
   Instance,
   LauncherAppUpdateInfo,
+  MinecraftAccount,
   LauncherUser,
   NewsItem,
   ServerItem,
@@ -42,10 +45,17 @@ type HomePageProps = {
   launchProgressPercent: number | null;
   launchProgressText: string;
   user: LauncherUser | null;
+  minecraftAccounts: MinecraftAccount[];
+  currentMinecraftAccount: MinecraftAccount | null;
   onSelect: (id: string) => void;
   onLaunch: () => void;
+  onLaunchToServer: (serverAddress: string) => void;
   onOpenSettings: () => void;
   onOpenServers: () => void;
+  onSelectMinecraftAccount: (accountId: string) => void;
+  onAddOfflineMinecraftAccount: (username: string) => void;
+  onSaveMicrosoftMinecraftAccount: (account: MinecraftAccount) => void;
+  onDeleteMinecraftAccount: (accountId: string) => void;
 };
 
 function canAccessInstance(instance: Instance, user: LauncherUser | null): boolean {
@@ -70,10 +80,17 @@ export default function HomePage({
   launchProgressPercent,
   launchProgressText,
   user,
+  minecraftAccounts,
+  currentMinecraftAccount,
   onSelect,
   onLaunch,
+  onLaunchToServer,
   onOpenSettings,
-  onOpenServers
+  onOpenServers,
+  onSelectMinecraftAccount,
+  onAddOfflineMinecraftAccount,
+  onSaveMicrosoftMinecraftAccount,
+  onDeleteMinecraftAccount
 }: HomePageProps) {
   const { t } = useI18n();
   const selectedInstance = current ?? availableInstances[0] ?? null;
@@ -83,6 +100,8 @@ export default function HomePage({
   const [pickerQuery, setPickerQuery] = useState("");
   const [activeNews, setActiveNews] = useState<NewsItem | null>(null);
   const [newsClosing, setNewsClosing] = useState(false);
+  const [activeServer, setActiveServer] = useState<ServerItem | null>(null);
+  const [serverClosing, setServerClosing] = useState(false);
 
   const filteredInstances = useMemo(() => {
     const keyword = pickerQuery.trim().toLowerCase();
@@ -122,6 +141,14 @@ export default function HomePage({
     }, 150);
   };
 
+  const closeServer = () => {
+    setServerClosing(true);
+    setTimeout(() => {
+      setActiveServer(null);
+      setServerClosing(false);
+    }, 150);
+  };
+
   return (
     <div className="flex h-full flex-col overflow-hidden">
       <div className="page-shell flex-1">
@@ -137,6 +164,16 @@ export default function HomePage({
             </div>
             <h1 className="page-title">{t("home.welcomeBack")}</h1>
             <p className="page-subtitle">{t("home.dashboardReady")}</p>
+          </div>
+          <div className="page-header-actions">
+            <MinecraftProfileCard
+              accounts={minecraftAccounts}
+              currentAccount={currentMinecraftAccount}
+              onSelectAccount={onSelectMinecraftAccount}
+              onAddOfflineAccount={onAddOfflineMinecraftAccount}
+              onSaveMicrosoftAccount={onSaveMicrosoftMinecraftAccount}
+              onDeleteAccount={onDeleteMinecraftAccount}
+            />
           </div>
         </header>
 
@@ -277,6 +314,7 @@ export default function HomePage({
                     key={server.id ?? server.address}
                     className="surface-list-item w-full text-left"
                     type="button"
+                    onClick={() => setActiveServer(server)}
                   >
                     <div className="icon-tile h-10 w-10 rounded-[14px]">
                       {server.iconPath ? (
@@ -511,6 +549,22 @@ export default function HomePage({
           </div>,
           document.body
         )}
+
+      <ServerDialog
+        server={activeServer}
+        closing={serverClosing}
+        onClose={closeServer}
+        onLaunch={() => {
+          if (activeServer) {
+            closeServer();
+            onLaunchToServer(activeServer.address);
+          }
+        }}
+        currentInstance={current}
+        busy={busy}
+        launching={launching}
+        launchProgressPercent={launchProgressPercent}
+      />
     </div>
   );
 }

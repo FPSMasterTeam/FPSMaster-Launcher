@@ -1,3 +1,4 @@
+import { convertFileSrc } from "@tauri-apps/api/core";
 import { DEFAULT_SETTINGS, PRESET_INSTANCES, STORAGE_KEYS } from "../constants";
 import fabricIcon from "../assets/icons/fabric.png";
 import forgeIcon from "../assets/icons/forge.png";
@@ -9,6 +10,7 @@ import type {
   InstallIpcEvent,
   InstallPhaseState,
   LauncherUser,
+  MinecraftAccount,
   Instance,
   Locale,
   Settings,
@@ -95,6 +97,7 @@ export function loadSettings(): Settings {
           ? parsed.playerName
           : fallbackPlayerName,
       downloadSource: parseDownloadSource(parsed.downloadSource),
+      launcherUpdateChannel: parseLauncherUpdateChannel(parsed.launcherUpdateChannel),
       maxMemoryMb:
         typeof parsed.maxMemoryMb === "number"
           ? clamp(parsed.maxMemoryMb, 1024, 16384)
@@ -188,6 +191,14 @@ function parseDownloadSource(input: unknown): DownloadSource {
   return DEFAULT_SETTINGS.downloadSource;
 }
 
+function parseLauncherUpdateChannel(input: unknown): string {
+  if (typeof input !== "string") {
+    return DEFAULT_SETTINGS.launcherUpdateChannel;
+  }
+  const normalized = input.trim().toLowerCase();
+  return normalized || DEFAULT_SETTINGS.launcherUpdateChannel;
+}
+
 function parseThemeMode(input: unknown): ThemeMode {
   if (input === "dark" || input === "light") {
     return input;
@@ -205,6 +216,7 @@ function parseThemeAccent(input: unknown): ThemeAccent {
     input === "amber" ||
     input === "sky" ||
     input === "lime" ||
+    input === "background" ||
     input === "custom"
   ) {
     return input;
@@ -221,10 +233,24 @@ function parseCustomAccentHex(input: unknown): string {
 }
 
 function parseBackgroundSource(input: unknown): BackgroundSource {
-  if (input === "local" || input === "web-random") {
+  if (input === "local" || input === "web-random" || input === "system") {
     return input;
   }
   return DEFAULT_SETTINGS.backgroundSource;
+}
+
+export function resolveBackgroundAssetUrl(settings: Settings): string {
+  if (settings.backgroundSource === "web-random") {
+    return settings.backgroundWebUrl;
+  }
+  if (settings.backgroundSource === "system") {
+    const value = settings.backgroundImage.trim();
+    if (!value) {
+      return "";
+    }
+    return value.startsWith("data:") ? value : convertFileSrc(value);
+  }
+  return settings.backgroundImage;
 }
 
 export function applyTheme(mode: ThemeMode, accent: ThemeAccent, customAccentHex: string) {
@@ -233,7 +259,7 @@ export function applyTheme(mode: ThemeMode, accent: ThemeAccent, customAccentHex
   root.setAttribute("data-theme", mode);
   root.setAttribute("data-accent", accent);
 
-  if (accent !== "custom") {
+  if (accent !== "custom" && accent !== "background") {
     root.style.removeProperty("--custom-accent");
     root.style.removeProperty("--custom-accent-dark");
     root.style.removeProperty("--custom-diamond");
@@ -259,6 +285,11 @@ export function applyTheme(mode: ThemeMode, accent: ThemeAccent, customAccentHex
   root.style.setProperty("--custom-emerald", rgbToHex(emerald));
   root.style.setProperty("--custom-gold", rgbToHex(gold));
   root.style.setProperty("--custom-accent-rgb", `${rgb.r}, ${rgb.g}, ${rgb.b}`);
+}
+
+export function resolveMinecraftAvatarUrl(account: MinecraftAccount | null | undefined, size = 72): string {
+  const identifier = account?.uuid?.trim() || account?.username?.trim() || "Steve";
+  return `https://mc-heads.net/avatar/${encodeURIComponent(identifier)}/${Math.max(16, Math.round(size))}`;
 }
 
 function normalizeHexColor(input: string): string | null {

@@ -207,6 +207,18 @@
   --accent-rgb: var(--custom-accent-rgb, 37, 184, 122);
 }
 
+:root[data-accent="background"] {
+  --accent: var(--custom-accent, #25b87a);
+  --accent-soft: rgba(var(--custom-accent-rgb, 37, 184, 122), 0.16);
+  --accent-strong: rgba(var(--custom-accent-rgb, 37, 184, 122), 0.36);
+  --mc-grass: var(--custom-accent, #25b87a);
+  --mc-grass-dark: var(--custom-accent-dark, #1f985f);
+  --mc-diamond: var(--custom-diamond, #57c89a);
+  --mc-emerald: var(--custom-emerald, #30b985);
+  --mc-gold: var(--custom-gold, #7dddb7);
+  --accent-rgb: var(--custom-accent-rgb, 37, 184, 122);
+}
+
 * {
   box-sizing: border-box;
 }
@@ -631,6 +643,476 @@ select:focus-visible {
   flex-wrap: wrap;
   align-items: center;
   gap: 10px;
+}
+
+@media (min-width: 980px) {
+  .page-header {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .page-header-actions {
+    justify-content: flex-end;
+  }
+}
+
+.minecraft-profile-anchor {
+  position: relative;
+  width: min(100%, 360px);
+}
+
+.minecraft-profile-card {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 14px;
+  padding: 14px 16px;
+  border-radius: 20px;
+  border: 1px solid var(--border-medium);
+  background:
+    radial-gradient(140% 120% at 100% 0%, rgba(var(--accent-rgb), 0.16), transparent 55%),
+    rgba(10, 15, 19, 0.7);
+  box-shadow: 0 18px 38px rgba(0, 0, 0, 0.18);
+  transition:
+    border-color var(--duration-fast) var(--ease-standard),
+    transform var(--duration-fast) var(--ease-standard),
+    box-shadow var(--duration-fast) var(--ease-standard);
+}
+
+.minecraft-profile-card:hover,
+.minecraft-profile-card.is-open {
+  border-color: rgba(var(--accent-rgb), 0.34);
+  transform: translateY(-1px);
+  box-shadow:
+    0 22px 42px rgba(0, 0, 0, 0.22),
+    0 0 0 1px rgba(var(--accent-rgb), 0.1);
+}
+
+.minecraft-profile-avatar {
+  width: 44px;
+  height: 44px;
+  border-radius: 14px;
+  flex-shrink: 0;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.04);
+  image-rendering: pixelated;
+}
+
+.minecraft-profile-copy {
+  min-width: 0;
+  flex: 1;
+}
+
+.minecraft-profile-label {
+  margin: 0;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.minecraft-profile-name {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.minecraft-profile-subtitle {
+  margin: 4px 0 0;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.minecraft-profile-chevron {
+  flex-shrink: 0;
+  color: var(--text-muted);
+  transition: transform var(--duration-fast) var(--ease-standard);
+}
+
+.minecraft-profile-chevron.is-open {
+  transform: rotate(180deg);
+}
+
+.minecraft-profile-dropdown {
+  position: absolute;
+  top: calc(100% + 12px);
+  right: 0;
+  z-index: 35;
+  width: min(100vw - 48px, 380px);
+  border-radius: 22px;
+  border: 1px solid var(--border-medium);
+  background:
+    radial-gradient(140% 120% at 100% 0%, rgba(var(--accent-rgb), 0.14), transparent 60%),
+    rgba(10, 15, 19, 0.96);
+  box-shadow: 0 26px 48px rgba(0, 0, 0, 0.28);
+  overflow: hidden;
+}
+
+.minecraft-profile-dropdown-scroll {
+  max-height: 320px;
+  overflow-y: auto;
+  padding: 8px;
+}
+
+.minecraft-account-row {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 10px 12px;
+  border-radius: 16px;
+  border: 1px solid transparent;
+  background: transparent;
+  cursor: pointer;
+  transition:
+    border-color var(--duration-fast) var(--ease-standard),
+    background-color var(--duration-fast) var(--ease-standard);
+}
+
+.minecraft-account-row:hover {
+  border-color: var(--border-medium);
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.minecraft-account-row:focus-visible {
+  outline: none;
+  border-color: rgba(var(--accent-rgb), 0.3);
+  background: rgba(var(--accent-rgb), 0.08);
+}
+
+.minecraft-account-row.is-active {
+  border-color: rgba(var(--accent-rgb), 0.3);
+  background: rgba(var(--accent-rgb), 0.1);
+}
+
+.minecraft-account-row-main {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex: 1;
+}
+
+.minecraft-account-row-avatar {
+  width: 34px;
+  height: 34px;
+  border-radius: 12px;
+  flex-shrink: 0;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  image-rendering: pixelated;
+}
+
+.minecraft-account-row-copy {
+  min-width: 0;
+  flex: 1;
+}
+
+.minecraft-account-row-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.minecraft-account-row-meta {
+  margin: 4px 0 0;
+  font-size: 11px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.minecraft-account-type-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.04);
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--text-secondary);
+}
+
+.minecraft-account-type-badge.is-premium {
+  border-color: rgba(255, 208, 112, 0.18);
+  background: rgba(255, 208, 112, 0.08);
+  color: #f6d07e;
+}
+
+.minecraft-account-row-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.minecraft-account-delete,
+.minecraft-account-modal-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  color: var(--text-muted);
+  transition:
+    border-color var(--duration-fast) var(--ease-standard),
+    background-color var(--duration-fast) var(--ease-standard),
+    color var(--duration-fast) var(--ease-standard);
+}
+
+.minecraft-account-delete:hover,
+.minecraft-account-modal-close:hover {
+  border-color: rgba(255, 107, 143, 0.22);
+  background: rgba(255, 107, 143, 0.12);
+  color: var(--accent-danger);
+}
+
+.minecraft-account-add {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 14px 16px;
+  border-top: 1px solid var(--border-subtle);
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text-primary);
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.minecraft-account-add:hover {
+  background: rgba(var(--accent-rgb), 0.08);
+}
+
+.minecraft-account-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 96;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(7, 10, 16, 0.72);
+  backdrop-filter: blur(12px);
+}
+
+.minecraft-account-modal {
+  width: min(100%, 520px);
+  border-radius: 24px;
+  border: 1px solid var(--border-medium);
+  background:
+    radial-gradient(140% 120% at 100% 0%, rgba(var(--accent-rgb), 0.14), transparent 58%),
+    rgba(10, 15, 19, 0.96);
+  box-shadow: 0 30px 56px rgba(0, 0, 0, 0.34);
+  padding: 22px;
+}
+
+.minecraft-account-modal-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.minecraft-account-modal-title {
+  margin: 6px 0 0;
+  font-size: 22px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.minecraft-account-mode-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 18px;
+}
+
+.minecraft-account-mode-card {
+  display: flex;
+  width: 100%;
+  align-items: flex-start;
+  justify-content: flex-start;
+  gap: 12px;
+  padding: 14px;
+  border-radius: 18px;
+  border: 1px solid rgba(var(--accent-rgb), 0.28);
+  background: rgba(var(--accent-rgb), 0.08);
+  text-align: left;
+  transition:
+    border-color var(--duration-fast) var(--ease-standard),
+    background-color var(--duration-fast) var(--ease-standard),
+    transform var(--duration-fast) var(--ease-standard);
+}
+
+.minecraft-account-mode-card:hover {
+  transform: translateY(-1px);
+}
+
+.minecraft-account-mode-card.is-active {
+  border-color: rgba(var(--accent-rgb), 0.38);
+  background: rgba(var(--accent-rgb), 0.13);
+}
+
+.minecraft-account-mode-card.is-disabled {
+  border-color: var(--border-medium);
+  background: rgba(255, 255, 255, 0.04);
+  opacity: 0.78;
+}
+
+.minecraft-account-mode-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  flex-shrink: 0;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.minecraft-account-mode-title {
+  margin: 0;
+  text-align: left;
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.minecraft-account-mode-desc {
+  margin: 6px 0 0;
+  text-align: left;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text-secondary);
+}
+
+.minecraft-account-modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 20px;
+}
+
+.minecraft-auth-panel {
+  margin-top: 18px;
+  display: grid;
+  gap: 14px;
+}
+
+.minecraft-auth-panel-copy {
+  display: grid;
+  gap: 6px;
+}
+
+.minecraft-auth-panel-title {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.minecraft-auth-panel-desc {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--text-secondary);
+}
+
+.minecraft-auth-notice {
+  border-radius: 16px;
+  border: 1px solid var(--border-medium);
+  background: rgba(255, 255, 255, 0.04);
+  padding: 12px 14px;
+}
+
+.minecraft-auth-notice p {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--text-secondary);
+}
+
+.minecraft-auth-notice.is-warning {
+  border-color: rgba(255, 208, 112, 0.26);
+  background: rgba(255, 208, 112, 0.08);
+}
+
+.minecraft-auth-notice.is-warning p {
+  color: #f6d07e;
+}
+
+.minecraft-auth-session {
+  display: grid;
+  gap: 12px;
+}
+
+.minecraft-auth-code-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.minecraft-auth-code-block {
+  min-width: 0;
+  flex: 1;
+  display: grid;
+  gap: 6px;
+  padding: 12px 14px;
+  border-radius: 16px;
+  border: 1px solid rgba(var(--accent-rgb), 0.24);
+  background: rgba(var(--accent-rgb), 0.08);
+}
+
+.minecraft-auth-code-label {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.minecraft-auth-code-value {
+  font-size: 20px;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  color: var(--text-primary);
+}
+
+.minecraft-auth-status {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.minecraft-auth-error {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--accent-danger);
+}
+
+.minecraft-inline-spinner {
+  animation: minecraft-inline-spin 0.8s linear infinite;
+}
+
+@keyframes minecraft-inline-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .page-grid {
@@ -2659,6 +3141,7 @@ button:disabled {
 .monitorConsoleBody {
   min-height: 0;
   height: 100%;
+  max-height: none;
   padding: 10px 10px 8px;
   border-radius: 16px;
 }

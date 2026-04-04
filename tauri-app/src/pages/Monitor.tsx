@@ -5,7 +5,7 @@ import Card from "../components/Card";
 import TitleBar from "../components/TitleBar";
 import { useI18n } from "../i18n";
 import type { GameRuntimeStats, UiLogPollResult } from "../types";
-import { formatDuration, loadSettings, parseIntSafe, prefix } from "../utils/launcher";
+import { formatDuration, loadSettings, parseIntSafe, prefix, resolveBackgroundAssetUrl } from "../utils/launcher";
 
 type MonitorPageProps = {
   params: URLSearchParams;
@@ -20,9 +20,9 @@ const MONITOR_LOG_LINE_LIMIT = 1200;
 export default function MonitorPage({ params }: MonitorPageProps) {
   const { t } = useI18n();
   const visualSettings = useMemo(() => loadSettings(), []);
-  const activeBackgroundUrl = visualSettings.backgroundSource === "web-random" ? visualSettings.backgroundWebUrl : visualSettings.backgroundImage;
+  const activeBackgroundUrl = resolveBackgroundAssetUrl(visualSettings);
   const pid = parseIntSafe(params.get("pid"), 0);
-  const startedAt = parseIntSafe(params.get("startedAt"), Date.now());
+  const monitorStartedAt = useRef(parseIntSafe(params.get("startedAt"), Date.now())).current;
   const initialCursor = parseIntSafe(params.get("cursor"), 0);
   const version = params.get("version") ?? "unknown";
 
@@ -30,6 +30,7 @@ export default function MonitorPage({ params }: MonitorPageProps) {
   const [stats, setStats] = useState<GameRuntimeStats | null>(null);
   const [status, setStatus] = useState(t("monitor.connecting"));
   const [tick, setTick] = useState(Date.now());
+  const [exitedAt, setExitedAt] = useState<number | null>(null);
   const [confirmAction, setConfirmAction] = useState<"stop" | "back" | null>(null);
   const [stopping, setStopping] = useState(false);
 
@@ -98,7 +99,15 @@ export default function MonitorPage({ params }: MonitorPageProps) {
       try {
         const out = await invoke<GameRuntimeStats>("poll_game_runtime", { pid });
         if (!active) return;
-        setStats(out);
+        setStats((previous) => ({
+          ...out,
+          memoryMb: out.memoryMb ?? previous?.memoryMb ?? null
+        }));
+        if (out.running) {
+          setExitedAt(null);
+        } else {
+          setExitedAt((previous) => previous ?? Date.now());
+        }
         setStatus(out.running ? t("monitor.processRunning") : t("monitor.processExited"));
       } catch (error) {
         if (!active) return;
@@ -136,10 +145,10 @@ export default function MonitorPage({ params }: MonitorPageProps) {
     viewport.scrollTop = viewport.scrollHeight;
   }, [logLines]);
 
-  const uptimeMs = stats?.running === false ? null : stats?.elapsedMs ?? Math.max(0, tick - startedAt);
-  const uptime = uptimeMs === null ? "N/A" : formatDuration(uptimeMs);
+  const uptimeMs = Math.max(0, (exitedAt ?? tick) - monitorStartedAt);
+  const uptime = formatDuration(uptimeMs);
   const memory = stats?.memoryMb === null || stats?.memoryMb === undefined ? "N/A" : `${stats.memoryMb} MB`;
-  const runtimeStateLabel = stats?.running ? t("monitor.running") : t("monitor.exited");
+  const runtimeStateLabel = stats?.running === false ? t("monitor.exited") : t("monitor.running");
   const pidLabel = pid > 0 ? pid : "N/A";
 
   async function backToLauncher() {
@@ -171,6 +180,11 @@ export default function MonitorPage({ params }: MonitorPageProps) {
     if (confirmAction === "stop") {
       await stopGame();
       setConfirmAction(null);
+      return;
+    }
+    if (stats?.running === false) {
+      setConfirmAction(null);
+      await backToLauncher();
       return;
     }
     await stopGame();
@@ -217,7 +231,18 @@ export default function MonitorPage({ params }: MonitorPageProps) {
               >
                 {t("monitor.clearLogs")}
               </button>
-              <button className="icon-button monitorUtilityButton !w-auto px-3" onClick={() => setConfirmAction("back")} disabled={stopping} type="button">
+              <button
+                className="icon-button monitorUtilityButton !w-auto px-3"
+                onClick={() => {
+                  if (stats?.running === false) {
+                    void backToLauncher();
+                    return;
+                  }
+                  setConfirmAction("back");
+                }}
+                disabled={stopping}
+                type="button"
+              >
                 {t("monitor.backLauncher")}
               </button>
               <button
@@ -231,7 +256,7 @@ export default function MonitorPage({ params }: MonitorPageProps) {
             </div>
           </div>
           <div className="monitorSummaryStrip">
-            <span className={`monitorStateBadge ${stats?.running ? "is-running" : "is-exited"}`}>{runtimeStateLabel}</span>
+            <span className={`monitorStateBadge ${stats?.running === false ? "is-exited" : "is-running"}`}>{runtimeStateLabel}</span>
             <MetricRow label={t("monitor.memory")} value={memory} compact />
             <MetricRow label={t("monitor.uptime")} value={uptime} compact />
             <MetricRow label={t("monitor.pid")} value={pidLabel} compact />

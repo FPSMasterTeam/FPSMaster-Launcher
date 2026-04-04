@@ -6,7 +6,9 @@ export const STORAGE_KEYS = {
   selected: "fpsmaster.selected",
   launcherAuth: "fpsmaster.launcherAuth",
   launcherLoginPrefs: "fpsmaster.launcherLoginPrefs",
-  launcherSessionId: "fpsmaster.launcherSessionId"
+  launcherSessionId: "fpsmaster.launcherSessionId",
+  minecraftAccounts: "fpsmaster.minecraftAccounts",
+  selectedMinecraftAccount: "fpsmaster.selectedMinecraftAccount"
 } as const;
 
 // Rust backend needs the full API URL for invoke() calls
@@ -21,9 +23,10 @@ export const NEWS_ITEMS: readonly NewsItem[] = [
 ];
 
 export const DEFAULT_SETTINGS: Settings = {
-  gameDir: "./.minecraft",
+  gameDir: "",
   playerName: "",
   downloadSource: "official",
+  launcherUpdateChannel: "release",
   maxMemoryMb: 4096,
   hideMainOnLaunch: true,
   minimizeToTray: true,

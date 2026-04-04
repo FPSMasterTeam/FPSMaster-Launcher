@@ -1,9 +1,9 @@
 import { useMemo, useState } from "react";
-import { ArrowLeft, ArrowRight, ExternalLink, Play, Server as ServerIcon, Users, X } from "lucide-react";
-import { createPortal } from "react-dom";
+import { ArrowLeft, ArrowRight, Server as ServerIcon, Users } from "lucide-react";
 import { useI18n } from "../i18n";
 import Button from "../components/Button";
 import Card from "../components/Card";
+import ServerDialog from "../components/ServerDialog";
 import type {
   Instance,
   LauncherUser,
@@ -197,98 +197,16 @@ export default function ServersPage({
       </div>
 
       {/* Server Detail Dialog */}
-      {(selectedServer || dialogClosing) &&
-        typeof document !== "undefined" &&
-        createPortal(
-          <div className={`modal-shell ${dialogClosing ? "modal-backdrop-animate-out" : "modal-backdrop-animate"}`} onClick={closeDialog}>
-            <Card
-              variant="strong"
-              className={`${dialogClosing ? "modal-animate-out" : "modal-animate"} modal-card page-card w-full max-w-2xl`}
-              interactive={false}
-              onClick={(e) => e.stopPropagation()}
-            >
-              <div className="modal-header">
-                <div className="flex items-center gap-4 min-w-0">
-                  <div className="icon-tile h-16 w-16 rounded-[20px] shrink-0">
-                    {selectedServer?.iconUrl ? (
-                      <img src={selectedServer.iconUrl} alt={selectedServer.name} className="h-full w-full object-cover" />
-                    ) : selectedServer?.iconPath ? (
-                      <img src={selectedServer.iconPath} alt={selectedServer.name} className="h-full w-full object-cover" />
-                    ) : (
-                      <span className="flex h-full w-full items-center justify-center text-xl font-bold text-[var(--text-secondary)]">
-                        {selectedServer?.name.slice(0, 1)}
-                      </span>
-                    )}
-                  </div>
-                  <div className="min-w-0 flex-1">
-                    <p className="page-eyebrow">{t("servers.serverDetail")}</p>
-                    <h3 className="page-title !mt-1 !text-[28px] truncate">{selectedServer?.name}</h3>
-                    <p className="mt-1 text-sm text-[var(--text-muted)] truncate">{selectedServer?.address}</p>
-                  </div>
-                </div>
-                <button
-                  className="modal-close"
-                  onClick={closeDialog}
-                  type="button"
-                  aria-label={t("servers.close")}
-                >
-                  <X size={16} />
-                </button>
-              </div>
-
-              <div className="modal-body">
-                {selectedServer?.description && (
-                  <div className="mb-4">
-                    <p className="text-sm leading-6 text-[var(--text-secondary)]">{selectedServer.description}</p>
-                  </div>
-                )}
-
-                {selectedServer?.detailedDescription && (
-                  <div className="surface-panel surface-panel-soft rounded-[20px] p-4 mb-4">
-                    <p className="text-sm leading-6 text-[var(--text-secondary)] whitespace-pre-wrap">{selectedServer.detailedDescription}</p>
-                  </div>
-                )}
-
-                <div className="flex flex-wrap gap-3">
-                  <Button
-                    variant="primary"
-                    size="lg"
-                    className="flex-1 min-h-[48px] justify-center"
-                    disabled={busy || launching}
-                    launchProgress={launching}
-                    launchProgressPercent={launchProgressPercent}
-                    onClick={handleLaunch}
-                  >
-                    <span className="flex flex-col items-center justify-center gap-1 text-center leading-tight">
-                      <span className="flex items-center justify-center gap-2">
-                        <Play fill="currentColor" size={16} />
-                        {launching
-                          ? `${t("home.launching")}${typeof launchProgressPercent === "number" ? ` ${launchProgressPercent}%` : ""}`
-                          : t("servers.quickLaunch")
-                        }
-                      </span>
-                      {currentInstance && !launching && (
-                        <span className="text-xs text-white/80">
-                          {currentInstance.name}
-                        </span>
-                      )}
-                    </span>
-                  </Button>
-
-                  <Button
-                    variant="secondary"
-                    size="lg"
-                    className="min-h-[48px] px-5"
-                    title={t("servers.addToServerList")}
-                  >
-                    <ExternalLink size={16} />
-                  </Button>
-                </div>
-              </div>
-            </Card>
-          </div>,
-          document.body
-        )}
+      <ServerDialog
+        server={selectedServer}
+        closing={dialogClosing}
+        onClose={closeDialog}
+        onLaunch={handleLaunch}
+        currentInstance={currentInstance}
+        busy={busy}
+        launching={launching}
+        launchProgressPercent={launchProgressPercent}
+      />
     </div>
   );
 }

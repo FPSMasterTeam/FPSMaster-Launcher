@@ -5,6 +5,7 @@
   "windows": ["*"],
   "permissions": [
     "core:default",
+    "dialog:default",
     "core:window:allow-get-all-windows",
     "core:window:allow-create",
     "core:window:allow-hide",
