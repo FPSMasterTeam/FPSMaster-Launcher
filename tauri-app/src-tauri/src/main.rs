@@ -2112,10 +2112,11 @@ async fn launcher_get_home(
 
 #[tauri::command]
 async fn launcher_get_app_update(
+    app: tauri::AppHandle,
     base_url: String,
     channel: Option<String>,
 ) -> Result<LauncherAppUpdateInfo, String> {
-    tauri::async_runtime::spawn_blocking(move || launcher_get_app_update_blocking(base_url, channel))
+    tauri::async_runtime::spawn_blocking(move || launcher_get_app_update_blocking(&app, base_url, channel))
         .await
         .map_err(|e| format!("Failed to join launcher app update task: {e}"))?
 }
@@ -2422,16 +2423,19 @@ fn launcher_get_home_blocking(
 }
 
 fn launcher_get_app_update_blocking(
+    app: &tauri::AppHandle,
     base_url: String,
     channel: Option<String>,
 ) -> Result<LauncherAppUpdateInfo, String> {
     let normalized_base = normalize_api_base_url(&base_url)?;
     let client = build_blocking_http_client()?;
+    let install_id = get_or_create_launcher_install_id(app)?;
     let mut url = reqwest::Url::parse(&format!("{normalized_base}/api/v1/launcher/app-update"))
         .map_err(|e| format!("Invalid launcher app update endpoint URL: {e}"))?;
     {
         let mut query = url.query_pairs_mut();
         query.append_pair("target", &current_launcher_update_target());
+        query.append_pair("installId", &install_id);
         if let Some(normalized_channel) = channel
             .map(|item| item.trim().to_lowercase())
             .filter(|item| !item.is_empty())
@@ -8283,6 +8287,52 @@ fn current_launcher_update_target() -> String {
         "unknown"
     };
     format!("{os}-{arch}")
+}
+
+fn get_or_create_launcher_install_id(app: &tauri::AppHandle) -> Result<String, String> {
+    let install_id_path = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("Failed to resolve launcher app data directory: {e}"))?
+        .join("state")
+        .join("install-id.txt");
+    if let Some(parent) = install_id_path.parent() {
+        fs::create_dir_all(parent).map_err(|e| {
+            format!(
+                "Failed to create launcher install state directory {}: {e}",
+                parent.display()
+            )
+        })?;
+    }
+
+    if let Ok(existing) = fs::read_to_string(&install_id_path) {
+        if let Some(normalized) = normalize_launcher_install_id(&existing) {
+            return Ok(normalized);
+        }
+    }
+
+    let generated = create_launcher_install_id();
+    fs::write(&install_id_path, format!("{generated}\n")).map_err(|e| {
+        format!(
+            "Failed to persist launcher install id to {}: {e}",
+            install_id_path.display()
+        )
+    })?;
+    Ok(generated)
+}
+
+fn normalize_launcher_install_id(value: &str) -> Option<String> {
+    let normalized = value.trim().to_ascii_lowercase();
+    if normalized.len() != 32 || !normalized.chars().all(|ch| ch.is_ascii_hexdigit()) {
+        return None;
+    }
+    Some(normalized)
+}
+
+fn create_launcher_install_id() -> String {
+    let mut bytes = [0_u8; 16];
+    rand::thread_rng().fill_bytes(&mut bytes);
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 fn infer_download_file_name(download_url: &str, version: &str) -> String {
