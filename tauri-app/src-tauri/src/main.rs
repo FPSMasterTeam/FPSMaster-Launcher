@@ -4,7 +4,7 @@ use base64::Engine;
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256, Sha512};
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::{BufRead, BufReader, Cursor, Read, Seek, SeekFrom, Write};
 use std::net::TcpListener;
 #[cfg(windows)]
@@ -3485,18 +3485,16 @@ fn install_launcher_version_mods_blocking(
         });
     }
 
+    let previous_marker = read_mods_marker(&marker_path)?;
     let installed_files = if let Some(manifest_source) = normalized_manifest_url.as_deref() {
         install_launcher_manifest_package(
             manifest_source,
             &normalized_tag,
             &mods_dir,
+            previous_marker.as_ref(),
             clean_existing.unwrap_or(false),
         )?
     } else {
-        if clean_existing.unwrap_or(false) {
-            clear_directory_contents(&mods_dir)?;
-        }
-
         let download_file_name = infer_download_file_name(&normalized_url, &normalized_tag);
         let temp_download_path = env::temp_dir().join(format!(
             "fpsmaster-launcher-mods-{}-{}-{}",
@@ -3511,29 +3509,35 @@ fn install_launcher_version_mods_blocking(
             return Err(format!("Failed to download launcher package: {err}"));
         }
         if let Some(expected_checksum) = checksum.as_deref() {
-            verify_file_sha256(&temp_download_path, expected_checksum)
-                .map_err(|err| format!("Launcher package checksum mismatch: {err}"))?;
+            if let Err(err) = verify_file_sha256(&temp_download_path, expected_checksum) {
+                let _ = fs::remove_file(&temp_download_path);
+                return Err(format!("Launcher package checksum mismatch: {err}"));
+            }
         }
 
-        if is_jar_file_name(&download_file_name) {
-            let relative_path = PathBuf::from(&download_file_name);
-            let target_path = mods_dir.join(&relative_path);
-            fs::copy(&temp_download_path, &target_path).map_err(|e| {
-                format!(
-                    "Failed to install launcher mod {}: {e}",
-                    target_path.to_string_lossy()
-                )
-            })?;
-            let _ = fs::remove_file(&temp_download_path);
-            vec![build_launcher_installed_file_record(
-                &target_path,
-                &relative_path,
-            )?]
-        } else {
-            let extract_result = extract_launcher_mod_archive(&temp_download_path, &mods_dir);
-            let _ = fs::remove_file(&temp_download_path);
-            extract_result?
+        let stage_dir = create_launcher_mods_stage_dir(&mods_dir)?;
+        let stage_result =
+            stage_launcher_download_package(&temp_download_path, &download_file_name, &stage_dir);
+        let _ = fs::remove_file(&temp_download_path);
+        let installed_files = match stage_result {
+            Ok(files) => files,
+            Err(err) => {
+                let _ = fs::remove_dir_all(&stage_dir);
+                return Err(err);
+            }
+        };
+
+        if let Err(err) = apply_staged_launcher_package(
+            &mods_dir,
+            &stage_dir,
+            previous_marker.as_ref(),
+            &installed_files,
+            clean_existing.unwrap_or(false),
+        ) {
+            let _ = fs::remove_dir_all(&stage_dir);
+            return Err(err);
         }
+        installed_files
     };
 
     let marker = LauncherModsInstallMarker {
@@ -3626,6 +3630,7 @@ fn install_launcher_manifest_package(
     manifest_url: &str,
     expected_version_tag: &str,
     mods_dir: &Path,
+    previous_marker: Option<&LauncherModsInstallMarker>,
     clean_existing: bool,
 ) -> Result<Vec<LauncherInstalledFileRecord>, String> {
     let manifest = fetch_launcher_package_manifest(manifest_url)?;
@@ -3647,6 +3652,29 @@ fn install_launcher_manifest_package(
         return Err("Launcher manifest does not contain any files".to_string());
     }
 
+    let stage_dir = create_launcher_mods_stage_dir(mods_dir)?;
+    let install_result = install_manifest_files_into_stage(manifest_url, &manifest, &stage_dir);
+    if let Err(err) = install_result {
+        let _ = fs::remove_dir_all(&stage_dir);
+        return Err(err);
+    }
+    let installed_files = install_result?;
+
+    if let Err(err) = apply_staged_launcher_package(
+        mods_dir,
+        &stage_dir,
+        previous_marker,
+        &installed_files,
+        clean_existing,
+    ) {
+        let _ = fs::remove_dir_all(&stage_dir);
+        return Err(err);
+    }
+
+    Ok(installed_files)
+}
+
+fn create_launcher_mods_stage_dir(mods_dir: &Path) -> Result<PathBuf, String> {
     let runtime_dir = mods_dir
         .parent()
         .ok_or_else(|| format!("Invalid mods directory: {}", mods_dir.display()))?;
@@ -3669,31 +3697,147 @@ fn install_launcher_manifest_package(
             stage_dir.display()
         )
     })?;
+    Ok(stage_dir)
+}
 
-    let install_result = install_manifest_files_into_stage(manifest_url, &manifest, &stage_dir);
-    if let Err(err) = install_result {
-        let _ = fs::remove_dir_all(&stage_dir);
-        return Err(err);
-    }
-    let installed_files = install_result?;
-
-    if clean_existing {
-        if let Err(err) = replace_directory_with_stage(mods_dir, &stage_dir) {
-            let _ = fs::remove_dir_all(&stage_dir);
-            return Err(err);
+fn stage_launcher_download_package(
+    archive_path: &Path,
+    download_file_name: &str,
+    stage_dir: &Path,
+) -> Result<Vec<LauncherInstalledFileRecord>, String> {
+    if is_jar_file_name(download_file_name) {
+        let relative_path = PathBuf::from(download_file_name);
+        let target_path = stage_dir.join(&relative_path);
+        if let Some(parent) = target_path.parent() {
+            fs::create_dir_all(parent).map_err(|e| {
+                format!(
+                    "Failed to create launcher stage directory {}: {e}",
+                    parent.display()
+                )
+            })?;
         }
-    } else {
-        fs::create_dir_all(mods_dir).map_err(|e| {
+        fs::copy(archive_path, &target_path).map_err(|e| {
             format!(
-                "Failed to create mods directory {}: {e}",
-                mods_dir.display()
+                "Failed to stage launcher mod {}: {e}",
+                target_path.to_string_lossy()
             )
         })?;
-        copy_directory_contents(&stage_dir, mods_dir)?;
-        let _ = fs::remove_dir_all(&stage_dir);
+        return Ok(vec![build_launcher_installed_file_record(
+            &target_path,
+            &relative_path,
+        )?]);
     }
 
-    Ok(installed_files)
+    extract_launcher_mod_archive(archive_path, stage_dir)
+}
+
+fn apply_staged_launcher_package(
+    mods_dir: &Path,
+    stage_dir: &Path,
+    previous_marker: Option<&LauncherModsInstallMarker>,
+    installed_files: &[LauncherInstalledFileRecord],
+    clean_existing: bool,
+) -> Result<(), String> {
+    if clean_existing {
+        return replace_directory_with_stage(mods_dir, stage_dir);
+    }
+
+    fs::create_dir_all(mods_dir).map_err(|e| {
+        format!(
+            "Failed to create mods directory {}: {e}",
+            mods_dir.display()
+        )
+    })?;
+    copy_directory_contents(stage_dir, mods_dir)?;
+    remove_stale_launcher_managed_files(mods_dir, previous_marker, installed_files)?;
+    let _ = fs::remove_dir_all(stage_dir);
+    Ok(())
+}
+
+fn remove_stale_launcher_managed_files(
+    mods_dir: &Path,
+    previous_marker: Option<&LauncherModsInstallMarker>,
+    installed_files: &[LauncherInstalledFileRecord],
+) -> Result<(), String> {
+    let Some(marker) = previous_marker else {
+        return Ok(());
+    };
+    if marker.files.is_empty() {
+        return Ok(());
+    }
+
+    let retained_paths: HashSet<PathBuf> = installed_files
+        .iter()
+        .map(|file| normalize_manifest_relative_path(&file.path))
+        .collect::<Result<HashSet<_>, _>>()?;
+
+    for file in &marker.files {
+        let relative_path = normalize_manifest_relative_path(&file.path)?;
+        if retained_paths.contains(&relative_path) {
+            continue;
+        }
+        remove_launcher_managed_path(mods_dir, &relative_path)?;
+    }
+    Ok(())
+}
+
+fn remove_launcher_managed_path(mods_dir: &Path, relative_path: &Path) -> Result<(), String> {
+    let target_path = mods_dir.join(relative_path);
+    if !target_path.exists() {
+        return Ok(());
+    }
+
+    if target_path.is_dir() {
+        fs::remove_dir_all(&target_path).map_err(|e| {
+            format!(
+                "Failed to remove launcher managed directory {}: {e}",
+                target_path.display()
+            )
+        })?;
+    } else {
+        fs::remove_file(&target_path).map_err(|e| {
+            format!(
+                "Failed to remove launcher managed file {}: {e}",
+                target_path.display()
+            )
+        })?;
+    }
+
+    prune_empty_launcher_parent_dirs(mods_dir, relative_path)?;
+    Ok(())
+}
+
+fn prune_empty_launcher_parent_dirs(mods_dir: &Path, relative_path: &Path) -> Result<(), String> {
+    let Some(mut current_dir) = relative_path.parent().map(|path| mods_dir.join(path)) else {
+        return Ok(());
+    };
+    while current_dir.starts_with(mods_dir) && current_dir != mods_dir {
+        let mut entries = fs::read_dir(&current_dir).map_err(|e| {
+            format!(
+                "Failed to inspect launcher managed directory {}: {e}",
+                current_dir.display()
+            )
+        })?;
+        if entries
+            .next()
+            .transpose()
+            .map_err(|e| e.to_string())?
+            .is_some()
+        {
+            break;
+        }
+        fs::remove_dir(&current_dir).map_err(|e| {
+            format!(
+                "Failed to remove empty launcher directory {}: {e}",
+                current_dir.display()
+            )
+        })?;
+        let Some(parent) = current_dir.parent() else {
+            break;
+        };
+        current_dir = parent.to_path_buf();
+    }
+    Ok(())
 }
 
 fn install_manifest_files_into_stage(
@@ -8864,24 +9008,6 @@ fn mods_dir_has_payload(mods_dir: &Path, marker_path: &Path) -> Result<bool, Str
         return Ok(true);
     }
     Ok(false)
-}
-
-fn clear_directory_contents(dir: &Path) -> Result<(), String> {
-    if !dir.exists() {
-        return Ok(());
-    }
-    for entry in fs::read_dir(dir).map_err(|e| e.to_string())? {
-        let entry = entry.map_err(|e| e.to_string())?;
-        let path = entry.path();
-        if path.is_dir() {
-            fs::remove_dir_all(&path)
-                .map_err(|e| format!("Failed removing directory {}: {e}", path.display()))?;
-        } else {
-            fs::remove_file(&path)
-                .map_err(|e| format!("Failed removing file {}: {e}", path.display()))?;
-        }
-    }
-    Ok(())
 }
 
 fn extract_launcher_mod_archive(
