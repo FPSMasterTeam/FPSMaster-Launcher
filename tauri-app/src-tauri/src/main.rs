@@ -3936,7 +3936,7 @@ fn fetch_launcher_package_manifest(manifest_url: &str) -> Result<LauncherPackage
 
 fn build_blocking_http_client() -> Result<reqwest::blocking::Client, String> {
     const LAUNCHER_HTTP_USER_AGENT: &str =
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) FPSMasterLauncher/0.2 (+https://github.com/fpsmaster)";
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) FPSMasterLauncher (+https://github.com/fpsmasterteam)";
 
     reqwest::blocking::Client::builder()
         .user_agent(LAUNCHER_HTTP_USER_AGENT)
