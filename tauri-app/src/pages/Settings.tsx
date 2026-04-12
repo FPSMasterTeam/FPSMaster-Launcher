@@ -325,7 +325,7 @@ export default function SettingsPage({
     : "--";
   const hasLauncherUpdateNotes = Boolean(launcherUpdate?.notes?.trim());
   const availableLauncherChannels = (() => {
-    const normalizedCurrent = settings.launcherUpdateChannel.trim() || "release";
+    const normalizedCurrent = settings.launcherUpdateChannel.trim() || "beta";
     const items = launcherUpdateChannels
       .filter((item) => item.code.trim() !== "")
       .map((item) => ({

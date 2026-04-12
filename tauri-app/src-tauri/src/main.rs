@@ -39,8 +39,8 @@ use windows::Win32::System::Com::{
 #[cfg(windows)]
 use windows::Win32::UI::Shell::{DesktopWallpaper, IDesktopWallpaper};
 
-const DEFAULT_MINECRAFT_MICROSOFT_CLIENT_ID: &str = "6a3728d6-27a3-4180-99bb-479895b8f88e";
-const DEFAULT_MINECRAFT_MICROSOFT_REDIRECT_URL: &str = "http://localhost:29111/auth-response";
+const DEFAULT_MINECRAFT_MICROSOFT_CLIENT_ID: &str = "057064c6-d180-43df-b010-834b4571532f";
+const DEFAULT_MINECRAFT_MICROSOFT_REDIRECT_URL: &str = "http://localhost:3389/oauth";
 const MINECRAFT_MICROSOFT_SCOPE: &str = "XboxLive.signin offline_access openid profile email";
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -2124,8 +2124,9 @@ async fn launcher_get_app_update(
 #[tauri::command]
 async fn launcher_list_app_update_channels(
     base_url: String,
+    token: Option<String>,
 ) -> Result<Vec<LauncherAppUpdateChannel>, String> {
-    tauri::async_runtime::spawn_blocking(move || launcher_list_app_update_channels_blocking(base_url))
+    tauri::async_runtime::spawn_blocking(move || launcher_list_app_update_channels_blocking(base_url, token))
         .await
         .map_err(|e| format!("Failed to join launcher app update channels task: {e}"))?
 }
@@ -2457,6 +2458,7 @@ fn launcher_get_app_update_blocking(
 
 fn launcher_list_app_update_channels_blocking(
     base_url: String,
+    token: Option<String>,
 ) -> Result<Vec<LauncherAppUpdateChannel>, String> {
     let normalized_base = normalize_api_base_url(&base_url)?;
     let client = build_blocking_http_client()?;
@@ -2465,8 +2467,15 @@ fn launcher_list_app_update_channels_blocking(
     ))
     .map_err(|e| format!("Invalid launcher app update channels endpoint URL: {e}"))?;
 
-    let response = client
-        .get(url)
+    let mut request = client.get(url);
+    if let Some(value) = token
+        .map(|item| item.trim().to_string())
+        .filter(|item| !item.is_empty())
+    {
+        request = request.bearer_auth(value);
+    }
+
+    let response = request
         .send()
         .map_err(|e| format!("Launcher app update channels request failed: {e}"))?;
     let status = response.status();

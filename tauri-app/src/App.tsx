@@ -1094,7 +1094,8 @@ function Launcher() {
   async function refreshLauncherAppUpdateChannels(): Promise<void> {
     try {
       const items = await invoke<LauncherAppUpdateChannel[]>("launcher_list_app_update_channels", {
-        baseUrl: LAUNCHER_API_BASE_URL
+        baseUrl: LAUNCHER_API_BASE_URL,
+        token: launcherAuth?.token ?? null
       });
       setLauncherAppUpdateChannels(items);
     } catch {

@@ -811,7 +811,7 @@ public final class MinecraftCoreService {
         variables.put("${launcher_version}", "0.1.0");
         variables.put("${user_type}", "msa");
         variables.put("${auth_xuid}", "0");
-        variables.put("${clientid}", "fpsmaster-launcher");
+        variables.put("${clientid}", "057064c6-d180-43df-b010-834b4571532f");
         variables.put("${user_properties}", "{}");
         variables.put("${profile_properties}", "{}");
         variables.put("${auth_session}", request.accessToken());
