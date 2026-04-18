@@ -35,14 +35,22 @@ const cargoTomlPattern = /(\[package\][\s\S]*?version = ")[^"]+(")/;
 if (!cargoTomlPattern.test(cargoToml)) {
   throw new Error("Failed to locate package version in Cargo.toml");
 }
-writeFileSync(cargoTomlPath, cargoToml.replace(cargoTomlPattern, `$1${version}$2`), "utf8");
+writeFileSync(
+  cargoTomlPath,
+  cargoToml.replace(cargoTomlPattern, (_, prefix, suffix) => `${prefix}${version}${suffix}`),
+  "utf8"
+);
 
 const cargoLock = readFileSync(cargoLockPath, "utf8");
 const cargoLockPattern = /(\[\[package\]\]\r?\nname = "fpsmaster-launcher"\r?\nversion = ")[^"]+(")/;
 if (!cargoLockPattern.test(cargoLock)) {
   throw new Error("Failed to locate package version in Cargo.lock");
 }
-writeFileSync(cargoLockPath, cargoLock.replace(cargoLockPattern, `$1${version}$2`), "utf8");
+writeFileSync(
+  cargoLockPath,
+  cargoLock.replace(cargoLockPattern, (_, prefix, suffix) => `${prefix}${version}${suffix}`),
+  "utf8"
+);
 
 const tauriConfig = readJson(tauriConfigPath);
 tauriConfig.version = version;

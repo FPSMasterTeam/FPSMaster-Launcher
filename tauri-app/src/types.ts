@@ -86,6 +86,7 @@ export type Settings = {
   gameDir: string;
   playerName: string;
   downloadSource: DownloadSource;
+  downloadThreads: number;
   launcherUpdateChannel: string;
   maxMemoryMb: number;
   hideMainOnLaunch: boolean;

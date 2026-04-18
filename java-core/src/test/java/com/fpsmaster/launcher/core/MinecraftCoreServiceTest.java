@@ -58,6 +58,7 @@ class MinecraftCoreServiceTest {
                 "offline",
                 Path.of("java"),
                 1024,
+                "",
                 ""
         ));
 
@@ -79,6 +80,7 @@ class MinecraftCoreServiceTest {
                 "offline",
                 Path.of("java"),
                 1024,
+                "",
                 ""
         );
 
@@ -104,6 +106,7 @@ class MinecraftCoreServiceTest {
                 "offline",
                 currentJavaExecutable(),
                 256,
+                "",
                 ""
         ), true);
 
@@ -125,6 +128,7 @@ class MinecraftCoreServiceTest {
                 "offline",
                 currentJavaExecutable(),
                 256,
+                "",
                 ""
         ), false);
 

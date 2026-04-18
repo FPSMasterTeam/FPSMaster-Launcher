@@ -449,6 +449,25 @@ export default function SettingsPage({
                   </Select.Content>
                 </Select>
               </div>
+
+              <div>
+                <FieldLabel>{t("settings.downloadThreads")}</FieldLabel>
+                <input
+                  className="ui-input"
+                  type="number"
+                  min={1}
+                  max={32}
+                  step={1}
+                  value={settings.downloadThreads}
+                  onChange={(event) =>
+                    onChange({
+                      ...settings,
+                      downloadThreads: Math.max(1, Math.min(32, Number(event.target.value) || 1))
+                    })
+                  }
+                />
+                <p className="mt-1 text-xs text-[var(--text-muted)]">{t("settings.downloadThreadsHint")}</p>
+              </div>
             </div>
 
             <div className="grid grid-cols-1 gap-3 md:grid-cols-2">

@@ -986,7 +986,7 @@ function Launcher() {
 
       setLaunchProgressPercent(Math.round((1 / LAUNCH_PREPARE_STEPS) * 100));
       setLaunchProgressText(t("launch.progress.prepareRuntime"));
-      const jdk = await ensureJdk(settings.gameDir, prepared.versionId);
+      const jdk = await ensureJdk(settings.gameDir, prepared.versionId, settings.downloadThreads);
 
       setLaunchProgressPercent(Math.round((2 / LAUNCH_PREPARE_STEPS) * 100));
       setLaunchProgressText(t("launch.progress.buildCommand"));
@@ -1526,6 +1526,7 @@ function Launcher() {
       gameDir: settings.gameDir,
       versionId: workingInstance.baseVersion,
       downloadSource: settings.downloadSource,
+      downloadThreads: settings.downloadThreads,
       ipcSession: sessionId
     });
 
@@ -1548,6 +1549,7 @@ function Launcher() {
         gameVersion: workingInstance.baseVersion,
         loaderVersion: nextLoaderVersion,
         downloadSource: settings.downloadSource,
+        downloadThreads: settings.downloadThreads,
         ipcSession: sessionId
       });
       nextVersionId = fabric.profileId;
@@ -1562,12 +1564,13 @@ function Launcher() {
       if (!nextLoaderVersion) {
         throw new Error(`No forge version available for ${workingInstance.baseVersion}`);
       }
-      const jdk = await ensureJdk(settings.gameDir, workingInstance.baseVersion);
+      const jdk = await ensureJdk(settings.gameDir, workingInstance.baseVersion, settings.downloadThreads);
       const forge = await invoke<ForgeInstallResult>("install_forge", {
         gameDir: settings.gameDir,
         forgeVersion: nextLoaderVersion,
         javaPath: jdk.javaPath,
         downloadSource: settings.downloadSource,
+        downloadThreads: settings.downloadThreads,
         ipcSession: sessionId
       });
       nextVersionId = forge.profileId;
@@ -1635,7 +1638,7 @@ function Launcher() {
 
       setLaunchProgressPercent(Math.round((1 / LAUNCH_PREPARE_STEPS) * 100));
       setLaunchProgressText(t("launch.progress.prepareRuntime"));
-      const jdk = await ensureJdk(settings.gameDir, prepared.versionId);
+      const jdk = await ensureJdk(settings.gameDir, prepared.versionId, settings.downloadThreads);
 
       setLaunchProgressPercent(Math.round((2 / LAUNCH_PREPARE_STEPS) * 100));
       setLaunchProgressText(t("launch.progress.buildCommand"));
@@ -1827,6 +1830,7 @@ function Launcher() {
         gameDir: settings.gameDir,
         versionId: installVersion,
         downloadSource: settings.downloadSource,
+        downloadThreads: settings.downloadThreads,
         ipcSession: sessionId
       });
 
@@ -1866,6 +1870,7 @@ function Launcher() {
           gameVersion: installVersion,
           loaderVersion,
           downloadSource: settings.downloadSource,
+          downloadThreads: settings.downloadThreads,
           ipcSession: sessionId
         });
         versionId = result.profileId;
@@ -1887,12 +1892,13 @@ function Launcher() {
           };
         });
 
-        const jdk = await ensureJdk(settings.gameDir, installVersion);
+        const jdk = await ensureJdk(settings.gameDir, installVersion, settings.downloadThreads);
         const result = await invoke<ForgeInstallResult>("install_forge", {
           gameDir: settings.gameDir,
           forgeVersion: loaderVersion,
           javaPath: jdk.javaPath,
           downloadSource: settings.downloadSource,
+          downloadThreads: settings.downloadThreads,
           ipcSession: sessionId
         });
         versionId = result.profileId;
@@ -2721,8 +2727,8 @@ function parseLaunchProgressLog(message: string): { percent?: number; text: stri
   return null;
 }
 
-async function ensureJdk(gameDir: string, versionId: string): Promise<JdkEnsureResult> {
-  return invoke<JdkEnsureResult>("ensure_jdk", { gameDir, versionId });
+async function ensureJdk(gameDir: string, versionId: string, downloadThreads: number): Promise<JdkEnsureResult> {
+  return invoke<JdkEnsureResult>("ensure_jdk", { gameDir, versionId, downloadThreads });
 }
 
 async function refreshMinecraftAccount(refreshToken: string): Promise<MinecraftAccount> {
