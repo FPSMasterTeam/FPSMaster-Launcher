@@ -1,0 +1,157 @@
+37012:
+2026-03-29 00:21:51
+Full thread dump OpenJDK 64-Bit Server VM (17.0.17+10-LTS mixed mode, sharing):
+
+Threads class SMR info:
+_java_thread_list=0x0000026cfbc07890, length=13, elements={
+0x0000026c95b6a580, 0x0000026cb519ef40, 0x0000026cb519fa10, 0x0000026cb51b54d0,
+0x0000026cb51b7db0, 0x0000026cb51b8680, 0x0000026cb51b8f50, 0x0000026cb51b9b50,
+0x0000026cb51cc480, 0x0000026cb51d0290, 0x0000026cb5a47b00, 0x0000026cb5a4f2e0,
+0x0000026cfc510960
+}
+
+"main" #1 prio=5 os_prio=0 cpu=1203.12ms elapsed=62.88s tid=0x0000026c95b6a580 nid=0x10918 runnable  [0x000000cdd07fe000]
+   java.lang.Thread.State: RUNNABLE
+	at com.sun.jna.Native.invokeInt(Native Method)
+	at com.sun.jna.Function.invoke(Function.java:426)
+	at com.sun.jna.Function.invoke(Function.java:361)
+	at com.sun.jna.Function.invoke(Function.java:315)
+	at com.sun.jna.Function.invoke(Function.java:306)
+	at com.sun.jna.platform.win32.COM.COMInvoker._invokeNativeObject(COMInvoker.java:48)
+	at com.sun.jna.platform.win32.COM.Wbemcli$IEnumWbemClassObject.Next(Wbemcli.java:166)
+	at com.sun.jna.platform.win32.COM.WbemcliUtil$WmiQuery.enumerateProperties(WbemcliUtil.java:300)
+	at com.sun.jna.platform.win32.COM.WbemcliUtil$WmiQuery.execute(WbemcliUtil.java:191)
+	at oshi.util.platform.windows.WmiQueryHandler.queryWMI(WmiQueryHandler.java:156)
+	at oshi.util.platform.windows.WmiQueryHandler.queryWMI(WmiQueryHandler.java:127)
+	at oshi.driver.windows.wmi.Win32Processor.queryProcessorId(Win32Processor.java:94)
+	at oshi.driver.windows.LogicalProcessorInformation.getLogicalProcessorInformationEx(LogicalProcessorInformation.java:118)
+	at oshi.hardware.platform.windows.WindowsCentralProcessor.initProcessorCounts(WindowsCentralProcessor.java:187)
+	at oshi.hardware.common.AbstractCentralProcessor.<init>(AbstractCentralProcessor.java:83)
+	at oshi.hardware.platform.windows.WindowsCentralProcessor.<init>(WindowsCentralProcessor.java:72)
+	at oshi.hardware.platform.windows.WindowsHardwareAbstractionLayer.createProcessor(WindowsHardwareAbstractionLayer.java:61)
+	at oshi.hardware.common.AbstractHardwareAbstractionLayer$$Lambda$355/0x0000026cb72162b8.get(Unknown Source)
+	at oshi.util.Memoizer$1.get(Memoizer.java:87)
+	- locked <0x00000000cec765a0> (a oshi.util.Memoizer$1)
+	at oshi.hardware.common.AbstractHardwareAbstractionLayer.getProcessor(AbstractHardwareAbstractionLayer.java:68)
+	at ab.c(SourceFile:75)
+	at ab$$Lambda$358/0x0000026cb7216918.run(Unknown Source)
+	at ab.a(SourceFile:82)
+	at ab.a(SourceFile:75)
+	at ab.c(SourceFile:52)
+	at ab$$Lambda$350/0x0000026cb720f610.run(Unknown Source)
+	at ab.a(SourceFile:82)
+	at ab.<init>(SourceFile:52)
+	at o.<init>(SourceFile:34)
+	at o.h(SourceFile:274)
+	at net.minecraft.client.main.Main.main(SourceFile:164)
+
+"Reference Handler" #2 daemon prio=10 os_prio=2 cpu=0.00ms elapsed=62.86s tid=0x0000026cb519ef40 nid=0x115a8 waiting on condition  [0x000000cdd0eff000]
+   java.lang.Thread.State: RUNNABLE
+	at java.lang.ref.Reference.waitForReferencePendingList(java.base@17.0.17/Native Method)
+	at java.lang.ref.Reference.processPendingReferences(java.base@17.0.17/Reference.java:253)
+	at java.lang.ref.Reference$ReferenceHandler.run(java.base@17.0.17/Reference.java:215)
+
+"Finalizer" #3 daemon prio=8 os_prio=1 cpu=0.00ms elapsed=62.86s tid=0x0000026cb519fa10 nid=0xb304 in Object.wait()  [0x000000cdd0fff000]
+   java.lang.Thread.State: WAITING (on object monitor)
+	at java.lang.Object.wait(java.base@17.0.17/Native Method)
+	- waiting on <0x00000000c19003d0> (a java.lang.ref.ReferenceQueue$Lock)
+	at java.lang.ref.ReferenceQueue.remove(java.base@17.0.17/ReferenceQueue.java:155)
+	- locked <0x00000000c19003d0> (a java.lang.ref.ReferenceQueue$Lock)
+	at java.lang.ref.ReferenceQueue.remove(java.base@17.0.17/ReferenceQueue.java:176)
+	at java.lang.ref.Finalizer$FinalizerThread.run(java.base@17.0.17/Finalizer.java:172)
+
+"Signal Dispatcher" #4 daemon prio=9 os_prio=2 cpu=0.00ms elapsed=62.85s tid=0x0000026cb51b54d0 nid=0xf1b8 waiting on condition  [0x0000000000000000]
+   java.lang.Thread.State: RUNNABLE
+
+"Attach Listener" #5 daemon prio=5 os_prio=2 cpu=0.00ms elapsed=62.85s tid=0x0000026cb51b7db0 nid=0xee84 waiting on condition  [0x0000000000000000]
+   java.lang.Thread.State: RUNNABLE
+
+"Service Thread" #6 daemon prio=9 os_prio=0 cpu=0.00ms elapsed=62.85s tid=0x0000026cb51b8680 nid=0xae60 runnable  [0x0000000000000000]
+   java.lang.Thread.State: RUNNABLE
+
+"Monitor Deflation Thread" #7 daemon prio=9 os_prio=0 cpu=0.00ms elapsed=62.85s tid=0x0000026cb51b8f50 nid=0x6ed4 runnable  [0x0000000000000000]
+   java.lang.Thread.State: RUNNABLE
+
+"C2 CompilerThread0" #8 daemon prio=9 os_prio=2 cpu=531.25ms elapsed=62.85s tid=0x0000026cb51b9b50 nid=0x10114 waiting on condition  [0x0000000000000000]
+   java.lang.Thread.State: RUNNABLE
+   No compile task
+
+"C1 CompilerThread0" #18 daemon prio=9 os_prio=2 cpu=125.00ms elapsed=62.85s tid=0x0000026cb51cc480 nid=0xb508 waiting on condition  [0x0000000000000000]
+   java.lang.Thread.State: RUNNABLE
+   No compile task
+
+"Sweeper thread" #23 daemon prio=9 os_prio=2 cpu=0.00ms elapsed=62.85s tid=0x0000026cb51d0290 nid=0xa29c runnable  [0x0000000000000000]
+   java.lang.Thread.State: RUNNABLE
+
+"Notification Thread" #24 daemon prio=9 os_prio=0 cpu=0.00ms elapsed=62.81s tid=0x0000026cb5a47b00 nid=0xef14 runnable  [0x0000000000000000]
+   java.lang.Thread.State: RUNNABLE
+
+"Common-Cleaner" #25 daemon prio=8 os_prio=1 cpu=0.00ms elapsed=62.81s tid=0x0000026cb5a4f2e0 nid=0x5d98 in Object.wait()  [0x000000cdd1aff000]
+   java.lang.Thread.State: TIMED_WAITING (on object monitor)
+	at java.lang.Object.wait(java.base@17.0.17/Native Method)
+	- waiting on <0x00000000c1900870> (a java.lang.ref.ReferenceQueue$Lock)
+	at java.lang.ref.ReferenceQueue.remove(java.base@17.0.17/ReferenceQueue.java:155)
+	- locked <0x00000000c1900870> (a java.lang.ref.ReferenceQueue$Lock)
+	at jdk.internal.ref.CleanerImpl.run(java.base@17.0.17/CleanerImpl.java:140)
+	at java.lang.Thread.run(java.base@17.0.17/Thread.java:840)
+	at jdk.internal.misc.InnocuousThread.run(java.base@17.0.17/InnocuousThread.java:162)
+
+"JNA Cleaner" #28 daemon prio=5 os_prio=0 cpu=0.00ms elapsed=61.48s tid=0x0000026cfc510960 nid=0x2140 in Object.wait()  [0x000000cdd33ff000]
+   java.lang.Thread.State: WAITING (on object monitor)
+	at java.lang.Object.wait(java.base@17.0.17/Native Method)
+	- waiting on <0x00000000cea75028> (a java.lang.ref.ReferenceQueue$Lock)
+	at java.lang.ref.ReferenceQueue.remove(java.base@17.0.17/ReferenceQueue.java:155)
+	- locked <0x00000000cea75028> (a java.lang.ref.ReferenceQueue$Lock)
+	at java.lang.ref.ReferenceQueue.remove(java.base@17.0.17/ReferenceQueue.java:176)
+	at com.sun.jna.internal.Cleaner$1.run(Cleaner.java:58)
+
+"G1 Refine#7" os_prio=2 cpu=0.00ms elapsed=61.63s tid=0x0000026cfbd93090 nid=0x115c4 runnable  
+
+"G1 Refine#6" os_prio=2 cpu=0.00ms elapsed=61.63s tid=0x0000026cfbd92d90 nid=0x50d8 runnable  
+
+"G1 Refine#5" os_prio=2 cpu=0.00ms elapsed=61.63s tid=0x0000026cfbd91890 nid=0xa590 runnable  
+
+"G1 Refine#4" os_prio=2 cpu=0.00ms elapsed=61.63s tid=0x0000026cfbd91b90 nid=0xd924 runnable  
+
+"GC Thread#10" os_prio=2 cpu=0.00ms elapsed=61.63s tid=0x0000026cfb7130f0 nid=0x1066c runnable  
+
+"GC Thread#9" os_prio=2 cpu=0.00ms elapsed=61.63s tid=0x0000026cfb713c30 nid=0x80d8 runnable  
+
+"GC Thread#8" os_prio=2 cpu=0.00ms elapsed=61.63s tid=0x0000026cfb7122e0 nid=0xe5a0 runnable  
+
+"GC Thread#7" os_prio=2 cpu=0.00ms elapsed=62.08s tid=0x0000026cfb712880 nid=0x9168 runnable  
+
+"GC Thread#6" os_prio=2 cpu=15.62ms elapsed=62.08s tid=0x0000026cfb713960 nid=0x4880 runnable  
+
+"GC Thread#5" os_prio=2 cpu=15.62ms elapsed=62.08s tid=0x0000026cfb7114d0 nid=0x6030 runnable  
+
+"G1 Refine#3" os_prio=2 cpu=0.00ms elapsed=62.62s tid=0x0000026cfb7bdf10 nid=0xf65c runnable  
+
+"G1 Refine#2" os_prio=2 cpu=15.62ms elapsed=62.62s tid=0x0000026cfb4243e0 nid=0xcc74 runnable  
+
+"G1 Refine#1" os_prio=2 cpu=15.62ms elapsed=62.62s tid=0x0000026cfb642160 nid=0x2a18 runnable  
+
+"GC Thread#4" os_prio=2 cpu=31.25ms elapsed=62.62s tid=0x0000026cfb712e20 nid=0xda90 runnable  
+
+"GC Thread#3" os_prio=2 cpu=15.62ms elapsed=62.62s tid=0x0000026cfb714770 nid=0x10250 runnable  
+
+"GC Thread#2" os_prio=2 cpu=15.62ms elapsed=62.62s tid=0x0000026c95b8b1f0 nid=0x9d84 runnable  
+
+"GC Thread#1" os_prio=2 cpu=31.25ms elapsed=62.62s tid=0x0000026c95b8ac50 nid=0x8330 runnable  
+
+"VM Periodic Task Thread" os_prio=2 cpu=15.62ms elapsed=62.81s tid=0x0000026cb5a49ff0 nid=0x105fc waiting on condition  
+
+"VM Thread" os_prio=2 cpu=0.00ms elapsed=62.86s tid=0x0000026cb5195e30 nid=0xa324 runnable  
+
+"G1 Service" os_prio=2 cpu=0.00ms elapsed=62.88s tid=0x0000026cb50daae0 nid=0x90d4 runnable  
+
+"G1 Refine#0" os_prio=2 cpu=15.62ms elapsed=62.88s tid=0x0000026cb50d92e0 nid=0xec94 runnable  
+
+"G1 Conc#0" os_prio=2 cpu=0.00ms elapsed=62.88s tid=0x0000026c95b8c2d0 nid=0xae6c runnable  
+
+"G1 Main Marker" os_prio=2 cpu=0.00ms elapsed=62.88s tid=0x0000026c95bb7ed0 nid=0xed28 runnable  
+
+"GC Thread#0" os_prio=2 cpu=31.25ms elapsed=62.88s tid=0x0000026c95b8bd30 nid=0xafd0 runnable  
+
+JNI global refs: 29, weak refs: 45
+

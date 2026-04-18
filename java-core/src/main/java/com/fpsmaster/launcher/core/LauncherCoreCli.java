@@ -24,9 +24,9 @@ public final class LauncherCoreCli {
             return;
         }
 
-        MinecraftCoreService service = new MinecraftCoreService();
         String command = args[0];
         Map<String, String> options = parseOptions(args);
+        MinecraftCoreService service = new MinecraftCoreService(parseDownloadThreads(options));
         IpcLogBridge.setSessionId(options.get("--ipc-session"));
         try {
             DownloadSource downloadSource = parseDownloadSource(options);
@@ -141,6 +141,18 @@ public final class LauncherCoreCli {
         return DownloadSource.fromId(options.getOrDefault("--download-source", "official"));
     }
 
+    private static int parseDownloadThreads(Map<String, String> options) {
+        String raw = options.get("--download-threads");
+        if (raw == null || raw.isBlank()) {
+            return Runtime.getRuntime().availableProcessors() * 2;
+        }
+        try {
+            return Integer.parseInt(raw.trim());
+        } catch (NumberFormatException e) {
+            throw new IllegalArgumentException("Invalid --download-threads: " + raw);
+        }
+    }
+
     private static MinecraftCoreService.LaunchRequest buildLaunchRequest(Map<String, String> options) {
         Path gameDir = requiredPath(options, "--game-dir");
         String versionId = required(options, "--version");
@@ -170,15 +182,15 @@ public final class LauncherCoreCli {
     private static void printUsage() {
         System.out.println("FPSMaster Launcher Core CLI");
         System.out.println("Commands:");
-        System.out.println("  list-versions [--download-source <official|bmclapi>]");
-        System.out.println("  install-vanilla --game-dir <path> --version <id> [--download-source <official|bmclapi>]");
-        System.out.println("  build-launch-plan --game-dir <path> --version <id> [--player <name>] [--uuid <uuid>] [--access-token <token>] [--fps-auth-token <token>] [--java <path>] [--max-memory <mb>] [--download-source <official|bmclapi>]");
-        System.out.println("  launch-vanilla --game-dir <path> --version <id> [--player <name>] [--uuid <uuid>] [--access-token <token>] [--fps-auth-token <token>] [--java <path>] [--max-memory <mb>] [--wait] [--download-source <official|bmclapi>]");
-        System.out.println("  resolve-java-major --version <id> [--game-dir <path>] [--download-source <official|bmclapi>]");
-        System.out.println("  list-fabric-loaders --game-version <id> [--download-source <official|bmclapi>]");
-        System.out.println("  install-fabric --game-dir <path> --game-version <id> --loader-version <id> [--download-source <official|bmclapi>]");
-        System.out.println("  list-forge-versions --game-version <id> [--download-source <official|bmclapi>]");
-        System.out.println("  install-forge --game-dir <path> --forge-version <minecraft-forge-version> [--java <path>] [--download-source <official|bmclapi>]");
-        System.out.println("  launch-forge --game-dir <path> --version <forge-profile-id> [--player <name>] [--uuid <uuid>] [--access-token <token>] [--fps-auth-token <token>] [--java <path>] [--max-memory <mb>] [--wait] [--download-source <official|bmclapi>]");
+        System.out.println("  list-versions [--download-source <official|bmclapi>] [--download-threads <n>]");
+        System.out.println("  install-vanilla --game-dir <path> --version <id> [--download-source <official|bmclapi>] [--download-threads <n>]");
+        System.out.println("  build-launch-plan --game-dir <path> --version <id> [--player <name>] [--uuid <uuid>] [--access-token <token>] [--fps-auth-token <token>] [--java <path>] [--max-memory <mb>] [--download-source <official|bmclapi>] [--download-threads <n>]");
+        System.out.println("  launch-vanilla --game-dir <path> --version <id> [--player <name>] [--uuid <uuid>] [--access-token <token>] [--fps-auth-token <token>] [--java <path>] [--max-memory <mb>] [--wait] [--download-source <official|bmclapi>] [--download-threads <n>]");
+        System.out.println("  resolve-java-major --version <id> [--game-dir <path>] [--download-source <official|bmclapi>] [--download-threads <n>]");
+        System.out.println("  list-fabric-loaders --game-version <id> [--download-source <official|bmclapi>] [--download-threads <n>]");
+        System.out.println("  install-fabric --game-dir <path> --game-version <id> --loader-version <id> [--download-source <official|bmclapi>] [--download-threads <n>]");
+        System.out.println("  list-forge-versions --game-version <id> [--download-source <official|bmclapi>] [--download-threads <n>]");
+        System.out.println("  install-forge --game-dir <path> --forge-version <minecraft-forge-version> [--java <path>] [--download-source <official|bmclapi>] [--download-threads <n>]");
+        System.out.println("  launch-forge --game-dir <path> --version <forge-profile-id> [--player <name>] [--uuid <uuid>] [--access-token <token>] [--fps-auth-token <token>] [--java <path>] [--max-memory <mb>] [--wait] [--download-source <official|bmclapi>] [--download-threads <n>]");
     }
 }

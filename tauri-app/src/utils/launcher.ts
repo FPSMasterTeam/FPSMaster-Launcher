@@ -97,6 +97,10 @@ export function loadSettings(): Settings {
           ? parsed.playerName
           : fallbackPlayerName,
       downloadSource: parseDownloadSource(parsed.downloadSource),
+      downloadThreads:
+        typeof parsed.downloadThreads === "number"
+          ? clamp(Math.round(parsed.downloadThreads), 1, 32)
+          : DEFAULT_SETTINGS.downloadThreads,
       launcherUpdateChannel: parseLauncherUpdateChannel(parsed.launcherUpdateChannel),
       maxMemoryMb:
         typeof parsed.maxMemoryMb === "number"

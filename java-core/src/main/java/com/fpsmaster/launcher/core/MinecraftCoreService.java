@@ -47,13 +47,19 @@ public final class MinecraftCoreService {
 
     private final HttpClient httpClient;
     private final Gson gson;
+    private final int downloadThreads;
 
     public MinecraftCoreService() {
+        this(resolveConfiguredDownloadThreads());
+    }
+
+    public MinecraftCoreService(int downloadThreads) {
         this.httpClient = HttpClient.newBuilder()
                 .connectTimeout(Duration.ofSeconds(30))
                 .followRedirects(HttpClient.Redirect.NORMAL)
                 .build();
         this.gson = new Gson();
+        this.downloadThreads = normalizeDownloadThreads(downloadThreads);
     }
 
     public List<String> listVanillaVersions() throws IOException, InterruptedException {
@@ -1448,8 +1454,25 @@ public final class MinecraftCoreService {
     }
 
     private int downloadThreadCount() {
-        int base = Runtime.getRuntime().availableProcessors() * 2;
-        return Math.max(4, Math.min(16, base));
+        return downloadThreads;
+    }
+
+    private static int resolveConfiguredDownloadThreads() {
+        String raw = System.getProperty("fpsmaster.downloadThreads", "").trim();
+        if (raw.isEmpty()) {
+            int base = Runtime.getRuntime().availableProcessors() * 2;
+            return Math.max(4, Math.min(16, base));
+        }
+        try {
+            return normalizeDownloadThreads(Integer.parseInt(raw));
+        } catch (NumberFormatException ignored) {
+            int base = Runtime.getRuntime().availableProcessors() * 2;
+            return Math.max(4, Math.min(16, base));
+        }
+    }
+
+    private static int normalizeDownloadThreads(int value) {
+        return Math.max(1, Math.min(32, value));
     }
 
     private void logProgress(String stage, String message) {

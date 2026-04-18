@@ -26,6 +26,7 @@ export const DEFAULT_SETTINGS: Settings = {
   gameDir: "",
   playerName: "",
   downloadSource: "official",
+  downloadThreads: 8,
   launcherUpdateChannel: "beta",
   maxMemoryMb: 4096,
   hideMainOnLaunch: true,

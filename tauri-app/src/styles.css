@@ -1,3 +1,5 @@
+@import "tailwindcss";
+
 :root {
   --mc-grass: #25b87a;
   --mc-grass-dark: #1f985f;
