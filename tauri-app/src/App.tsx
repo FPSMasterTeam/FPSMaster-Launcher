@@ -2427,7 +2427,7 @@ async function withTitlebarGuard(action: () => Promise<void>) {
         setStatus(createTranslator(locale)("app.status.ready"));
       }}
     >
-      <div className="launcher-shell relative flex h-screen w-screen overflow-hidden bg-[var(--bg-primary)] text-[var(--text-primary)] select-none pixel-pattern linear-backdrop">
+      <div className="launcher-shell relative flex h-screen w-screen overflow-hidden bg-[var(--bg-primary)] text-[var(--text-primary)] select-none pixel-pattern">
         {activeBackgroundUrl && (
           <div className="pointer-events-none absolute inset-0 z-0 overflow-hidden">
             <div
@@ -2436,14 +2436,14 @@ async function withTitlebarGuard(action: () => Promise<void>) {
                 backgroundImage: `url("${activeBackgroundUrl}")`,
                 opacity: settings.backgroundOpacity / 100,
                 filter: `blur(${settings.backgroundBlur}px)`,
-                transform: settings.backgroundBlur > 0 ? "scale(1.06)" : "scale(1)"
+                transform: settings.backgroundBlur > 0 ? "scale(1.04)" : "scale(1)"
               }}
             />
             <div className="absolute inset-0 bg-[var(--bg-primary)]/16" />
           </div>
         )}
         <div
-          className="fixed left-0 right-0 top-0 z-50 flex h-10 items-center justify-between border-b border-white/5 bg-[var(--bg-secondary)]/86 px-3 backdrop-blur-xl"
+          className="fixed left-0 right-0 top-0 z-50 flex h-10 items-center justify-between border-b border-white/5 bg-[var(--bg-secondary)]/92 px-3"
           data-tauri-drag-region
         >
           <div
@@ -2495,8 +2495,8 @@ async function withTitlebarGuard(action: () => Promise<void>) {
             />
 
             <main className="relative flex-1 overflow-hidden border-l border-white/5 bg-[var(--bg-secondary)]/34">
-              <div className="pointer-events-none absolute -right-32 -top-24 h-[420px] w-[420px] rounded-full bg-[var(--mc-grass)]/8 blur-[110px] opacity-45" />
-              <div className="pointer-events-none absolute -bottom-32 -left-24 h-[360px] w-[360px] rounded-full bg-[var(--mc-grass)]/6 blur-[105px] opacity-35" />
+              <div className="pointer-events-none absolute -right-32 -top-24 h-[420px] w-[420px] rounded-full bg-[var(--mc-grass)]/8 blur-[42px] opacity-38" />
+              <div className="pointer-events-none absolute -bottom-32 -left-24 h-[360px] w-[360px] rounded-full bg-[var(--mc-grass)]/6 blur-[38px] opacity-30" />
 
               <div key={page} className="relative z-10 h-full page-transition">
                 {renderPage()}
@@ -2521,7 +2521,7 @@ async function withTitlebarGuard(action: () => Promise<void>) {
         )}
 
         {authenticated && launchError && (
-          <div className="fixed inset-0 z-[95] flex items-center justify-center bg-[var(--bg-primary)]/68 p-6 backdrop-blur-md">
+          <div className="fixed inset-0 z-[95] flex items-center justify-center bg-[var(--bg-primary)]/82 p-6">
             <Card variant="frost" className="w-full max-w-lg rounded-2xl p-6" interactive={false}>
               <h3 className="text-xl font-semibold text-[var(--accent-danger)]">
                 {t("launch.error.title")}

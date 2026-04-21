@@ -193,7 +193,7 @@ export default function MonitorPage({ params }: MonitorPageProps) {
   }
 
   return (
-    <div className="appWindow relative overflow-hidden linear-backdrop">
+    <div className="appWindow relative overflow-hidden">
       {activeBackgroundUrl && (
         <div className="pointer-events-none absolute inset-0 z-0 overflow-hidden">
           <div
@@ -202,7 +202,7 @@ export default function MonitorPage({ params }: MonitorPageProps) {
               backgroundImage: `url("${activeBackgroundUrl}")`,
               opacity: visualSettings.backgroundOpacity / 100,
               filter: `blur(${visualSettings.backgroundBlur}px)`,
-              transform: visualSettings.backgroundBlur > 0 ? "scale(1.06)" : "scale(1)"
+              transform: visualSettings.backgroundBlur > 0 ? "scale(1.04)" : "scale(1)"
             }}
           />
           <div className="absolute inset-0 bg-[var(--bg-primary)]/40" />

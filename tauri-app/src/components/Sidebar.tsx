@@ -40,7 +40,7 @@ export default function Sidebar({
 
   return (
     <aside
-      className={`relative z-20 flex h-full flex-col overflow-hidden bg-[var(--bg-secondary)]/72 backdrop-blur-xl transition-[width] duration-[var(--duration-normal)] ${
+      className={`relative z-20 flex h-full flex-col overflow-hidden bg-[var(--bg-secondary)]/76 backdrop-blur-md transition-[width] duration-[var(--duration-normal)] ${
         collapsed ? "w-[76px]" : "w-[76px] lg:w-[268px]"
       }`}
     >
