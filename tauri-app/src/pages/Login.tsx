@@ -43,9 +43,9 @@ export default function LoginPage({ loading, initialPrefs, statusText, onSubmit 
 
   return (
     <div className="page-shell page-shell-centered relative w-full px-2 sm:px-4">
-      <div className="pointer-events-none absolute -left-16 -top-16 h-56 w-56 rounded-full bg-[var(--mc-grass)]/16 blur-3xl" />
+      <div className="pointer-events-none absolute -left-16 -top-16 h-56 w-56 rounded-full bg-[var(--mc-grass)]/16 blur-2xl" />
       <Card as="section" variant="strong" className="page-card page-card-roomy relative w-full max-w-[560px] overflow-hidden rounded-[24px] border border-white/10 shadow-[0_20px_48px_rgba(4,8,14,0.34)]" interactive={false}>
-        <div className="pointer-events-none absolute -right-14 -top-14 h-40 w-40 rounded-full bg-[var(--mc-grass)]/12 blur-3xl" />
+        <div className="pointer-events-none absolute -right-14 -top-14 h-40 w-40 rounded-full bg-[var(--mc-grass)]/12 blur-2xl" />
 
         <header className="relative mb-7 flex items-center gap-4">
           <AppLogo size={56} className="rounded-2xl border border-white/10 shadow-[0_0_0_1px_var(--border-subtle),0_10px_30px_rgba(37,184,122,0.22)]" />
