@@ -1,11 +1,11 @@
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { startTransition, useEffect, useMemo, useRef, useState } from "react";
+import { startTransition, useEffect, useRef, useState } from "react";
 import Card from "../components/Card";
 import TitleBar from "../components/TitleBar";
 import { useI18n } from "../i18n";
 import type { GameRuntimeStats, UiLogPollResult } from "../types";
-import { formatDuration, loadSettings, parseIntSafe, prefix, resolveBackgroundAssetUrl } from "../utils/launcher";
+import { formatDuration, parseIntSafe, prefix } from "../utils/launcher";
 
 type MonitorPageProps = {
   params: URLSearchParams;
@@ -19,8 +19,6 @@ const MONITOR_LOG_LINE_LIMIT = 1200;
 
 export default function MonitorPage({ params }: MonitorPageProps) {
   const { t } = useI18n();
-  const visualSettings = useMemo(() => loadSettings(), []);
-  const activeBackgroundUrl = resolveBackgroundAssetUrl(visualSettings);
   const pid = parseIntSafe(params.get("pid"), 0);
   const monitorStartedAt = useRef(parseIntSafe(params.get("startedAt"), Date.now())).current;
   const initialCursor = parseIntSafe(params.get("cursor"), 0);
@@ -193,27 +191,13 @@ export default function MonitorPage({ params }: MonitorPageProps) {
   }
 
   return (
-    <div className="appWindow relative overflow-hidden">
-      {activeBackgroundUrl && (
-        <div className="pointer-events-none absolute inset-0 z-0 overflow-hidden">
-          <div
-            className="absolute inset-0 bg-cover bg-center bg-no-repeat"
-            style={{
-              backgroundImage: `url("${activeBackgroundUrl}")`,
-              opacity: visualSettings.backgroundOpacity / 100,
-              filter: `blur(${visualSettings.backgroundBlur}px)`,
-              transform: visualSettings.backgroundBlur > 0 ? "scale(1.04)" : "scale(1)"
-            }}
-          />
-          <div className="absolute inset-0 bg-[var(--bg-primary)]/40" />
-        </div>
-      )}
-      <div className="relative z-10">
+    <div className="appWindow monitorWindow">
+      <div>
         <TitleBar title={version} />
       </div>
 
       <main className="monitorWorkspace monitorWorkspaceCompact">
-        <Card as="section" variant="frost" className="monitorHeroCard monitorHeroCardCompact page-card rounded-[22px]" interactive={false}>
+        <Card as="section" variant="soft" className="monitorHeroCard monitorHeroCardCompact monitorPlainCard page-card rounded-[22px]" interactive={false}>
           <div className="monitorHeroHeader monitorHeroHeaderCompact">
             <div className="monitorHeroIdentity">
               <p className="page-eyebrow">{t("monitor.brandTag")}</p>
@@ -264,7 +248,7 @@ export default function MonitorPage({ params }: MonitorPageProps) {
           </div>
         </Card>
 
-        <Card as="section" variant="frost" className="monitorConsoleCard monitorConsoleCardExpanded page-card rounded-[22px]" interactive={false}>
+        <Card as="section" variant="soft" className="monitorConsoleCard monitorConsoleCardExpanded monitorPlainCard page-card rounded-[22px]" interactive={false}>
           <div className="monitorConsoleHead monitorConsoleHeadCompact">
             <h2 className="monitorConsoleTitle">{t("monitor.consoleOutput")}</h2>
           </div>
@@ -282,7 +266,7 @@ export default function MonitorPage({ params }: MonitorPageProps) {
 
       {confirmAction && (
         <section className="modal-shell">
-          <Card variant="strong" className="modal-card page-card w-full max-w-[680px]" interactive={false}>
+          <Card variant="soft" className="modal-card page-card monitorConfirmCard w-full max-w-[680px]" interactive={false}>
             <div className="modal-header !mb-3">
               <div>
                 <p className="page-eyebrow">{t("monitor.confirmTitle")}</p>

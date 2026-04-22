@@ -1,11 +1,13 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod minecraft_core;
+
 use base64::Engine;
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256, Sha512};
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::io::{BufRead, BufReader, Cursor, Read, Seek, SeekFrom, Write};
+use std::io::{BufRead, BufReader, Cursor, Read, Write};
 use std::net::TcpListener;
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
@@ -17,7 +19,6 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use std::{env, fs};
 use tauri::menu::{Menu, MenuItem};
-use tauri::path::BaseDirectory;
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder, WindowEvent};
 #[cfg(target_os = "macos")]
@@ -39,6 +40,7 @@ use windows::Win32::System::Com::{
 };
 #[cfg(windows)]
 use windows::Win32::UI::Shell::{DesktopWallpaper, IDesktopWallpaper};
+use minecraft_core::VanillaLaunchRequest;
 
 const DEFAULT_MINECRAFT_MICROSOFT_CLIENT_ID: &str = "057064c6-d180-43df-b010-834b4571532f";
 const DEFAULT_MINECRAFT_MICROSOFT_REDIRECT_URL: &str = "http://localhost:3389/oauth";
@@ -48,6 +50,8 @@ const JDK_DOWNLOAD_USER_AGENT: &str =
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) FPSMasterLauncher/0.1 (+https://github.com/fpsmaster)";
 const MOJANG_JAVA_ALL_JSON_URL: &str =
     "https://piston-meta.mojang.com/v1/products/java-runtime/2ec0cc96c44e5a76b9c8b7c39df7210883d12871/all.json";
+
+static INSTALL_CANCEL_STATE: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
 
 #[derive(Debug, Serialize, Deserialize)]
 struct InstallResult {
@@ -880,7 +884,6 @@ static UI_LOG_STORE: OnceLock<Mutex<UiLogStore>> = OnceLock::new();
 static GAME_RUNTIME_STARTS: OnceLock<Mutex<HashMap<i64, std::time::Instant>>> = OnceLock::new();
 static GAME_RUNTIME_CACHE: OnceLock<Mutex<HashMap<i64, CachedGameRuntimeStats>>> = OnceLock::new();
 static GAME_RUNTIME_SAMPLER_STARTED: OnceLock<()> = OnceLock::new();
-static JAVA_CORE_RESOURCE_JAR: OnceLock<PathBuf> = OnceLock::new();
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 const TRAY_SHOW_ID: &str = "tray_show";
@@ -1731,12 +1734,13 @@ fn repair_instance_runtime_blocking(
         )
     })?;
 
-    let vanilla = install_vanilla_blocking_core(
+    let vanilla = minecraft_core::install_vanilla(
         Some(&window),
         &game_dir_path,
         &normalized_base_version,
         None,
-        Some(DEFAULT_DOWNLOAD_THREADS),
+        normalize_download_threads(Some(DEFAULT_DOWNLOAD_THREADS)),
+        None,
     )?;
     let mut source_version_id = vanilla.version_id;
     let mut resolved_loader_version = loader_version
@@ -1779,9 +1783,7 @@ fn repair_instance_runtime_blocking(
             .ok_or_else(|| format!("No forge version available for {}", normalized_base_version))?;
         let jdk = ensure_jdk_blocking(
             window.clone(),
-            strip_windows_verbatim_prefix(&game_dir_path)
-                .to_string_lossy()
-                .to_string(),
+            game_dir_path.to_string_lossy().to_string(),
             normalized_base_version.clone(),
             Some(DEFAULT_DOWNLOAD_THREADS),
         )?;
@@ -1994,19 +1996,8 @@ fn ensure_jdk_blocking(
     download_threads: Option<i32>,
 ) -> Result<JdkEnsureResult, String> {
     let game_dir_path = resolve_game_dir_path(&game_dir)?;
-    let resolved_game_dir = game_dir_path.to_string_lossy().to_string();
-    let requirement_output = run_java_core(
-        Some(&window),
-        &[
-            "resolve-java-major",
-            "--version",
-            &version_id,
-            "--game-dir",
-            &resolved_game_dir,
-        ],
-    )?;
-    let requirement: JavaRuntimeRequirement = serde_json::from_str(&requirement_output)
-        .map_err(|e| format!("Failed to parse java runtime requirement: {e}"))?;
+    let requirement =
+        minecraft_core::resolve_java_runtime_requirement(Some(&game_dir_path), &version_id, None)?;
 
     let major = requirement.major_version.max(8);
     let runtime_root = managed_jdk_runtime_root(&game_dir_path, major);
@@ -2294,7 +2285,7 @@ fn start_launcher_heartbeat(app: tauri::AppHandle) -> Result<(), String> {
     let app_handle = app.clone();
 
     thread::spawn(move || {
-        let mut interval = Duration::from_secs(90); // Base interval: 90 seconds
+        let interval = Duration::from_secs(90); // Base interval: 90 seconds
         let mut counter = 0u32;
 
         loop {
@@ -5747,23 +5738,44 @@ fn normalize_sha512_value(raw: &str) -> Option<String> {
     }
 }
 
-fn push_download_source_arg(command: &mut Vec<String>, download_source: Option<&str>) {
-    let Some(source) = download_source
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    else {
-        return;
-    };
-    command.push("--download-source".to_string());
-    command.push(source.to_string());
+fn install_cancel_state() -> &'static Mutex<HashSet<String>> {
+    INSTALL_CANCEL_STATE.get_or_init(|| Mutex::new(HashSet::new()))
 }
 
-fn push_download_threads_arg(command: &mut Vec<String>, download_threads: Option<i32>) {
-    let Some(value) = download_threads else {
+fn request_install_cancel(session_id: &str) -> Result<(), String> {
+    let normalized = session_id.trim();
+    if normalized.is_empty() {
+        return Err("Install session cannot be empty".to_string());
+    }
+    let mut state = install_cancel_state()
+        .lock()
+        .map_err(|_| "Install cancel state lock poisoned".to_string())?;
+    state.insert(normalized.to_string());
+    Ok(())
+}
+
+fn clear_install_cancel(session_id: Option<&str>) {
+    let Some(session_id) = session_id.map(str::trim).filter(|value| !value.is_empty()) else {
         return;
     };
-    command.push("--download-threads".to_string());
-    command.push(value.clamp(1, 32).to_string());
+    if let Ok(mut state) = install_cancel_state().lock() {
+        state.remove(session_id);
+    }
+}
+
+pub(crate) fn is_install_cancelled(session_id: Option<&str>) -> bool {
+    let Some(session_id) = session_id.map(str::trim).filter(|value| !value.is_empty()) else {
+        return false;
+    };
+    install_cancel_state()
+        .lock()
+        .map(|state| state.contains(session_id))
+        .unwrap_or(false)
+}
+
+#[tauri::command]
+async fn cancel_install(session_id: String) -> Result<(), String> {
+    request_install_cancel(&session_id)
 }
 
 #[tauri::command]
@@ -5771,11 +5783,11 @@ async fn list_vanilla_versions(
     window: tauri::Window,
     download_source: Option<String>,
 ) -> Result<Vec<String>, String> {
-    let mut command = vec!["list-versions".to_string()];
-    push_download_source_arg(&mut command, download_source.as_deref());
-    let output = run_java_core_async(Some(window), command).await?;
-    serde_json::from_str::<Vec<String>>(&output)
-        .map_err(|e| format!("Invalid java-core output: {e}"))
+    tauri::async_runtime::spawn_blocking(move || {
+        minecraft_core::list_vanilla_versions(Some(&window), download_source.as_deref())
+    })
+    .await
+    .map_err(|e| format!("Failed to join vanilla version listing task: {e}"))?
 }
 
 #[tauri::command]
@@ -5787,56 +5799,23 @@ async fn install_vanilla(
     download_threads: Option<i32>,
     ipc_session: Option<String>,
 ) -> Result<InstallResult, String> {
-    let game_dir = resolve_game_dir_path(&game_dir)?
-        .to_string_lossy()
-        .to_string();
-    let mut command = vec![
-        "install-vanilla".to_string(),
-        "--game-dir".to_string(),
-        game_dir,
-        "--version".to_string(),
-        version_id,
-    ];
-    push_download_source_arg(&mut command, download_source.as_deref());
-    push_download_threads_arg(&mut command, download_threads);
-    if let Some(session) = ipc_session {
-        if !session.trim().is_empty() {
-            command.push("--ipc-session".to_string());
-            command.push(session);
-        }
-    }
-    let output = run_java_core_async(Some(window), command).await?;
-    serde_json::from_str::<InstallResult>(&output)
-        .map_err(|e| format!("Invalid java-core output: {e}"))
-}
-
-fn install_vanilla_blocking_core(
-    window: Option<&tauri::Window>,
-    game_dir: &Path,
-    version_id: &str,
-    download_source: Option<&str>,
-    download_threads: Option<i32>,
-) -> Result<InstallResult, String> {
-    let normalized_version_id = version_id.trim();
-    if normalized_version_id.is_empty() {
-        return Err("Version id cannot be empty".to_string());
-    }
-    let command = vec![
-        "install-vanilla".to_string(),
-        "--game-dir".to_string(),
-        strip_windows_verbatim_prefix(game_dir)
-            .to_string_lossy()
-            .to_string(),
-        "--version".to_string(),
-        normalized_version_id.to_string(),
-    ];
-    let mut command = command;
-    push_download_source_arg(&mut command, download_source);
-    push_download_threads_arg(&mut command, download_threads);
-    let refs: Vec<&str> = command.iter().map(String::as_str).collect();
-    let output = run_java_core(window, &refs)?;
-    serde_json::from_str::<InstallResult>(&output)
-        .map_err(|e| format!("Invalid java-core output: {e}"))
+    tauri::async_runtime::spawn_blocking(move || {
+        let session = ipc_session.clone();
+        let game_dir_path = resolve_game_dir_path(&game_dir)?;
+        let normalized_download_threads = normalize_download_threads(download_threads);
+        let result = minecraft_core::install_vanilla(
+            Some(&window),
+            &game_dir_path,
+            &version_id,
+            download_source.as_deref(),
+            normalized_download_threads,
+            ipc_session.as_deref(),
+        );
+        clear_install_cancel(session.as_deref());
+        result
+    })
+    .await
+    .map_err(|e| format!("Failed to join vanilla install task: {e}"))?
 }
 
 #[tauri::command]
@@ -5851,34 +5830,32 @@ async fn build_vanilla_launch_plan(
     java_path: Option<String>,
     download_source: Option<String>,
 ) -> Result<LaunchPlan, String> {
-    let game_dir = resolve_game_dir_path(&game_dir)?
-        .to_string_lossy()
-        .to_string();
-    let max_memory = max_memory_mb.to_string();
-    let mut command = vec![
-        "build-launch-plan".to_string(),
-        "--game-dir".to_string(),
-        game_dir,
-        "--version".to_string(),
-        version_id,
-        "--player".to_string(),
-        player_name,
-        "--uuid".to_string(),
-        uuid,
-        "--access-token".to_string(),
-        access_token,
-        "--max-memory".to_string(),
-        max_memory,
-    ];
-    if let Some(java) = java_path {
-        command.push("--java".to_string());
-        command.push(java);
-    }
-    push_download_source_arg(&mut command, download_source.as_deref());
-
-    let output = run_java_core_async(Some(window), command).await?;
-    serde_json::from_str::<LaunchPlan>(&output)
-        .map_err(|e| format!("Invalid java-core output: {e}"))
+    tauri::async_runtime::spawn_blocking(move || {
+        let game_dir_path = resolve_game_dir_path(&game_dir)?;
+        let java_executable = java_path
+            .map(|value| PathBuf::from(value.trim()))
+            .filter(|path| !path.as_os_str().is_empty())
+            .unwrap_or_else(|| {
+                game_dir_path
+                    .join("runtime")
+                    .join("bin")
+                    .join(if cfg!(windows) { "java.exe" } else { "java" })
+            });
+        let request = VanillaLaunchRequest {
+            game_dir: game_dir_path,
+            version_id,
+            player_name,
+            uuid,
+            access_token,
+            java_path: java_executable,
+            max_memory_mb,
+            server_address: None,
+        };
+        minecraft_core::build_vanilla_launch_plan(Some(&window), &request, download_source.as_deref())
+            .map(|value| value.plan)
+    })
+    .await
+    .map_err(|e| format!("Failed to join launch plan task: {e}"))?
 }
 
 #[tauri::command]
@@ -5934,22 +5911,34 @@ fn launch_vanilla_blocking(
     }
 
     let game_dir_path = resolve_game_dir_path(&game_dir)?;
-    let resolved_game_dir = game_dir_path.to_string_lossy().to_string();
-    let plan = resolve_launch_plan_blocking(
-        &window,
-        &resolved_game_dir,
-        &version_id,
-        &player_name,
-        &uuid,
-        &access_token,
-        max_memory_mb,
-        java_path.as_deref(),
+    let resolved_plan = minecraft_core::build_vanilla_launch_plan(
+        Some(&window),
+        &VanillaLaunchRequest {
+            game_dir: game_dir_path.clone(),
+            version_id: version_id.clone(),
+            player_name: player_name.clone(),
+            uuid: uuid.clone(),
+            access_token: access_token.clone(),
+            java_path: java_path
+                .as_deref()
+                .map(PathBuf::from)
+                .unwrap_or_else(|| {
+                    game_dir_path
+                        .join("runtime")
+                        .join("bin")
+                        .join(if cfg!(windows) { "java.exe" } else { "java" })
+                }),
+            max_memory_mb,
+            server_address: server_address.clone(),
+        },
         download_source.as_deref(),
-        server_address.as_deref(),
     )?;
+    let plan = resolved_plan.plan;
+    let natives_dir = resolved_plan.natives_dir;
 
     let mut normalized_command = normalize_game_command_tokens(plan.command.clone());
     if normalized_command.is_empty() {
+        cleanup_launch_natives_dir(&natives_dir);
         return Err("Launch command is empty".to_string());
     }
     let runtime_dir = resolve_version_runtime_dir(&game_dir_path, &version_id)?;
@@ -5965,7 +5954,13 @@ fn launch_vanilla_blocking(
     );
 
     let should_wait = wait_for_exit.unwrap_or(false);
-    let mut child = spawn_game_process(&runtime_dir, &executable, &args)?;
+    let mut child = match spawn_game_process(&runtime_dir, &executable, &args) {
+        Ok(child) => child,
+        Err(error) => {
+            cleanup_launch_natives_dir(&natives_dir);
+            return Err(error);
+        }
+    };
     let pid = i64::from(child.id());
     if let Ok(mut store) = game_runtime_starts().lock() {
         store.insert(pid, std::time::Instant::now());
@@ -5998,6 +5993,7 @@ fn launch_vanilla_blocking(
         let _ = stdout_handle.join();
         let _ = stderr_handle.join();
         let exit_code = status.code().unwrap_or(-1);
+        cleanup_launch_natives_dir(&natives_dir);
         let _ = window.emit("game-exit", GameExitEvent { pid, exit_code });
         push_ui_log(
             "game",
@@ -6017,6 +6013,7 @@ fn launch_vanilla_blocking(
         });
     }
 
+    let wait_natives_dir = natives_dir.clone();
     let wait_window = window.clone();
     thread::spawn(move || {
         let exit_code = child
@@ -6026,6 +6023,7 @@ fn launch_vanilla_blocking(
             .unwrap_or(-1);
         let _ = stdout_handle.join();
         let _ = stderr_handle.join();
+        cleanup_launch_natives_dir(&wait_natives_dir);
         let _ = wait_window.emit("game-exit", GameExitEvent { pid, exit_code });
         push_ui_log(
             "game",
@@ -6089,49 +6087,6 @@ fn detect_active_game_pid() -> Option<i64> {
     active
 }
 
-fn resolve_launch_plan_blocking(
-    window: &tauri::Window,
-    game_dir: &str,
-    version_id: &str,
-    player_name: &str,
-    uuid: &str,
-    access_token: &str,
-    max_memory_mb: i32,
-    java_path: Option<&str>,
-    download_source: Option<&str>,
-    server_address: Option<&str>,
-) -> Result<LaunchPlan, String> {
-    let mut command = vec![
-        "build-launch-plan".to_string(),
-        "--game-dir".to_string(),
-        game_dir.to_string(),
-        "--version".to_string(),
-        version_id.to_string(),
-        "--player".to_string(),
-        player_name.to_string(),
-        "--uuid".to_string(),
-        uuid.to_string(),
-        "--access-token".to_string(),
-        access_token.to_string(),
-        "--max-memory".to_string(),
-        max_memory_mb.to_string(),
-    ];
-    if let Some(java) = java_path {
-        command.push("--java".to_string());
-        command.push(java.to_string());
-    }
-    if let Some(server) = server_address {
-        command.push("--server".to_string());
-        command.push(server.to_string());
-    }
-    push_download_source_arg(&mut command, download_source);
-
-    let refs: Vec<&str> = command.iter().map(String::as_str).collect();
-    let output = run_java_core(Some(window), &refs)?;
-    serde_json::from_str::<LaunchPlan>(&output)
-        .map_err(|e| format!("Invalid launch plan output: {e}"))
-}
-
 fn normalize_game_command_tokens(command: Vec<String>) -> Vec<String> {
     if command.is_empty() {
         return command;
@@ -6165,6 +6120,22 @@ fn normalize_game_command_tokens(command: Vec<String>) -> Vec<String> {
     normalized.push(executable);
     normalized.extend(normalized_args);
     normalized
+}
+
+fn cleanup_launch_natives_dir(natives_dir: &Path) {
+    if let Err(error) = fs::remove_dir_all(natives_dir) {
+        if error.kind() != std::io::ErrorKind::NotFound {
+            push_ui_log(
+                "core",
+                "warn",
+                &format!(
+                    "Failed cleaning natives directory {}: {}",
+                    natives_dir.display(),
+                    error
+                ),
+            );
+        }
+    }
 }
 
 fn resolve_version_runtime_dir(game_dir: &Path, version_id: &str) -> Result<PathBuf, String> {
@@ -6624,59 +6595,6 @@ fn parse_csv_line(line: &str) -> Vec<String> {
     fields
 }
 
-fn build_platform_command(
-    executable: &str,
-    args: &[String],
-    current_dir: Option<&Path>,
-) -> Command {
-    if cfg!(windows) {
-        let mut command = Command::new(executable);
-        command.args(args);
-        apply_windows_silent_spawn(&mut command);
-        if let Some(dir) = current_dir {
-            command.current_dir(dir);
-        }
-        return command;
-    }
-
-    let mut command = Command::new(executable);
-    command.args(args);
-    if let Some(dir) = current_dir {
-        command.current_dir(dir);
-    }
-    command
-}
-
-fn resolve_java_core_executable(
-    window: Option<&tauri::Window>,
-    args: &[&str],
-) -> Result<PathBuf, String> {
-    let game_dir = extract_cli_option_path(args, &["--game-dir", "--gameDir"])?
-        .unwrap_or(default_game_dir_path()?);
-    let runtime_root = managed_jdk_runtime_root(&game_dir, 17);
-    ensure_managed_jdk_runtime(window, &runtime_root, 17, Some(DEFAULT_DOWNLOAD_THREADS))
-}
-
-fn extract_cli_option_path(args: &[&str], names: &[&str]) -> Result<Option<PathBuf>, String> {
-    let mut index = 0;
-    while index < args.len() {
-        let current = args[index];
-        for name in names {
-            if current == *name {
-                if index + 1 >= args.len() {
-                    return Err(format!("Missing value for {}", name));
-                }
-                return Ok(Some(resolve_game_dir_path(args[index + 1])?));
-            }
-            if let Some(value) = current.strip_prefix(&format!("{name}=")) {
-                return Ok(Some(resolve_game_dir_path(value)?));
-            }
-        }
-        index += 1;
-    }
-    Ok(None)
-}
-
 fn managed_jdk_runtime_root(game_dir: &Path, major: i32) -> PathBuf {
     game_dir.join("runtime").join(format!("jdk-{major}"))
 }
@@ -6768,11 +6686,15 @@ async fn list_fabric_loaders(
     game_version: String,
     download_source: Option<String>,
 ) -> Result<Vec<String>, String> {
-    list_fabric_loaders_blocking_core(
-        Some(&window),
-        game_version.trim(),
-        download_source.as_deref(),
-    )
+    tauri::async_runtime::spawn_blocking(move || {
+        list_fabric_loaders_blocking_core(
+            Some(&window),
+            game_version.trim(),
+            download_source.as_deref(),
+        )
+    })
+    .await
+    .map_err(|e| format!("Failed to join fabric loader listing task: {e}"))?
 }
 
 fn list_fabric_loaders_blocking_core(
@@ -6784,17 +6706,7 @@ fn list_fabric_loaders_blocking_core(
     if normalized_game_version.is_empty() {
         return Err("Game version cannot be empty".to_string());
     }
-    let command = vec![
-        "list-fabric-loaders".to_string(),
-        "--game-version".to_string(),
-        normalized_game_version.to_string(),
-    ];
-    let mut command = command;
-    push_download_source_arg(&mut command, download_source);
-    let refs: Vec<&str> = command.iter().map(String::as_str).collect();
-    let output = run_java_core(window, &refs)?;
-    serde_json::from_str::<Vec<String>>(&output)
-        .map_err(|e| format!("Invalid java-core output: {e}"))
+    minecraft_core::list_fabric_loader_versions(window, normalized_game_version, download_source)
 }
 
 #[tauri::command]
@@ -6807,29 +6719,24 @@ async fn install_fabric(
     download_threads: Option<i32>,
     ipc_session: Option<String>,
 ) -> Result<FabricInstallResult, String> {
-    let game_dir = resolve_game_dir_path(&game_dir)?
-        .to_string_lossy()
-        .to_string();
-    let mut command = vec![
-        "install-fabric".to_string(),
-        "--game-dir".to_string(),
-        game_dir,
-        "--game-version".to_string(),
-        game_version,
-        "--loader-version".to_string(),
-        loader_version,
-    ];
-    push_download_source_arg(&mut command, download_source.as_deref());
-    push_download_threads_arg(&mut command, download_threads);
-    if let Some(session) = ipc_session {
-        if !session.trim().is_empty() {
-            command.push("--ipc-session".to_string());
-            command.push(session);
-        }
-    }
-    let output = run_java_core_async(Some(window), command).await?;
-    serde_json::from_str::<FabricInstallResult>(&output)
-        .map_err(|e| format!("Invalid java-core output: {e}"))
+    tauri::async_runtime::spawn_blocking(move || {
+        let session = ipc_session.clone();
+        let normalized_download_threads = normalize_download_threads(download_threads);
+        let game_dir_path = resolve_game_dir_path(&game_dir)?;
+        let result = minecraft_core::install_fabric(
+            Some(&window),
+            &game_dir_path,
+            &game_version,
+            &loader_version,
+            download_source.as_deref(),
+            normalized_download_threads,
+            ipc_session.as_deref(),
+        );
+        clear_install_cancel(session.as_deref());
+        result
+    })
+    .await
+    .map_err(|e| format!("Failed to join fabric install task: {e}"))?
 }
 
 fn install_fabric_blocking_core(
@@ -6848,24 +6755,16 @@ fn install_fabric_blocking_core(
     if normalized_loader_version.is_empty() {
         return Err("Loader version cannot be empty".to_string());
     }
-    let command = vec![
-        "install-fabric".to_string(),
-        "--game-dir".to_string(),
-        strip_windows_verbatim_prefix(game_dir)
-            .to_string_lossy()
-            .to_string(),
-        "--game-version".to_string(),
-        normalized_game_version.to_string(),
-        "--loader-version".to_string(),
-        normalized_loader_version.to_string(),
-    ];
-    let mut command = command;
-    push_download_source_arg(&mut command, download_source);
-    push_download_threads_arg(&mut command, download_threads);
-    let refs: Vec<&str> = command.iter().map(String::as_str).collect();
-    let output = run_java_core(window, &refs)?;
-    serde_json::from_str::<FabricInstallResult>(&output)
-        .map_err(|e| format!("Invalid java-core output: {e}"))
+    let normalized_download_threads = normalize_download_threads(download_threads);
+    minecraft_core::install_fabric(
+        window,
+        game_dir,
+        normalized_game_version,
+        normalized_loader_version,
+        download_source,
+        normalized_download_threads,
+        None,
+    )
 }
 
 #[tauri::command]
@@ -6874,11 +6773,15 @@ async fn list_forge_versions(
     game_version: String,
     download_source: Option<String>,
 ) -> Result<Vec<String>, String> {
-    list_forge_versions_blocking_core(
-        Some(&window),
-        game_version.trim(),
-        download_source.as_deref(),
-    )
+    tauri::async_runtime::spawn_blocking(move || {
+        list_forge_versions_blocking_core(
+            Some(&window),
+            game_version.trim(),
+            download_source.as_deref(),
+        )
+    })
+    .await
+    .map_err(|e| format!("Failed to join forge version listing task: {e}"))?
 }
 
 fn list_forge_versions_blocking_core(
@@ -6890,17 +6793,7 @@ fn list_forge_versions_blocking_core(
     if normalized_game_version.is_empty() {
         return Err("Game version cannot be empty".to_string());
     }
-    let command = vec![
-        "list-forge-versions".to_string(),
-        "--game-version".to_string(),
-        normalized_game_version.to_string(),
-    ];
-    let mut command = command;
-    push_download_source_arg(&mut command, download_source);
-    let refs: Vec<&str> = command.iter().map(String::as_str).collect();
-    let output = run_java_core(window, &refs)?;
-    serde_json::from_str::<Vec<String>>(&output)
-        .map_err(|e| format!("Invalid java-core output: {e}"))
+    minecraft_core::list_forge_versions(window, normalized_game_version, download_source)
 }
 
 #[tauri::command]
@@ -6913,42 +6806,38 @@ async fn install_forge(
     download_threads: Option<i32>,
     ipc_session: Option<String>,
 ) -> Result<ForgeInstallResult, String> {
-    let game_dir_path = resolve_game_dir_path(&game_dir)?;
-    let java_exe = match java_path
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
-    {
-        Some(value) => value,
-        None => ensure_managed_jdk_runtime(
+    tauri::async_runtime::spawn_blocking(move || {
+        let session = ipc_session.clone();
+        let game_dir_path = resolve_game_dir_path(&game_dir)?;
+        let normalized_download_threads = normalize_download_threads(download_threads);
+        let java_exe = match java_path
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+        {
+            Some(value) => value,
+            None => ensure_managed_jdk_runtime(
+                Some(&window),
+                &managed_jdk_runtime_root(&game_dir_path, 17),
+                17,
+                Some(normalized_download_threads as i32),
+            )?
+            .to_string_lossy()
+            .to_string(),
+        };
+        let result = minecraft_core::install_forge(
             Some(&window),
-            &managed_jdk_runtime_root(&game_dir_path, 17),
-            17,
-            Some(DEFAULT_DOWNLOAD_THREADS),
-        )?
-        .to_string_lossy()
-        .to_string(),
-    };
-    let game_dir = game_dir_path.to_string_lossy().to_string();
-    let mut command = vec![
-        "install-forge".to_string(),
-        "--game-dir".to_string(),
-        game_dir,
-        "--forge-version".to_string(),
-        forge_version,
-        "--java".to_string(),
-        java_exe,
-    ];
-    push_download_source_arg(&mut command, download_source.as_deref());
-    push_download_threads_arg(&mut command, download_threads);
-    if let Some(session) = ipc_session {
-        if !session.trim().is_empty() {
-            command.push("--ipc-session".to_string());
-            command.push(session);
-        }
-    }
-    let output = run_java_core_async(Some(window), command).await?;
-    serde_json::from_str::<ForgeInstallResult>(&output)
-        .map_err(|e| format!("Invalid java-core output: {e}"))
+            &game_dir_path,
+            &forge_version,
+            Path::new(&java_exe),
+            download_source.as_deref(),
+            normalized_download_threads,
+            ipc_session.as_deref(),
+        );
+        clear_install_cancel(session.as_deref());
+        result
+    })
+    .await
+    .map_err(|e| format!("Failed to join forge install task: {e}"))?
 }
 
 fn install_forge_blocking_core(
@@ -6968,335 +6857,16 @@ fn install_forge_blocking_core(
     } else {
         java_path.trim()
     };
-    let command = vec![
-        "install-forge".to_string(),
-        "--game-dir".to_string(),
-        strip_windows_verbatim_prefix(game_dir)
-            .to_string_lossy()
-            .to_string(),
-        "--forge-version".to_string(),
-        normalized_forge_version.to_string(),
-        "--java".to_string(),
-        normalized_java.to_string(),
-    ];
-    let mut command = command;
-    push_download_source_arg(&mut command, download_source);
-    push_download_threads_arg(&mut command, download_threads);
-    let refs: Vec<&str> = command.iter().map(String::as_str).collect();
-    let output = run_java_core(window, &refs)?;
-    serde_json::from_str::<ForgeInstallResult>(&output)
-        .map_err(|e| format!("Invalid java-core output: {e}"))
-}
-
-async fn run_java_core_async(
-    window: Option<tauri::Window>,
-    args: Vec<String>,
-) -> Result<String, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        let refs: Vec<&str> = args.iter().map(String::as_str).collect();
-        run_java_core(window.as_ref(), &refs)
-    })
-    .await
-    .map_err(|e| format!("Failed to join java-core task: {e}"))?
-}
-
-fn run_java_core(window: Option<&tauri::Window>, args: &[&str]) -> Result<String, String> {
-    let jar = java_core_jar_path()?;
-    let java_executable = resolve_java_core_executable(window, args)?;
-    let mut full_args: Vec<String> = vec!["-jar".to_string(), jar.to_string_lossy().to_string()];
-    full_args.extend(args.iter().map(|x| (*x).to_string()));
-    let command_preview =
-        format_quoted_command(java_executable.to_string_lossy().as_ref(), &full_args);
-    emit_log(window, "info", &format!("run: {command_preview}"));
-
-    let mut java_cmd =
-        build_platform_command(java_executable.to_string_lossy().as_ref(), &full_args, None);
-    let mut child = java_cmd
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| format!("Failed to run java core: {e}"))?;
-
-    let log_tailer_stop = start_core_latest_log_tailer(window.cloned(), args);
-
-    let stdout_buf = Arc::new(Mutex::new(String::new()));
-    let stderr_buf = Arc::new(Mutex::new(String::new()));
-
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| "Failed to capture java-core stdout".to_string())?;
-    let stderr = child
-        .stderr
-        .take()
-        .ok_or_else(|| "Failed to capture java-core stderr".to_string())?;
-
-    let stdout_buf_clone = Arc::clone(&stdout_buf);
-    let window_for_stdout = window.cloned();
-    let stdout_reader_handle = thread::spawn(move || -> Result<(), String> {
-        pump_core_stream(
-            stdout,
-            stdout_buf_clone,
-            window_for_stdout,
-            "core-log",
-            "stdout",
-        )
-    });
-
-    let stderr_buf_clone = Arc::clone(&stderr_buf);
-    let window_for_stderr = window.cloned();
-    let stderr_reader_handle = thread::spawn(move || -> Result<(), String> {
-        pump_core_stream(
-            stderr,
-            stderr_buf_clone,
-            window_for_stderr,
-            "core-log",
-            "stderr",
-        )
-    });
-
-    let status = child
-        .wait()
-        .map_err(|e| format!("Failed waiting java core: {e}"))?;
-
-    if let Some(stop) = log_tailer_stop {
-        stop.store(true, Ordering::Relaxed);
-    }
-
-    stdout_reader_handle
-        .join()
-        .map_err(|_| "Failed joining stdout thread".to_string())??;
-    stderr_reader_handle
-        .join()
-        .map_err(|_| "Failed joining stderr thread".to_string())??;
-
-    let stdout_text = stdout_buf
-        .lock()
-        .map_err(|_| "Failed to lock stdout buffer after completion".to_string())?
-        .trim()
-        .to_string();
-    let stderr_text = stderr_buf
-        .lock()
-        .map_err(|_| "Failed to lock stderr buffer after completion".to_string())?
-        .trim()
-        .to_string();
-
-    if !status.success() {
-        if let Some(ipc_error) = extract_install_ipc_error(&stderr_text) {
-            return Err(ipc_error);
-        }
-        let concise = summarize_command_failure(&stdout_text, &stderr_text);
-        return Err(format!(
-            "java-core command failed. shell={}; command={command_preview}; error={concise}",
-            "direct",
-        ));
-    }
-
-    emit_log(window, "info", "java-core command completed");
-    Ok(stdout_text)
-}
-
-fn extract_install_ipc_error(stderr_text: &str) -> Option<String> {
-    for line in stderr_text.lines().rev() {
-        let Some(payload) = line.strip_prefix("[ipc]") else {
-            continue;
-        };
-        let Ok(value) = serde_json::from_str::<serde_json::Value>(payload.trim()) else {
-            continue;
-        };
-        if value.get("channel").and_then(|v| v.as_str()) != Some("install") {
-            continue;
-        }
-        if value.get("event").and_then(|v| v.as_str()) != Some("error") {
-            continue;
-        }
-        if let Some(error) = value.get("error").and_then(|v| v.as_str()) {
-            let trimmed = error.trim();
-            if !trimmed.is_empty() {
-                return Some(trimmed.to_string());
-            }
-        }
-        if let Some(message) = value.get("message").and_then(|v| v.as_str()) {
-            let trimmed = message.trim();
-            if !trimmed.is_empty() {
-                return Some(trimmed.to_string());
-            }
-        }
-    }
-    None
-}
-
-fn summarize_command_failure(stdout: &str, stderr: &str) -> String {
-    let mut candidates: Vec<String> = Vec::new();
-    if !stderr.trim().is_empty() {
-        candidates.extend(stderr.lines().filter_map(normalize_error_line));
-    }
-    if !stdout.trim().is_empty() {
-        candidates.extend(stdout.lines().filter_map(normalize_error_line));
-    }
-
-    for candidate in candidates.iter().rev() {
-        if is_useful_error_line(candidate) {
-            return candidate.clone();
-        }
-    }
-
-    candidates
-        .into_iter()
-        .rev()
-        .find(|line| !line.is_empty())
-        .unwrap_or_else(|| "Unknown java-core failure".to_string())
-}
-
-fn normalize_error_line(line: &str) -> Option<String> {
-    let trimmed = line.trim();
-    if trimmed.is_empty() {
-        return None;
-    }
-    if trimmed.starts_with("[ipc]") {
-        return None;
-    }
-    if trimmed.starts_with("[launcher-core]") {
-        if let Some(idx) = trimmed.rfind(']') {
-            let msg = trimmed[idx + 1..].trim();
-            if !msg.is_empty() {
-                return Some(msg.to_string());
-            }
-        }
-    }
-    Some(trimmed.to_string())
-}
-
-fn is_useful_error_line(line: &str) -> bool {
-    let lower = line.to_lowercase();
-    lower.contains("download failed")
-        || lower.contains("sha1 mismatch")
-        || lower.contains("connection reset")
-        || lower.contains("exception")
-        || lower.contains("failed")
-        || lower.contains("error")
-}
-
-fn start_core_latest_log_tailer(
-    window: Option<tauri::Window>,
-    args: &[&str],
-) -> Option<Arc<AtomicBool>> {
-    if window.is_none() || args.is_empty() || args[0] != "launch-vanilla" {
-        return None;
-    }
-
-    let mut game_dir: Option<String> = None;
-    let mut i = 1;
-    while i + 1 < args.len() {
-        if args[i] == "--game-dir" {
-            game_dir = Some(args[i + 1].to_string());
-            break;
-        }
-        i += 1;
-    }
-
-    let game_dir = game_dir?;
-    let stop = Arc::new(AtomicBool::new(false));
-    let stop_flag = Arc::clone(&stop);
-    let target_window = window?;
-
-    thread::spawn(move || {
-        let latest_log = Path::new(&game_dir).join("logs").join("latest.log");
-        let mut offset: u64 = 0;
-
-        while !stop_flag.load(Ordering::Relaxed) {
-            if let Ok(mut file) = fs::File::open(&latest_log) {
-                if let Ok(meta) = file.metadata() {
-                    if meta.len() < offset {
-                        offset = 0;
-                    }
-                }
-
-                if file.seek(SeekFrom::Start(offset)).is_ok() {
-                    let mut reader = BufReader::new(file);
-                    let mut line = String::new();
-                    loop {
-                        line.clear();
-                        match reader.read_line(&mut line) {
-                            Ok(0) => break,
-                            Ok(_) => {
-                                let content = line.trim_end_matches(['\r', '\n']);
-                                if !content.is_empty() {
-                                    let message = format!("[launcher-core][latest.log] {content}");
-                                    let _ = target_window.emit(
-                                        "core-log",
-                                        CoreLogEvent {
-                                            level: "latest-log".to_string(),
-                                            message: message.clone(),
-                                        },
-                                    );
-                                    push_ui_log("core", "latest-log", &message);
-                                }
-                            }
-                            Err(_) => break,
-                        }
-                    }
-                    if let Ok(pos) = reader.stream_position() {
-                        offset = pos;
-                    }
-                }
-            }
-
-            thread::sleep(Duration::from_millis(300));
-        }
-    });
-
-    Some(stop)
-}
-
-fn pump_core_stream<R: Read>(
-    stream: R,
-    sink: Arc<Mutex<String>>,
-    window: Option<tauri::Window>,
-    event_name: &'static str,
-    level: &str,
-) -> Result<(), String> {
-    let mut reader = BufReader::new(stream);
-    let mut buffer = Vec::new();
-
-    loop {
-        buffer.clear();
-        let read = reader
-            .read_until(b'\n', &mut buffer)
-            .map_err(|e| e.to_string())?;
-        if read == 0 {
-            break;
-        }
-
-        let line = String::from_utf8_lossy(&buffer)
-            .trim_end_matches(['\r', '\n'])
-            .to_string();
-        if line.is_empty() {
-            continue;
-        }
-
-        {
-            let mut buf = sink
-                .lock()
-                .map_err(|_| "Failed to lock stream buffer".to_string())?;
-            buf.push_str(&line);
-            buf.push('\n');
-        }
-
-        if let Some(ref target_window) = window {
-            let line_for_emit = line.clone();
-            let _ = target_window.emit(
-                event_name,
-                CoreLogEvent {
-                    level: level.to_string(),
-                    message: line_for_emit,
-                },
-            );
-        }
-        push_ui_log("core", level, &line);
-    }
-
-    Ok(())
+    let normalized_download_threads = normalize_download_threads(download_threads);
+    minecraft_core::install_forge(
+        window,
+        game_dir,
+        normalized_forge_version,
+        Path::new(normalized_java),
+        download_source,
+        normalized_download_threads,
+        None,
+    )
 }
 
 fn emit_log(window: Option<&tauri::Window>, level: &str, message: &str) {
@@ -7309,64 +6879,6 @@ fn emit_log(window: Option<&tauri::Window>, level: &str, message: &str) {
                 message: message.to_string(),
             },
         );
-    }
-}
-
-fn java_core_jar_path() -> Result<PathBuf, String> {
-    let mut candidates = Vec::new();
-
-    if let Some(resource_jar) = JAVA_CORE_RESOURCE_JAR.get() {
-        candidates.push(resource_jar.clone());
-    }
-
-    if let Ok(exe_path) = std::env::current_exe() {
-        if let Some(exe_dir) = exe_path.parent() {
-            candidates.extend([
-                exe_dir.join("resources").join("java").join("java-core.jar"),
-                exe_dir.join("java").join("java-core.jar"),
-                exe_dir
-                    .join("src-tauri")
-                    .join("resources")
-                    .join("java")
-                    .join("java-core.jar"),
-            ]);
-        }
-    }
-
-    candidates.extend([
-        PathBuf::from("src-tauri/resources/java/java-core.jar"),
-        PathBuf::from("./src-tauri/resources/java/java-core.jar"),
-        PathBuf::from("../java-core/build/libs/fpsmaster-launcher-core-0.1.0-all.jar"),
-        PathBuf::from("../java-core/build/libs/fpsmaster-launcher-core-0.1.0.jar"),
-        PathBuf::from("../../java-core/build/libs/fpsmaster-launcher-core-0.1.0-all.jar"),
-        PathBuf::from("../../java-core/build/libs/fpsmaster-launcher-core-0.1.0.jar"),
-    ]);
-
-    for candidate in candidates {
-        if candidate.exists() {
-            return candidate
-                .absolutize()
-                .map_err(|e| format!("Failed to resolve java-core jar path: {e}"))
-                .map(|p| strip_windows_verbatim_prefix(p.as_ref()));
-        }
-    }
-
-    Err(
-        "java-core jar not found. Run `npm run prepare:java-core` or build the installer so Tauri bundles `java-core.jar` automatically."
-            .to_string(),
-    )
-}
-
-trait Absolutize {
-    fn absolutize(&self) -> Result<PathBuf, std::io::Error>;
-}
-
-impl Absolutize for PathBuf {
-    fn absolutize(&self) -> Result<PathBuf, std::io::Error> {
-        if self.is_absolute() {
-            return Ok(self.clone());
-        }
-        std::env::current_dir().map(|cwd| cwd.join(self))
     }
 }
 
@@ -9016,16 +8528,27 @@ fn parse_launcher_versions_response(
     status: reqwest::StatusCode,
     body: &str,
 ) -> Result<Vec<LauncherVersion>, String> {
-    if let Ok(items) = parse_api_envelope::<Vec<LauncherVersion>>(status, body, "versions list") {
+    let trimmed_body = body.trim();
+    if trimmed_body.is_empty() {
+        if status.is_success() {
+            return Ok(Vec::new());
+        }
+        return Err(format!(
+            "versions list failed with HTTP {} and empty response body",
+            status.as_u16()
+        ));
+    }
+
+    if let Ok(items) = parse_api_envelope::<Vec<LauncherVersion>>(status, trimmed_body, "versions list") {
         return Ok(items);
     }
 
-    let value: serde_json::Value = serde_json::from_str(body)
+    let value: serde_json::Value = serde_json::from_str(trimmed_body)
         .map_err(|e| format!("Invalid versions list response JSON: {e}"))?;
 
     if !status.is_success() {
         let is_auth_error = status.as_u16() == 401 || status.as_u16() == 403;
-        if let Some(msg) = extract_api_error_message(body) {
+        if let Some(msg) = extract_api_error_message(trimmed_body) {
             if is_auth_error {
                 return Err(format!("HTTP {} - {}", status.as_u16(), msg));
             }
@@ -9607,7 +9130,9 @@ fn trim_to_mods_relative_path(path: &Path) -> Option<PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    use super::{FabricInstallResult, ForgeInstallResult};
+    use super::{cleanup_launch_natives_dir, FabricInstallResult, ForgeInstallResult};
+    use std::fs;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
     fn fabric_install_result_matches_java_core_payload() {
@@ -9646,6 +9171,23 @@ mod tests {
             result.profile_json_path,
             r"E:\test\1.20.1-forge-47.4.18.json"
         );
+    }
+
+    #[test]
+    fn cleanup_launch_natives_dir_removes_directory_tree() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock should be valid")
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("fpsmaster-launcher-natives-{unique}"));
+        let nested = dir.join("child").join("file.txt");
+        fs::create_dir_all(nested.parent().expect("nested parent should exist"))
+            .expect("test directory should be created");
+        fs::write(&nested, "test").expect("test file should be written");
+
+        cleanup_launch_natives_dir(&dir);
+
+        assert!(!dir.exists());
     }
 }
 
@@ -10091,13 +9633,6 @@ fn main() {
         })
         .setup(|app| {
             let _ = app.path().app_data_dir();
-            if let Ok(resource_jar) = app
-                .path()
-                .resolve("java/java-core.jar", BaseDirectory::Resource)
-            {
-                let _ = JAVA_CORE_RESOURCE_JAR
-                    .set(strip_windows_verbatim_prefix(resource_jar.as_path()));
-            }
             create_tray(&app.handle())?;
             let launched_from_autostart = is_autostart_launch();
             if let Some(window) = app.get_webview_window("main") {
@@ -10144,6 +9679,7 @@ fn main() {
             install_vanilla,
             build_vanilla_launch_plan,
             launch_vanilla,
+            cancel_install,
             list_fabric_loaders,
             install_fabric,
             list_forge_versions,

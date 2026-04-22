@@ -1,7 +1,7 @@
 {
   "name": "fpsmaster-launcher-ui",
   "private": true,
-  "version": "0.3.1",
+  "version": "0.3.2",
   "type": "module",
   "scripts": {
     "version:sync": "node scripts/sync-version.mjs",
@@ -10,8 +10,7 @@
     "prebuild": "npm run version:sync",
     "build": "vite build",
     "prebuild:installer": "npm run version:sync",
-    "prepare:java-core": "powershell -ExecutionPolicy Bypass -File scripts/prepare-java-core.ps1",
-    "build:installer": "npm run prepare:java-core && npx tauri build --bundles nsis --ci --no-sign",
+    "build:installer": "npx tauri build --bundles nsis --ci --no-sign",
     "preview": "vite preview",
     "pretauri": "npm run version:sync",
     "tauri": "tauri"
