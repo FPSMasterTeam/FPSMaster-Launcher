@@ -32,7 +32,6 @@ jobs:
       release_tag: ${{ steps.meta.outputs.release_tag }}
       version_name: ${{ steps.meta.outputs.version_name }}
       asset_name: ${{ steps.meta.outputs.asset_name }}
-      download_url: ${{ steps.meta.outputs.download_url }}
       checksum: ${{ steps.meta.outputs.checksum }}
       file_size: ${{ steps.meta.outputs.file_size }}
       changelog: ${{ steps.meta.outputs.changelog }}
@@ -154,7 +153,6 @@ jobs:
           "release_tag=$releaseTag" >> $env:GITHUB_OUTPUT
           "checksum=$checksum" >> $env:GITHUB_OUTPUT
           "file_size=$fileSize" >> $env:GITHUB_OUTPUT
-          "download_url=https://github.com/$env:GITHUB_REPOSITORY/releases/download/$releaseTag/$($installer.Name)" >> $env:GITHUB_OUTPUT
 
           $changelog = git log -1 --pretty=format:'%s%n%n%b'
           @"
@@ -201,6 +199,23 @@ jobs:
             exit 1
           fi
 
+          artifact_path="$(find dist -maxdepth 1 -type f -name '*.exe' | head -n 1)"
+          if [ -z "$artifact_path" ]; then
+            echo "No launcher artifact found in dist" >&2
+            exit 1
+          fi
+
+          upload_response="$(curl --fail --show-error --silent \
+            -X POST \
+            -H "X-CI-Token: ${FPSMASTER_CI_UPLOAD_TOKEN}" \
+            -F "file=@${artifact_path}" \
+            "${FPSMASTER_CI_API_BASE_URL%/}/api/v1/launcher/releases/upload")"
+
+          upload_json="$(printf '%s' "$upload_response" | python -c 'import json,sys; data=json.load(sys.stdin); print(json.dumps(data["data"]))')"
+          download_url="$(printf '%s' "$upload_json" | python -c 'import json,sys; print(json.load(sys.stdin)["url"])')"
+          file_bucket="$(printf '%s' "$upload_json" | python -c 'import json,sys; print((json.load(sys.stdin).get("bucket") or ""))')"
+          file_key="$(printf '%s' "$upload_json" | python -c 'import json,sys; print((json.load(sys.stdin).get("key") or ""))')"
+
           changelog_json="$(printf '%s' '${{ needs.build.outputs.changelog }}' | python -c 'import json,sys; print(json.dumps(sys.stdin.read()))')"
 
           cat <<EOF > payload.json
@@ -209,8 +224,10 @@ jobs:
             "channelCode": "${{ needs.build.outputs.channel }}",
             "versionName": "${{ needs.build.outputs.version_name }}",
             "commitHash": "${{ needs.build.outputs.commit_hash }}",
-            "artifactSourceType": "${ARTIFACT_SOURCE_TYPE}",
-            "downloadUrl": "${{ needs.build.outputs.download_url }}",
+            "artifactSourceType": "UPLOADED_FILE",
+            "downloadUrl": "${download_url}",
+            "fileBucket": "${file_bucket}",
+            "fileKey": "${file_key}",
             "fileSize": ${{ needs.build.outputs.file_size }},
             "checksum": "${{ needs.build.outputs.checksum }}",
             "recommended": true,
