@@ -482,6 +482,12 @@ export function isSnapshot(version: string): boolean {
 }
 
 function compareRelease(a: string, b: string): number {
+  const leftSemver = parseSemverLike(a);
+  const rightSemver = parseSemverLike(b);
+  if (leftSemver && rightSemver) {
+    return compareSemverLike(leftSemver, rightSemver);
+  }
+
   const left = a.split(".").map((item) => Number.parseInt(item, 10));
   const right = b.split(".").map((item) => Number.parseInt(item, 10));
   const len = Math.max(left.length, right.length);
@@ -495,6 +501,59 @@ function compareRelease(a: string, b: string): number {
 
 export function compareMajor(a: string, b: string): number {
   return compareRelease(a, b);
+}
+
+type ParsedSemverLike = {
+  major: number;
+  minor: number;
+  patch: number;
+  prerelease: string[];
+};
+
+function parseSemverLike(input: string): ParsedSemverLike | null {
+  const match = input.trim().match(
+    /^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$/,
+  );
+  if (!match) {
+    return null;
+  }
+  return {
+    major: Number.parseInt(match[1], 10),
+    minor: Number.parseInt(match[2], 10),
+    patch: Number.parseInt(match[3], 10),
+    prerelease: match[4]?.split(".").filter(Boolean) ?? [],
+  };
+}
+
+function compareSemverLike(a: ParsedSemverLike, b: ParsedSemverLike): number {
+  if (a.major !== b.major) return a.major - b.major;
+  if (a.minor !== b.minor) return a.minor - b.minor;
+  if (a.patch !== b.patch) return a.patch - b.patch;
+
+  const leftStable = a.prerelease.length === 0;
+  const rightStable = b.prerelease.length === 0;
+  if (leftStable && rightStable) return 0;
+  if (leftStable) return 1;
+  if (rightStable) return -1;
+
+  const len = Math.max(a.prerelease.length, b.prerelease.length);
+  for (let i = 0; i < len; i += 1) {
+    const left = a.prerelease[i];
+    const right = b.prerelease[i];
+    if (left === undefined) return -1;
+    if (right === undefined) return 1;
+    if (left === right) continue;
+
+    const leftIsNumber = /^\d+$/.test(left);
+    const rightIsNumber = /^\d+$/.test(right);
+    if (leftIsNumber && rightIsNumber) {
+      return Number.parseInt(left, 10) - Number.parseInt(right, 10);
+    }
+    if (leftIsNumber) return -1;
+    if (rightIsNumber) return 1;
+    return left.localeCompare(right);
+  }
+  return 0;
 }
 
 export function prefix(entry: UiLogEntry): string {
