@@ -132,7 +132,12 @@ export default function SettingsPage({
   }
 
   const themeModes: ThemeMode[] = ["dark", "light"];
-  const downloadSources: DownloadSource[] = ["official", "bmclapi"];
+  const downloadSources: DownloadSource[] = [
+    "official-only",
+    "mirror-only",
+    "mirror-first",
+    "official-first"
+  ];
   const accentOptions: Array<{ id: ThemeAccent; swatch: string }> = [
     { id: "emerald", swatch: "#25b87a" },
     { id: "cyan", swatch: "#2b7fff" },

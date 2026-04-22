@@ -3,12 +3,10 @@
 Minecraft launcher architecture with:
 
 - Tauri + React UI
-- Rust command bridge (lightweight tasks such as JDK management)
-- Java launcher core (game install and launch metadata logic)
+- Rust command bridge and launcher core
 
 ## Project Layout
 
-- `java-core/`: Java core for vanilla install + launch command assembly
 - `tauri-app/`: Tauri + React desktop frontend and Rust command layer
 - `reference/HMCL/HMCL/`: HMCL reference codebase for behaviour parity
 

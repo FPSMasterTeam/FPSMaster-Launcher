@@ -11,6 +11,7 @@ import AppLogo from "./components/AppLogo";
 import Button from "./components/Button";
 import Card from "./components/Card";
 import InstallDialog from "./components/InstallDialog";
+import LaunchPrepareDialog from "./components/LaunchPrepareDialog";
 import Sidebar from "./components/Sidebar";
 import {
   DEFAULT_SETTINGS,
@@ -52,6 +53,11 @@ import type {
   InstanceExportResult,
   InstanceImportResult,
   InstanceRepairResult,
+  LaunchPrepareDialogState,
+  LaunchPrepareItem,
+  LaunchPrepareItemStatus,
+  LaunchPreparePhaseKey,
+  LaunchPreparePhaseState,
   LauncherAppUpdateInfo,
   LauncherLoginResult,
   LauncherModsInstallResult,
@@ -79,6 +85,7 @@ import {
   clamp,
   compareMajor,
   createPhaseState,
+  createLaunchPrepareDialogState,
   createSessionId,
   groupByMajor,
   isSnapshot,
@@ -192,6 +199,7 @@ function Launcher() {
   const [monitorWindowOpen, setMonitorWindowOpen] = useState(false);
 
   const [installDialog, setInstallDialog] = useState<InstallDialogState | null>(null);
+  const [launchPrepareDialog, setLaunchPrepareDialog] = useState<LaunchPrepareDialogState | null>(null);
   const [titlebarBusy, setTitlebarBusy] = useState(false);
   const [windowVisible, setWindowVisible] = useState(false);
   const launcherSessionIdRef = useRef(loadOrCreateLauncherSessionId());
@@ -204,6 +212,7 @@ function Launcher() {
   const lastInstallPageRef = useRef(false);
   const launchingInstanceRef = useRef<string | null>(null);
   const installDialogRef = useRef<InstallDialogState | null>(null);
+  const launchPrepareDialogRef = useRef<LaunchPrepareDialogState | null>(null);
 
   const t = useMemo(() => createTranslator(settings.language), [settings.language]);
   const launcherAppUpdateAvailable = useMemo(
@@ -533,6 +542,10 @@ function Launcher() {
   }, [installDialog]);
 
   useEffect(() => {
+    launchPrepareDialogRef.current = launchPrepareDialog;
+  }, [launchPrepareDialog]);
+
+  useEffect(() => {
     const inInstall = page === "install";
     if (inInstall && !lastInstallPageRef.current) {
       void refreshCatalog();
@@ -559,7 +572,10 @@ function Launcher() {
     void refreshLoader();
   }, [page, loader, installVersion]);
 
-  const shouldPollUiLogs = windowVisible && !monitorWindowOpen && (launchingInstanceId !== null || installDialog !== null);
+  const shouldPollUiLogs =
+    windowVisible &&
+    !monitorWindowOpen &&
+    (launchingInstanceId !== null || installDialog !== null || launchPrepareDialog !== null);
 
   useEffect(() => {
     if (!shouldPollUiLogs) {
@@ -584,10 +600,12 @@ function Launcher() {
                 setLaunchProgressPercent(launchProgress.percent);
               }
             }
+            applyLaunchPrepareLog(entry.message);
           }
           const ipc = parseInstallIpc(entry.message);
           if (ipc) {
             applyInstallIpc(ipc);
+            applyLaunchPrepareIpc(ipc);
           }
         }
       } catch {
@@ -602,7 +620,7 @@ function Launcher() {
       active = false;
       window.clearInterval(timer);
     };
-  }, [shouldPollUiLogs, launchingInstanceId, installDialog]);
+  }, [shouldPollUiLogs, launchingInstanceId, installDialog, launchPrepareDialog]);
 
   useEffect(() => {
     if (activeGamePid === null || activeGamePid <= 0) return;
@@ -690,7 +708,7 @@ function Launcher() {
             ? "error"
             : ipc.event === "phase-complete"
               ? "done"
-              : ipc.event === "phase-start" || ipc.event === "progress"
+              : ipc.event === "phase-start" || ipc.event === "progress" || ipc.event.startsWith("item-")
                 ? "running"
                 : currentPhase.status,
         stage: ipc.stage ?? currentPhase.stage,
@@ -698,7 +716,8 @@ function Launcher() {
         current: typeof ipc.current === "number" ? ipc.current : currentPhase.current,
         total: typeof ipc.total === "number" ? ipc.total : currentPhase.total,
         downloaded: typeof ipc.downloaded === "number" ? ipc.downloaded : currentPhase.downloaded,
-        cached: typeof ipc.cached === "number" ? ipc.cached : currentPhase.cached
+        cached: typeof ipc.cached === "number" ? ipc.cached : currentPhase.cached,
+        items: reduceLaunchPrepareItems(currentPhase.items, ipc)
       };
 
       let next = {
@@ -716,6 +735,89 @@ function Launcher() {
       }
 
       return next;
+    });
+  }
+
+  function applyLaunchPrepareIpc(ipc: InstallIpcEvent) {
+    setLaunchPrepareDialog((prev) => {
+      if (!prev || !prev.open) return prev;
+      if (ipc.channel !== "install" && ipc.channel !== "launch-prepare") return prev;
+      if (ipc.session !== prev.sessionId) return prev;
+
+      const phaseKey = mapLaunchPreparePhaseKey(ipc.phase);
+      if (!phaseKey) return prev;
+
+      const phaseIndex = prev.phases.findIndex((phase) => phase.key === phaseKey);
+      if (phaseIndex < 0) return prev;
+
+      const currentPhase = prev.phases[phaseIndex];
+      const nextPhase = {
+        ...currentPhase,
+        status:
+          ipc.event === "error"
+            ? "error"
+            : ipc.event === "phase-complete"
+              ? "done"
+              : ipc.event === "phase-start" || ipc.event === "progress" || ipc.event.startsWith("item-")
+                ? "running"
+                : currentPhase.status,
+        stage: ipc.stage ?? currentPhase.stage,
+        message: ipc.message ?? currentPhase.message,
+        current: typeof ipc.current === "number" ? ipc.current : currentPhase.current,
+        total: typeof ipc.total === "number" ? ipc.total : currentPhase.total,
+        downloaded: typeof ipc.downloaded === "number" ? ipc.downloaded : currentPhase.downloaded,
+        cached: typeof ipc.cached === "number" ? ipc.cached : currentPhase.cached,
+        items: reduceLaunchPrepareItems(currentPhase.items, ipc)
+      } satisfies LaunchPreparePhaseState;
+
+      const nextPhases = prev.phases.map((phase, index) => (index === phaseIndex ? nextPhase : phase));
+
+      let next = {
+        ...prev,
+        phases: nextPhases
+      };
+
+      if (ipc.event === "error") {
+        next = {
+          ...next,
+          canClose: true,
+          cancelling: false,
+          errorText: ipc.error ?? ipc.message ?? t("dialog.installationFailed")
+        };
+      }
+
+      return next;
+    });
+  }
+
+  function applyLaunchPrepareLog(message: string) {
+    const jdkProgress = parseLaunchPrepareJdkLog(message);
+    if (!jdkProgress) {
+      return;
+    }
+
+    setLaunchPrepareDialog((prev) => {
+      if (!prev || !prev.open) return prev;
+      const phaseIndex = prev.phases.findIndex((phase) => phase.key === "runtime");
+      if (phaseIndex < 0) return prev;
+      const currentPhase = prev.phases[phaseIndex];
+      const nextItems = upsertLaunchPrepareLogItem(currentPhase.items, jdkProgress.item);
+      const nextPhase: LaunchPreparePhaseState = {
+        ...currentPhase,
+        status: jdkProgress.phaseStatus ?? currentPhase.status,
+        stage: jdkProgress.stage ?? currentPhase.stage,
+        message: jdkProgress.message,
+        current: typeof jdkProgress.current === "number" ? jdkProgress.current : currentPhase.current,
+        total: typeof jdkProgress.total === "number" ? jdkProgress.total : currentPhase.total,
+        downloaded: typeof jdkProgress.downloaded === "number" ? jdkProgress.downloaded : currentPhase.downloaded,
+        cached: typeof jdkProgress.cached === "number" ? jdkProgress.cached : currentPhase.cached,
+        items: nextItems
+      };
+
+      return {
+        ...prev,
+        phases: prev.phases.map((phase, index) => (index === phaseIndex ? nextPhase : phase))
+      };
     });
   }
 
@@ -970,6 +1072,9 @@ function Launcher() {
       return;
     }
 
+    const sessionId = createSessionId();
+    openLaunchPrepare(current, sessionId);
+    markLaunchPreparePhase("check-instance", "running", "prepare", t("launch.progress.checkInstance"));
     setLaunchError(null);
     setLaunchingInstanceId(current.id);
     setLaunchProgressPercent(0);
@@ -982,12 +1087,15 @@ function Launcher() {
       const launchIdentity = resolveMinecraftLaunchIdentity(readyAccount, settings.playerName);
       setLaunchProgressPercent(0);
       setLaunchProgressText(t("launch.progress.checkInstance"));
-      const prepared = await ensureInstanceReadyForLaunch(current);
+      const prepared = await ensureInstanceReadyForLaunch(current, sessionId);
 
+      markLaunchPreparePhase("runtime", "running", "prepare", t("launch.progress.prepareRuntime"));
       setLaunchProgressPercent(Math.round((1 / LAUNCH_PREPARE_STEPS) * 100));
       setLaunchProgressText(t("launch.progress.prepareRuntime"));
       const jdk = await ensureJdk(settings.gameDir, prepared.versionId, settings.downloadThreads);
+      markLaunchPreparePhase("runtime", "done", "complete", t("launch.progress.prepareRuntime"));
 
+      markLaunchPreparePhase("launch", "running", "prepare", t("launch.progress.buildCommand"));
       setLaunchProgressPercent(Math.round((2 / LAUNCH_PREPARE_STEPS) * 100));
       setLaunchProgressText(t("launch.progress.buildCommand"));
       launchResult = await invoke<LaunchExecutionResult>("launch_vanilla", {
@@ -1004,10 +1112,12 @@ function Launcher() {
       });
       setLaunchProgressPercent(100);
       setLaunchProgressText(t("launch.progress.startingGame"));
+      markLaunchPreparePhase("launch", "done", "complete", t("launch.progress.startingGame"));
     } catch (error) {
       const errorText = formatLaunchError(error);
       setStatus(t("app.status.launchFailed", { error: errorText }));
       setLaunchError(errorText);
+      failLaunchPrepare(errorText);
       setBusy(false);
       setLaunchingInstanceId(null);
       return;
@@ -1017,6 +1127,7 @@ function Launcher() {
       const errorText = t("app.status.launchMissingResult");
       setStatus(errorText);
       setLaunchError(errorText);
+      failLaunchPrepare(errorText);
       setBusy(false);
       setLaunchingInstanceId(null);
       return;
@@ -1046,6 +1157,7 @@ function Launcher() {
         })
       );
     } finally {
+      completeLaunchPrepare();
       setBusy(false);
       setLaunchingInstanceId(null);
     }
@@ -1478,7 +1590,7 @@ function Launcher() {
     setStatus(t("app.status.autoUpdatedContent", { name: instance.name, count: pendingItems.length }));
   }
 
-  async function ensureInstanceReadyForLaunch(instance: Instance): Promise<Instance> {
+  async function ensureInstanceReadyForLaunch(instance: Instance, launchSessionId?: string): Promise<Instance> {
     let workingInstance = instance;
     const presetVersionId = instance.preset ? resolvePresetVersionId(instance.id) : null;
     if (presetVersionId && workingInstance.versionId !== presetVersionId) {
@@ -1508,6 +1620,7 @@ function Launcher() {
         versionId: workingInstance.versionId
       });
       if (installed) {
+        markLaunchPreparePhase("check-instance", "done", "complete", t("launch.progress.checkInstance"));
         await ensurePresetModsReady(workingInstance);
         await ensureManagedContentUpToDate(workingInstance);
         return workingInstance;
@@ -1521,7 +1634,13 @@ function Launcher() {
         loader: loaderDisplayName(workingInstance.loader)
       })
     );
-    const sessionId = createSessionId();
+    const sessionId = launchSessionId ?? createSessionId();
+    markLaunchPreparePhase("check-instance", "running", "prepare", t("app.status.missingAutoInstall", {
+      versionId: workingInstance.versionId,
+      baseVersion: workingInstance.baseVersion,
+      loader: loaderDisplayName(workingInstance.loader)
+    }));
+    markLaunchPreparePhase("vanilla", "running", "prepare", t("install.phase.preparing", { version: workingInstance.baseVersion }));
     const vanilla = await invoke<InstallResult>("install_vanilla", {
       gameDir: settings.gameDir,
       versionId: workingInstance.baseVersion,
@@ -1529,6 +1648,7 @@ function Launcher() {
       downloadThreads: settings.downloadThreads,
       ipcSession: sessionId
     });
+    markLaunchPreparePhase("vanilla", "done", "complete", t("install.phase.vanillaCompleted"));
 
     let nextVersionId = vanilla.versionId;
     let nextLoaderVersion = workingInstance.loaderVersion;
@@ -1544,6 +1664,7 @@ function Launcher() {
       if (!nextLoaderVersion) {
         throw new Error(`No fabric loader version available for ${workingInstance.baseVersion}`);
       }
+      markLaunchPreparePhase("fabric", "running", "prepare", t("install.phase.installingFabric", { version: nextLoaderVersion }));
       const fabric = await invoke<FabricInstallResult>("install_fabric", {
         gameDir: settings.gameDir,
         gameVersion: workingInstance.baseVersion,
@@ -1553,6 +1674,7 @@ function Launcher() {
         ipcSession: sessionId
       });
       nextVersionId = fabric.profileId;
+      markLaunchPreparePhase("fabric", "done", "complete", t("install.phase.loaderCompleted"));
     } else if (workingInstance.loader === "forge") {
       if (!nextLoaderVersion) {
         const forgeVersions = await invoke<string[]>("list_forge_versions", {
@@ -1564,6 +1686,7 @@ function Launcher() {
       if (!nextLoaderVersion) {
         throw new Error(`No forge version available for ${workingInstance.baseVersion}`);
       }
+      markLaunchPreparePhase("forge", "running", "prepare", t("install.phase.installingForge", { version: nextLoaderVersion }));
       const jdk = await ensureJdk(settings.gameDir, workingInstance.baseVersion, settings.downloadThreads);
       const forge = await invoke<ForgeInstallResult>("install_forge", {
         gameDir: settings.gameDir,
@@ -1575,6 +1698,7 @@ function Launcher() {
       });
       nextVersionId = forge.profileId;
       nextLoaderVersion = forge.forgeVersion;
+      markLaunchPreparePhase("forge", "done", "complete", t("install.phase.loaderCompleted"));
     }
 
     if (presetVersionId && nextVersionId !== presetVersionId) {
@@ -1596,6 +1720,7 @@ function Launcher() {
     await ensurePresetModsReady(updatedInstance);
     await ensureManagedContentUpToDate(updatedInstance);
     setStatus(t("app.status.autoInstallCompleted", { name: updatedInstance.name }));
+    markLaunchPreparePhase("check-instance", "done", "complete", t("app.status.autoInstallCompleted", { name: updatedInstance.name }));
     return updatedInstance;
   }
 
@@ -1622,6 +1747,9 @@ function Launcher() {
       setActiveGamePid(null);
     }
 
+    const sessionId = createSessionId();
+    openLaunchPrepare(target, sessionId);
+    markLaunchPreparePhase("check-instance", "running", "prepare", t("launch.progress.checkInstance"));
     setLaunchError(null);
     setLaunchingInstanceId(target.id);
     setLaunchProgressPercent(0);
@@ -1634,12 +1762,15 @@ function Launcher() {
       const launchIdentity = resolveMinecraftLaunchIdentity(readyAccount, settings.playerName);
       setLaunchProgressPercent(0);
       setLaunchProgressText(t("launch.progress.checkInstance"));
-      const prepared = await ensureInstanceReadyForLaunch(target);
+      const prepared = await ensureInstanceReadyForLaunch(target, sessionId);
 
+      markLaunchPreparePhase("runtime", "running", "prepare", t("launch.progress.prepareRuntime"));
       setLaunchProgressPercent(Math.round((1 / LAUNCH_PREPARE_STEPS) * 100));
       setLaunchProgressText(t("launch.progress.prepareRuntime"));
       const jdk = await ensureJdk(settings.gameDir, prepared.versionId, settings.downloadThreads);
+      markLaunchPreparePhase("runtime", "done", "complete", t("launch.progress.prepareRuntime"));
 
+      markLaunchPreparePhase("launch", "running", "prepare", t("launch.progress.buildCommand"));
       setLaunchProgressPercent(Math.round((2 / LAUNCH_PREPARE_STEPS) * 100));
       setLaunchProgressText(t("launch.progress.buildCommand"));
       launchResult = await invoke<LaunchExecutionResult>("launch_vanilla", {
@@ -1655,10 +1786,12 @@ function Launcher() {
       });
       setLaunchProgressPercent(100);
       setLaunchProgressText(t("launch.progress.startingGame"));
+      markLaunchPreparePhase("launch", "done", "complete", t("launch.progress.startingGame"));
     } catch (error) {
       const errorText = formatLaunchError(error);
       setStatus(t("app.status.launchFailed", { error: errorText }));
       setLaunchError(errorText);
+      failLaunchPrepare(errorText);
       setBusy(false);
       setLaunchingInstanceId(null);
       return;
@@ -1668,6 +1801,7 @@ function Launcher() {
       const errorText = t("app.status.launchMissingResult");
       setStatus(errorText);
       setLaunchError(errorText);
+      failLaunchPrepare(errorText);
       setBusy(false);
       setLaunchingInstanceId(null);
       return;
@@ -1697,6 +1831,7 @@ function Launcher() {
         })
       );
     } finally {
+      completeLaunchPrepare();
       setBusy(false);
       setLaunchingInstanceId(null);
     }
@@ -1813,6 +1948,7 @@ function Launcher() {
       versionId: installVersion,
       loader,
       canClose: false,
+      cancelling: false,
       errorText: "",
       vanilla: {
         ...createPhaseState(t("install.phase.vanilla"), "vanilla"),
@@ -1838,6 +1974,7 @@ function Launcher() {
         if (!prev || prev.sessionId !== sessionId) return prev;
         return {
           ...prev,
+          cancelling: false,
           vanilla: {
             ...prev.vanilla,
             status: "done",
@@ -1928,6 +2065,7 @@ function Launcher() {
         return {
           ...prev,
           canClose: true,
+          cancelling: false,
           loaderPhase: prev.loaderPhase
             ? {
                 ...prev.loaderPhase,
@@ -1938,6 +2076,7 @@ function Launcher() {
             : prev.loaderPhase
         };
       });
+      setInstallDialog(null);
     } catch (error) {
       const errorText = String(error);
       setStatus(t("app.status.installFailed", { error: errorText }));
@@ -1947,6 +2086,7 @@ function Launcher() {
         return {
           ...prev,
           canClose: true,
+          cancelling: false,
           errorText,
           vanilla:
             prev.vanilla.status === "running"
@@ -2066,6 +2206,107 @@ function Launcher() {
   function closeInstallDialog() {
     if (!installDialog?.canClose) return;
     setInstallDialog(null);
+  }
+
+  async function cancelInstallDialog() {
+    const active = installDialogRef.current;
+    if (!active || active.canClose || active.cancelling) return;
+    setInstallDialog((prev) => (prev ? { ...prev, cancelling: true } : prev));
+    try {
+      await invoke("cancel_install", { sessionId: active.sessionId });
+      setStatus(t("dialog.cancelling"));
+    } catch (error) {
+      const errorText = String(error);
+      setInstallDialog((prev) => (prev ? { ...prev, cancelling: false } : prev));
+      setStatus(t("app.status.failed", { error: errorText }));
+    }
+  }
+
+  function closeLaunchPrepareDialog() {
+    if (!launchPrepareDialog?.canClose) return;
+    setLaunchPrepareDialog(null);
+  }
+
+  function openLaunchPrepare(instance: Instance, sessionId: string) {
+    setLaunchPrepareDialog(
+      createLaunchPrepareDialogState(
+        sessionId,
+        instance.name,
+        instance.versionId,
+        {
+          "check-instance": t("launch.prepare.phase.check-instance"),
+          vanilla: t("launch.prepare.phase.vanilla"),
+          fabric: t("launch.prepare.phase.fabric"),
+          forge: t("launch.prepare.phase.forge"),
+          runtime: t("launch.prepare.phase.runtime"),
+          launch: t("launch.prepare.phase.launch")
+        },
+        t("dialog.waiting"),
+        t("launch.progress.checkInstance")
+      )
+    );
+  }
+
+  function markLaunchPreparePhase(
+    key: LaunchPreparePhaseKey,
+    status: LaunchPreparePhaseState["status"],
+    stage: string,
+    message: string
+  ) {
+    setLaunchPrepareDialog((prev) => {
+      if (!prev) return prev;
+      return {
+        ...prev,
+        phases: prev.phases.map((phase) =>
+          phase.key === key
+            ? {
+                ...phase,
+                status,
+                stage,
+                message
+              }
+            : phase
+        )
+      };
+    });
+  }
+
+  function failLaunchPrepare(errorText: string) {
+    setLaunchPrepareDialog((prev) => {
+      if (!prev) return prev;
+      const runningPhase = prev.phases.find((phase) => phase.status === "running")?.key ?? "check-instance";
+      return {
+        ...prev,
+        canClose: true,
+        errorText,
+        phases: prev.phases.map((phase) =>
+          phase.key === runningPhase
+            ? {
+                ...phase,
+                status: "error",
+                stage: "failed",
+                message: errorText
+              }
+            : phase
+        )
+      };
+    });
+  }
+
+  function completeLaunchPrepare() {
+    setLaunchPrepareDialog((prev) => {
+      if (!prev) return prev;
+      if (prev.errorText) {
+        return {
+          ...prev,
+          canClose: true
+        };
+      }
+      return {
+        ...prev,
+        canClose: true
+      };
+    });
   }
 
   function updateSettings(next: Settings) {
@@ -2517,7 +2758,11 @@ async function withTitlebarGuard(action: () => Promise<void>) {
         )}
 
         {authenticated && installDialog && installDialog.open && (
-          <InstallDialog dialog={installDialog} onClose={closeInstallDialog} />
+          <InstallDialog dialog={installDialog} onClose={closeInstallDialog} onCancel={cancelInstallDialog} />
+        )}
+
+        {authenticated && launchPrepareDialog && launchPrepareDialog.open && (
+          <LaunchPrepareDialog dialog={launchPrepareDialog} onClose={closeLaunchPrepareDialog} />
         )}
 
         {authenticated && launchError && (
@@ -2725,6 +2970,266 @@ function parseLaunchProgressLog(message: string): { percent?: number; text: stri
     return { percent: 100, text: "Game process started" };
   }
   return null;
+}
+
+function parseLaunchPrepareJdkLog(message: string): {
+  message: string;
+  stage?: string;
+  phaseStatus?: LaunchPreparePhaseState["status"];
+  current?: number;
+  total?: number;
+  downloaded?: number;
+  cached?: number;
+  item: LaunchPrepareItem;
+} | null {
+  const text = message.trim();
+  if (!text) {
+    return null;
+  }
+
+  const progressMatch = text.match(/^JDK download progress:\s*(\d+)%\s*\((\d+)\/(\d+)\s+bytes\)$/i);
+  if (progressMatch) {
+    const percent = Number.parseInt(progressMatch[1], 10);
+    const currentBytes = Number.parseInt(progressMatch[2], 10);
+    const totalBytes = Number.parseInt(progressMatch[3], 10);
+    return {
+      message: text,
+      stage: "download",
+      phaseStatus: "running",
+      current: Number.isFinite(percent) ? percent : 0,
+      total: 100,
+      item: {
+        id: "jdk-download",
+        name: "JDK Runtime",
+        kind: "jdk",
+        status: percent >= 100 ? "done" : "running",
+        currentBytes,
+        totalBytes,
+        message: text,
+        updatedAt: Date.now()
+      }
+    };
+  }
+
+  const bytesOnlyMatch = text.match(/^JDK download progress:\s*(\d+)\s+bytes$/i);
+  if (bytesOnlyMatch) {
+    const currentBytes = Number.parseInt(bytesOnlyMatch[1], 10);
+    return {
+      message: text,
+      stage: "download",
+      phaseStatus: "running",
+      item: {
+        id: "jdk-download",
+        name: "JDK Runtime",
+        kind: "jdk",
+        status: "running",
+        currentBytes,
+        totalBytes: null,
+        message: text,
+        updatedAt: Date.now()
+      }
+    };
+  }
+
+  if (text.startsWith("Managed JDK already exists")) {
+    return {
+      message: text,
+      stage: "complete",
+      phaseStatus: "done",
+      current: 100,
+      total: 100,
+      downloaded: 0,
+      cached: 1,
+      item: {
+        id: "jdk-download",
+        name: "JDK Runtime",
+        kind: "jdk",
+        status: "cached",
+        currentBytes: 0,
+        totalBytes: null,
+        message: text,
+        updatedAt: Date.now()
+      }
+    };
+  }
+
+  if (text.startsWith("Resolving Mojang runtime") || text.startsWith("Installing Mojang runtime")) {
+    return {
+      message: text,
+      stage: "prepare",
+      phaseStatus: "running",
+      item: {
+        id: "jdk-download",
+        name: "JDK Runtime",
+        kind: "jdk",
+        status: "running",
+        currentBytes: 0,
+        totalBytes: null,
+        message: text,
+        updatedAt: Date.now()
+      }
+    };
+  }
+
+  if (text.startsWith("Fetching Mojang Java all.json") || text.startsWith("Fetching Mojang Java manifest")) {
+    return {
+      message: text,
+      stage: "prepare",
+      phaseStatus: "running",
+      item: {
+        id: "jdk-manifest",
+        name: text.includes("all.json") ? "Runtime Index" : "Runtime Manifest",
+        kind: "jdk-meta",
+        status: "running",
+        currentBytes: 0,
+        totalBytes: null,
+        message: text,
+        updatedAt: Date.now()
+      }
+    };
+  }
+
+  const runtimeMatch = text.match(/^Mojang runtime progress:\s*(\d+)\/(\d+)\s+downloaded=(\d+)\s+cached=(\d+)$/i);
+  if (runtimeMatch) {
+    const current = Number.parseInt(runtimeMatch[1], 10);
+    const total = Number.parseInt(runtimeMatch[2], 10);
+    const downloaded = Number.parseInt(runtimeMatch[3], 10);
+    const cached = Number.parseInt(runtimeMatch[4], 10);
+    return {
+      message: text,
+      stage: current >= total ? "complete" : "download",
+      phaseStatus: current >= total ? "done" : "running",
+      current,
+      total,
+      downloaded,
+      cached,
+      item: {
+        id: "jdk-runtime-files",
+        name: "Runtime Files",
+        kind: "jdk",
+        status: current >= total ? "done" : "running",
+        currentBytes: current,
+        totalBytes: total,
+        message: text,
+        updatedAt: Date.now()
+      }
+    };
+  }
+
+  if (text.startsWith("JDK ready ") || text.startsWith("JDK download succeeded")) {
+    return {
+      message: text,
+      stage: "complete",
+      phaseStatus: "done",
+      current: 100,
+      total: 100,
+      item: {
+        id: "jdk-download",
+        name: "JDK Runtime",
+        kind: "jdk",
+        status: "done",
+        currentBytes: 100,
+        totalBytes: 100,
+        message: text,
+        updatedAt: Date.now()
+      }
+    };
+  }
+
+  return null;
+}
+
+function mapLaunchPreparePhaseKey(phase?: string): LaunchPreparePhaseKey | null {
+  if (phase === "vanilla") return "vanilla";
+  if (phase === "fabric") return "fabric";
+  if (phase === "forge") return "forge";
+  if (phase === "runtime") return "runtime";
+  return null;
+}
+
+function reduceLaunchPrepareItems(items: LaunchPrepareItem[], ipc: InstallIpcEvent): LaunchPrepareItem[] {
+  if (!ipc.event.startsWith("item-")) {
+    return items;
+  }
+  const itemId = ipc.itemId?.trim();
+  if (!itemId) {
+    return items;
+  }
+
+  const existingIndex = items.findIndex((item) => item.id === itemId);
+  const existing = existingIndex >= 0 ? items[existingIndex] : null;
+  const nextStatus = resolveLaunchPrepareItemStatus(ipc, existing?.status);
+  const nextItem: LaunchPrepareItem = {
+    id: itemId,
+    name: ipc.itemName?.trim() || existing?.name || itemId,
+    kind: ipc.itemKind?.trim() || existing?.kind || "file",
+    status: nextStatus,
+    currentBytes: typeof ipc.itemCurrentBytes === "number" ? ipc.itemCurrentBytes : existing?.currentBytes ?? 0,
+    totalBytes:
+      typeof ipc.itemTotalBytes === "number"
+        ? ipc.itemTotalBytes
+        : existing?.totalBytes ?? null,
+    message: ipc.message?.trim() || existing?.message || "",
+    updatedAt: Date.now()
+  };
+
+  const next = existingIndex >= 0 ? [...items] : [nextItem, ...items];
+  if (existingIndex >= 0) {
+    next[existingIndex] = nextItem;
+  }
+
+  next.sort((left, right) => {
+    const leftRank = launchPrepareItemRank(left.status);
+    const rightRank = launchPrepareItemRank(right.status);
+    if (leftRank !== rightRank) {
+      return leftRank - rightRank;
+    }
+    return right.updatedAt - left.updatedAt;
+  });
+
+  return next;
+}
+
+function resolveLaunchPrepareItemStatus(
+  ipc: InstallIpcEvent,
+  previous?: LaunchPrepareItemStatus
+): LaunchPrepareItemStatus {
+  if (ipc.event === "item-error") return "error";
+  if (ipc.event === "item-complete") {
+    return ipc.itemCached ? "cached" : "done";
+  }
+  if (ipc.event === "item-progress" || ipc.event === "item-start") {
+    if ((ipc.message ?? "").trim().toLowerCase() === "queued") {
+      return "pending";
+    }
+    return "running";
+  }
+  return previous ?? "pending";
+}
+
+function launchPrepareItemRank(status: LaunchPrepareItemStatus): number {
+  if (status === "running") return 0;
+  if (status === "pending") return 1;
+  if (status === "error") return 2;
+  if (status === "done") return 3;
+  return 4;
+}
+
+function upsertLaunchPrepareLogItem(items: LaunchPrepareItem[], item: LaunchPrepareItem): LaunchPrepareItem[] {
+  const index = items.findIndex((entry) => entry.id === item.id);
+  const next = index >= 0 ? [...items] : [item, ...items];
+  if (index >= 0) {
+    next[index] = item;
+  }
+  next.sort((left, right) => {
+    const leftRank = launchPrepareItemRank(left.status);
+    const rightRank = launchPrepareItemRank(right.status);
+    if (leftRank !== rightRank) {
+      return leftRank - rightRank;
+    }
+    return right.updatedAt - left.updatedAt;
+  });
+  return next.slice(0, 4);
 }
 
 async function ensureJdk(gameDir: string, versionId: string, downloadThreads: number): Promise<JdkEnsureResult> {

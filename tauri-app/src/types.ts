@@ -3,7 +3,11 @@ export type Loader = "vanilla" | "forge" | "fabric";
 export type PhaseStatus = "pending" | "running" | "done" | "error";
 export type Locale = "en-US" | "zh-CN";
 export type ThemeMode = "dark" | "light";
-export type DownloadSource = "official" | "bmclapi";
+export type DownloadSource =
+  | "official-only"
+  | "mirror-only"
+  | "mirror-first"
+  | "official-first";
 export type ThemeAccent =
   | "emerald"
   | "cyan"
@@ -183,6 +187,12 @@ export type InstallIpcEvent = {
   cached?: number;
   message?: string;
   error?: string;
+  itemId?: string;
+  itemName?: string;
+  itemKind?: string;
+  itemCurrentBytes?: number;
+  itemTotalBytes?: number;
+  itemCached?: boolean;
 };
 
 export type ContentInstallProgressEvent = {
@@ -202,6 +212,7 @@ export type InstallPhaseState = {
   total: number;
   downloaded: number;
   cached: number;
+  items: LaunchPrepareItem[];
 };
 
 export type InstallDialogState = {
@@ -210,9 +221,54 @@ export type InstallDialogState = {
   versionId: string;
   loader: Loader;
   canClose: boolean;
+  cancelling: boolean;
   errorText: string;
   vanilla: InstallPhaseState;
   loaderPhase: InstallPhaseState | null;
+};
+
+export type LaunchPrepareItemStatus = "pending" | "running" | "done" | "cached" | "error";
+
+export type LaunchPreparePhaseKey =
+  | "check-instance"
+  | "vanilla"
+  | "fabric"
+  | "forge"
+  | "runtime"
+  | "launch";
+
+export type LaunchPrepareItem = {
+  id: string;
+  name: string;
+  kind: string;
+  status: LaunchPrepareItemStatus;
+  currentBytes: number;
+  totalBytes: number | null;
+  message: string;
+  updatedAt: number;
+};
+
+export type LaunchPreparePhaseState = {
+  key: LaunchPreparePhaseKey;
+  title: string;
+  status: PhaseStatus;
+  stage: string;
+  message: string;
+  current: number;
+  total: number;
+  downloaded: number;
+  cached: number;
+  items: LaunchPrepareItem[];
+};
+
+export type LaunchPrepareDialogState = {
+  open: boolean;
+  sessionId: string;
+  instanceName: string;
+  versionId: string;
+  canClose: boolean;
+  errorText: string;
+  phases: LaunchPreparePhaseState[];
 };
 
 export type InstanceSectionEntry = {

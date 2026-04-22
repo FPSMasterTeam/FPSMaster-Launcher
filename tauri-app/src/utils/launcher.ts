@@ -9,6 +9,9 @@ import type {
   DownloadSource,
   InstallIpcEvent,
   InstallPhaseState,
+  LaunchPrepareDialogState,
+  LaunchPreparePhaseKey,
+  LaunchPreparePhaseState,
   LauncherUser,
   MinecraftAccount,
   Instance,
@@ -32,7 +35,57 @@ export function createPhaseState(
     current: 0,
     total: 0,
     downloaded: 0,
-    cached: 0
+    cached: 0,
+    items: []
+  };
+}
+
+export function createLaunchPreparePhaseState(
+  key: LaunchPreparePhaseKey,
+  title: string,
+  message: string
+): LaunchPreparePhaseState {
+  return {
+    key,
+    title,
+    status: "pending",
+    stage: "",
+    message,
+    current: 0,
+    total: 0,
+    downloaded: 0,
+    cached: 0,
+    items: []
+  };
+}
+
+export function createLaunchPrepareDialogState(
+  sessionId: string,
+  instanceName: string,
+  versionId: string,
+  phaseTitles: Record<LaunchPreparePhaseKey, string>,
+  waitingText: string,
+  initialMessage: string
+): LaunchPrepareDialogState {
+  return {
+    open: true,
+    sessionId,
+    instanceName,
+    versionId,
+    canClose: false,
+    errorText: "",
+    phases: [
+      {
+        ...createLaunchPreparePhaseState("check-instance", phaseTitles["check-instance"], initialMessage),
+        status: "running",
+        stage: "prepare"
+      },
+      createLaunchPreparePhaseState("vanilla", phaseTitles.vanilla, waitingText),
+      createLaunchPreparePhaseState("fabric", phaseTitles.fabric, waitingText),
+      createLaunchPreparePhaseState("forge", phaseTitles.forge, waitingText),
+      createLaunchPreparePhaseState("runtime", phaseTitles.runtime, waitingText),
+      createLaunchPreparePhaseState("launch", phaseTitles.launch, waitingText)
+    ]
   };
 }
 
@@ -189,8 +242,19 @@ function parseLocale(input: unknown): Locale {
 }
 
 function parseDownloadSource(input: unknown): DownloadSource {
-  if (input === "official" || input === "bmclapi") {
+  if (
+    input === "official-only" ||
+    input === "mirror-only" ||
+    input === "mirror-first" ||
+    input === "official-first"
+  ) {
     return input;
+  }
+  if (input === "official") {
+    return "official-only";
+  }
+  if (input === "bmclapi") {
+    return "mirror-first";
   }
   return DEFAULT_SETTINGS.downloadSource;
 }
