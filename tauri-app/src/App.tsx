@@ -72,8 +72,10 @@ import type {
     LauncherLoginPrefs,
     Locale,
     LaunchExecutionResult,
-    Loader,
-    MinecraftAccount,
+  Loader,
+  MinecraftAccount,
+  OptiFineInstallResult,
+  OptiFineVersion,
     Page,
   PresetPackageStatus,
   ServerItem,
@@ -116,7 +118,7 @@ const LAUNCHER_ONLINE_REFRESH_INTERVAL_MS = 90_000;
 const LAUNCHER_ONLINE_REFRESH_JITTER_MS = 8_000;
 const LAUNCHER_LOG_POLL_INTERVAL_MS = 500;
 const LAUNCHER_RUNTIME_POLL_INTERVAL_MS = 1000;
-const LAUNCH_PREPARE_STEPS = 4;
+const LAUNCH_PREPARE_STEPS = 5;
 
 const EMPTY_LAUNCHER_VERSIONS: LauncherVersionMap = {
   EDGE: null,
@@ -190,6 +192,10 @@ function Launcher() {
   const [loader, setLoader] = useState<Loader>("vanilla");
   const [loaderOptions, setLoaderOptions] = useState<string[]>([]);
   const [loaderVersion, setLoaderVersion] = useState("");
+  const [optiFineEnabled, setOptiFineEnabled] = useState(false);
+  const [optiFineLoading, setOptiFineLoading] = useState(false);
+  const [optiFineOptions, setOptiFineOptions] = useState<OptiFineVersion[]>([]);
+  const [optiFineVersion, setOptiFineVersion] = useState("");
   const [installedVersions, setInstalledVersions] = useState<string[]>([]);
   const [activeGamePid, setActiveGamePid] = useState<number | null>(null);
   const [launchingInstanceId, setLaunchingInstanceId] = useState<string | null>(null);
@@ -209,6 +215,7 @@ function Launcher() {
   const logCursorRef = useRef<number | null>(null);
   const pollingRef = useRef(false);
   const loaderRequestRef = useRef(0);
+  const optiFineRequestRef = useRef(0);
   const lastInstallPageRef = useRef(false);
   const launchingInstanceRef = useRef<string | null>(null);
   const installDialogRef = useRef<InstallDialogState | null>(null);
@@ -248,7 +255,10 @@ function Launcher() {
     busy ||
     catalogLoading ||
     !installVersion ||
-    (loader !== "vanilla" && (loaderLoading || !loaderVersion));
+    (loader !== "vanilla" && (loaderLoading || !loaderVersion)) ||
+    (optiFineEnabled && (optiFineLoading || !optiFineVersion || loader === "fabric"));
+  const optiFineDisabledReason =
+    loader === "fabric" ? t("install.optifineFabricConflict") : "";
   const loaderDisplayName = (value: Loader) => t(loaderLabelKey(value));
   const installButtonText = busy
     ? t("install.button.installing")
@@ -572,6 +582,27 @@ function Launcher() {
     void refreshLoader();
   }, [page, loader, installVersion]);
 
+  useEffect(() => {
+    if (loader === "fabric" && optiFineEnabled) {
+      setOptiFineEnabled(false);
+    }
+  }, [loader, optiFineEnabled]);
+
+  useEffect(() => {
+    optiFineRequestRef.current += 1;
+    setOptiFineOptions([]);
+    setOptiFineVersion("");
+    if (page !== "install" || !optiFineEnabled || !installVersion || loader === "fabric") {
+      setOptiFineLoading(false);
+      return;
+    }
+    if (loader !== "vanilla" && !loaderVersion) {
+      setOptiFineLoading(false);
+      return;
+    }
+    void refreshOptiFine();
+  }, [page, optiFineEnabled, installVersion, loader, loaderVersion]);
+
   const shouldPollUiLogs =
     windowVisible &&
     !monitorWindowOpen &&
@@ -712,7 +743,7 @@ function Launcher() {
                 ? "running"
                 : currentPhase.status,
         stage: ipc.stage ?? currentPhase.stage,
-        message: ipc.message ?? currentPhase.message,
+        message: translateLaunchPrepareMessage(ipc, t) ?? currentPhase.message,
         current: typeof ipc.current === "number" ? ipc.current : currentPhase.current,
         total: typeof ipc.total === "number" ? ipc.total : currentPhase.total,
         downloaded: typeof ipc.downloaded === "number" ? ipc.downloaded : currentPhase.downloaded,
@@ -1083,20 +1114,25 @@ function Launcher() {
     setStatus(t("app.status.launching", { name: current.name }));
     let launchResult: LaunchExecutionResult | null = null;
     try {
-      const readyAccount = await ensureMinecraftAccountReadyForLaunch(currentMinecraftAccount);
+      markLaunchPreparePhase("login", "running", "prepare", t("launch.progress.login"));
+      setLaunchProgressText(t("launch.progress.login"));
+      const readyAccount = await ensureMinecraftAccountReadyForLaunch(currentMinecraftAccount, sessionId);
+      markLaunchPreparePhase("login", "done", "complete", t("launch.progress.loginCompleted"));
       const launchIdentity = resolveMinecraftLaunchIdentity(readyAccount, settings.playerName);
-      setLaunchProgressPercent(0);
+      markLaunchPreparePhase("check-instance", "running", "prepare", t("launch.progress.checkInstance"));
+      setLaunchProgressPercent(Math.round((1 / LAUNCH_PREPARE_STEPS) * 100));
       setLaunchProgressText(t("launch.progress.checkInstance"));
       const prepared = await ensureInstanceReadyForLaunch(current, sessionId);
+      markLaunchPreparePhase("check-instance", "done", "complete", t("launch.progress.checkInstance"));
 
       markLaunchPreparePhase("runtime", "running", "prepare", t("launch.progress.prepareRuntime"));
-      setLaunchProgressPercent(Math.round((1 / LAUNCH_PREPARE_STEPS) * 100));
+      setLaunchProgressPercent(Math.round((2 / LAUNCH_PREPARE_STEPS) * 100));
       setLaunchProgressText(t("launch.progress.prepareRuntime"));
       const jdk = await ensureJdk(settings.gameDir, prepared.versionId, settings.downloadThreads);
       markLaunchPreparePhase("runtime", "done", "complete", t("launch.progress.prepareRuntime"));
 
       markLaunchPreparePhase("launch", "running", "prepare", t("launch.progress.buildCommand"));
-      setLaunchProgressPercent(Math.round((2 / LAUNCH_PREPARE_STEPS) * 100));
+      setLaunchProgressPercent(Math.round((3 / LAUNCH_PREPARE_STEPS) * 100));
       setLaunchProgressText(t("launch.progress.buildCommand"));
       launchResult = await invoke<LaunchExecutionResult>("launch_vanilla", {
         gameDir: settings.gameDir,
@@ -1621,6 +1657,75 @@ function Launcher() {
       });
       if (installed) {
         markLaunchPreparePhase("check-instance", "done", "complete", t("launch.progress.checkInstance"));
+        if (workingInstance.launcherVersionType === "EDGE" && !workingInstance.optiFineVersion) {
+          const optiFineVersions = await invoke<OptiFineVersion[]>("list_optifine_versions", {
+            gameVersion: workingInstance.baseVersion,
+            loader: workingInstance.loader,
+            loaderVersion: workingInstance.loaderVersion,
+            downloadSource: settings.downloadSource
+          });
+          const selectedOptiFine = selectDefaultOptiFineVersion(optiFineVersions);
+          const latestOptiFine = selectedOptiFine?.version ?? "";
+          const requiredForgeBuild = parseOptiFineForgeBuild(selectedOptiFine?.forgeRequirement);
+          if (workingInstance.loader === "forge" && requiredForgeBuild && getForgeBuild(workingInstance.loaderVersion ?? "") !== requiredForgeBuild) {
+            const forgeVersions = await invoke<string[]>("list_forge_versions", {
+              gameVersion: workingInstance.baseVersion,
+              downloadSource: settings.downloadSource
+            });
+            const compatibleForgeVersion = forgeVersions.find((version) => getForgeBuild(version) === requiredForgeBuild) ?? "";
+            if (!compatibleForgeVersion) {
+              throw new Error(`No Forge build ${requiredForgeBuild} available for ${workingInstance.baseVersion}`);
+            }
+            markLaunchPreparePhase("forge", "running", "prepare", t("install.phase.installingForge", { version: compatibleForgeVersion }));
+            const jdk = await ensureJdk(settings.gameDir, workingInstance.baseVersion, settings.downloadThreads);
+            const forge = await invoke<ForgeInstallResult>("install_forge", {
+              gameDir: settings.gameDir,
+              forgeVersion: compatibleForgeVersion,
+              javaPath: jdk.javaPath,
+              downloadSource: settings.downloadSource,
+              downloadThreads: settings.downloadThreads,
+              ipcSession: launchSessionId
+            });
+            workingInstance = {
+              ...workingInstance,
+              versionId: forge.profileId,
+              loaderVersion: forge.forgeVersion
+            };
+            if (presetVersionId && workingInstance.versionId !== presetVersionId) {
+              const renamedVersionId = await invoke<string>("rename_version_profile", {
+                gameDir: settings.gameDir,
+                fromVersionId: workingInstance.versionId,
+                toVersionId: presetVersionId
+              });
+              workingInstance = {
+                ...workingInstance,
+                versionId: renamedVersionId
+              };
+            }
+            markLaunchPreparePhase("forge", "done", "complete", t("install.phase.loaderCompleted"));
+          }
+          if (latestOptiFine) {
+            markLaunchPreparePhase("optifine", "running", "prepare", t("install.phase.installingOptiFine", { version: latestOptiFine }));
+            const optiFine = await invoke<OptiFineInstallResult>("install_optifine", {
+              gameDir: settings.gameDir,
+              versionId: workingInstance.versionId,
+              gameVersion: workingInstance.baseVersion,
+              loader: workingInstance.loader,
+              loaderVersion: workingInstance.loaderVersion,
+              optifineVersion: latestOptiFine,
+              downloadSource: settings.downloadSource,
+              ipcSession: launchSessionId
+            });
+            workingInstance = {
+              ...workingInstance,
+              optiFineVersion: optiFine.optiFineVersion
+            };
+            setInstances((prev) =>
+              prev.map((item) => (item.id === workingInstance.id ? workingInstance : item))
+            );
+            markLaunchPreparePhase("optifine", "done", "complete", t("install.phase.optiFineCompleted"));
+          }
+        }
         await ensurePresetModsReady(workingInstance);
         await ensureManagedContentUpToDate(workingInstance);
         return workingInstance;
@@ -1652,6 +1757,7 @@ function Launcher() {
 
     let nextVersionId = vanilla.versionId;
     let nextLoaderVersion = workingInstance.loaderVersion;
+    let nextOptiFineVersion = workingInstance.optiFineVersion;
 
     if (workingInstance.loader === "fabric") {
       if (!nextLoaderVersion) {
@@ -1681,7 +1787,21 @@ function Launcher() {
           gameVersion: workingInstance.baseVersion,
           downloadSource: settings.downloadSource
         });
-        nextLoaderVersion = forgeVersions[0] ?? "";
+        if (workingInstance.launcherVersionType === "EDGE" && !nextOptiFineVersion) {
+          const optiFineVersions = await invoke<OptiFineVersion[]>("list_optifine_versions", {
+            gameVersion: workingInstance.baseVersion,
+            loader: workingInstance.loader,
+            loaderVersion: null,
+            downloadSource: settings.downloadSource
+          });
+          const selectedOptiFine = selectDefaultOptiFineVersion(optiFineVersions);
+          const requiredForgeBuild = parseOptiFineForgeBuild(selectedOptiFine?.forgeRequirement);
+          nextOptiFineVersion = selectedOptiFine?.version ?? "";
+          nextLoaderVersion = requiredForgeBuild
+            ? forgeVersions.find((version) => getForgeBuild(version) === requiredForgeBuild) ?? ""
+            : "";
+        }
+        nextLoaderVersion ||= forgeVersions[0] ?? "";
       }
       if (!nextLoaderVersion) {
         throw new Error(`No forge version available for ${workingInstance.baseVersion}`);
@@ -1701,6 +1821,33 @@ function Launcher() {
       markLaunchPreparePhase("forge", "done", "complete", t("install.phase.loaderCompleted"));
     }
 
+    if (workingInstance.launcherVersionType === "EDGE" && !nextOptiFineVersion) {
+      const optiFineVersions = await invoke<OptiFineVersion[]>("list_optifine_versions", {
+        gameVersion: workingInstance.baseVersion,
+        loader: workingInstance.loader,
+        loaderVersion: workingInstance.loader === "vanilla" ? null : nextLoaderVersion,
+        downloadSource: settings.downloadSource
+      });
+      nextOptiFineVersion =
+        optiFineVersions.find((item) => item.compatibility === "compatible")?.version ?? "";
+    }
+
+    if (nextOptiFineVersion) {
+      markLaunchPreparePhase("optifine", "running", "prepare", t("install.phase.installingOptiFine", { version: nextOptiFineVersion }));
+      const optiFine = await invoke<OptiFineInstallResult>("install_optifine", {
+        gameDir: settings.gameDir,
+        versionId: nextVersionId,
+        gameVersion: workingInstance.baseVersion,
+        loader: workingInstance.loader,
+        loaderVersion: nextLoaderVersion,
+        optifineVersion: nextOptiFineVersion,
+        downloadSource: settings.downloadSource,
+        ipcSession: sessionId
+      });
+      nextOptiFineVersion = optiFine.optiFineVersion;
+      markLaunchPreparePhase("optifine", "done", "complete", t("install.phase.optiFineCompleted"));
+    }
+
     if (presetVersionId && nextVersionId !== presetVersionId) {
       nextVersionId = await invoke<string>("rename_version_profile", {
         gameDir: settings.gameDir,
@@ -1712,7 +1859,8 @@ function Launcher() {
     const updatedInstance: Instance = {
       ...workingInstance,
       versionId: nextVersionId,
-      loaderVersion: workingInstance.loader === "vanilla" ? undefined : nextLoaderVersion
+      loaderVersion: workingInstance.loader === "vanilla" ? undefined : nextLoaderVersion,
+      optiFineVersion: nextOptiFineVersion || undefined
     };
     setInstances((prev) =>
       prev.map((item) => (item.id === updatedInstance.id ? updatedInstance : item))
@@ -1758,20 +1906,25 @@ function Launcher() {
     setStatus(t("app.status.launching", { name: target.name }));
     let launchResult: LaunchExecutionResult | null = null;
     try {
-      const readyAccount = await ensureMinecraftAccountReadyForLaunch(currentMinecraftAccount);
+      markLaunchPreparePhase("login", "running", "prepare", t("launch.progress.login"));
+      setLaunchProgressText(t("launch.progress.login"));
+      const readyAccount = await ensureMinecraftAccountReadyForLaunch(currentMinecraftAccount, sessionId);
+      markLaunchPreparePhase("login", "done", "complete", t("launch.progress.loginCompleted"));
       const launchIdentity = resolveMinecraftLaunchIdentity(readyAccount, settings.playerName);
-      setLaunchProgressPercent(0);
+      markLaunchPreparePhase("check-instance", "running", "prepare", t("launch.progress.checkInstance"));
+      setLaunchProgressPercent(Math.round((1 / LAUNCH_PREPARE_STEPS) * 100));
       setLaunchProgressText(t("launch.progress.checkInstance"));
       const prepared = await ensureInstanceReadyForLaunch(target, sessionId);
+      markLaunchPreparePhase("check-instance", "done", "complete", t("launch.progress.checkInstance"));
 
       markLaunchPreparePhase("runtime", "running", "prepare", t("launch.progress.prepareRuntime"));
-      setLaunchProgressPercent(Math.round((1 / LAUNCH_PREPARE_STEPS) * 100));
+      setLaunchProgressPercent(Math.round((2 / LAUNCH_PREPARE_STEPS) * 100));
       setLaunchProgressText(t("launch.progress.prepareRuntime"));
       const jdk = await ensureJdk(settings.gameDir, prepared.versionId, settings.downloadThreads);
       markLaunchPreparePhase("runtime", "done", "complete", t("launch.progress.prepareRuntime"));
 
       markLaunchPreparePhase("launch", "running", "prepare", t("launch.progress.buildCommand"));
-      setLaunchProgressPercent(Math.round((2 / LAUNCH_PREPARE_STEPS) * 100));
+      setLaunchProgressPercent(Math.round((3 / LAUNCH_PREPARE_STEPS) * 100));
       setLaunchProgressText(t("launch.progress.buildCommand"));
       launchResult = await invoke<LaunchExecutionResult>("launch_vanilla", {
         gameDir: settings.gameDir,
@@ -1893,7 +2046,7 @@ function Launcher() {
 
       if (requestId !== loaderRequestRef.current) return;
 
-      const options = loader === "fabric" ? versions.slice(0, 60) : versions.slice(0, 80);
+      const options = versions;
       setLoaderOptions(options);
       setLoaderVersion(options[0] ?? "");
       setStatus(
@@ -1919,6 +2072,48 @@ function Launcher() {
     }
   }
 
+  async function refreshOptiFine() {
+    if (!installVersion || loader === "fabric") return;
+    const requestId = optiFineRequestRef.current + 1;
+    optiFineRequestRef.current = requestId;
+    setOptiFineLoading(true);
+    try {
+      const versions = await invoke<OptiFineVersion[]>("list_optifine_versions", {
+        gameVersion: installVersion,
+        loader,
+        loaderVersion: loader === "vanilla" ? null : loaderVersion,
+        downloadSource: settings.downloadSource
+      });
+
+      if (requestId !== optiFineRequestRef.current) return;
+
+      const options = versions.slice(0, 80);
+      const firstCompatible = options.find((item) => item.compatibility === "compatible") ?? null;
+      setOptiFineOptions(options);
+      setOptiFineVersion(firstCompatible?.version ?? "");
+      setStatus(
+        options.length > 0
+          ? t("app.status.loadedLoaderVersions", {
+              count: options.length,
+              loader: t("loader.optifine")
+            })
+          : t("app.status.noLoaderVersions", {
+              loader: t("loader.optifine"),
+              version: installVersion
+            })
+      );
+    } catch (error) {
+      if (requestId !== optiFineRequestRef.current) return;
+      setOptiFineOptions([]);
+      setOptiFineVersion("");
+      setStatus(t("app.status.failed", { error: String(error) }));
+    } finally {
+      if (requestId === optiFineRequestRef.current) {
+        setOptiFineLoading(false);
+      }
+    }
+  }
+
   async function install() {
     if (ensureMandatoryLauncherUpdate()) {
       return;
@@ -1932,6 +2127,18 @@ function Launcher() {
       );
       return;
     }
+    if (optiFineEnabled && loader === "fabric") {
+      setStatus(t("install.optifineFabricConflict"));
+      return;
+    }
+    if (optiFineEnabled && !optiFineVersion) {
+      setStatus(
+        t("app.status.selectLoaderVersionFirst", {
+          loader: t("loader.optifine")
+        })
+      );
+      return;
+    }
 
     const sessionId = createSessionId();
     const loaderPhase =
@@ -1941,6 +2148,9 @@ function Launcher() {
             loader === "forge" ? t("install.phase.forge") : t("install.phase.fabric"),
             loader
           );
+    const optiFinePhase = optiFineEnabled
+      ? createPhaseState(t("install.phase.optifine"), "optifine")
+      : null;
 
     setInstallDialog({
       open: true,
@@ -1956,7 +2166,8 @@ function Launcher() {
         stage: "prepare",
         message: t("install.phase.preparing", { version: installVersion })
       },
-      loaderPhase
+      loaderPhase,
+      optiFinePhase
     });
 
     setBusy(true);
@@ -2043,6 +2254,34 @@ function Launcher() {
         loaderVer = result.forgeVersion;
       }
 
+      let installedOptiFineVersion: string | undefined;
+      if (optiFineEnabled) {
+        setInstallDialog((prev) => {
+          if (!prev || !prev.optiFinePhase) return prev;
+          return {
+            ...prev,
+            optiFinePhase: {
+              ...prev.optiFinePhase,
+              status: "running",
+              stage: "prepare",
+              message: t("install.phase.installingOptiFine", { version: optiFineVersion })
+            }
+          };
+        });
+
+        const result = await invoke<OptiFineInstallResult>("install_optifine", {
+          gameDir: settings.gameDir,
+          versionId,
+          gameVersion: installVersion,
+          loader: loaderName,
+          loaderVersion: loaderVer,
+          optifineVersion: optiFineVersion,
+          downloadSource: settings.downloadSource,
+          ipcSession: sessionId
+        });
+        installedOptiFineVersion = result.optiFineVersion;
+      }
+
       const item: Instance = {
         id: `instance-${Date.now()}-${Math.floor(Math.random() * 10000)}`,
         name:
@@ -2053,6 +2292,7 @@ function Launcher() {
         baseVersion: installVersion,
         loader: loaderName,
         loaderVersion: loaderVer,
+        optiFineVersion: installedOptiFineVersion,
         preset: false
       };
 
@@ -2073,7 +2313,15 @@ function Launcher() {
                 stage: "complete",
                 message: t("install.phase.loaderCompleted")
               }
-            : prev.loaderPhase
+            : prev.loaderPhase,
+          optiFinePhase: prev.optiFinePhase
+            ? {
+                ...prev.optiFinePhase,
+                status: "done",
+                stage: "complete",
+                message: t("install.phase.optiFineCompleted")
+              }
+            : prev.optiFinePhase
         };
       });
       setInstallDialog(null);
@@ -2094,7 +2342,11 @@ function Launcher() {
               : prev.vanilla,
           loaderPhase: loaderRunning
             ? { ...prev.loaderPhase!, status: "error", stage: "failed", message: errorText }
-            : prev.loaderPhase
+            : prev.loaderPhase,
+          optiFinePhase:
+            prev.optiFinePhase && prev.optiFinePhase.status === "running"
+              ? { ...prev.optiFinePhase, status: "error", stage: "failed", message: errorText }
+              : prev.optiFinePhase
         };
       });
     } finally {
@@ -2184,7 +2436,8 @@ function Launcher() {
         versionId: result.versionId,
         baseVersion: result.baseVersion,
         loader: result.loader,
-        loaderVersion: result.loaderVersion
+        loaderVersion: result.loaderVersion,
+        optiFineVersion: result.optiFineVersion
       };
       setInstances((prev) =>
         prev.map((item) => (item.id === repaired.id ? repaired : item))
@@ -2234,10 +2487,12 @@ function Launcher() {
         instance.name,
         instance.versionId,
         {
+          login: t("launch.prepare.phase.login"),
           "check-instance": t("launch.prepare.phase.check-instance"),
           vanilla: t("launch.prepare.phase.vanilla"),
           fabric: t("launch.prepare.phase.fabric"),
           forge: t("launch.prepare.phase.forge"),
+          optifine: t("launch.prepare.phase.optifine"),
           runtime: t("launch.prepare.phase.runtime"),
           launch: t("launch.prepare.phase.launch")
         },
@@ -2401,9 +2656,11 @@ function Launcher() {
   }
 
   async function ensureMinecraftAccountReadyForLaunch(
-    account: MinecraftAccount | null
+    account: MinecraftAccount | null,
+    ipcSession?: string
   ): Promise<MinecraftAccount | null> {
     if (!account || account.type !== "microsoft") {
+      markLaunchPreparePhase("login", "done", "complete", t("launch.progress.loginOffline"));
       return account;
     }
 
@@ -2412,6 +2669,7 @@ function Launcher() {
     const shouldRefresh = !hasAccessToken || (expiresAt !== null && expiresAt <= Date.now() + 60_000);
 
     if (!shouldRefresh) {
+      markLaunchPreparePhase("login", "done", "complete", t("launch.progress.loginReady"));
       return account;
     }
 
@@ -2420,7 +2678,7 @@ function Launcher() {
       throw new Error(t("minecraftAccount.microsoftRefreshRequired"));
     }
 
-    const refreshedAccount = await refreshMinecraftAccount(refreshToken);
+    const refreshedAccount = await refreshMinecraftAccount(refreshToken, ipcSession);
     saveMinecraftAccount(refreshedAccount);
     return refreshedAccount;
   }
@@ -2552,6 +2810,11 @@ function Launcher() {
           loaderLoading={loaderLoading}
           loaderOptions={loaderOptions}
           loaderVersion={loaderVersion}
+          optiFineEnabled={optiFineEnabled}
+          optiFineLoading={optiFineLoading}
+          optiFineOptions={optiFineOptions}
+          optiFineVersion={optiFineVersion}
+          optiFineDisabledReason={optiFineDisabledReason}
           installedVersions={installedVersions}
           installDisabled={installDisabled}
           installButtonText={installButtonText}
@@ -2563,6 +2826,14 @@ function Launcher() {
           onSelectInstallVersion={setInstallVersion}
           onSelectLoader={setLoader}
           onSelectLoaderVersion={setLoaderVersion}
+          onToggleOptiFine={() => {
+            if (loader === "fabric") {
+              setStatus(t("install.optifineFabricConflict"));
+              return;
+            }
+            setOptiFineEnabled((value) => !value);
+          }}
+          onSelectOptiFineVersion={setOptiFineVersion}
           onInstall={install}
         />
       );
@@ -3140,11 +3411,44 @@ function parseLaunchPrepareJdkLog(message: string): {
 }
 
 function mapLaunchPreparePhaseKey(phase?: string): LaunchPreparePhaseKey | null {
+  if (phase === "login") return "login";
   if (phase === "vanilla") return "vanilla";
   if (phase === "fabric") return "fabric";
   if (phase === "forge") return "forge";
   if (phase === "runtime") return "runtime";
   return null;
+}
+
+function parseOptiFineForgeBuild(requirement?: string | null): string {
+  const value = requirement?.trim() ?? "";
+  if (!value || value.toLowerCase() === "forge n/a") return "";
+  return value.split("#")[1]?.trim() || value.split(/\s+/).at(-1)?.trim() || "";
+}
+
+function selectDefaultOptiFineVersion(versions: OptiFineVersion[]): OptiFineVersion | undefined {
+  return versions.find((item) => item.compatibility === "compatible" && !item.isPreview)
+    ?? versions.find((item) => item.compatibility !== "incompatible" && !item.isPreview)
+    ?? versions.find((item) => item.compatibility === "compatible")
+    ?? versions.find((item) => item.compatibility !== "incompatible");
+}
+
+function getForgeBuild(version: string): string {
+  return version.trim().split("-").at(-1)?.trim() || "";
+}
+
+function translateLaunchPrepareMessage(
+  ipc: InstallIpcEvent,
+  t: ReturnType<typeof useI18n>["t"]
+): string | null {
+  if (ipc.phase !== "login") {
+    return ipc.message ?? null;
+  }
+  if (ipc.stage === "microsoft") return t("launch.progress.loginMicrosoft");
+  if (ipc.stage === "xbox") return t("launch.progress.loginXbox");
+  if (ipc.stage === "xsts") return t("launch.progress.loginXsts");
+  if (ipc.stage === "minecraft") return t("launch.progress.loginMinecraft");
+  if (ipc.stage === "profile") return t("launch.progress.loginProfile");
+  return ipc.message ?? null;
 }
 
 function reduceLaunchPrepareItems(items: LaunchPrepareItem[], ipc: InstallIpcEvent): LaunchPrepareItem[] {
@@ -3236,8 +3540,8 @@ async function ensureJdk(gameDir: string, versionId: string, downloadThreads: nu
   return invoke<JdkEnsureResult>("ensure_jdk", { gameDir, versionId, downloadThreads });
 }
 
-async function refreshMinecraftAccount(refreshToken: string): Promise<MinecraftAccount> {
-  return invoke<MinecraftAccount>("refresh_minecraft_account", { refreshToken });
+async function refreshMinecraftAccount(refreshToken: string, ipcSession?: string): Promise<MinecraftAccount> {
+  return invoke<MinecraftAccount>("refresh_minecraft_account", { refreshToken, ipcSession });
 }
 
 async function syncAutostart(enabled: boolean): Promise<void> {
@@ -3386,6 +3690,7 @@ function normalizeMinecraftAccount(raw: unknown): MinecraftAccount | null {
         ? value.refreshToken
         : null,
     xuid: typeof value.xuid === "string" && value.xuid.trim() ? value.xuid : null,
+    skinUrl: typeof value.skinUrl === "string" && value.skinUrl.trim() ? value.skinUrl : null,
     expiresAt: typeof value.expiresAt === "number" ? value.expiresAt : null,
     addedAt: typeof value.addedAt === "number" ? value.addedAt : Date.now()
   };
@@ -3400,6 +3705,7 @@ function createOfflineMinecraftAccount(username: string): MinecraftAccount {
     accessToken: "offline",
     refreshToken: null,
     xuid: null,
+    skinUrl: null,
     expiresAt: null,
     addedAt: Date.now()
   };

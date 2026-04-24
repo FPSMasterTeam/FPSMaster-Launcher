@@ -1,9 +1,9 @@
-import { Box, Layers, PenTool, Plus } from "lucide-react";
+import { Box, Eye, Layers, PenTool, Plus } from "lucide-react";
 import { useMemo } from "react";
 import Button from "../components/Button";
 import Card from "../components/Card";
 import { useI18n } from "../i18n";
-import type { Loader } from "../types";
+import type { Loader, OptiFineVersion } from "../types";
 
 type InstallPageProps = {
   catalogLoading: boolean;
@@ -19,6 +19,11 @@ type InstallPageProps = {
   loaderLoading: boolean;
   loaderOptions: string[];
   loaderVersion: string;
+  optiFineEnabled: boolean;
+  optiFineLoading: boolean;
+  optiFineOptions: OptiFineVersion[];
+  optiFineVersion: string;
+  optiFineDisabledReason: string;
   installedVersions: string[];
   installDisabled: boolean;
   installButtonText: string;
@@ -27,6 +32,8 @@ type InstallPageProps = {
   onSelectInstallVersion: (version: string) => void;
   onSelectLoader: (loader: Loader) => void;
   onSelectLoaderVersion: (version: string) => void;
+  onToggleOptiFine: () => void;
+  onSelectOptiFineVersion: (version: string) => void;
   onInstall: () => void;
 };
 
@@ -44,6 +51,11 @@ export default function InstallPage({
   loaderLoading,
   loaderOptions,
   loaderVersion,
+  optiFineEnabled,
+  optiFineLoading,
+  optiFineOptions,
+  optiFineVersion,
+  optiFineDisabledReason,
   installedVersions,
   installDisabled,
   installButtonText,
@@ -52,6 +64,8 @@ export default function InstallPage({
   onSelectInstallVersion,
   onSelectLoader,
   onSelectLoaderVersion,
+  onToggleOptiFine,
+  onSelectOptiFineVersion,
   onInstall
 }: InstallPageProps) {
   const { t } = useI18n();
@@ -195,7 +209,7 @@ export default function InstallPage({
                   ? t("install.loadingLoaderVersions", { loader: loaderLabel(loader) })
                   : t("install.selectLoaderVersion", { loader: loaderLabel(loader) })}
               </p>
-              <Card variant="soft" className="surface-panel surface-panel-soft flex max-h-44 flex-wrap gap-2 overflow-y-auto rounded-[18px] p-2" interactive={false}>
+              <Card variant="soft" className="surface-panel surface-panel-soft flex max-h-[320px] flex-wrap content-start gap-2 overflow-y-auto rounded-[18px] p-2 pr-3" interactive={false}>
                 {loaderOptions.map((version) => (
                   <button
                     key={version}
@@ -219,6 +233,73 @@ export default function InstallPage({
             </div>
           )}
 
+          <div className="mb-6">
+            <div className="section-header !mb-3">
+              <div className="section-header-main">
+                <h2 className="section-title">{t("install.optifine")}</h2>
+                <p className="section-subtitle">{t("install.optifineSubtitle")}</p>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={onToggleOptiFine}
+              disabled={Boolean(optiFineDisabledReason)}
+              className={`surface-panel flex w-full items-center justify-between gap-3 rounded-[20px] px-4 py-4 text-left transition-all duration-[var(--duration-normal)] ${
+                optiFineEnabled
+                  ? "border-[rgba(var(--accent-rgb),0.3)] bg-[rgba(var(--accent-rgb),0.1)]"
+                  : "hover:border-[var(--border-medium)] hover:bg-[rgba(255,255,255,0.05)]"
+              } ${optiFineDisabledReason ? "cursor-not-allowed opacity-60" : ""}`}
+            >
+              <span className="flex items-center gap-3">
+                <Eye size={22} className="text-lime-300" />
+                <span>
+                  <span className="block text-sm font-semibold text-[var(--text-primary)]">{t("loader.optifine")}</span>
+                  <span className="block text-xs text-[var(--text-muted)]">
+                    {optiFineDisabledReason || t("install.optifineHint")}
+                  </span>
+                </span>
+              </span>
+              <span className={`badge rounded-full px-3 py-1 text-xs ${optiFineEnabled ? "badge-accent" : "badge-muted"}`}>
+                {optiFineEnabled ? t("install.enabled") : t("install.disabled")}
+              </span>
+            </button>
+          </div>
+
+          {optiFineEnabled && (
+            <div className="mb-6">
+              <p className="field-label !mb-2">
+                {optiFineLoading
+                  ? t("install.loadingLoaderVersions", { loader: t("loader.optifine") })
+                  : t("install.selectLoaderVersion", { loader: t("loader.optifine") })}
+              </p>
+              <Card variant="soft" className="surface-panel surface-panel-soft flex max-h-44 flex-wrap gap-2 overflow-y-auto rounded-[18px] p-2" interactive={false}>
+                {optiFineOptions.map((item) => (
+                  <button
+                    key={item.id}
+                    onClick={() => onSelectOptiFineVersion(item.version)}
+                    disabled={item.compatibility === "incompatible"}
+                    title={item.incompatibilityReason ?? undefined}
+                    className={`badge min-h-11 rounded-2xl px-4 py-2 text-sm normal-case tracking-normal ${
+                      optiFineVersion === item.version
+                        ? "badge-accent text-[var(--text-primary)]"
+                        : item.compatibility === "incompatible"
+                          ? "badge-muted cursor-not-allowed opacity-50"
+                          : "badge-muted hover:border-[var(--border-medium)] hover:text-[var(--text-primary)]"
+                    }`}
+                    type="button"
+                  >
+                    {item.version}
+                  </button>
+                ))}
+                {!optiFineLoading && optiFineOptions.length === 0 && (
+                  <p className="px-1 py-2 text-sm text-[var(--text-muted)]">
+                    {t("install.noLoaderVersionsSelected", { loader: t("loader.optifine") })}
+                  </p>
+                )}
+              </Card>
+            </div>
+          )}
+
           <Card variant="soft" className="surface-panel surface-panel-soft mb-6 rounded-[20px] p-4 text-sm" interactive={false}>
             <p className="mb-1 text-[var(--text-secondary)]">
               <span className="text-[var(--text-muted)]">{t("install.versionLabel")}</span>{" "}
@@ -230,6 +311,12 @@ export default function InstallPage({
                 {loader === "vanilla" ? t("loader.vanilla") : `${loaderLabel(loader)} ${loaderVersion || t("install.notSelected")}`}
               </span>
             </p>
+            {optiFineEnabled && (
+              <p className="mt-1 text-[var(--text-secondary)]">
+                <span className="text-[var(--text-muted)]">{t("loader.optifine")}</span>{" "}
+                <span className="text-[var(--text-primary)]">{optiFineVersion || t("install.notSelected")}</span>
+              </p>
+            )}
           </Card>
 
           <Button variant="primary" size="xl" fullWidth className="w-full justify-center gap-2 !rounded-2xl" disabled={installDisabled} onClick={onInstall}>

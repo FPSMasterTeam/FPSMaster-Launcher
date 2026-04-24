@@ -63,6 +63,7 @@ const translations = {
     "loader.vanilla": "Vanilla",
     "loader.forge": "Forge",
     "loader.fabric": "Fabric",
+    "loader.optifine": "OptiFine",
 
     "home.welcomeBack": "Welcome Back",
     "home.dashboardReady": "Your gaming dashboard is ready.",
@@ -164,6 +165,15 @@ const translations = {
     "home.launch": "LAUNCH",
     "home.launching": "LAUNCHING",
     "launch.progress.preparing": "Preparing launch...",
+    "launch.progress.login": "Verifying Minecraft account...",
+    "launch.progress.loginMicrosoft": "Refreshing Microsoft login...",
+    "launch.progress.loginXbox": "Authenticating with Xbox Live...",
+    "launch.progress.loginXsts": "Authorizing XSTS token...",
+    "launch.progress.loginMinecraft": "Signing in to Minecraft Services...",
+    "launch.progress.loginProfile": "Loading Minecraft profile...",
+    "launch.progress.loginReady": "Minecraft account is ready.",
+    "launch.progress.loginOffline": "Using offline launch profile.",
+    "launch.progress.loginCompleted": "Minecraft account verified.",
     "launch.progress.checkInstance": "Checking instance files...",
     "launch.progress.prepareRuntime": "Preparing Java runtime...",
     "launch.progress.buildCommand": "Building launch command...",
@@ -366,6 +376,12 @@ const translations = {
     "install.releases": "Releases",
     "install.snapshots": "Snapshots",
     "install.modloader": "Modloader",
+    "install.optifine": "OptiFine",
+    "install.optifineSubtitle": "Optional visual and performance patch",
+    "install.optifineHint": "Install the latest compatible OptiFine release for this setup.",
+    "install.optifineFabricConflict": "OptiFine cannot be installed together with Fabric.",
+    "install.enabled": "Enabled",
+    "install.disabled": "Disabled",
     "install.loadingLoaderVersions": "Loading {loader} versions...",
     "install.selectLoaderVersion": "Select {loader} version",
     "install.noLoaderVersionsSelected":
@@ -534,6 +550,7 @@ const translations = {
     "dialog.stage": "stage: {stage}",
     "dialog.waiting": "waiting...",
     "dialog.simpleProgress": "{current}/{total}",
+    "dialog.progress": "{current}/{total}",
     "dialog.status.pending": "pending",
     "dialog.status.running": "running",
     "dialog.status.done": "done",
@@ -545,10 +562,12 @@ const translations = {
     "launch.prepare.title": "Preparing {name}",
     "launch.prepare.running": "Running...",
     "launch.prepare.percent": "{percent}%",
+    "launch.prepare.phase.login": "Account Login",
     "launch.prepare.phase.check-instance": "Check Instance",
     "launch.prepare.phase.vanilla": "Vanilla Runtime",
     "launch.prepare.phase.fabric": "Fabric Loader",
     "launch.prepare.phase.forge": "Forge Loader",
+    "launch.prepare.phase.optifine": "OptiFine",
     "launch.prepare.phase.runtime": "Java Runtime",
     "launch.prepare.phase.launch": "Launch Game",
     "launch.prepare.item.pending": "queued",
@@ -586,11 +605,14 @@ const translations = {
     "install.phase.vanilla": "Vanilla Install",
     "install.phase.forge": "Forge Install",
     "install.phase.fabric": "Fabric Install",
+    "install.phase.optifine": "OptiFine Install",
     "install.phase.preparing": "Preparing {version}",
     "install.phase.vanillaCompleted": "Vanilla install completed",
     "install.phase.loaderCompleted": "Loader install completed",
+    "install.phase.optiFineCompleted": "OptiFine install completed",
     "install.phase.installingFabric": "Installing fabric {version}",
-    "install.phase.installingForge": "Installing forge {version}"
+    "install.phase.installingForge": "Installing forge {version}",
+    "install.phase.installingOptiFine": "Installing OptiFine {version}"
   },
   "zh-CN": {
     "app.name": "FPSMaster",
@@ -653,6 +675,7 @@ const translations = {
     "loader.vanilla": "原版",
     "loader.forge": "Forge",
     "loader.fabric": "Fabric",
+    "loader.optifine": "OptiFine",
 
     "home.welcomeBack": "欢迎回来",
     "home.dashboardReady": "你的游戏面板已准备就绪。",
@@ -754,6 +777,15 @@ const translations = {
     "home.launch": "启动",
     "home.launching": "启动中",
     "launch.progress.preparing": "正在准备启动...",
+    "launch.progress.login": "正在验证 Minecraft 账号...",
+    "launch.progress.loginMicrosoft": "正在刷新 Microsoft 登录...",
+    "launch.progress.loginXbox": "正在验证 Xbox Live...",
+    "launch.progress.loginXsts": "正在授权 XSTS token...",
+    "launch.progress.loginMinecraft": "正在登录 Minecraft 服务...",
+    "launch.progress.loginProfile": "正在读取 Minecraft 档案...",
+    "launch.progress.loginReady": "Minecraft 账号已可用。",
+    "launch.progress.loginOffline": "使用离线启动身份。",
+    "launch.progress.loginCompleted": "Minecraft 账号验证完成。",
     "launch.progress.checkInstance": "正在检查实例文件...",
     "launch.progress.prepareRuntime": "正在准备 Java 运行环境...",
     "launch.progress.buildCommand": "正在生成启动命令...",
@@ -955,6 +987,12 @@ const translations = {
     "install.releases": "正式版",
     "install.snapshots": "快照版",
     "install.modloader": "模组加载器",
+    "install.optifine": "OptiFine",
+    "install.optifineSubtitle": "可选的画面与性能补丁",
+    "install.optifineHint": "为当前安装组合安装最新兼容的 OptiFine。",
+    "install.optifineFabricConflict": "OptiFine 不能和 Fabric 同时安装。",
+    "install.enabled": "已启用",
+    "install.disabled": "未启用",
     "install.loadingLoaderVersions": "正在加载 {loader} 版本...",
     "install.selectLoaderVersion": "选择 {loader} 版本",
     "install.noLoaderVersionsSelected": "当前游戏版本没有可用的 {loader} 版本。",
@@ -1122,6 +1160,7 @@ const translations = {
     "dialog.stage": "阶段：{stage}",
     "dialog.waiting": "等待中...",
     "dialog.simpleProgress": "{current}/{total}",
+    "dialog.progress": "{current}/{total}",
     "dialog.status.pending": "待处理",
     "dialog.status.running": "进行中",
     "dialog.status.done": "完成",
@@ -1133,10 +1172,12 @@ const translations = {
     "launch.prepare.title": "正在准备启动 {name}",
     "launch.prepare.running": "进行中...",
     "launch.prepare.percent": "{percent}%",
+    "launch.prepare.phase.login": "登录验证",
     "launch.prepare.phase.check-instance": "检查实例",
     "launch.prepare.phase.vanilla": "原版运行时",
     "launch.prepare.phase.fabric": "Fabric 加载器",
     "launch.prepare.phase.forge": "Forge 加载器",
+    "launch.prepare.phase.optifine": "OptiFine",
     "launch.prepare.phase.runtime": "Java 运行环境",
     "launch.prepare.phase.launch": "启动游戏",
     "launch.prepare.item.pending": "排队中",
@@ -1174,11 +1215,14 @@ const translations = {
     "install.phase.vanilla": "原版安装",
     "install.phase.forge": "Forge 安装",
     "install.phase.fabric": "Fabric 安装",
+    "install.phase.optifine": "OptiFine 安装",
     "install.phase.preparing": "准备安装 {version}",
     "install.phase.vanillaCompleted": "原版安装完成",
     "install.phase.loaderCompleted": "加载器安装完成",
+    "install.phase.optiFineCompleted": "OptiFine 安装完成",
     "install.phase.installingFabric": "正在安装 Fabric {version}",
-    "install.phase.installingForge": "正在安装 Forge {version}"
+    "install.phase.installingForge": "正在安装 Forge {version}",
+    "install.phase.installingOptiFine": "正在安装 OptiFine {version}"
   }
 } as const;
 
@@ -1205,6 +1249,7 @@ export function detectLocaleFromEnvironment(): Locale {
 }
 
 function interpolate(template: string, values?: TranslationValues): string {
+  if (typeof template !== "string") return "";
   if (!values) return template;
   return template.replace(/\{(\w+)\}/g, (_, key: string) =>
     key in values ? String(values[key]) : `{${key}}`
