@@ -1,5 +1,6 @@
 export type Page = "home" | "instances" | "install" | "servers" | "content" | "settings" | "instance-settings" | "mandatory-update" | "account-center";
 export type Loader = "vanilla" | "forge" | "fabric";
+export type OptiFineCompatibilityState = "compatible" | "incompatible" | "unknown";
 export type PhaseStatus = "pending" | "running" | "done" | "error";
 export type Locale = "en-US" | "zh-CN";
 export type ThemeMode = "dark" | "light";
@@ -38,6 +39,7 @@ export type Instance = {
   baseVersion: string;
   loader: Loader;
   loaderVersion?: string;
+  optiFineVersion?: string;
   launcherVersionType?: LauncherVersionType;
   iconPath?: string;
   preset: boolean;
@@ -51,6 +53,7 @@ export type MinecraftAccount = {
   accessToken: string;
   refreshToken?: string | null;
   xuid?: string | null;
+  skinUrl?: string | null;
   expiresAt?: number | null;
   addedAt: number;
 };
@@ -204,7 +207,7 @@ export type ContentInstallProgressEvent = {
 
 export type InstallPhaseState = {
   title: string;
-  sourcePhase: "vanilla" | "forge" | "fabric";
+  sourcePhase: "vanilla" | "forge" | "fabric" | "optifine";
   status: PhaseStatus;
   stage: string;
   message: string;
@@ -225,15 +228,18 @@ export type InstallDialogState = {
   errorText: string;
   vanilla: InstallPhaseState;
   loaderPhase: InstallPhaseState | null;
+  optiFinePhase: InstallPhaseState | null;
 };
 
 export type LaunchPrepareItemStatus = "pending" | "running" | "done" | "cached" | "error";
 
 export type LaunchPreparePhaseKey =
+  | "login"
   | "check-instance"
   | "vanilla"
   | "fabric"
   | "forge"
+  | "optifine"
   | "runtime"
   | "launch";
 
@@ -327,6 +333,7 @@ export type InstanceImportResult = {
   baseVersion: string;
   loader: Loader;
   loaderVersion?: string;
+  optiFineVersion?: string;
 };
 
 export type InstanceRepairResult = {
@@ -334,7 +341,29 @@ export type InstanceRepairResult = {
   baseVersion: string;
   loader: Loader;
   loaderVersion?: string;
+  optiFineVersion?: string;
   reinstalledFromVersionId: string;
+};
+
+export type OptiFineVersion = {
+  id: string;
+  gameVersion: string;
+  version: string;
+  fileName: string;
+  type: string;
+  patch: string;
+  isPreview: boolean;
+  forgeRequirement?: string | null;
+  compatibility: OptiFineCompatibilityState;
+  incompatibilityReason?: string | null;
+};
+
+export type OptiFineInstallResult = {
+  versionId: string;
+  optiFineVersion: string;
+  fileName: string;
+  installedPath: string;
+  skipped: boolean;
 };
 
 export type InstalledContentItem = {

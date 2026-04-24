@@ -114,6 +114,39 @@ struct ForgeInstallResult {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+struct OptiFineVersionInfo {
+    id: String,
+    #[serde(rename = "gameVersion")]
+    game_version: String,
+    version: String,
+    #[serde(rename = "fileName")]
+    file_name: String,
+    #[serde(rename = "type")]
+    optifine_type: String,
+    patch: String,
+    #[serde(rename = "isPreview")]
+    is_preview: bool,
+    #[serde(rename = "forgeRequirement")]
+    forge_requirement: Option<String>,
+    compatibility: String,
+    #[serde(rename = "incompatibilityReason")]
+    incompatibility_reason: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct OptiFineInstallResult {
+    #[serde(rename = "versionId")]
+    version_id: String,
+    #[serde(rename = "optiFineVersion")]
+    opti_fine_version: String,
+    #[serde(rename = "fileName")]
+    file_name: String,
+    #[serde(rename = "installedPath")]
+    installed_path: String,
+    skipped: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
 struct ApiEnvelope<T> {
     success: bool,
     message: Option<String>,
@@ -156,6 +189,8 @@ struct MinecraftAccountPayload {
     refresh_token: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     xuid: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    skin_url: Option<String>,
     expires_at: i64,
     added_at: i64,
 }
@@ -247,6 +282,35 @@ struct MinecraftLoginResponse {
 struct MinecraftProfileResponse {
     id: String,
     name: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct MinecraftSessionProfileResponse {
+    #[serde(default)]
+    properties: Vec<MinecraftSessionProfileProperty>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct MinecraftSessionProfileProperty {
+    name: String,
+    value: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct MinecraftTexturesPayload {
+    #[serde(default)]
+    textures: MinecraftTextures,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+struct MinecraftTextures {
+    #[serde(rename = "SKIN")]
+    skin: Option<MinecraftSkinTexture>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct MinecraftSkinTexture {
+    url: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -663,6 +727,8 @@ struct InstanceImportResult {
     loader: String,
     #[serde(rename = "loaderVersion")]
     loader_version: Option<String>,
+    #[serde(rename = "optiFineVersion")]
+    opti_fine_version: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -674,6 +740,8 @@ struct InstanceRepairResult {
     loader: String,
     #[serde(rename = "loaderVersion")]
     loader_version: Option<String>,
+    #[serde(rename = "optiFineVersion")]
+    opti_fine_version: Option<String>,
     #[serde(rename = "reinstalledFromVersionId")]
     reinstalled_from_version_id: String,
 }
@@ -684,6 +752,7 @@ struct InstanceProfileMetadata {
     base_version: String,
     loader: String,
     loader_version: Option<String>,
+    opti_fine_version: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1707,6 +1776,7 @@ fn import_instance_archive_blocking(
         base_version: metadata.base_version,
         loader: metadata.loader,
         loader_version: metadata.loader_version,
+        opti_fine_version: metadata.opti_fine_version,
     })
 }
 
@@ -1836,6 +1906,7 @@ fn repair_instance_runtime_blocking(
         base_version: normalized_base_version,
         loader: normalized_loader,
         loader_version: resolved_loader_version,
+        opti_fine_version: None,
         reinstalled_from_version_id: source_version_id,
     })
 }
@@ -2184,8 +2255,11 @@ async fn poll_minecraft_device_login(
 #[tauri::command]
 async fn refresh_minecraft_account(
     refresh_token: String,
+    ipc_session: Option<String>,
 ) -> Result<MinecraftAccountPayload, String> {
-    tauri::async_runtime::spawn_blocking(move || refresh_minecraft_account_blocking(refresh_token))
+    tauri::async_runtime::spawn_blocking(move || {
+        refresh_minecraft_account_blocking(refresh_token, ipc_session.as_deref())
+    })
         .await
         .map_err(|e| format!("Failed to join Minecraft refresh task: {e}"))?
 }
@@ -5096,12 +5170,14 @@ fn parse_instance_profile_metadata(json_path: &Path) -> Result<InstanceProfileMe
         .or_else(|| detect_base_version_from_profile_id(&version_id, &loader))
         .unwrap_or_else(|| version_id.clone());
     let loader_version = detect_loader_version_from_profile_id(&version_id, &loader, &base_version);
+    let opti_fine_version = None;
 
     Ok(InstanceProfileMetadata {
         version_id,
         base_version,
         loader,
         loader_version,
+        opti_fine_version,
     })
 }
 
@@ -6797,6 +6873,66 @@ fn list_forge_versions_blocking_core(
 }
 
 #[tauri::command]
+async fn list_optifine_versions(
+    window: tauri::Window,
+    game_version: String,
+    loader: String,
+    loader_version: Option<String>,
+    download_source: Option<String>,
+) -> Result<Vec<OptiFineVersionInfo>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let normalized_game_version = game_version.trim().to_string();
+        if normalized_game_version.is_empty() {
+            return Err("Game version cannot be empty".to_string());
+        }
+        let normalized_loader = normalize_loader_kind(&loader)?;
+        minecraft_core::list_optifine_versions(
+            Some(&window),
+            &normalized_game_version,
+            &normalized_loader,
+            loader_version.as_deref(),
+            download_source.as_deref(),
+        )
+    })
+    .await
+    .map_err(|e| format!("Failed to join OptiFine version listing task: {e}"))?
+}
+
+#[tauri::command]
+async fn install_optifine(
+    window: tauri::Window,
+    game_dir: String,
+    version_id: String,
+    game_version: String,
+    loader: String,
+    loader_version: Option<String>,
+    optifine_version: String,
+    download_source: Option<String>,
+    ipc_session: Option<String>,
+) -> Result<OptiFineInstallResult, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let session = ipc_session.clone();
+        let game_dir_path = resolve_game_dir_path(&game_dir)?;
+        let normalized_loader = normalize_loader_kind(&loader)?;
+        let result = minecraft_core::install_optifine(
+            Some(&window),
+            &game_dir_path,
+            version_id.trim(),
+            game_version.trim(),
+            &normalized_loader,
+            loader_version.as_deref(),
+            optifine_version.trim(),
+            download_source.as_deref(),
+            ipc_session.as_deref(),
+        );
+        clear_install_cancel(session.as_deref());
+        result
+    })
+    .await
+    .map_err(|e| format!("Failed to join OptiFine install task: {e}"))?
+}
+
+#[tauri::command]
 async fn install_forge(
     window: tauri::Window,
     game_dir: String,
@@ -6882,6 +7018,45 @@ fn emit_log(window: Option<&tauri::Window>, level: &str, message: &str) {
     }
 }
 
+fn emit_launch_prepare_ipc(
+    session: Option<&str>,
+    event: &str,
+    phase: &str,
+    stage: &str,
+    current: Option<i32>,
+    total: Option<i32>,
+    message: &str,
+    error: Option<&str>,
+) {
+    let Some(session) = session.filter(|value| !value.trim().is_empty()) else {
+        return;
+    };
+    let mut payload = serde_json::Map::new();
+    payload.insert("channel".to_string(), serde_json::Value::String("launch-prepare".to_string()));
+    payload.insert("session".to_string(), serde_json::Value::String(session.trim().to_string()));
+    payload.insert("event".to_string(), serde_json::Value::String(event.to_string()));
+    payload.insert("phase".to_string(), serde_json::Value::String(phase.to_string()));
+    payload.insert("stage".to_string(), serde_json::Value::String(stage.to_string()));
+    if let Some(current) = current {
+        payload.insert("current".to_string(), serde_json::Value::Number(current.into()));
+    }
+    if let Some(total) = total {
+        payload.insert("total".to_string(), serde_json::Value::Number(total.into()));
+    }
+    if !message.trim().is_empty() {
+        payload.insert("message".to_string(), serde_json::Value::String(message.to_string()));
+    }
+    if let Some(error) = error.filter(|value| !value.trim().is_empty()) {
+        payload.insert("error".to_string(), serde_json::Value::String(error.to_string()));
+    }
+    let line = format!(
+        "[ipc]{}",
+        serde_json::to_string(&serde_json::Value::Object(payload))
+            .unwrap_or_else(|_| "{}".to_string())
+    );
+    push_ui_log("core", "stderr", &line);
+}
+
 fn strip_windows_verbatim_prefix(path: &Path) -> PathBuf {
     let raw = path.to_string_lossy();
     if cfg!(windows) {
@@ -6943,7 +7118,6 @@ fn install_mojang_java_runtime(
     let all_downloads: MojangJavaAllDownloads =
         fetch_json(window, "Mojang Java all.json", MOJANG_JAVA_ALL_JSON_URL)?;
     let platform_downloads = all_downloads
-        .downloads
         .get(platform)
         .ok_or_else(|| format!("Mojang runtime platform not found: {platform}"))?;
     let candidates = platform_downloads
@@ -7241,11 +7415,7 @@ struct MojangJavaComponentDownload {
     version: MojangJavaVersionName,
 }
 
-#[derive(Debug, Deserialize)]
-struct MojangJavaAllDownloads {
-    #[serde(default)]
-    downloads: HashMap<String, HashMap<String, Vec<MojangJavaComponentDownload>>>,
-}
+type MojangJavaAllDownloads = HashMap<String, HashMap<String, Vec<MojangJavaComponentDownload>>>;
 
 #[derive(Debug, Deserialize)]
 struct MojangJavaManifest {
@@ -7690,7 +7860,7 @@ fn start_minecraft_browser_login_blocking(app: AppHandle) -> Result<MinecraftAcc
     }
     let token: MicrosoftTokenSuccessResponse = serde_json::from_str(&text)
         .map_err(|e| format!("Failed to decode Microsoft authorization response: {e}"))?;
-    let result = complete_minecraft_microsoft_account(&client, token.access_token, token.refresh_token);
+    let result = complete_minecraft_microsoft_account(&client, token.access_token, token.refresh_token, None);
     close_auth_window(&app, &auth_window_label, Some(&auth_window_data_dir));
     result
 }
@@ -7724,6 +7894,7 @@ fn poll_minecraft_device_login_blocking(
             &client,
             token.access_token,
             token.refresh_token,
+            None,
         )?;
         return Ok(MinecraftDeviceLoginPollResult {
             status: "completed".to_string(),
@@ -7787,6 +7958,7 @@ fn poll_minecraft_device_login_blocking(
 
 fn refresh_minecraft_account_blocking(
     refresh_token: String,
+    ipc_session: Option<&str>,
 ) -> Result<MinecraftAccountPayload, String> {
     let trimmed_refresh_token = refresh_token.trim().to_string();
     if trimmed_refresh_token.is_empty() {
@@ -7794,6 +7966,16 @@ fn refresh_minecraft_account_blocking(
     }
     let (client_id, _) = resolve_minecraft_client_id()?;
     let client = build_minecraft_auth_http_client()?;
+    emit_launch_prepare_ipc(
+        ipc_session,
+        "progress",
+        "login",
+        "microsoft",
+        Some(1),
+        Some(5),
+        "Refreshing Microsoft login...",
+        None,
+    );
     let response = client
         .post("https://login.microsoftonline.com/consumers/oauth2/v2.0/token")
         .form(&[
@@ -7824,6 +8006,7 @@ fn refresh_minecraft_account_blocking(
         &client,
         token.access_token,
         token.refresh_token.or(Some(trimmed_refresh_token)),
+        ipc_session,
     )
 }
 
@@ -7831,7 +8014,18 @@ fn complete_minecraft_microsoft_account(
     client: &reqwest::blocking::Client,
     microsoft_access_token: String,
     refresh_token: Option<String>,
+    ipc_session: Option<&str>,
 ) -> Result<MinecraftAccountPayload, String> {
+    emit_launch_prepare_ipc(
+        ipc_session,
+        "progress",
+        "login",
+        "xbox",
+        Some(2),
+        Some(5),
+        "Authenticating with Xbox Live...",
+        None,
+    );
     let xbox_response = client
         .post("https://user.auth.xboxlive.com/user/authenticate")
         .json(&serde_json::json!({
@@ -7869,6 +8063,16 @@ fn complete_minecraft_microsoft_account(
         .filter(|value| !value.trim().is_empty())
         .ok_or_else(|| "Xbox Live authentication response did not include a user hash".to_string())?;
 
+    emit_launch_prepare_ipc(
+        ipc_session,
+        "progress",
+        "login",
+        "xsts",
+        Some(3),
+        Some(5),
+        "Authorizing XSTS token...",
+        None,
+    );
     let xsts_response = client
         .post("https://xsts.auth.xboxlive.com/xsts/authorize")
         .json(&serde_json::json!({
@@ -7904,6 +8108,16 @@ fn complete_minecraft_microsoft_account(
             xid: None,
         });
 
+    emit_launch_prepare_ipc(
+        ipc_session,
+        "progress",
+        "login",
+        "minecraft",
+        Some(4),
+        Some(5),
+        "Signing in to Minecraft Services...",
+        None,
+    );
     let minecraft_login_response = client
         .post("https://api.minecraftservices.com/authentication/login_with_xbox")
         .json(&serde_json::json!({
@@ -7959,6 +8173,16 @@ fn complete_minecraft_microsoft_account(
         );
     }
 
+    emit_launch_prepare_ipc(
+        ipc_session,
+        "progress",
+        "login",
+        "profile",
+        Some(5),
+        Some(5),
+        "Loading Minecraft profile...",
+        None,
+    );
     let profile_response = client
         .get("https://api.minecraftservices.com/minecraft/profile")
         .bearer_auth(&minecraft_login_payload.access_token)
@@ -7980,6 +8204,7 @@ fn complete_minecraft_microsoft_account(
     }
     let profile_payload: MinecraftProfileResponse = serde_json::from_str(&profile_text)
         .map_err(|e| format!("Failed to decode Minecraft profile response: {e}"))?;
+    let skin_url = fetch_minecraft_skin_url(client, &profile_payload.id).ok().flatten();
     let now = unix_timestamp_millis();
     let expires_at = now.saturating_add(
         i64::try_from(minecraft_login_payload.expires_in.saturating_mul(1000))
@@ -7993,9 +8218,56 @@ fn complete_minecraft_microsoft_account(
         access_token: minecraft_login_payload.access_token,
         refresh_token,
         xuid: xsts_user.xid.filter(|value| !value.trim().is_empty()),
+        skin_url,
         expires_at,
         added_at: now,
     })
+}
+
+fn fetch_minecraft_skin_url(
+    client: &reqwest::blocking::Client,
+    uuid: &str,
+) -> Result<Option<String>, String> {
+    let normalized_uuid = uuid.trim().replace('-', "");
+    if normalized_uuid.is_empty() {
+        return Ok(None);
+    }
+
+    let response = client
+        .get(format!(
+            "https://sessionserver.mojang.com/session/minecraft/profile/{normalized_uuid}"
+        ))
+        .send()
+        .map_err(|e| format!("Failed to fetch Minecraft session profile: {e}"))?;
+    let status = response.status();
+    let text = response
+        .text()
+        .map_err(|e| format!("Failed to read Minecraft session profile response: {e}"))?;
+    if !status.is_success() {
+        return Err(format!("Failed to fetch Minecraft session profile: HTTP {status}"));
+    }
+
+    let profile: MinecraftSessionProfileResponse = serde_json::from_str(&text)
+        .map_err(|e| format!("Failed to decode Minecraft session profile response: {e}"))?;
+    let Some(textures_property) = profile
+        .properties
+        .into_iter()
+        .find(|property| property.name == "textures")
+    else {
+        return Ok(None);
+    };
+
+    let decoded = base64::engine::general_purpose::STANDARD
+        .decode(textures_property.value)
+        .map_err(|e| format!("Failed to decode Minecraft textures payload: {e}"))?;
+    let textures_payload: MinecraftTexturesPayload = serde_json::from_slice(&decoded)
+        .map_err(|e| format!("Failed to parse Minecraft textures payload: {e}"))?;
+
+    Ok(textures_payload
+        .textures
+        .skin
+        .map(|skin| skin.url)
+        .filter(|url| !url.trim().is_empty()))
 }
 
 fn resolve_minecraft_redirect_url() -> Result<String, String> {
@@ -9683,7 +9955,9 @@ fn main() {
             list_fabric_loaders,
             install_fabric,
             list_forge_versions,
+            list_optifine_versions,
             install_forge,
+            install_optifine,
             poll_ui_logs,
             poll_game_runtime,
             is_version_installed,

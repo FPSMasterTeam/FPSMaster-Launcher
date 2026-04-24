@@ -4,7 +4,7 @@ use crate::{
 };
 use base64::Engine;
 use serde_json::{json, Map, Value};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
@@ -218,6 +218,20 @@ struct MavenCoordinates {
     group: String,
     artifact: String,
     version: String,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+struct OptiFineVersionListRow {
+    #[serde(rename = "mcversion")]
+    game_version: String,
+    #[serde(rename = "patch")]
+    patch: String,
+    #[serde(rename = "type")]
+    optifine_type: String,
+    #[serde(default)]
+    filename: Option<String>,
+    #[serde(default)]
+    forge: Option<String>,
 }
 
 impl MavenCoordinates {
@@ -765,6 +779,187 @@ pub(crate) fn list_forge_versions(
     Err(format!("No forge version source succeeded for {game_version}"))
 }
 
+pub(crate) fn list_optifine_versions(
+    window: Option<&tauri::Window>,
+    game_version: &str,
+    loader: &str,
+    loader_version: Option<&str>,
+    download_source_id: Option<&str>,
+) -> Result<Vec<crate::OptiFineVersionInfo>, String> {
+    let source = DownloadSource::from_id(download_source_id)?;
+    let payload = get_json_from_candidates(
+        window,
+        &source.pair_candidates(
+            "https://bmclapi2.bangbang93.com/optifine/versionlist".to_string(),
+            "https://bmclapi2.bangbang93.com/optifine/versionlist".to_string(),
+        ),
+        Some(DownloadSource::VERSION_LIST_TIMEOUT),
+    )?;
+    let rows: Vec<OptiFineVersionListRow> = serde_json::from_value(payload)
+        .map_err(|e| format!("Invalid OptiFine version list response: {e}"))?;
+    let normalized_game_version = normalize_optifine_game_version(game_version);
+    let normalized_loader = loader.trim().to_ascii_lowercase();
+    let normalized_loader_version = loader_version
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string);
+
+    let mut unique = HashSet::new();
+    let mut result = Vec::new();
+    for row in rows {
+        if normalize_optifine_game_version(&row.game_version) != normalized_game_version {
+            continue;
+        }
+        let version = format!("{}_{}", row.optifine_type.trim(), row.patch.trim());
+        if !unique.insert(version.clone()) {
+            continue;
+        }
+        let compatibility = resolve_optifine_compatibility(
+            &normalized_loader,
+            normalized_loader_version.as_deref(),
+            row.forge.as_deref(),
+        );
+        let is_preview = row.patch.starts_with("pre") || row.patch.starts_with("alpha");
+        let file_name = row
+            .filename
+            .clone()
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| {
+                if is_preview {
+                    format!(
+                        "preview_OptiFine_{}_{}.jar",
+                        normalize_optifine_game_version(&row.game_version),
+                        version
+                    )
+                } else {
+                    format!(
+                        "OptiFine_{}_{}.jar",
+                        normalize_optifine_game_version(&row.game_version),
+                        version
+                    )
+                }
+            });
+        result.push(crate::OptiFineVersionInfo {
+            id: format!("{}:{}", normalized_game_version, version),
+            game_version: normalized_game_version.clone(),
+            version,
+            file_name,
+            optifine_type: row.optifine_type.clone(),
+            patch: row.patch.clone(),
+            is_preview,
+            forge_requirement: row.forge.clone(),
+            compatibility: compatibility.0.to_string(),
+            incompatibility_reason: compatibility.1,
+        });
+    }
+
+    result.sort_by(|left, right| compare_optifine_versions(&right.version, &left.version));
+    Ok(result)
+}
+
+fn normalize_optifine_game_version(input: &str) -> String {
+    match input.trim() {
+        "1.8.0" => "1.8".to_string(),
+        "1.9.0" => "1.9".to_string(),
+        other => other.to_string(),
+    }
+}
+
+fn resolve_optifine_compatibility(
+    loader: &str,
+    loader_version: Option<&str>,
+    forge_requirement: Option<&str>,
+) -> (&'static str, Option<String>) {
+    if loader == "fabric" {
+        return (
+            "incompatible",
+            Some("OptiFine is not compatible with Fabric in this launcher.".to_string()),
+        );
+    }
+    if loader != "forge" {
+        return ("compatible", None);
+    }
+
+    let normalized_loader_version = loader_version.unwrap_or("").trim();
+    if normalized_loader_version.is_empty() {
+        return ("unknown", None);
+    }
+
+    let Some(requirement) = forge_requirement.map(str::trim).filter(|value| !value.is_empty()) else {
+        return (
+            "unknown",
+            Some("OptiFine did not provide a Forge compatibility hint.".to_string()),
+        );
+    };
+    if requirement.eq_ignore_ascii_case("Forge N/A") {
+        return (
+            "incompatible",
+            Some("This OptiFine release does not support Forge.".to_string()),
+        );
+    }
+    let Some(required_build) = requirement
+        .split('#')
+        .nth(1)
+        .or_else(|| requirement.split_whitespace().last())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return ("unknown", None);
+    };
+    let actual_build = normalized_loader_version.split('-').last().unwrap_or(normalized_loader_version);
+    if actual_build == required_build {
+        ("compatible", None)
+    } else {
+        (
+            "incompatible",
+            Some(format!(
+                "Requires Forge build {required_build}, but selected Forge is {actual_build}."
+            )),
+        )
+    }
+}
+
+fn compare_optifine_versions(left: &str, right: &str) -> std::cmp::Ordering {
+    let parse = |input: &str| -> Vec<String> {
+        input
+            .split(['_', '-'])
+            .filter(|item| !item.trim().is_empty())
+            .map(|item| item.trim().to_string())
+            .collect()
+    };
+    let left_parts = parse(left);
+    let right_parts = parse(right);
+    for index in 0..left_parts.len().max(right_parts.len()) {
+        let l = left_parts.get(index).map(String::as_str).unwrap_or("");
+        let r = right_parts.get(index).map(String::as_str).unwrap_or("");
+        if l == r {
+            continue;
+        }
+        let l_num = l.parse::<i32>().ok();
+        let r_num = r.parse::<i32>().ok();
+        match (l_num, r_num) {
+            (Some(a), Some(b)) if a != b => return a.cmp(&b),
+            _ => return l.cmp(r),
+        }
+    }
+    std::cmp::Ordering::Equal
+}
+
+fn resolve_version_runtime_dir(game_dir: &Path, version_id: &str) -> Result<PathBuf, String> {
+    let version = version_id.trim();
+    if version.is_empty() {
+        return Err("Version id is empty".to_string());
+    }
+    let runtime_dir = game_dir.join("versions").join(version);
+    fs::create_dir_all(&runtime_dir).map_err(|e| {
+        format!(
+            "Failed to create isolated runtime directory {}: {e}",
+            runtime_dir.display()
+        )
+    })?;
+    Ok(runtime_dir)
+}
+
 pub(crate) fn install_forge(
     window: Option<&tauri::Window>,
     game_dir: &Path,
@@ -953,6 +1148,152 @@ pub(crate) fn install_forge(
     })
 }
 
+pub(crate) fn install_optifine(
+    window: Option<&tauri::Window>,
+    game_dir: &Path,
+    version_id: &str,
+    game_version: &str,
+    loader: &str,
+    loader_version: Option<&str>,
+    requested_optifine_version: &str,
+    download_source_id: Option<&str>,
+    ipc_session: Option<&str>,
+) -> Result<crate::OptiFineInstallResult, String> {
+    install_cancel_error(ipc_session)?;
+    let normalized_version_id = version_id.trim();
+    let normalized_game_version = game_version.trim();
+    let normalized_loader = loader.trim().to_ascii_lowercase();
+    let normalized_optifine_version = requested_optifine_version.trim();
+    if normalized_version_id.is_empty() || normalized_game_version.is_empty() || normalized_optifine_version.is_empty() {
+        return Err("OptiFine install arguments cannot be empty".to_string());
+    }
+    if normalized_loader == "fabric" {
+        return Err("OptiFine cannot be installed together with Fabric".to_string());
+    }
+
+    let available = list_optifine_versions(
+        window,
+        normalized_game_version,
+        &normalized_loader,
+        loader_version,
+        download_source_id,
+    )?;
+    let selected = available
+        .into_iter()
+        .find(|item| item.version == normalized_optifine_version)
+        .ok_or_else(|| format!("OptiFine version not found: {normalized_optifine_version}"))?;
+    if selected.compatibility == "incompatible" {
+        return Err(
+            selected
+                .incompatibility_reason
+                .unwrap_or_else(|| "Selected OptiFine version is incompatible".to_string()),
+        );
+    }
+
+    emit_install_phase_start(
+        window,
+        ipc_session,
+        "optifine",
+        "prepare",
+        &format!("Prepare OptiFine install version={normalized_optifine_version}"),
+    );
+
+    let mods_dir = resolve_version_runtime_dir(game_dir, normalized_version_id)?.join("mods");
+    fs::create_dir_all(&mods_dir)
+        .map_err(|e| format!("Failed to create OptiFine mods dir {}: {e}", mods_dir.display()))?;
+
+    let target_path = mods_dir.join(&selected.file_name);
+    let artifact = DownloadArtifact::new(
+        "optifine",
+        "optifine",
+        "download",
+        &target_path,
+        "mod",
+    );
+    remove_existing_optifine_jars(&mods_dir, &target_path)?;
+
+    if target_path.is_file() {
+        emit_install_phase_complete(
+            window,
+            ipc_session,
+            "optifine",
+            "complete",
+            &format!("OptiFine already installed: {}", target_path.display()),
+        );
+        return Ok(crate::OptiFineInstallResult {
+            version_id: normalized_version_id.to_string(),
+            opti_fine_version: selected.version,
+            file_name: selected.file_name,
+            installed_path: target_path.to_string_lossy().to_string(),
+            skipped: true,
+        });
+    }
+
+    let download_url = build_optifine_download_url(normalized_game_version, &selected.optifine_type, &selected.patch);
+    let source = DownloadSource::from_id(download_source_id)?;
+    let urls = source.pair_candidates(download_url.clone(), download_url);
+    let fetched = download_file_with_ipc(
+        window,
+        ipc_session,
+        &urls,
+        &target_path,
+        None,
+        "optifine",
+        &artifact,
+    )?;
+    if !fetched && !target_path.is_file() {
+        return Err("OptiFine download was skipped but target file is missing".to_string());
+    }
+
+    emit_install_phase_complete(
+        window,
+        ipc_session,
+        "optifine",
+        "complete",
+        &format!("OptiFine install completed file={}", target_path.display()),
+    );
+    Ok(crate::OptiFineInstallResult {
+        version_id: normalized_version_id.to_string(),
+        opti_fine_version: selected.version,
+        file_name: selected.file_name,
+        installed_path: target_path.to_string_lossy().to_string(),
+        skipped: false,
+    })
+}
+
+fn build_optifine_download_url(game_version: &str, optifine_type: &str, patch: &str) -> String {
+    let lookup_version = match game_version.trim() {
+        "1.8" => "1.8.0".to_string(),
+        "1.9" => "1.9.0".to_string(),
+        other => other.to_string(),
+    };
+    format!(
+        "https://bmclapi2.bangbang93.com/optifine/{lookup_version}/{}/{patch}",
+        optifine_type.trim()
+    )
+}
+
+fn remove_existing_optifine_jars(mods_dir: &Path, keep_path: &Path) -> Result<(), String> {
+    if !mods_dir.exists() {
+        return Ok(());
+    }
+    let read_dir = fs::read_dir(mods_dir)
+        .map_err(|e| format!("Failed to inspect mods dir {}: {e}", mods_dir.display()))?;
+    for entry in read_dir {
+        let entry = entry.map_err(|e| format!("Failed to inspect OptiFine candidate: {e}"))?;
+        let path = entry.path();
+        if path == keep_path || !path.is_file() {
+            continue;
+        }
+        let name = path.file_name().and_then(|value| value.to_str()).unwrap_or("");
+        if name.to_ascii_lowercase().contains("optifine") {
+            fs::remove_file(&path)
+                .map_err(|e| format!("Failed to remove existing OptiFine jar {}: {e}", path.display()))?;
+        }
+    }
+    Ok(())
+}
+
 pub(crate) fn build_vanilla_launch_plan(
     window: Option<&tauri::Window>,
     request: &VanillaLaunchRequest,
@@ -1034,6 +1375,7 @@ pub(crate) fn build_vanilla_launch_plan(
     } else {
         Vec::new()
     };
+    ensure_default_resolution_args(&mut game_args, &variables);
 
     if let Some(server) = request
         .server_address
@@ -1219,6 +1561,26 @@ fn merge_arguments(
         }
     }
     merged
+}
+
+fn ensure_default_resolution_args(game_args: &mut Vec<String>, variables: &HashMap<String, String>) {
+    if game_args.iter().any(|arg| arg == "--width" || arg == "--height") {
+        return;
+    }
+    let width = variables
+        .get("${resolution_width}")
+        .cloned()
+        .unwrap_or_else(|| "1200".to_string());
+    let height = variables
+        .get("${resolution_height}")
+        .cloned()
+        .unwrap_or_else(|| "700".to_string());
+    game_args.extend([
+        "--width".to_string(),
+        width,
+        "--height".to_string(),
+        height,
+    ]);
 }
 
 fn build_rule_features() -> HashMap<String, bool> {
@@ -1469,7 +1831,7 @@ fn build_variables(
     );
     variables.insert("${library_directory}".to_string(), request.game_dir.join("libraries").to_string_lossy().to_string());
     variables.insert("${resolution_width}".to_string(), "1200".to_string());
-    variables.insert("${resolution_height}".to_string(), "680".to_string());
+    variables.insert("${resolution_height}".to_string(), "700".to_string());
     variables.insert("${classpath_separator}".to_string(), classpath_separator().to_string());
     variables.insert(
         "${primary_jar}".to_string(),
@@ -3016,6 +3378,8 @@ mod tests {
         assert!(!plan.plan.command.contains(&"--demo".to_string()));
         assert!(plan.plan.command.contains(&"--username".to_string()));
         assert!(plan.plan.command.contains(&"Player".to_string()));
+        assert!(plan.plan.command.windows(2).any(|args| args == ["--width", "1200"]));
+        assert!(plan.plan.command.windows(2).any(|args| args == ["--height", "700"]));
         assert!(plan.natives_dir.starts_with(version_dir.join("natives")));
     }
 

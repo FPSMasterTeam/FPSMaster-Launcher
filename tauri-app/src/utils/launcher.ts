@@ -24,7 +24,7 @@ import type {
 
 export function createPhaseState(
   title: string,
-  sourcePhase: "vanilla" | "forge" | "fabric"
+  sourcePhase: "vanilla" | "forge" | "fabric" | "optifine"
 ): InstallPhaseState {
   return {
     title,
@@ -75,6 +75,7 @@ export function createLaunchPrepareDialogState(
     canClose: false,
     errorText: "",
     phases: [
+      createLaunchPreparePhaseState("login", phaseTitles.login, waitingText),
       {
         ...createLaunchPreparePhaseState("check-instance", phaseTitles["check-instance"], initialMessage),
         status: "running",
@@ -83,6 +84,7 @@ export function createLaunchPrepareDialogState(
       createLaunchPreparePhaseState("vanilla", phaseTitles.vanilla, waitingText),
       createLaunchPreparePhaseState("fabric", phaseTitles.fabric, waitingText),
       createLaunchPreparePhaseState("forge", phaseTitles.forge, waitingText),
+      createLaunchPreparePhaseState("optifine", phaseTitles.optifine, waitingText),
       createLaunchPreparePhaseState("runtime", phaseTitles.runtime, waitingText),
       createLaunchPreparePhaseState("launch", phaseTitles.launch, waitingText)
     ]
@@ -355,11 +357,6 @@ export function applyTheme(mode: ThemeMode, accent: ThemeAccent, customAccentHex
   root.style.setProperty("--custom-accent-rgb", `${rgb.r}, ${rgb.g}, ${rgb.b}`);
 }
 
-export function resolveMinecraftAvatarUrl(account: MinecraftAccount | null | undefined, size = 72): string {
-  const identifier = account?.uuid?.trim() || account?.username?.trim() || "Steve";
-  return `https://mc-heads.net/avatar/${encodeURIComponent(identifier)}/${Math.max(16, Math.round(size))}`;
-}
-
 function normalizeHexColor(input: string): string | null {
   const value = input.trim();
   if (/^#[0-9a-fA-F]{6}$/.test(value)) {
@@ -416,7 +413,8 @@ function withPresetInstances(instances: Instance[]): Instance[] {
     return {
       ...preset,
       versionId: saved.versionId || preset.versionId,
-      loaderVersion: saved.loaderVersion
+      loaderVersion: saved.loaderVersion,
+      optiFineVersion: saved.optiFineVersion
     };
   });
   const custom = instances

@@ -4,7 +4,6 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useI18n } from "../i18n";
 import type { MinecraftAccount, MinecraftAuthConfig } from "../types";
-import { resolveMinecraftAvatarUrl } from "../utils/launcher";
 
 type MinecraftProfileCardProps = {
   accounts: MinecraftAccount[];
@@ -89,7 +88,7 @@ export default function MinecraftProfileCard({
   const displayAccount = currentAccount ?? accounts[0] ?? null;
   const profileTitle = displayAccount?.username?.trim() || t("minecraftAccount.emptyTitle");
   const profileSubtitle = displayAccount ? t(`minecraftAccount.type.${displayAccount.type}` as const) : t("minecraftAccount.emptySubtitle");
-  const avatarUrl = useMemo(() => resolveMinecraftAvatarUrl(displayAccount), [displayAccount]);
+  const skinUrl = useMemo(() => resolveMinecraftSkinUrl(displayAccount), [displayAccount]);
 
   function resetDialogState(nextMode: AccountDialogMode = "offline") {
     setMode(nextMode);
@@ -144,7 +143,7 @@ export default function MinecraftProfileCard({
           className={`minecraft-profile-card ${open ? "is-open" : ""}`}
           onClick={() => setOpen((value) => !value)}
         >
-          <img src={avatarUrl} alt={profileTitle} className="minecraft-profile-avatar" />
+          <MinecraftAvatar skinUrl={skinUrl} title={profileTitle} className="minecraft-profile-avatar" />
           <div className="minecraft-profile-copy">
             <p className="minecraft-profile-name">{profileTitle}</p>
             <p className="minecraft-profile-subtitle">{profileSubtitle}</p>
@@ -176,7 +175,7 @@ export default function MinecraftProfileCard({
                     tabIndex={0}
                   >
                     <div className="minecraft-account-row-main">
-                      <img src={resolveMinecraftAvatarUrl(account, 56)} alt={account.username} className="minecraft-account-row-avatar" />
+                      <MinecraftAvatar skinUrl={resolveMinecraftSkinUrl(account)} title={account.username} className="minecraft-account-row-avatar" />
                       <div className="minecraft-account-row-copy">
                         <div className="minecraft-account-row-title">
                           <span className="truncate">{account.username}</span>
@@ -333,4 +332,30 @@ async function loadMinecraftAuthConfig(): Promise<MinecraftAuthConfig> {
 
 async function startMinecraftBrowserLogin(): Promise<MinecraftAccount> {
   return invoke<MinecraftAccount>("start_minecraft_browser_login");
+}
+
+function resolveMinecraftSkinUrl(account: MinecraftAccount | null | undefined): string | null {
+  return account?.skinUrl?.trim() || null;
+}
+
+function MinecraftAvatar({ skinUrl, title, className }: { skinUrl: string | null; title: string; className: string }) {
+  const [failed, setFailed] = useState(false);
+  const showSkin = skinUrl && !failed;
+
+  useEffect(() => {
+    setFailed(false);
+  }, [skinUrl]);
+
+  return (
+    <span className={`${className} minecraft-avatar-frame`} aria-label={title} role="img">
+      {showSkin ? (
+        <>
+          <img src={skinUrl} alt="" className="minecraft-avatar-face" onError={() => setFailed(true)} />
+          <img src={skinUrl} alt="" className="minecraft-avatar-overlay" onError={() => setFailed(true)} />
+        </>
+      ) : (
+        <span className="minecraft-avatar-fallback" />
+      )}
+    </span>
+  );
 }

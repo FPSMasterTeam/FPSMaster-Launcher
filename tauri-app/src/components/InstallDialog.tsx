@@ -27,6 +27,7 @@ export default function InstallDialog({ dialog, onClose, onCancel }: InstallDial
           <div className="installDialogPhaseStack">
             <InstallPhaseView phase={dialog.vanilla} />
             {dialog.loaderPhase && <InstallPhaseView phase={dialog.loaderPhase} />}
+            {dialog.optiFinePhase && <InstallPhaseView phase={dialog.optiFinePhase} />}
           </div>
           {dialog.errorText !== "" && <pre className="errorBox installDialogErrorBox">{dialog.errorText}</pre>}
         </div>
