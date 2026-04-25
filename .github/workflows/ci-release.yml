@@ -231,7 +231,7 @@ jobs:
             "fileSize": ${{ needs.build.outputs.file_size }},
             "checksum": "${{ needs.build.outputs.checksum }}",
             "recommended": true,
-            "mandatory": false,
+            "mandatory": true,
             "target": "${TARGET}",
             "changelog": ${changelog_json}
           }
