@@ -24,7 +24,8 @@ use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindow, WebviewWindo
 #[cfg(target_os = "macos")]
 use tauri_plugin_autostart::MacosLauncher;
 use tauri_plugin_autostart::ManagerExt;
-use xz2::read::XzDecoder;
+use xz2::bufread::XzDecoder;
+use xz2::stream::Stream;
 #[cfg(windows)]
 use windows::core::{HSTRING, PWSTR};
 #[cfg(windows)]
@@ -7336,10 +7337,35 @@ fn download_mojang_runtime_file(
         )?;
         let temp_output = target.with_extension("tmp");
         let input = fs::File::open(&temp_lzma).map_err(|e| e.to_string())?;
-        let mut decoder = XzDecoder::new(input);
+        let stream = Stream::new_auto_decoder(u64::MAX, 0).map_err(|e| e.to_string())?;
+        let mut decoder = XzDecoder::new_stream(BufReader::new(input), stream);
         let mut output = fs::File::create(&temp_output).map_err(|e| e.to_string())?;
-        std::io::copy(&mut decoder, &mut output).map_err(|e| e.to_string())?;
-        output.flush().map_err(|e| e.to_string())?;
+        if let Err(error) = std::io::copy(&mut decoder, &mut output) {
+            let _ = fs::remove_file(&temp_output);
+            return Err(error.to_string());
+        }
+        if let Err(error) = output.flush() {
+            let _ = fs::remove_file(&temp_output);
+            return Err(error.to_string());
+        }
+        drop(output);
+        if let Some(raw) = entry.downloads.get("raw") {
+            let sha1 = match compute_sha1_hex(&temp_output) {
+                Ok(sha1) => sha1,
+                Err(error) => {
+                    let _ = fs::remove_file(&temp_output);
+                    return Err(error);
+                }
+            };
+            if !sha1.eq_ignore_ascii_case(&raw.sha1) {
+                let _ = fs::remove_file(&temp_output);
+                return Err(format!(
+                    "SHA1 mismatch after decompressing Mojang runtime {}: expected={} actual={sha1}",
+                    target.display(),
+                    raw.sha1
+                ));
+            }
+        }
         fs::rename(&temp_output, target).map_err(|e| e.to_string())?;
         let _ = fs::remove_file(&temp_lzma);
     } else if let Some(raw) = entry.downloads.get("raw") {
