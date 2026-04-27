@@ -1,8 +1,8 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "launcher-default",
-  "description": "Default IPC and window permissions for launcher windows.",
-  "windows": ["*"],
+  "description": "IPC and window permissions for the main launcher window only. The Microsoft OAuth window (label minecraft-auth-*) intentionally has no capabilities so the embedded login page cannot reach launcher IPC.",
+  "windows": ["main"],
   "permissions": [
     "core:default",
     "dialog:default",

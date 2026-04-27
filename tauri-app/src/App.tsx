@@ -98,6 +98,7 @@ import {
   resolveBackgroundAssetUrl,
   resolveInstallVersion
 } from "./utils/launcher";
+import { loadSecureRaw, persistSecureJson } from "./utils/secureStorage";
 
 type LauncherAuthState = {
   token: string;
@@ -154,14 +155,13 @@ function Launcher() {
     localStorage.getItem(STORAGE_KEYS.selected) ?? PRESET_INSTANCES[0].id
   );
   const [settings, setSettings] = useState<Settings>(loadSettings);
-  const [minecraftAccounts, setMinecraftAccounts] = useState<MinecraftAccount[]>(() =>
-    loadMinecraftAccounts(loadSettings().playerName)
-  );
+  const [minecraftAccounts, setMinecraftAccounts] = useState<MinecraftAccount[]>([]);
   const [selectedMinecraftAccountId, setSelectedMinecraftAccountId] = useState<string | null>(() =>
     loadSelectedMinecraftAccountId()
   );
-  const [launcherAuth, setLauncherAuth] = useState<LauncherAuthState | null>(loadLauncherAuthState);
-  const [launcherLoginPrefs, setLauncherLoginPrefs] = useState<LauncherLoginPrefs>(loadLauncherLoginPrefs);
+  const [launcherAuth, setLauncherAuth] = useState<LauncherAuthState | null>(null);
+  const [launcherLoginPrefs, setLauncherLoginPrefs] = useState<LauncherLoginPrefs>(DEFAULT_LOGIN_PREFS);
+  const [secureStorageReady, setSecureStorageReady] = useState(false);
   const [launcherVersions, setLauncherVersions] = useState<LauncherVersionMap>(EMPTY_LAUNCHER_VERSIONS);
   const [currentLauncherVersion, setCurrentLauncherVersion] = useState(FALLBACK_LAUNCHER_VERSION);
   const [launcherNews, setLauncherNews] = useState<NewsItem[]>([]);
@@ -308,8 +308,35 @@ function Launcher() {
   }, [settings]);
 
   useEffect(() => {
-    localStorage.setItem(STORAGE_KEYS.minecraftAccounts, JSON.stringify(minecraftAccounts));
-  }, [minecraftAccounts]);
+    let cancelled = false;
+    (async () => {
+      const [authRaw, prefsRaw, accountsRaw] = await Promise.all([
+        loadSecureRaw(STORAGE_KEYS.launcherAuth),
+        loadSecureRaw(STORAGE_KEYS.launcherLoginPrefs),
+        loadSecureRaw(STORAGE_KEYS.minecraftAccounts)
+      ]);
+      if (cancelled) return;
+      setLauncherAuth(authRaw === null ? null : parseLauncherAuthState(authRaw));
+      setLauncherLoginPrefs(prefsRaw === null ? DEFAULT_LOGIN_PREFS : parseLauncherLoginPrefs(prefsRaw));
+      const fallbackPlayerName = settings.playerName.trim() || "Player";
+      const accounts = accountsRaw === null ? [] : parseMinecraftAccounts(accountsRaw);
+      setMinecraftAccounts(
+        accounts.length > 0 ? accounts : [createOfflineMinecraftAccount(fallbackPlayerName)]
+      );
+      setSecureStorageReady(true);
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    if (!secureStorageReady) return;
+    void persistSecureJson(STORAGE_KEYS.minecraftAccounts, minecraftAccounts).catch((error) => {
+      console.warn("[secure-storage] failed to persist minecraftAccounts:", error);
+    });
+  }, [minecraftAccounts, secureStorageReady]);
 
   useEffect(() => {
     if (selectedMinecraftAccountId) {
@@ -320,16 +347,24 @@ function Launcher() {
   }, [selectedMinecraftAccountId]);
 
   useEffect(() => {
-    if (launcherAuth) {
-      localStorage.setItem(STORAGE_KEYS.launcherAuth, JSON.stringify(launcherAuth));
-      return;
-    }
-    localStorage.removeItem(STORAGE_KEYS.launcherAuth);
-  }, [launcherAuth]);
+    if (!secureStorageReady) return;
+    void persistSecureJson(STORAGE_KEYS.launcherAuth, launcherAuth).catch((error) => {
+      console.warn("[secure-storage] failed to persist launcherAuth:", error);
+    });
+  }, [launcherAuth, secureStorageReady]);
 
   useEffect(() => {
-    localStorage.setItem(STORAGE_KEYS.launcherLoginPrefs, JSON.stringify(launcherLoginPrefs));
-  }, [launcherLoginPrefs]);
+    if (!secureStorageReady) return;
+    void persistSecureJson(STORAGE_KEYS.launcherLoginPrefs, launcherLoginPrefs).catch((error) => {
+      console.warn("[secure-storage] failed to persist launcherLoginPrefs:", error);
+    });
+  }, [launcherLoginPrefs, secureStorageReady]);
+
+  useEffect(() => {
+    if (secureStorageReady) {
+      window.dispatchEvent(new Event("fpsmaster:loaded"));
+    }
+  }, [secureStorageReady]);
 
   useEffect(() => {
     if (!launcherAuth?.token) {
@@ -1667,12 +1702,12 @@ function Launcher() {
           const selectedOptiFine = selectDefaultOptiFineVersion(optiFineVersions);
           const latestOptiFine = selectedOptiFine?.version ?? "";
           const requiredForgeBuild = parseOptiFineForgeBuild(selectedOptiFine?.forgeRequirement);
-          if (workingInstance.loader === "forge" && requiredForgeBuild && getForgeBuild(workingInstance.loaderVersion ?? "") !== requiredForgeBuild) {
+          if (workingInstance.loader === "forge" && requiredForgeBuild && !matchesForgeBuildRequirement(workingInstance.loaderVersion ?? "", requiredForgeBuild)) {
             const forgeVersions = await invoke<string[]>("list_forge_versions", {
               gameVersion: workingInstance.baseVersion,
               downloadSource: settings.downloadSource
             });
-            const compatibleForgeVersion = forgeVersions.find((version) => getForgeBuild(version) === requiredForgeBuild) ?? "";
+            const compatibleForgeVersion = forgeVersions.find((version) => matchesForgeBuildRequirement(version, requiredForgeBuild)) ?? "";
             if (!compatibleForgeVersion) {
               throw new Error(`No Forge build ${requiredForgeBuild} available for ${workingInstance.baseVersion}`);
             }
@@ -1798,7 +1833,7 @@ function Launcher() {
           const requiredForgeBuild = parseOptiFineForgeBuild(selectedOptiFine?.forgeRequirement);
           nextOptiFineVersion = selectedOptiFine?.version ?? "";
           nextLoaderVersion = requiredForgeBuild
-            ? forgeVersions.find((version) => getForgeBuild(version) === requiredForgeBuild) ?? ""
+            ? forgeVersions.find((version) => matchesForgeBuildRequirement(version, requiredForgeBuild)) ?? ""
             : "";
         }
         nextLoaderVersion ||= forgeVersions[0] ?? "";
@@ -3432,8 +3467,16 @@ function selectDefaultOptiFineVersion(versions: OptiFineVersion[]): OptiFineVers
     ?? versions.find((item) => item.compatibility !== "incompatible");
 }
 
-function getForgeBuild(version: string): string {
-  return version.trim().split("-").at(-1)?.trim() || "";
+function matchesForgeBuildRequirement(forgeVersion: string, requirement: string): boolean {
+  const trimmedRequirement = requirement.trim();
+  if (!trimmedRequirement) return false;
+  const trimmedVersion = forgeVersion.trim();
+  if (!trimmedVersion) return false;
+  const parts = trimmedVersion.split("-");
+  const forgePart = parts.length >= 2 ? parts[1] : parts[0];
+  if (forgePart === trimmedRequirement) return true;
+  const buildNumber = forgePart.split(".").at(-1) ?? "";
+  return buildNumber === trimmedRequirement;
 }
 
 function translateLaunchPrepareMessage(
@@ -3589,10 +3632,8 @@ async function openMonitor(pid: number, instanceName: string, cursor: number, lo
   return win;
 }
 
-function loadLauncherAuthState(): LauncherAuthState | null {
+function parseLauncherAuthState(raw: string): LauncherAuthState | null {
   try {
-    const raw = localStorage.getItem(STORAGE_KEYS.launcherAuth);
-    if (!raw) return null;
     const parsed = JSON.parse(raw) as Partial<LauncherAuthState>;
     const token = normalizeStoredToken(parsed?.token);
     if (!parsed || !token) {
@@ -3607,10 +3648,8 @@ function loadLauncherAuthState(): LauncherAuthState | null {
   }
 }
 
-function loadLauncherLoginPrefs(): LauncherLoginPrefs {
+function parseLauncherLoginPrefs(raw: string): LauncherLoginPrefs {
   try {
-    const raw = localStorage.getItem(STORAGE_KEYS.launcherLoginPrefs);
-    if (!raw) return DEFAULT_LOGIN_PREFS;
     const parsed = JSON.parse(raw) as Partial<LauncherLoginPrefs>;
     const rememberPassword = Boolean(parsed?.rememberPassword);
     return {
@@ -3624,26 +3663,18 @@ function loadLauncherLoginPrefs(): LauncherLoginPrefs {
   }
 }
 
-function loadMinecraftAccounts(fallbackPlayerName: string): MinecraftAccount[] {
+function parseMinecraftAccounts(raw: string): MinecraftAccount[] {
   try {
-    const raw = localStorage.getItem(STORAGE_KEYS.minecraftAccounts);
-    if (!raw) {
-      return [createOfflineMinecraftAccount(fallbackPlayerName.trim() || "Player")];
-    }
     const parsed = JSON.parse(raw) as unknown;
     if (!Array.isArray(parsed)) {
-      return [createOfflineMinecraftAccount(fallbackPlayerName.trim() || "Player")];
+      return [];
     }
-    const accounts = parsed
+    return parsed
       .map(normalizeMinecraftAccount)
       .filter((value): value is MinecraftAccount => value !== null);
-    if (accounts.length > 0) {
-      return accounts;
-    }
   } catch {
-    // Ignore malformed minecraft account storage
+    return [];
   }
-  return [createOfflineMinecraftAccount(fallbackPlayerName.trim() || "Player")];
 }
 
 function loadSelectedMinecraftAccountId(): string | null {
