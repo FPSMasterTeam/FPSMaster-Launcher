@@ -1,6 +1,9 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod minecraft_core;
+mod secure_storage;
+
+use secure_storage::{secure_storage_delete, secure_storage_get, secure_storage_set};
 
 use base64::Engine;
 use rand::RngCore;
@@ -8340,8 +8343,23 @@ fn bind_minecraft_redirect_listener(redirect_url: &str) -> Result<TcpListener, S
         .port_or_known_default()
         .ok_or_else(|| "Minecraft redirect URL is missing port".to_string())?;
     let bind_target = format!("{host}:{port}");
-    let listener = TcpListener::bind(&bind_target)
-        .map_err(|e| format!("Failed to bind Minecraft OAuth redirect listener on {bind_target}: {e}"))?;
+    let listener = TcpListener::bind(&bind_target).map_err(|e| {
+        let kind = e.kind();
+        if matches!(
+            kind,
+            std::io::ErrorKind::AddrInUse | std::io::ErrorKind::PermissionDenied
+        ) {
+            format!(
+                "Cannot bind the Microsoft OAuth callback listener on {bind_target} ({e}). \
+                 The port is already in use (port {port} is the Windows Remote Desktop port by default). \
+                 Override the redirect URL by setting the FPSMASTER_MINECRAFT_REDIRECT_URL environment \
+                 variable to e.g. http://localhost:43289/oauth, then make sure the same redirect URI is \
+                 registered in your Microsoft Entra application."
+            )
+        } else {
+            format!("Failed to bind Minecraft OAuth redirect listener on {bind_target}: {e}")
+        }
+    })?;
     listener
         .set_nonblocking(true)
         .map_err(|e| format!("Failed to configure Minecraft OAuth redirect listener: {e}"))?;
@@ -8826,7 +8844,7 @@ fn parse_launcher_versions_response(
     status: reqwest::StatusCode,
     body: &str,
 ) -> Result<Vec<LauncherVersion>, String> {
-    let trimmed_body = body.trim();
+    let trimmed_body = body.trim_start_matches('\u{feff}').trim();
     if trimmed_body.is_empty() {
         if status.is_success() {
             return Ok(Vec::new());
@@ -8837,16 +8855,54 @@ fn parse_launcher_versions_response(
         ));
     }
 
-    if let Ok(items) = parse_api_envelope::<Vec<LauncherVersion>>(status, trimmed_body, "versions list") {
-        return Ok(items);
-    }
+    let value: serde_json::Value = match serde_json::from_str(trimmed_body) {
+        Ok(value) => value,
+        Err(err) => {
+            let preview = response_body_preview(trimmed_body);
+            if !status.is_success() {
+                return Err(format!(
+                    "versions list failed with HTTP {}: {preview}",
+                    status.as_u16()
+                ));
+            }
+            return Err(format!(
+                "Invalid versions list response (not JSON, {err}): {preview}"
+            ));
+        }
+    };
 
-    let value: serde_json::Value = serde_json::from_str(trimmed_body)
-        .map_err(|e| format!("Invalid versions list response JSON: {e}"))?;
+    if let Ok(envelope) =
+        serde_json::from_value::<ApiEnvelope<Vec<LauncherVersion>>>(value.clone())
+    {
+        if !status.is_success() || !envelope.success {
+            let is_auth_error = status.as_u16() == 401 || status.as_u16() == 403;
+            let message = envelope
+                .message
+                .and_then(|value| {
+                    let trimmed = value.trim().to_string();
+                    (!trimmed.is_empty()).then_some(trimmed)
+                })
+                .or_else(|| find_error_message_in_value(&value))
+                .map(|msg| {
+                    if is_auth_error {
+                        format!("HTTP {} - {}", status.as_u16(), msg)
+                    } else {
+                        msg
+                    }
+                })
+                .unwrap_or_else(|| {
+                    format!("versions list failed with HTTP {}", status.as_u16())
+                });
+            return Err(message);
+        }
+        if let Some(data) = envelope.data {
+            return Ok(data);
+        }
+    }
 
     if !status.is_success() {
         let is_auth_error = status.as_u16() == 401 || status.as_u16() == 403;
-        if let Some(msg) = extract_api_error_message(trimmed_body) {
+        if let Some(msg) = find_error_message_in_value(&value) {
             if is_auth_error {
                 return Err(format!("HTTP {} - {}", status.as_u16(), msg));
             }
@@ -8860,6 +8916,16 @@ fn parse_launcher_versions_response(
 
     extract_launcher_versions(&value)
         .ok_or_else(|| "versions list response missing data".to_string())
+}
+
+fn response_body_preview(body: &str) -> String {
+    const LIMIT: usize = 200;
+    let mut preview: String = body.chars().take(LIMIT).collect();
+    preview = preview.replace(['\n', '\r', '\t'], " ");
+    if body.chars().count() > LIMIT {
+        preview.push('…');
+    }
+    preview
 }
 
 fn parse_launcher_news_response(
@@ -10005,7 +10071,10 @@ fn main() {
             quit_launcher_app,
             configure_tray_behavior,
             set_launch_on_startup,
-            terminate_game_process
+            terminate_game_process,
+            secure_storage_get,
+            secure_storage_set,
+            secure_storage_delete
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

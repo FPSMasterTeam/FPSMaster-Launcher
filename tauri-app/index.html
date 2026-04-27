@@ -90,21 +90,5 @@
 
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
-    <script>
-      // Hide loading screen when React app is ready
-      window.addEventListener('load', () => {
-        requestAnimationFrame(() => {
-          const loadingScreen = document.getElementById('loading-screen');
-          const root = document.getElementById('root');
-          if (loadingScreen) {
-            loadingScreen.classList.add('hidden');
-            if (root) root.classList.add('ready');
-            setTimeout(() => {
-              loadingScreen.remove();
-            }, 300);
-          }
-        });
-      });
-    </script>
   </body>
 </html>

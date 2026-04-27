@@ -4,25 +4,26 @@ version = "0.3.4"
 edition = "2021"
 
 [build-dependencies]
-tauri-build = { version = "2.0.4", features = [] }
+tauri-build = { version = "2.4", features = [] }
 
 [dependencies]
 base64 = "0.22"
-flate2 = "1.1.5"
+flate2 = "1.1"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "gif", "bmp", "webp"] }
+keyring = { version = "3", features = ["windows-native", "apple-native", "linux-native-sync-persistent", "crypto-rust"] }
 rand = "0.8"
-reqwest = { version = "0.12.24", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+reqwest = { version = "0.12.28", default-features = false, features = ["blocking", "json", "rustls-tls"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-sha1 = "0.10.6"
-sha2 = "0.10.9"
-tar = "0.4.44"
-tauri = { version = "2.1.1", features = ["tray-icon", "image-png"] }
+sha1 = "0.10"
+sha2 = "0.10"
+tar = "0.4"
+tauri = { version = "2.10", features = ["tray-icon", "image-png"] }
 tauri-plugin-autostart = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-single-instance = "2"
-xz2 = "0.1.7"
-zip = { version = "2.2.2", default-features = false, features = ["deflate"] }
+xz2 = "0.1"
+zip = { version = "2.4", default-features = false, features = ["deflate"] }
 windows = { version = "0.58", features = [
   "Win32_Foundation",
   "Win32_Graphics_Gdi",
