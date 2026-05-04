@@ -906,14 +906,21 @@ fn resolve_optifine_compatibility(
     else {
         return ("unknown", None);
     };
-    let actual_build = normalized_loader_version.split('-').last().unwrap_or(normalized_loader_version);
-    if actual_build == required_build {
+    let forge_version_part = normalized_loader_version
+        .split('-')
+        .nth(1)
+        .unwrap_or(normalized_loader_version);
+    let build_number = forge_version_part
+        .split('.')
+        .last()
+        .unwrap_or(forge_version_part);
+    if forge_version_part == required_build || build_number == required_build {
         ("compatible", None)
     } else {
         (
             "incompatible",
             Some(format!(
-                "Requires Forge build {required_build}, but selected Forge is {actual_build}."
+                "Requires Forge build {required_build}, but selected Forge is {forge_version_part}."
             )),
         )
     }
