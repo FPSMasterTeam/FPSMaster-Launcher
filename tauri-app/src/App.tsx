@@ -1696,7 +1696,7 @@ function Launcher() {
           const optiFineVersions = await invoke<OptiFineVersion[]>("list_optifine_versions", {
             gameVersion: workingInstance.baseVersion,
             loader: workingInstance.loader,
-            loaderVersion: workingInstance.loaderVersion,
+            loaderVersion: workingInstance.loader === "forge" ? null : workingInstance.loaderVersion,
             downloadSource: settings.downloadSource
           });
           const selectedOptiFine = selectDefaultOptiFineVersion(optiFineVersions);
@@ -1817,26 +1817,35 @@ function Launcher() {
       nextVersionId = fabric.profileId;
       markLaunchPreparePhase("fabric", "done", "complete", t("install.phase.loaderCompleted"));
     } else if (workingInstance.loader === "forge") {
+      let requiredForgeBuild = "";
+      if (workingInstance.launcherVersionType === "EDGE" && !nextOptiFineVersion) {
+        const optiFineVersions = await invoke<OptiFineVersion[]>("list_optifine_versions", {
+          gameVersion: workingInstance.baseVersion,
+          loader: workingInstance.loader,
+          loaderVersion: null,
+          downloadSource: settings.downloadSource
+        });
+        const selectedOptiFine = selectDefaultOptiFineVersion(optiFineVersions);
+        requiredForgeBuild = parseOptiFineForgeBuild(selectedOptiFine?.forgeRequirement);
+        nextOptiFineVersion = selectedOptiFine?.version ?? "";
+      }
       if (!nextLoaderVersion) {
         const forgeVersions = await invoke<string[]>("list_forge_versions", {
           gameVersion: workingInstance.baseVersion,
           downloadSource: settings.downloadSource
         });
-        if (workingInstance.launcherVersionType === "EDGE" && !nextOptiFineVersion) {
-          const optiFineVersions = await invoke<OptiFineVersion[]>("list_optifine_versions", {
-            gameVersion: workingInstance.baseVersion,
-            loader: workingInstance.loader,
-            loaderVersion: null,
-            downloadSource: settings.downloadSource
-          });
-          const selectedOptiFine = selectDefaultOptiFineVersion(optiFineVersions);
-          const requiredForgeBuild = parseOptiFineForgeBuild(selectedOptiFine?.forgeRequirement);
-          nextOptiFineVersion = selectedOptiFine?.version ?? "";
-          nextLoaderVersion = requiredForgeBuild
-            ? forgeVersions.find((version) => matchesForgeBuildRequirement(version, requiredForgeBuild)) ?? ""
-            : "";
+        nextLoaderVersion = requiredForgeBuild
+          ? forgeVersions.find((version) => matchesForgeBuildRequirement(version, requiredForgeBuild)) ?? ""
+          : forgeVersions[0] ?? "";
+      } else if (requiredForgeBuild && !matchesForgeBuildRequirement(nextLoaderVersion, requiredForgeBuild)) {
+        const forgeVersions = await invoke<string[]>("list_forge_versions", {
+          gameVersion: workingInstance.baseVersion,
+          downloadSource: settings.downloadSource
+        });
+        nextLoaderVersion = forgeVersions.find((version) => matchesForgeBuildRequirement(version, requiredForgeBuild)) ?? "";
+        if (!nextLoaderVersion) {
+          throw new Error(`No Forge build ${requiredForgeBuild} available for ${workingInstance.baseVersion}`);
         }
-        nextLoaderVersion ||= forgeVersions[0] ?? "";
       }
       if (!nextLoaderVersion) {
         throw new Error(`No forge version available for ${workingInstance.baseVersion}`);
