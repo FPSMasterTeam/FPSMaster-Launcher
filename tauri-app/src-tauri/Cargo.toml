@@ -24,6 +24,8 @@ tauri-plugin-dialog = "2"
 tauri-plugin-single-instance = "2"
 xz2 = "0.1"
 zip = { version = "2.4", default-features = false, features = ["deflate"] }
+
+[target.'cfg(windows)'.dependencies]
 windows = { version = "0.58", features = [
   "Win32_Foundation",
   "Win32_Graphics_Gdi",
