@@ -20,25 +20,17 @@ permissions:
 
 env:
   PRODUCT_CODE: launcher
-  TARGET: windows-x86_64
-  ARTIFACT_SOURCE_TYPE: external_url
 
 jobs:
-  build:
-    runs-on: windows-latest
+  resolve:
+    runs-on: ubuntu-latest
     outputs:
       should_publish: ${{ steps.channel.outputs.should_publish }}
       channel: ${{ steps.channel.outputs.channel }}
       release_tag: ${{ steps.meta.outputs.release_tag }}
       version_name: ${{ steps.meta.outputs.version_name }}
-      asset_name: ${{ steps.meta.outputs.asset_name }}
-      checksum: ${{ steps.meta.outputs.checksum }}
-      file_size: ${{ steps.meta.outputs.file_size }}
       changelog: ${{ steps.meta.outputs.changelog }}
       commit_hash: ${{ steps.meta.outputs.commit_hash }}
-    defaults:
-      run:
-        shell: pwsh
     steps:
       - uses: actions/checkout@v4
         with:
@@ -46,52 +38,102 @@ jobs:
 
       - name: Resolve release channel
         id: channel
+        shell: bash
         run: |
-          $ref = "${env:GITHUB_REF_NAME}"
-          $channel = ""
-          $shouldPublish = "false"
+          ref="${GITHUB_REF_NAME}"
+          channel=""
+          should_publish="false"
 
-          switch -Wildcard ($ref) {
-            "master" {
-              $channel = "beta"
-              $shouldPublish = "true"
-            }
-            "nightly" {
-              $channel = "nightly"
-              $shouldPublish = "true"
-            }
-            "nightly/*" {
-              $channel = "nightly"
-              $shouldPublish = "true"
-            }
-            "cannary" {
-              $channel = "cannary"
-              $shouldPublish = "true"
-            }
-            "cannary/*" {
-              $channel = "cannary"
-              $shouldPublish = "true"
-            }
-            "beta" {
-              $channel = "beta"
-              $shouldPublish = "true"
-            }
-            "beta/*" {
-              $channel = "beta"
-              $shouldPublish = "true"
-            }
-            "release" {
-              $channel = "release"
-              $shouldPublish = "true"
-            }
-            "release/*" {
-              $channel = "release"
-              $shouldPublish = "true"
-            }
-          }
+          case "$ref" in
+            master|beta|beta/*)
+              channel="beta"
+              should_publish="true"
+              ;;
+            nightly|nightly/*)
+              channel="nightly"
+              should_publish="true"
+              ;;
+            cannary|cannary/*)
+              channel="cannary"
+              should_publish="true"
+              ;;
+            release|release/*)
+              channel="release"
+              should_publish="true"
+              ;;
+          esac
 
-          "channel=$channel" >> $env:GITHUB_OUTPUT
-          "should_publish=$shouldPublish" >> $env:GITHUB_OUTPUT
+          echo "channel=$channel" >> "$GITHUB_OUTPUT"
+          echo "should_publish=$should_publish" >> "$GITHUB_OUTPUT"
+
+      - name: Capture release metadata
+        id: meta
+        shell: bash
+        run: |
+          base_version="$(python - <<'PY'
+          import json
+          with open("tauri-app/package.json", "r", encoding="utf-8") as f:
+              print(json.load(f)["version"].strip())
+          PY
+          )"
+          commit_hash="$(printf '%s' "$GITHUB_SHA" | tr '[:upper:]' '[:lower:]')"
+          short_sha="${commit_hash:0:8}"
+          channel="${{ steps.channel.outputs.channel }}"
+          if [ "$channel" = "release" ]; then
+            version_name="$base_version"
+          else
+            version_name="$base_version-$channel.$GITHUB_RUN_NUMBER+$short_sha"
+          fi
+          release_tag="launcher-$channel-$GITHUB_RUN_NUMBER-$short_sha"
+
+          echo "commit_hash=$commit_hash" >> "$GITHUB_OUTPUT"
+          echo "version_name=$version_name" >> "$GITHUB_OUTPUT"
+          echo "release_tag=$release_tag" >> "$GITHUB_OUTPUT"
+
+          changelog="$(git log -1 --pretty=format:'%s%n%n%b')"
+          {
+            echo "changelog<<EOF"
+            printf '%s\n' "$changelog"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: resolve
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: windows-x86_64
+            os: windows-latest
+            build_script: build:installer:windows
+            artifact_glob: tauri-app/src-tauri/target/release/bundle/nsis/*.exe
+          - target: linux-x86_64
+            os: ubuntu-latest
+            build_script: build:installer:linux
+            artifact_glob: tauri-app/src-tauri/target/release/bundle/deb/*.deb
+          - target: macos-aarch64
+            os: macos-14
+            build_script: build:installer:macos
+            artifact_glob: tauri-app/src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            curl \
+            file \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libssl-dev \
+            libwebkit2gtk-4.1-dev \
+            libxdo-dev \
+            patchelf \
+            wget
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -109,83 +151,102 @@ jobs:
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Add macOS Rust target
+        if: matrix.target == 'macos-aarch64'
+        run: rustup target add aarch64-apple-darwin
+
       - name: Cache Rust target
         uses: swatinem/rust-cache@v2
         with:
           workspaces: |
             tauri-app/src-tauri -> target
+          key: ${{ matrix.target }}
 
       - name: Install frontend dependencies
         working-directory: tauri-app
         run: npm ci
 
-      - name: Build NSIS installer
+      - name: Build installer
         working-directory: tauri-app
-        run: npm run build:installer
+        run: npm run ${{ matrix.build_script }}
 
       - name: Capture artifact metadata
-        id: meta
+        shell: bash
+        env:
+          ARTIFACT_GLOB: ${{ matrix.artifact_glob }}
+          TARGET: ${{ matrix.target }}
         run: |
-          $installer = Get-ChildItem -Path "tauri-app/src-tauri/target/release/bundle/nsis/*.exe" -File |
-            Sort-Object LastWriteTime -Descending |
-            Select-Object -First 1
-          if (-not $installer) {
-            throw "NSIS installer was not produced"
+          python - <<'PY'
+          import glob
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+
+          matches = sorted(
+              glob.glob(os.environ["ARTIFACT_GLOB"]),
+              key=lambda path: os.path.getmtime(path),
+              reverse=True,
+          )
+          if not matches:
+              raise SystemExit(f"Installer was not produced: {os.environ['ARTIFACT_GLOB']}")
+
+          artifact = Path(matches[0])
+          payload = {
+              "target": os.environ["TARGET"],
+              "assetName": artifact.name,
+              "checksum": hashlib.sha256(artifact.read_bytes()).hexdigest(),
+              "fileSize": artifact.stat().st_size,
           }
-
-          $package = Get-Content "tauri-app/package.json" | ConvertFrom-Json
-          $baseVersion = $package.version.Trim()
-          $commitHash = $env:GITHUB_SHA.ToLowerInvariant()
-          $shortSha = $commitHash.Substring(0, 8)
-          $channel = "${{ steps.channel.outputs.channel }}"
-          $versionName = if ($channel -eq "release") {
-            $baseVersion
-          } else {
-            "$baseVersion-$channel.$env:GITHUB_RUN_NUMBER+$shortSha"
-          }
-          $releaseTag = "launcher-$channel-$env:GITHUB_RUN_NUMBER-$shortSha"
-          $checksum = (Get-FileHash -Path $installer.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
-          $fileSize = $installer.Length
-
-          "asset_name=$($installer.Name)" >> $env:GITHUB_OUTPUT
-          "commit_hash=$commitHash" >> $env:GITHUB_OUTPUT
-          "version_name=$versionName" >> $env:GITHUB_OUTPUT
-          "release_tag=$releaseTag" >> $env:GITHUB_OUTPUT
-          "checksum=$checksum" >> $env:GITHUB_OUTPUT
-          "file_size=$fileSize" >> $env:GITHUB_OUTPUT
-
-          $changelog = git log -1 --pretty=format:'%s%n%n%b'
-          @"
-          changelog<<EOF
-          $changelog
-          EOF
-          "@ >> $env:GITHUB_OUTPUT
+          output_dir = Path("build-meta")
+          output_dir.mkdir(exist_ok=True)
+          (output_dir / f"{os.environ['TARGET']}.json").write_text(
+              json.dumps(payload, ensure_ascii=False),
+              encoding="utf-8",
+          )
+          PY
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: launcher-build
-          path: tauri-app/src-tauri/target/release/bundle/nsis/*.exe
+          name: launcher-build-${{ matrix.target }}
+          path: |
+            ${{ matrix.artifact_glob }}
+            build-meta/${{ matrix.target }}.json
           if-no-files-found: error
 
   publish:
-    needs: build
-    if: github.event_name != 'pull_request' && needs.build.outputs.should_publish == 'true'
+    needs:
+      - resolve
+      - build
+    if: github.event_name != 'pull_request' && needs.resolve.outputs.should_publish == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
         with:
-          name: launcher-build
+          pattern: launcher-build-*
           path: dist
+          merge-multiple: true
+
+      - name: Collect release files
+        shell: bash
+        run: |
+          mkdir -p release-dist
+          find dist -type f \( -name '*.exe' -o -name '*.deb' -o -name '*.dmg' -o -name '*.json' \) \
+            -exec cp '{}' release-dist/ \;
+          find release-dist -maxdepth 1 -type f -print
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ needs.build.outputs.release_tag }}
+          tag_name: ${{ needs.resolve.outputs.release_tag }}
           target_commitish: ${{ github.sha }}
-          name: Launcher ${{ needs.build.outputs.version_name }}
-          body: ${{ needs.build.outputs.changelog }}
-          files: dist/*.exe
+          name: Launcher ${{ needs.resolve.outputs.version_name }}
+          body: ${{ needs.resolve.outputs.changelog }}
+          files: |
+            release-dist/*.exe
+            release-dist/*.deb
+            release-dist/*.dmg
           fail_on_unmatched_files: true
 
       - name: Notify release API
@@ -193,53 +254,73 @@ jobs:
         env:
           FPSMASTER_CI_API_BASE_URL: ${{ secrets.FPSMASTER_CI_API_BASE_URL }}
           FPSMASTER_CI_UPLOAD_TOKEN: ${{ secrets.FPSMASTER_CI_UPLOAD_TOKEN }}
+          CHANNEL: ${{ needs.resolve.outputs.channel }}
+          VERSION_NAME: ${{ needs.resolve.outputs.version_name }}
+          COMMIT_HASH: ${{ needs.resolve.outputs.commit_hash }}
+          CHANGELOG: ${{ needs.resolve.outputs.changelog }}
         run: |
           if [ -z "$FPSMASTER_CI_API_BASE_URL" ] || [ -z "$FPSMASTER_CI_UPLOAD_TOKEN" ]; then
             echo "Release API secrets are not configured" >&2
             exit 1
           fi
 
-          artifact_path="$(find dist -maxdepth 1 -type f -name '*.exe' | head -n 1)"
-          if [ -z "$artifact_path" ]; then
-            echo "No launcher artifact found in dist" >&2
+          shopt -s nullglob
+          metadata_files=(release-dist/*.json)
+          if [ "${#metadata_files[@]}" -eq 0 ]; then
+            echo "No launcher metadata found in dist" >&2
             exit 1
           fi
 
-          upload_response="$(curl --fail --show-error --silent \
-            -X POST \
-            -H "X-CI-Token: ${FPSMASTER_CI_UPLOAD_TOKEN}" \
-            -F "file=@${artifact_path}" \
-            "${FPSMASTER_CI_API_BASE_URL%/}/api/v1/launcher/releases/upload")"
+          for metadata_path in "${metadata_files[@]}"; do
+            asset_name="$(python -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["assetName"])' "$metadata_path")"
+            target="$(python -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["target"])' "$metadata_path")"
+            checksum="$(python -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["checksum"])' "$metadata_path")"
+            file_size="$(python -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["fileSize"])' "$metadata_path")"
+            artifact_path="release-dist/$asset_name"
+            if [ ! -f "$artifact_path" ]; then
+              echo "Artifact listed by metadata was not found: $artifact_path" >&2
+              exit 1
+            fi
 
-          upload_json="$(printf '%s' "$upload_response" | python -c 'import json,sys; data=json.load(sys.stdin); print(json.dumps(data["data"]))')"
-          download_url="$(printf '%s' "$upload_json" | python -c 'import json,sys; print(json.load(sys.stdin)["url"])')"
-          file_bucket="$(printf '%s' "$upload_json" | python -c 'import json,sys; print((json.load(sys.stdin).get("bucket") or ""))')"
-          file_key="$(printf '%s' "$upload_json" | python -c 'import json,sys; print((json.load(sys.stdin).get("key") or ""))')"
+            upload_response="$(curl --fail --show-error --silent \
+              -X POST \
+              -H "X-CI-Token: ${FPSMASTER_CI_UPLOAD_TOKEN}" \
+              -F "file=@${artifact_path}" \
+              "${FPSMASTER_CI_API_BASE_URL%/}/api/v1/launcher/releases/upload")"
 
-          changelog_json="$(printf '%s' '${{ needs.build.outputs.changelog }}' | python -c 'import json,sys; print(json.dumps(sys.stdin.read()))')"
+            export UPLOAD_RESPONSE="$upload_response"
+            export TARGET="$target"
+            export CHECKSUM="$checksum"
+            export FILE_SIZE="$file_size"
+            python - <<'PY'
+            import json
+            import os
 
-          cat <<EOF > payload.json
-          {
-            "productCode": "${PRODUCT_CODE}",
-            "channelCode": "${{ needs.build.outputs.channel }}",
-            "versionName": "${{ needs.build.outputs.version_name }}",
-            "commitHash": "${{ needs.build.outputs.commit_hash }}",
-            "artifactSourceType": "UPLOADED_FILE",
-            "downloadUrl": "${download_url}",
-            "fileBucket": "${file_bucket}",
-            "fileKey": "${file_key}",
-            "fileSize": ${{ needs.build.outputs.file_size }},
-            "checksum": "${{ needs.build.outputs.checksum }}",
-            "recommended": true,
-            "mandatory": true,
-            "target": "${TARGET}",
-            "changelog": ${changelog_json}
-          }
-          EOF
+            upload = json.loads(os.environ["UPLOAD_RESPONSE"])["data"]
+            payload = {
+                "productCode": os.environ["PRODUCT_CODE"],
+                "channelCode": os.environ["CHANNEL"],
+                "versionName": os.environ["VERSION_NAME"],
+                "commitHash": os.environ["COMMIT_HASH"],
+                "artifactSourceType": "UPLOADED_FILE",
+                "downloadUrl": upload["url"],
+                "fileBucket": upload.get("bucket") or "",
+                "fileKey": upload.get("key") or "",
+                "fileSize": int(os.environ["FILE_SIZE"]),
+                "checksum": os.environ["CHECKSUM"],
+                "recommended": True,
+                "mandatory": True,
+                "target": os.environ["TARGET"],
+                "changelog": os.environ["CHANGELOG"],
+            }
+            with open("payload.json", "w", encoding="utf-8") as f:
+                json.dump(payload, f, ensure_ascii=False)
+            PY
 
-          curl --fail --show-error --silent \
-            -X POST \
-            -H "Content-Type: application/json" \
-            -H "X-CI-Token: ${FPSMASTER_CI_UPLOAD_TOKEN}" \
-            --data @payload.json \
-            "${FPSMASTER_CI_API_BASE_URL%/}/api/v1/launcher/releases/ci"
+            curl --fail --show-error --silent \
+              -X POST \
+              -H "Content-Type: application/json" \
+              -H "X-CI-Token: ${FPSMASTER_CI_UPLOAD_TOKEN}" \
+              --data @payload.json \
+              "${FPSMASTER_CI_API_BASE_URL%/}/api/v1/launcher/releases/ci"
+          done

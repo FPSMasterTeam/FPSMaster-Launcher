@@ -1692,54 +1692,57 @@ function Launcher() {
       });
       if (installed) {
         markLaunchPreparePhase("check-instance", "done", "complete", t("launch.progress.checkInstance"));
-        if (workingInstance.launcherVersionType === "EDGE" && !workingInstance.optiFineVersion) {
+        if (workingInstance.launcherVersionType === "EDGE") {
           const optiFineVersions = await invoke<OptiFineVersion[]>("list_optifine_versions", {
             gameVersion: workingInstance.baseVersion,
             loader: workingInstance.loader,
-            loaderVersion: workingInstance.loader === "forge" ? null : workingInstance.loaderVersion,
+            loaderVersion: null,
             downloadSource: settings.downloadSource
           });
-          const selectedOptiFine = selectDefaultOptiFineVersion(optiFineVersions);
+          const selectedOptiFine = selectDefaultEdgeOptiFineVersion(optiFineVersions);
           const latestOptiFine = selectedOptiFine?.version ?? "";
-          const requiredForgeBuild = parseOptiFineForgeBuild(selectedOptiFine?.forgeRequirement);
-          if (workingInstance.loader === "forge" && requiredForgeBuild && !matchesForgeBuildRequirement(workingInstance.loaderVersion ?? "", requiredForgeBuild)) {
+          let edgeInstanceChanged = false;
+          if (workingInstance.loader === "forge") {
             const forgeVersions = await invoke<string[]>("list_forge_versions", {
               gameVersion: workingInstance.baseVersion,
               downloadSource: settings.downloadSource
             });
-            const compatibleForgeVersion = forgeVersions.find((version) => matchesForgeBuildRequirement(version, requiredForgeBuild)) ?? "";
-            if (!compatibleForgeVersion) {
-              throw new Error(`No Forge build ${requiredForgeBuild} available for ${workingInstance.baseVersion}`);
+            const latestForgeVersion = forgeVersions[0] ?? "";
+            if (!latestForgeVersion) {
+              throw new Error(`No forge version available for ${workingInstance.baseVersion}`);
             }
-            markLaunchPreparePhase("forge", "running", "prepare", t("install.phase.installingForge", { version: compatibleForgeVersion }));
-            const jdk = await ensureJdk(settings.gameDir, workingInstance.baseVersion, settings.downloadThreads);
-            const forge = await invoke<ForgeInstallResult>("install_forge", {
-              gameDir: settings.gameDir,
-              forgeVersion: compatibleForgeVersion,
-              javaPath: jdk.javaPath,
-              downloadSource: settings.downloadSource,
-              downloadThreads: settings.downloadThreads,
-              ipcSession: launchSessionId
-            });
-            workingInstance = {
-              ...workingInstance,
-              versionId: forge.profileId,
-              loaderVersion: forge.forgeVersion
-            };
-            if (presetVersionId && workingInstance.versionId !== presetVersionId) {
-              const renamedVersionId = await invoke<string>("rename_version_profile", {
+            if ((workingInstance.loaderVersion ?? "").trim() !== latestForgeVersion) {
+              markLaunchPreparePhase("forge", "running", "prepare", t("install.phase.installingForge", { version: latestForgeVersion }));
+              const jdk = await ensureJdk(settings.gameDir, workingInstance.baseVersion, settings.downloadThreads);
+              const forge = await invoke<ForgeInstallResult>("install_forge", {
                 gameDir: settings.gameDir,
-                fromVersionId: workingInstance.versionId,
-                toVersionId: presetVersionId
+                forgeVersion: latestForgeVersion,
+                javaPath: jdk.javaPath,
+                downloadSource: settings.downloadSource,
+                downloadThreads: settings.downloadThreads,
+                ipcSession: launchSessionId
               });
               workingInstance = {
                 ...workingInstance,
-                versionId: renamedVersionId
+                versionId: forge.profileId,
+                loaderVersion: forge.forgeVersion
               };
+              edgeInstanceChanged = true;
+              if (presetVersionId && workingInstance.versionId !== presetVersionId) {
+                const renamedVersionId = await invoke<string>("rename_version_profile", {
+                  gameDir: settings.gameDir,
+                  fromVersionId: workingInstance.versionId,
+                  toVersionId: presetVersionId
+                });
+                workingInstance = {
+                  ...workingInstance,
+                  versionId: renamedVersionId
+                };
+              }
+              markLaunchPreparePhase("forge", "done", "complete", t("install.phase.loaderCompleted"));
             }
-            markLaunchPreparePhase("forge", "done", "complete", t("install.phase.loaderCompleted"));
           }
-          if (latestOptiFine) {
+          if (latestOptiFine && (workingInstance.optiFineVersion !== latestOptiFine || edgeInstanceChanged)) {
             markLaunchPreparePhase("optifine", "running", "prepare", t("install.phase.installingOptiFine", { version: latestOptiFine }));
             const optiFine = await invoke<OptiFineInstallResult>("install_optifine", {
               gameDir: settings.gameDir,
@@ -1755,10 +1758,13 @@ function Launcher() {
               ...workingInstance,
               optiFineVersion: optiFine.optiFineVersion
             };
+            edgeInstanceChanged = true;
+            markLaunchPreparePhase("optifine", "done", "complete", t("install.phase.optiFineCompleted"));
+          }
+          if (edgeInstanceChanged) {
             setInstances((prev) =>
               prev.map((item) => (item.id === workingInstance.id ? workingInstance : item))
             );
-            markLaunchPreparePhase("optifine", "done", "complete", t("install.phase.optiFineCompleted"));
           }
         }
         await ensurePresetModsReady(workingInstance);
@@ -1817,35 +1823,26 @@ function Launcher() {
       nextVersionId = fabric.profileId;
       markLaunchPreparePhase("fabric", "done", "complete", t("install.phase.loaderCompleted"));
     } else if (workingInstance.loader === "forge") {
-      let requiredForgeBuild = "";
-      if (workingInstance.launcherVersionType === "EDGE" && !nextOptiFineVersion) {
+      if (workingInstance.launcherVersionType === "EDGE") {
         const optiFineVersions = await invoke<OptiFineVersion[]>("list_optifine_versions", {
           gameVersion: workingInstance.baseVersion,
           loader: workingInstance.loader,
           loaderVersion: null,
           downloadSource: settings.downloadSource
         });
-        const selectedOptiFine = selectDefaultOptiFineVersion(optiFineVersions);
-        requiredForgeBuild = parseOptiFineForgeBuild(selectedOptiFine?.forgeRequirement);
+        const selectedOptiFine = selectDefaultEdgeOptiFineVersion(optiFineVersions);
         nextOptiFineVersion = selectedOptiFine?.version ?? "";
-      }
-      if (!nextLoaderVersion) {
         const forgeVersions = await invoke<string[]>("list_forge_versions", {
           gameVersion: workingInstance.baseVersion,
           downloadSource: settings.downloadSource
         });
-        nextLoaderVersion = requiredForgeBuild
-          ? forgeVersions.find((version) => matchesForgeBuildRequirement(version, requiredForgeBuild)) ?? ""
-          : forgeVersions[0] ?? "";
-      } else if (requiredForgeBuild && !matchesForgeBuildRequirement(nextLoaderVersion, requiredForgeBuild)) {
+        nextLoaderVersion = forgeVersions[0] ?? "";
+      } else if (!nextLoaderVersion) {
         const forgeVersions = await invoke<string[]>("list_forge_versions", {
           gameVersion: workingInstance.baseVersion,
           downloadSource: settings.downloadSource
         });
-        nextLoaderVersion = forgeVersions.find((version) => matchesForgeBuildRequirement(version, requiredForgeBuild)) ?? "";
-        if (!nextLoaderVersion) {
-          throw new Error(`No Forge build ${requiredForgeBuild} available for ${workingInstance.baseVersion}`);
-        }
+        nextLoaderVersion = forgeVersions[0] ?? "";
       }
       if (!nextLoaderVersion) {
         throw new Error(`No forge version available for ${workingInstance.baseVersion}`);
@@ -3463,29 +3460,8 @@ function mapLaunchPreparePhaseKey(phase?: string): LaunchPreparePhaseKey | null 
   return null;
 }
 
-function parseOptiFineForgeBuild(requirement?: string | null): string {
-  const value = requirement?.trim() ?? "";
-  if (!value || value.toLowerCase() === "forge n/a") return "";
-  return value.split("#")[1]?.trim() || value.split(/\s+/).at(-1)?.trim() || "";
-}
-
-function selectDefaultOptiFineVersion(versions: OptiFineVersion[]): OptiFineVersion | undefined {
-  return versions.find((item) => item.compatibility === "compatible" && !item.isPreview)
-    ?? versions.find((item) => item.compatibility !== "incompatible" && !item.isPreview)
-    ?? versions.find((item) => item.compatibility === "compatible")
-    ?? versions.find((item) => item.compatibility !== "incompatible");
-}
-
-function matchesForgeBuildRequirement(forgeVersion: string, requirement: string): boolean {
-  const trimmedRequirement = requirement.trim();
-  if (!trimmedRequirement) return false;
-  const trimmedVersion = forgeVersion.trim();
-  if (!trimmedVersion) return false;
-  const parts = trimmedVersion.split("-");
-  const forgePart = parts.length >= 2 ? parts[1] : parts[0];
-  if (forgePart === trimmedRequirement) return true;
-  const buildNumber = forgePart.split(".").at(-1) ?? "";
-  return buildNumber === trimmedRequirement;
+function selectDefaultEdgeOptiFineVersion(versions: OptiFineVersion[]): OptiFineVersion | undefined {
+  return versions.find((item) => item.compatibility !== "incompatible");
 }
 
 function translateLaunchPrepareMessage(

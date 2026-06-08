@@ -1169,6 +1169,23 @@ fn rename_version_profile(
     let to_json = to_dir.join(format!("{to_id}.json"));
 
     if to_json.exists() {
+        if to_id == "FPSMaster-Edge" && from_dir.exists() {
+            fs::remove_dir_all(&to_dir).map_err(|e| {
+                format!(
+                    "Failed to replace preset version directory {}: {e}",
+                    to_dir.display()
+                )
+            })?;
+            fs::rename(&from_dir, &to_dir).map_err(|e| {
+                format!(
+                    "Failed to rename version directory from {} to {}: {e}",
+                    from_dir.display(),
+                    to_dir.display()
+                )
+            })?;
+            retarget_version_runtime(&to_dir, from_id, to_id)?;
+            return Ok(to_id.to_string());
+        }
         rewrite_version_profile_id(&to_json, to_id)?;
         return Ok(to_id.to_string());
     }

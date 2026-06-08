@@ -815,6 +815,8 @@ pub(crate) fn list_optifine_versions(
             continue;
         }
         let compatibility = resolve_optifine_compatibility(
+            &normalized_game_version,
+            &version,
             &normalized_loader,
             normalized_loader_version.as_deref(),
             row.forge.as_deref(),
@@ -866,6 +868,8 @@ fn normalize_optifine_game_version(input: &str) -> String {
 }
 
 fn resolve_optifine_compatibility(
+    game_version: &str,
+    optifine_version: &str,
     loader: &str,
     loader_version: Option<&str>,
     forge_requirement: Option<&str>,
@@ -886,16 +890,18 @@ fn resolve_optifine_compatibility(
     }
 
     let Some(requirement) = forge_requirement.map(str::trim).filter(|value| !value.is_empty()) else {
-        return (
-            "unknown",
-            Some("OptiFine did not provide a Forge compatibility hint.".to_string()),
-        );
+        return ("compatible", None);
     };
     if requirement.eq_ignore_ascii_case("Forge N/A") {
         return (
             "incompatible",
             Some("This OptiFine release does not support Forge.".to_string()),
         );
+    }
+    if normalize_optifine_game_version(game_version) == "1.8.9"
+        && optifine_version.starts_with("HD_U_M6")
+    {
+        return ("compatible", None);
     }
     let Some(required_build) = requirement
         .split('#')
@@ -1117,7 +1123,7 @@ pub(crate) fn install_forge(
         &["--installClient", "--installDir", &game_dir.to_string_lossy()],
     )?;
     let profile_id = if first.exit_code == 0 {
-        first_profile_id_after_install(game_dir, game_version)?
+        select_forge_profile_id_after_install(game_dir, game_version, forge_version, &install_profile.payload)?
     } else {
         emit_install_phase_start(
             window,
@@ -1133,7 +1139,7 @@ pub(crate) fn install_forge(
                 first.output, fallback.output
             ));
         }
-        first_profile_id_after_install(game_dir, game_version)?
+        select_forge_profile_id_after_install(game_dir, game_version, forge_version, &install_profile.payload)?
     };
 
     let profile_json_path = game_dir
@@ -2692,6 +2698,76 @@ fn run_forge_installer(
     })
 }
 
+fn select_forge_profile_id_after_install(
+    game_dir: &Path,
+    game_version: &str,
+    forge_version: &str,
+    install_profile: &Value,
+) -> Result<String, String> {
+    for candidate in forge_profile_id_candidates(game_version, forge_version, install_profile) {
+        let profile_json = game_dir
+            .join("versions")
+            .join(&candidate)
+            .join(format!("{candidate}.json"));
+        if profile_json.is_file() {
+            return Ok(candidate);
+        }
+    }
+    first_profile_id_after_install(game_dir, game_version)
+}
+
+fn forge_profile_id_candidates(
+    game_version: &str,
+    forge_version: &str,
+    install_profile: &Value,
+) -> Vec<String> {
+    let mut candidates = Vec::new();
+    push_forge_profile_id_candidate(
+        &mut candidates,
+        install_profile.get("version").and_then(Value::as_str),
+    );
+    push_forge_profile_id_candidate(
+        &mut candidates,
+        install_profile.get("json").and_then(Value::as_str),
+    );
+    if let Some(forge_part) = forge_version
+        .strip_prefix(game_version)
+        .and_then(|value| value.strip_prefix('-'))
+        .filter(|value| !value.trim().is_empty())
+    {
+        push_forge_profile_id_candidate(
+            &mut candidates,
+            Some(&format!("{game_version}-forge-{forge_part}")),
+        );
+    }
+    push_forge_profile_id_candidate(
+        &mut candidates,
+        Some(&format!("{game_version}-forge{forge_version}")),
+    );
+    candidates
+}
+
+fn push_forge_profile_id_candidate(candidates: &mut Vec<String>, value: Option<&str>) {
+    let Some(raw_value) = value.map(str::trim).filter(|item| !item.is_empty()) else {
+        return;
+    };
+    let normalized = raw_value.trim_end_matches(['/', '\\']);
+    let profile_id = if normalized.ends_with(".json") {
+        Path::new(normalized)
+            .file_stem()
+            .map(|item| item.to_string_lossy().to_string())
+            .unwrap_or_else(|| normalized.trim_end_matches(".json").to_string())
+    } else {
+        Path::new(normalized)
+            .file_name()
+            .map(|item| item.to_string_lossy().to_string())
+            .unwrap_or_else(|| normalized.to_string())
+    };
+    if !profile_id.is_empty() && !candidates.iter().any(|item| item == &profile_id) {
+        candidates.push(profile_id);
+    }
+}
+
 fn first_profile_id_after_install(game_dir: &Path, game_version: &str) -> Result<String, String> {
     let versions_dir = game_dir.join("versions");
     let read_dir = fs::read_dir(&versions_dir)
@@ -3243,8 +3319,9 @@ fn emit_install_item_ipc(
 #[cfg(test)]
 mod tests {
     use super::{
-        build_rule_features, build_vanilla_launch_plan, resolve_java_runtime_requirement,
-        DownloadSource, VanillaLaunchRequest,
+        build_rule_features, build_vanilla_launch_plan, forge_profile_id_candidates,
+        resolve_java_runtime_requirement, resolve_optifine_compatibility, DownloadSource,
+        VanillaLaunchRequest,
     };
     use serde_json::json;
     use std::fs;
@@ -3438,5 +3515,46 @@ mod tests {
         let features = build_rule_features();
         assert_eq!(features.get("is_demo_user"), Some(&false));
         assert_eq!(features.get("has_custom_resolution"), Some(&true));
+    }
+
+    #[test]
+    fn optifine_without_forge_hint_is_compatible_with_forge() {
+        let compatibility = resolve_optifine_compatibility(
+            "1.8.9",
+            "HD_U_L6_pre1",
+            "forge",
+            Some("1.8.9-11.15.1.2318-1.8.9"),
+            None,
+        );
+
+        assert_eq!(compatibility, ("compatible", None));
+    }
+
+    #[test]
+    fn optifine_189_m6_preview_is_compatible_with_latest_forge() {
+        let compatibility = resolve_optifine_compatibility(
+            "1.8.9",
+            "HD_U_M6_pre2",
+            "forge",
+            Some("1.8.9-11.15.1.2318-1.8.9"),
+            Some("Forge #1902"),
+        );
+
+        assert_eq!(compatibility, ("compatible", None));
+    }
+
+    #[test]
+    fn forge_profile_candidates_keep_dotted_profile_ids() {
+        let candidates = forge_profile_id_candidates(
+            "1.20.1",
+            "1.20.1-47.0.35",
+            &json!({
+                "version": "1.20.1-forge-47.0.35",
+                "json": "versions/1.20.1-forge-47.0.35/1.20.1-forge-47.0.35.json"
+            }),
+        );
+
+        assert_eq!(candidates[0], "1.20.1-forge-47.0.35");
+        assert!(candidates.iter().any(|item| item == "1.20.1-forge-47.0.35"));
     }
 }

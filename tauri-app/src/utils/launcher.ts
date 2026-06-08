@@ -410,6 +410,9 @@ function withPresetInstances(instances: Instance[]): Instance[] {
     if (!saved) {
       return { ...preset };
     }
+    if (preset.launcherVersionType === "EDGE") {
+      return { ...preset };
+    }
     return {
       ...preset,
       versionId: saved.versionId || preset.versionId,
