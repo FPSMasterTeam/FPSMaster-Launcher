@@ -5,9 +5,10 @@ import { useI18n } from "../i18n";
 type TitleBarProps = {
   title: string;
   subtitle?: string;
+  onClose?: () => Promise<void>;
 };
 
-export default function TitleBar({ title, subtitle }: TitleBarProps) {
+export default function TitleBar({ title, subtitle, onClose }: TitleBarProps) {
   const { t } = useI18n();
   const [busy, setBusy] = useState(false);
   const [isMaximized, setIsMaximized] = useState(false);
@@ -82,7 +83,7 @@ export default function TitleBar({ title, subtitle }: TitleBarProps) {
         <button
           className="titleBtn danger"
           type="button"
-          onClick={() => withGuard(() => getCurrentWindow().close())}
+          onClick={() => withGuard(() => onClose?.() ?? getCurrentWindow().close())}
           aria-label={t("window.close")}
         >
           <WindowControlIcon kind="close" />

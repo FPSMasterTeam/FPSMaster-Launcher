@@ -1554,7 +1554,7 @@ function Launcher() {
         checksum: targetVersion.checksum,
         manifestUrl: targetVersion.manifestUrl,
         versionTag: targetVersion.versionName,
-        cleanExisting: false
+        cleanExisting: instance.launcherVersionType === "NOVA"
       });
       setPresetPackageStatuses((prev) => ({
         ...prev,

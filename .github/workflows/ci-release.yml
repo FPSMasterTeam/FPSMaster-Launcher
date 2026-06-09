@@ -45,7 +45,11 @@ jobs:
           should_publish="false"
 
           case "$ref" in
-            master|beta|beta/*)
+            master|release|release/*)
+              channel="release"
+              should_publish="true"
+              ;;
+            beta|beta/*)
               channel="beta"
               should_publish="true"
               ;;
@@ -55,10 +59,6 @@ jobs:
               ;;
             cannary|cannary/*)
               channel="cannary"
-              should_publish="true"
-              ;;
-            release|release/*)
-              channel="release"
               should_publish="true"
               ;;
           esac
