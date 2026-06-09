@@ -1686,10 +1686,24 @@ function Launcher() {
       workingInstance.loader !== "vanilla" && workingInstance.versionId === workingInstance.baseVersion;
 
     if (!needsLoaderProfile) {
-      const installed = await invoke<boolean>("is_version_installed", {
+      let installed = await invoke<boolean>("is_version_installed", {
         gameDir: settings.gameDir,
         versionId: workingInstance.versionId
       });
+      if (installed && presetVersionId && workingInstance.loader !== "vanilla") {
+        const profileBaseVersion = await invoke<string | null>("get_version_profile_base_version", {
+          gameDir: settings.gameDir,
+          versionId: workingInstance.versionId
+        });
+        if (profileBaseVersion && profileBaseVersion !== workingInstance.baseVersion) {
+          installed = false;
+          workingInstance = {
+            ...workingInstance,
+            loaderVersion: undefined,
+            optiFineVersion: undefined
+          };
+        }
+      }
       if (installed) {
         markLaunchPreparePhase("check-instance", "done", "complete", t("launch.progress.checkInstance"));
         if (workingInstance.launcherVersionType === "EDGE") {

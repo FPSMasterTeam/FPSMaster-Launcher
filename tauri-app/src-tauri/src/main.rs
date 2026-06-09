@@ -1108,6 +1108,42 @@ fn is_version_installed(game_dir: String, version_id: String) -> Result<bool, St
 }
 
 #[tauri::command]
+fn get_version_profile_base_version(
+    game_dir: String,
+    version_id: String,
+) -> Result<Option<String>, String> {
+    let version = version_id.trim();
+    if version.is_empty() {
+        return Ok(None);
+    }
+    let game_dir_path = resolve_game_dir_path(&game_dir)?;
+    let profile_json = game_dir_path
+        .join("versions")
+        .join(version)
+        .join(format!("{version}.json"));
+    if !profile_json.is_file() {
+        return Ok(None);
+    }
+    let raw = fs::read_to_string(&profile_json).map_err(|e| {
+        format!(
+            "Failed to read version profile {}: {e}",
+            profile_json.display()
+        )
+    })?;
+    let parsed: serde_json::Value = serde_json::from_str(&raw).map_err(|e| {
+        format!(
+            "Failed to parse version profile {}: {e}",
+            profile_json.display()
+        )
+    })?;
+    Ok(parsed
+        .get("inheritsFrom")
+        .or_else(|| parsed.get("id"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string))
+}
+
+#[tauri::command]
 fn list_installed_versions(game_dir: String) -> Result<Vec<String>, String> {
     let game_dir_path = resolve_game_dir_path(&game_dir)?;
     let versions_dir = game_dir_path.join("versions");
@@ -1169,21 +1205,10 @@ fn rename_version_profile(
     let to_json = to_dir.join(format!("{to_id}.json"));
 
     if to_json.exists() {
-        if to_id == "FPSMaster-Edge" && from_dir.exists() {
-            fs::remove_dir_all(&to_dir).map_err(|e| {
-                format!(
-                    "Failed to replace preset version directory {}: {e}",
-                    to_dir.display()
-                )
-            })?;
-            fs::rename(&from_dir, &to_dir).map_err(|e| {
-                format!(
-                    "Failed to rename version directory from {} to {}: {e}",
-                    from_dir.display(),
-                    to_dir.display()
-                )
-            })?;
+        if is_launcher_preset_version_id(to_id) && from_dir.exists() {
+            copy_directory_contents(&from_dir, &to_dir)?;
             retarget_version_runtime(&to_dir, from_id, to_id)?;
+            let _ = fs::remove_dir_all(&from_dir);
             return Ok(to_id.to_string());
         }
         rewrite_version_profile_id(&to_json, to_id)?;
@@ -1620,6 +1645,14 @@ fn retarget_version_runtime(
     let source_json = version_dir.join(format!("{from_version_id}.json"));
     let target_json = version_dir.join(format!("{to_version_id}.json"));
     if source_json.exists() && source_json != target_json {
+        if target_json.exists() {
+            fs::remove_file(&target_json).map_err(|e| {
+                format!(
+                    "Failed to replace version json {}: {e}",
+                    target_json.display()
+                )
+            })?;
+        }
         fs::rename(&source_json, &target_json).map_err(|e| {
             format!(
                 "Failed to rename version json from {} to {}: {e}",
@@ -7886,6 +7919,7 @@ fn main() {
             poll_ui_logs,
             poll_game_runtime,
             is_version_installed,
+            get_version_profile_base_version,
             list_installed_versions,
             rename_version_profile,
             duplicate_instance_storage,
