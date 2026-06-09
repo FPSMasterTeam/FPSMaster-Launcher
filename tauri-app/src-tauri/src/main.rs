@@ -18,6 +18,7 @@ use microsoft_auth::{
 use secure_storage::{secure_storage_delete, secure_storage_get, secure_storage_set};
 
 use base64::Engine;
+use minecraft_core::VanillaLaunchRequest;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256, Sha512};
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -37,15 +38,13 @@ use tauri::{AppHandle, Emitter, Manager, WebviewWindow, WebviewWindowBuilder, Wi
 #[cfg(target_os = "macos")]
 use tauri_plugin_autostart::MacosLauncher;
 use tauri_plugin_autostart::ManagerExt;
-use xz2::bufread::XzDecoder;
-use xz2::stream::Stream;
 #[cfg(windows)]
 use windows::core::{HSTRING, PWSTR};
 #[cfg(windows)]
 use windows::Win32::Foundation::{POINT, RECT, RPC_E_CHANGED_MODE};
 #[cfg(windows)]
 use windows::Win32::Graphics::Gdi::{
-    GetMonitorInfoW, MonitorFromPoint, MONITOR_DEFAULTTOPRIMARY, MONITORINFO,
+    GetMonitorInfoW, MonitorFromPoint, MONITORINFO, MONITOR_DEFAULTTOPRIMARY,
 };
 #[cfg(windows)]
 use windows::Win32::System::Com::{
@@ -54,7 +53,8 @@ use windows::Win32::System::Com::{
 };
 #[cfg(windows)]
 use windows::Win32::UI::Shell::{DesktopWallpaper, IDesktopWallpaper};
-use minecraft_core::VanillaLaunchRequest;
+use xz2::bufread::XzDecoder;
+use xz2::stream::Stream;
 
 const DEFAULT_DOWNLOAD_THREADS: i32 = 8;
 const JDK_DOWNLOAD_USER_AGENT: &str =
@@ -156,7 +156,6 @@ struct OptiFineInstallResult {
     installed_path: String,
     skipped: bool,
 }
-
 
 #[derive(Debug, Clone, Serialize)]
 struct LauncherModsInstallResult {
@@ -967,6 +966,22 @@ fn show_main_window(app: tauri::AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn destroy_current_window(app: tauri::AppHandle, window: tauri::Window) -> Result<(), String> {
+    let label = window.label().to_string();
+    if label == "main" {
+        return Err("Refusing to destroy main window through monitor close command".to_string());
+    }
+    if let Some(webview_window) = app.get_webview_window(&label) {
+        return webview_window
+            .destroy()
+            .map_err(|e| format!("Failed to destroy current window: {e}"));
+    }
+    window
+        .close()
+        .map_err(|e| format!("Failed to close current window: {e}"))
+}
+
+#[tauri::command]
 fn hide_main_window(app: tauri::AppHandle) -> Result<(), String> {
     hide_main_window_internal(&app)
 }
@@ -1751,12 +1766,8 @@ fn ensure_jdk_blocking(
 
     let major = requirement.major_version.max(8);
     let runtime_root = managed_jdk_runtime_root(&game_dir_path, major);
-    let java_path = ensure_managed_jdk_runtime(
-        Some(&window),
-        &runtime_root,
-        major,
-        download_threads,
-    )?;
+    let java_path =
+        ensure_managed_jdk_runtime(Some(&window), &runtime_root, major, download_threads)?;
 
     emit_log(
         Some(&window),
@@ -1774,12 +1785,10 @@ fn ensure_jdk_blocking(
     })
 }
 
-
-
 #[tauri::command]
 fn open_external_link(url: String) -> Result<(), String> {
-    let parsed = reqwest::Url::parse(url.trim())
-        .map_err(|e| format!("Invalid external URL: {e}"))?;
+    let parsed =
+        reqwest::Url::parse(url.trim()).map_err(|e| format!("Invalid external URL: {e}"))?;
     match parsed.scheme() {
         "http" | "https" => open_target_with_system(parsed.as_str()),
         other => Err(format!("Unsupported external URL scheme: {other}")),
@@ -1922,8 +1931,6 @@ fn stop_launcher_heartbeat(app: tauri::AppHandle) {
         .heartbeat_running
         .store(false, Ordering::Relaxed);
 }
-
-
 
 #[tauri::command]
 async fn modrinth_search_projects(
@@ -2832,6 +2839,8 @@ fn install_launcher_version_mods_blocking(
                 normalized_manifest_url.as_deref(),
                 Some(normalized_url.as_str()),
             )? && validate_installed_launcher_package(&mods_dir, &marker_path, Some(marker))?
+                && !launcher_package_has_unsupported_runtime_mods(&mods_dir, marker)?
+                && !mods_dir_has_unsupported_runtime_mods(&mods_dir)?
                 && (!clean_existing
                     || !mods_dir_has_unmanaged_files(&mods_dir, &marker_path, marker)?)
         }
@@ -2863,14 +2872,13 @@ fn install_launcher_version_mods_blocking(
             now_epoch_millis(),
             download_file_name
         ));
-        let download_result =
-            download_file_blocking(
-                None,
-                "launcher-mods",
-                &normalized_url,
-                &temp_download_path,
-                normalize_download_threads(Some(DEFAULT_DOWNLOAD_THREADS)),
-            );
+        let download_result = download_file_blocking(
+            None,
+            "launcher-mods",
+            &normalized_url,
+            &temp_download_path,
+            normalize_download_threads(Some(DEFAULT_DOWNLOAD_THREADS)),
+        );
         if let Err(err) = download_result {
             let _ = fs::remove_file(&temp_download_path);
             return Err(format!("Failed to download launcher package: {err}"));
@@ -2952,6 +2960,14 @@ fn get_launcher_package_state_blocking(
     let manifest_url = marker.as_ref().and_then(|value| value.manifest_url.clone());
     let installed = version_tag.is_some()
         && validate_installed_launcher_package(&mods_dir, &marker_path, marker.as_ref())?;
+    let package_is_supported = match marker.as_ref() {
+        Some(installed_marker) if installed => {
+            !launcher_package_has_unsupported_runtime_mods(&mods_dir, installed_marker)?
+                && !mods_dir_has_unsupported_runtime_mods(&mods_dir)?
+        }
+        Some(_) => false,
+        None => false,
+    };
     let up_to_date = match (marker.as_ref(), expected_version_tag.as_ref()) {
         (Some(installed_marker), Some(expected_tag)) => {
             let version_matches = installed_marker.version_tag.trim() == expected_tag.trim();
@@ -2979,9 +2995,13 @@ fn get_launcher_package_state_blocking(
                 Some(expected_url) => installed_marker.download_url.trim() == expected_url.trim(),
                 None => true,
             };
-            version_matches && checksum_matches && manifest_matches && url_matches
+            package_is_supported
+                && version_matches
+                && checksum_matches
+                && manifest_matches
+                && url_matches
         }
-        (Some(_), None) => true,
+        (Some(_), None) => package_is_supported,
         _ => false,
     };
     Ok(LauncherPackageState {
@@ -3025,7 +3045,8 @@ fn install_launcher_manifest_package(
         let _ = fs::remove_dir_all(&stage_dir);
         return Err(err);
     }
-    let installed_files = install_result?;
+    let mut installed_files = install_result?;
+    sanitize_launcher_mod_package(&stage_dir, &mut installed_files)?;
 
     if let Err(err) = apply_staged_launcher_package(
         mods_dir,
@@ -3095,7 +3116,9 @@ fn stage_launcher_download_package(
         )?]);
     }
 
-    extract_launcher_mod_archive(archive_path, stage_dir)
+    let mut installed_files = extract_launcher_mod_archive(archive_path, stage_dir)?;
+    sanitize_launcher_mod_package(stage_dir, &mut installed_files)?;
+    Ok(installed_files)
 }
 
 fn apply_staged_launcher_package(
@@ -5206,8 +5229,12 @@ async fn build_vanilla_launch_plan(
             max_memory_mb,
             server_address: None,
         };
-        minecraft_core::build_vanilla_launch_plan(Some(&window), &request, download_source.as_deref())
-            .map(|value| value.plan)
+        minecraft_core::build_vanilla_launch_plan(
+            Some(&window),
+            &request,
+            download_source.as_deref(),
+        )
+        .map(|value| value.plan)
     })
     .await
     .map_err(|e| format!("Failed to join launch plan task: {e}"))?
@@ -5274,15 +5301,12 @@ fn launch_vanilla_blocking(
             player_name: player_name.clone(),
             uuid: uuid.clone(),
             access_token: access_token.clone(),
-            java_path: java_path
-                .as_deref()
-                .map(PathBuf::from)
-                .unwrap_or_else(|| {
-                    game_dir_path
-                        .join("runtime")
-                        .join("bin")
-                        .join(if cfg!(windows) { "java.exe" } else { "java" })
-                }),
+            java_path: java_path.as_deref().map(PathBuf::from).unwrap_or_else(|| {
+                game_dir_path
+                    .join("runtime")
+                    .join("bin")
+                    .join(if cfg!(windows) { "java.exe" } else { "java" })
+            }),
             max_memory_mb,
             server_address: server_address.clone(),
         },
@@ -5986,7 +6010,13 @@ fn ensure_managed_jdk_runtime(
         "info",
         &format!("Resolving Mojang runtime component={component} major={major}"),
     );
-    install_mojang_java_runtime(window, runtime_root, component, major, normalized_download_threads)?;
+    install_mojang_java_runtime(
+        window,
+        runtime_root,
+        component,
+        major,
+        normalized_download_threads,
+    )?;
 
     locate_java_binary(runtime_root)
         .ok_or_else(|| "JDK extracted but java executable not found".to_string())
@@ -6311,22 +6341,46 @@ pub(crate) fn emit_launch_prepare_ipc(
         return;
     };
     let mut payload = serde_json::Map::new();
-    payload.insert("channel".to_string(), serde_json::Value::String("launch-prepare".to_string()));
-    payload.insert("session".to_string(), serde_json::Value::String(session.trim().to_string()));
-    payload.insert("event".to_string(), serde_json::Value::String(event.to_string()));
-    payload.insert("phase".to_string(), serde_json::Value::String(phase.to_string()));
-    payload.insert("stage".to_string(), serde_json::Value::String(stage.to_string()));
+    payload.insert(
+        "channel".to_string(),
+        serde_json::Value::String("launch-prepare".to_string()),
+    );
+    payload.insert(
+        "session".to_string(),
+        serde_json::Value::String(session.trim().to_string()),
+    );
+    payload.insert(
+        "event".to_string(),
+        serde_json::Value::String(event.to_string()),
+    );
+    payload.insert(
+        "phase".to_string(),
+        serde_json::Value::String(phase.to_string()),
+    );
+    payload.insert(
+        "stage".to_string(),
+        serde_json::Value::String(stage.to_string()),
+    );
     if let Some(current) = current {
-        payload.insert("current".to_string(), serde_json::Value::Number(current.into()));
+        payload.insert(
+            "current".to_string(),
+            serde_json::Value::Number(current.into()),
+        );
     }
     if let Some(total) = total {
         payload.insert("total".to_string(), serde_json::Value::Number(total.into()));
     }
     if !message.trim().is_empty() {
-        payload.insert("message".to_string(), serde_json::Value::String(message.to_string()));
+        payload.insert(
+            "message".to_string(),
+            serde_json::Value::String(message.to_string()),
+        );
     }
     if let Some(error) = error.filter(|value| !value.trim().is_empty()) {
-        payload.insert("error".to_string(), serde_json::Value::String(error.to_string()));
+        payload.insert(
+            "error".to_string(),
+            serde_json::Value::String(error.to_string()),
+        );
     }
     let line = format!(
         "[ipc]{}",
@@ -6347,7 +6401,9 @@ fn strip_windows_verbatim_prefix(path: &Path) -> PathBuf {
 }
 
 fn normalize_download_threads(download_threads: Option<i32>) -> usize {
-    download_threads.unwrap_or(DEFAULT_DOWNLOAD_THREADS).clamp(1, 32) as usize
+    download_threads
+        .unwrap_or(DEFAULT_DOWNLOAD_THREADS)
+        .clamp(1, 32) as usize
 }
 
 fn mojang_java_component_for_major(major: i32) -> &'static str {
@@ -6484,52 +6540,50 @@ fn download_mojang_runtime_files(
         let downloaded = Arc::clone(&downloaded);
         let runtime_root = runtime_root.to_path_buf();
         let window = window.cloned();
-        workers.push(thread::spawn(move || {
-            loop {
-                let next = {
-                    let mut guard = jobs.lock().unwrap();
-                    guard.pop_front()
-                };
-                let Some((relative_path, entry)) = next else {
-                    return;
-                };
+        workers.push(thread::spawn(move || loop {
+            let next = {
+                let mut guard = jobs.lock().unwrap();
+                guard.pop_front()
+            };
+            let Some((relative_path, entry)) = next else {
+                return;
+            };
 
-                if error.lock().unwrap().is_some() {
-                    return;
+            if error.lock().unwrap().is_some() {
+                return;
+            }
+
+            let result = process_mojang_runtime_entry(
+                window.as_ref(),
+                &runtime_root,
+                &relative_path,
+                &entry,
+                download_threads,
+            );
+
+            match result {
+                Ok(fetched) => {
+                    let done = completed.fetch_add(1, Ordering::Relaxed) + 1;
+                    if fetched {
+                        downloaded.fetch_add(1, Ordering::Relaxed);
+                    }
+                    if done % 10 == 0 || done as usize == total {
+                        emit_log(
+                            window.as_ref(),
+                            "info",
+                            &format!(
+                                "Mojang runtime progress: {done}/{total} downloaded={} cached={}",
+                                downloaded.load(Ordering::Relaxed),
+                                done.saturating_sub(downloaded.load(Ordering::Relaxed))
+                            ),
+                        );
+                    }
                 }
-
-                let result = process_mojang_runtime_entry(
-                    window.as_ref(),
-                    &runtime_root,
-                    &relative_path,
-                    &entry,
-                    download_threads,
-                );
-
-                match result {
-                    Ok(fetched) => {
-                        let done = completed.fetch_add(1, Ordering::Relaxed) + 1;
-                        if fetched {
-                            downloaded.fetch_add(1, Ordering::Relaxed);
-                        }
-                        if done % 10 == 0 || done as usize == total {
-                            emit_log(
-                                window.as_ref(),
-                                "info",
-                                &format!(
-                                    "Mojang runtime progress: {done}/{total} downloaded={} cached={}",
-                                    downloaded.load(Ordering::Relaxed),
-                                    done.saturating_sub(downloaded.load(Ordering::Relaxed))
-                                ),
-                            );
-                        }
-                    }
-                    Err(err) => {
-                        *error.lock().unwrap() = Some(format!(
-                            "Failed processing Mojang runtime entry {relative_path}: {err}"
-                        ));
-                        return;
-                    }
+                Err(err) => {
+                    *error.lock().unwrap() = Some(format!(
+                        "Failed processing Mojang runtime entry {relative_path}: {err}"
+                    ));
+                    return;
                 }
             }
         }));
@@ -6593,7 +6647,9 @@ fn download_mojang_runtime_file(
 
     if let Some(raw) = entry.downloads.get("raw") {
         if target.is_file() {
-            let size_ok = fs::metadata(target).map(|meta| meta.len() == raw.size).unwrap_or(false);
+            let size_ok = fs::metadata(target)
+                .map(|meta| meta.len() == raw.size)
+                .unwrap_or(false);
             let sha1_ok = compute_sha1_hex(target)
                 .map(|sha1| sha1.eq_ignore_ascii_case(&raw.sha1))
                 .unwrap_or(false);
@@ -6663,7 +6719,9 @@ fn download_mojang_runtime_file(
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let mut perms = fs::metadata(target).map_err(|e| e.to_string())?.permissions();
+            let mut perms = fs::metadata(target)
+                .map_err(|e| e.to_string())?
+                .permissions();
             perms.set_mode(0o755);
             fs::set_permissions(target, perms).map_err(|e| e.to_string())?;
         }
@@ -6682,9 +6740,15 @@ fn download_file_with_sha1(
     download_file_blocking(window, source_name, url, target, download_threads)?;
     let sha1 = compute_sha1_hex(target)?;
     if !sha1.eq_ignore_ascii_case(expected_sha1) {
-        return Err(format!("SHA1 mismatch for {url}: expected={expected_sha1} actual={sha1}"));
+        return Err(format!(
+            "SHA1 mismatch for {url}: expected={expected_sha1} actual={sha1}"
+        ));
     }
-    emit_log(window, "info", &format!("Downloaded {source_name}: {}", target.display()));
+    emit_log(
+        window,
+        "info",
+        &format!("Downloaded {source_name}: {}", target.display()),
+    );
     Ok(())
 }
 
@@ -7098,7 +7162,6 @@ fn is_jar_file_name(file_name: &str) -> bool {
         .unwrap_or(false)
 }
 
-
 fn now_epoch_seconds() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -7389,6 +7452,238 @@ fn extract_launcher_mod_archive(
     Ok(installed_files)
 }
 
+fn sanitize_launcher_mod_package(
+    mods_dir: &Path,
+    installed_files: &mut Vec<LauncherInstalledFileRecord>,
+) -> Result<(), String> {
+    extract_nested_launcher_mod_jars(mods_dir, installed_files)?;
+    remove_unsupported_launcher_runtime_mods(mods_dir, installed_files)?;
+    Ok(())
+}
+
+fn extract_nested_launcher_mod_jars(
+    mods_dir: &Path,
+    installed_files: &mut Vec<LauncherInstalledFileRecord>,
+) -> Result<(), String> {
+    let package_files = installed_files.clone();
+    let mut known_paths: HashSet<String> = installed_files
+        .iter()
+        .map(|file| file.path.to_ascii_lowercase())
+        .collect();
+    let mut nested_files = Vec::new();
+
+    for file in package_files {
+        let relative_path = normalize_manifest_relative_path(&file.path)?;
+        let package_path = mods_dir.join(&relative_path);
+        if !is_jar_file_name(&file.path) || !package_path.exists() {
+            continue;
+        }
+
+        let input = fs::File::open(&package_path).map_err(|e| {
+            format!(
+                "Failed to open launcher mod {}: {e}",
+                package_path.display()
+            )
+        })?;
+        let mut archive = zip::ZipArchive::new(input).map_err(|e| {
+            format!(
+                "Invalid launcher mod archive {}: {e}",
+                package_path.display()
+            )
+        })?;
+
+        for index in 0..archive.len() {
+            let mut entry = archive.by_index(index).map_err(|e| e.to_string())?;
+            if entry.name().ends_with('/') {
+                continue;
+            }
+            let Some(enclosed) = entry.enclosed_name().map(|path| path.to_path_buf()) else {
+                continue;
+            };
+            if !is_nested_launcher_mod_jar_path(&enclosed) {
+                continue;
+            }
+            let Some(file_name) = enclosed.file_name() else {
+                continue;
+            };
+
+            let nested_relative_path = PathBuf::from(file_name);
+            let nested_key = nested_relative_path
+                .to_string_lossy()
+                .replace('\\', "/")
+                .to_ascii_lowercase();
+            if known_paths.contains(&nested_key) {
+                continue;
+            }
+
+            let out_path = mods_dir.join(&nested_relative_path);
+            let mut out_file = fs::File::create(&out_path).map_err(|e| {
+                format!(
+                    "Failed to create nested launcher mod {}: {e}",
+                    out_path.display()
+                )
+            })?;
+            std::io::copy(&mut entry, &mut out_file).map_err(|e| {
+                format!(
+                    "Failed to write nested launcher mod {}: {e}",
+                    out_path.display()
+                )
+            })?;
+            nested_files.push(build_launcher_installed_file_record(
+                &out_path,
+                &nested_relative_path,
+            )?);
+            known_paths.insert(nested_key);
+        }
+    }
+
+    installed_files.extend(nested_files);
+    Ok(())
+}
+
+fn remove_unsupported_launcher_runtime_mods(
+    mods_dir: &Path,
+    installed_files: &mut Vec<LauncherInstalledFileRecord>,
+) -> Result<(), String> {
+    let mut retained = Vec::with_capacity(installed_files.len());
+    for file in installed_files.drain(..) {
+        let name = launcher_installed_file_name(&file.path);
+        if !is_jar_file_name(&name) {
+            retained.push(file);
+            continue;
+        }
+        let relative_path = normalize_manifest_relative_path(&file.path)?;
+        let target_path = mods_dir.join(&relative_path);
+        if is_unsupported_launcher_runtime_mod_name(&name)
+            || fabric_mod_uses_named_namespace(&target_path)?
+        {
+            if target_path.exists() {
+                fs::remove_file(&target_path).map_err(|e| {
+                    format!(
+                        "Failed to remove unsupported runtime mod {}: {e}",
+                        target_path.display()
+                    )
+                })?;
+            }
+            continue;
+        }
+        retained.push(file);
+    }
+    *installed_files = retained;
+    Ok(())
+}
+
+fn is_nested_launcher_mod_jar_path(path: &Path) -> bool {
+    let normalized = path.to_string_lossy().replace('\\', "/").to_ascii_lowercase();
+    normalized.starts_with("meta-inf/jars/") && normalized.ends_with(".jar")
+}
+
+fn launcher_package_has_unsupported_runtime_mods(
+    mods_dir: &Path,
+    marker: &LauncherModsInstallMarker,
+) -> Result<bool, String> {
+    for file in &marker.files {
+        if !is_jar_file_name(&file.path) {
+            continue;
+        }
+        let name = launcher_installed_file_name(&file.path);
+        if is_unsupported_launcher_runtime_mod_name(&name) {
+            return Ok(true);
+        }
+        let relative_path = normalize_manifest_relative_path(&file.path)?;
+        let target_path = mods_dir.join(relative_path);
+        if fabric_mod_uses_named_namespace(&target_path)? {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn mods_dir_has_unsupported_runtime_mods(mods_dir: &Path) -> Result<bool, String> {
+    if !mods_dir.exists() {
+        return Ok(false);
+    }
+    let read_dir = fs::read_dir(mods_dir).map_err(|e| {
+        format!(
+            "Failed to inspect mods directory {}: {e}",
+            mods_dir.display()
+        )
+    })?;
+    for entry in read_dir {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let path = entry.path();
+        if path.is_dir() {
+            continue;
+        }
+        let Some(name) = path.file_name().and_then(|value| value.to_str()) else {
+            continue;
+        };
+        let name = name.to_ascii_lowercase();
+        if !is_jar_file_name(&name) {
+            continue;
+        }
+        if is_unsupported_launcher_runtime_mod_name(&name) || fabric_mod_uses_named_namespace(&path)?
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn fabric_mod_uses_named_namespace(path: &Path) -> Result<bool, String> {
+    if !path.exists() {
+        return Ok(false);
+    }
+    let file = fs::File::open(path)
+        .map_err(|e| format!("Failed to open Fabric module {}: {e}", path.display()))?;
+    let mut archive = zip::ZipArchive::new(file)
+        .map_err(|e| format!("Invalid Fabric module archive {}: {e}", path.display()))?;
+
+    for index in 0..archive.len() {
+        let mut entry = archive.by_index(index).map_err(|e| e.to_string())?;
+        if entry.name().ends_with('/') {
+            continue;
+        }
+        let Some(enclosed) = entry.enclosed_name().map(|value| value.to_path_buf()) else {
+            continue;
+        };
+        let Some(file_name) = enclosed.file_name().and_then(|value| value.to_str()) else {
+            continue;
+        };
+        if !file_name.ends_with(".accesswidener") {
+            continue;
+        }
+        let mut content = String::new();
+        entry
+            .read_to_string(&mut content)
+            .map_err(|e| format!("Failed to read access widener {}: {e}", path.display()))?;
+        if let Some(first_line) = content.lines().next() {
+            if first_line.split_whitespace().any(|part| part == "named") {
+                return Ok(true);
+            }
+        }
+    }
+
+    Ok(false)
+}
+
+fn launcher_installed_file_name(path: &str) -> String {
+    Path::new(path)
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or(path)
+        .to_ascii_lowercase()
+}
+
+fn file_name_has_loom_namespace_marker(name: &str) -> bool {
+    name.split('-')
+        .any(|part| part.len() == 8 && part.chars().all(|ch| ch.is_ascii_hexdigit()))
+}
+
+fn is_unsupported_launcher_runtime_mod_name(name: &str) -> bool {
+    is_jar_file_name(name) && file_name_has_loom_namespace_marker(name)
+}
+
 fn path_contains_mods_component(path: &Path) -> bool {
     for component in path.components() {
         if let std::path::Component::Normal(part) = component {
@@ -7424,8 +7719,16 @@ fn trim_to_mods_relative_path(path: &Path) -> Option<PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    use super::{cleanup_launch_natives_dir, FabricInstallResult, ForgeInstallResult};
+    use super::{
+        cleanup_launch_natives_dir, fabric_mod_uses_named_namespace,
+        is_nested_launcher_mod_jar_path, is_unsupported_launcher_runtime_mod_name,
+        launcher_package_has_unsupported_runtime_mods,
+        FabricInstallResult, ForgeInstallResult, LauncherInstalledFileRecord,
+        LauncherModsInstallMarker,
+    };
     use std::fs;
+    use std::io::Write;
+    use std::path::Path;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
@@ -7482,6 +7785,112 @@ mod tests {
         cleanup_launch_natives_dir(&dir);
 
         assert!(!dir.exists());
+    }
+
+    #[test]
+    fn detects_nested_launcher_mod_jars() {
+        assert!(is_nested_launcher_mod_jar_path(Path::new(
+            "META-INF/jars/fabric-biome-api-v1-17.1.1+4fc5413f3e.jar"
+        )));
+        assert!(!is_nested_launcher_mod_jar_path(Path::new(
+            "fabric-biome-api-v1-17.1.1+4fc5413f3e.jar"
+        )));
+        assert!(is_nested_launcher_mod_jar_path(Path::new(
+            "META-INF/jars/kotlin-stdlib-2.4.0.jar"
+        )));
+    }
+
+    #[test]
+    fn detects_named_access_widener_mods() {
+        assert!(is_unsupported_launcher_runtime_mod_name(
+            "fabric-biome-api-v1-48d44a6c-17.1.1+4fc5413f3e.jar"
+        ));
+        assert!(is_unsupported_launcher_runtime_mod_name(
+            "fabric-api-48d44a6c-0.141.4+1.21.11.jar"
+        ));
+        assert!(!is_unsupported_launcher_runtime_mod_name(
+            "fabric-language-kotlin-1.13.8+kotlin.2.2.10.jar"
+        ));
+        assert!(!is_unsupported_launcher_runtime_mod_name(
+            "sodium-fabric-0.7.1.jar"
+        ));
+
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock should be valid")
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("fpsmaster-fabric-api-test-{unique}"));
+        fs::create_dir_all(&dir).expect("test directory should be created");
+        let named_module = dir.join("fabric-biome-api-v1-48d44a6c-17.1.1+4fc5413f3e.jar");
+        let intermediary_module =
+            dir.join("fabric-block-view-api-v2-1.0.39+4ebb5c083e.jar");
+        write_accesswidener_jar(&named_module, "accessWidener v1 named");
+        write_accesswidener_jar(&intermediary_module, "accessWidener v1 intermediary");
+
+        assert!(fabric_mod_uses_named_namespace(&named_module).expect("named jar should be read"));
+        assert!(!fabric_mod_uses_named_namespace(&intermediary_module)
+            .expect("intermediary jar should be read"));
+
+        let marker = LauncherModsInstallMarker {
+            version_tag: "4.0.0".to_string(),
+            checksum: None,
+            manifest_url: None,
+            download_url: "https://example.invalid/nova.zip".to_string(),
+            files: vec![
+                installed_file("fabric-api-48d44a6c-0.141.4+1.21.11.jar"),
+                installed_file("fabric-biome-api-v1-48d44a6c-17.1.1+4fc5413f3e.jar"),
+                installed_file("fabric-language-kotlin-1.13.8+kotlin.2.2.10.jar"),
+                installed_file("nova-4.0.0.jar"),
+            ],
+            installed_at_epoch_sec: 1,
+        };
+        assert!(launcher_package_has_unsupported_runtime_mods(&dir, &marker)
+            .expect("named package should be checked"));
+
+        let intermediary_marker = LauncherModsInstallMarker {
+            files: vec![installed_file("fabric-block-view-api-v2-1.0.39+4ebb5c083e.jar")],
+            ..marker
+        };
+        assert!(!launcher_package_has_unsupported_runtime_mods(&dir, &intermediary_marker)
+            .expect("intermediary package should be checked"));
+        assert!(is_unsupported_launcher_runtime_mod_name(
+            "mcef-48d44a6c-3.3.0-1.21.11.jar"
+        ));
+        assert!(is_unsupported_launcher_runtime_mod_name(
+            "sodium-48d44a6c-mc1.21.11-0.8.12-fabric.jar"
+        ));
+        assert!(!is_unsupported_launcher_runtime_mod_name(
+            "mcef-3.3.0-1.21.11.jar"
+        ));
+
+        fs::remove_dir_all(&dir).expect("test directory should be removed");
+    }
+
+    fn installed_file(path: &str) -> LauncherInstalledFileRecord {
+        LauncherInstalledFileRecord {
+            path: path.to_string(),
+            size: None,
+            checksum: None,
+        }
+    }
+
+    fn write_accesswidener_jar(path: &Path, first_line: &str) {
+        let file = fs::File::create(path).expect("test jar should be created");
+        let mut writer = zip::ZipWriter::new(file);
+        let options = zip::write::SimpleFileOptions::default();
+        writer
+            .start_file("fabric.mod.json", options)
+            .expect("fabric.mod.json should be added");
+        writer
+            .write_all(br#"{"schemaVersion":1,"id":"fabric-test","version":"1.0.0"}"#)
+            .expect("fabric.mod.json should be written");
+        writer
+            .start_file("test.accesswidener", options)
+            .expect("access widener should be added");
+        writer
+            .write_all(format!("{first_line}\n").as_bytes())
+            .expect("access widener should be written");
+        writer.finish().expect("test jar should be finalized");
     }
 }
 
@@ -7817,9 +8226,15 @@ fn resolve_bucket_rgb(bucket: AccentBucket) -> (u8, u8, u8) {
         return (37, 184, 122);
     }
     (
-        (bucket.total_r / bucket.total_weight).round().clamp(0.0, 255.0) as u8,
-        (bucket.total_g / bucket.total_weight).round().clamp(0.0, 255.0) as u8,
-        (bucket.total_b / bucket.total_weight).round().clamp(0.0, 255.0) as u8,
+        (bucket.total_r / bucket.total_weight)
+            .round()
+            .clamp(0.0, 255.0) as u8,
+        (bucket.total_g / bucket.total_weight)
+            .round()
+            .clamp(0.0, 255.0) as u8,
+        (bucket.total_b / bucket.total_weight)
+            .round()
+            .clamp(0.0, 255.0) as u8,
     )
 }
 
@@ -7955,6 +8370,7 @@ fn main() {
             refresh_minecraft_account,
             open_external_link,
             quit_launcher_app,
+            destroy_current_window,
             launcher_cache_telemetry_session,
             launcher_offline_telemetry_session,
             start_launcher_heartbeat,
