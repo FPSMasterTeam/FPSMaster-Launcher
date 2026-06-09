@@ -57,9 +57,9 @@ export const PRESET_INSTANCES: readonly Instance[] = [
   },
   {
     id: "preset-1.20.1-fabric",
-    name: "FPSMaster Nova (1.20.1)",
+    name: "FPSMaster Nova (1.21.11)",
     versionId: "FPSMaster-Nova",
-    baseVersion: "1.20.1",
+    baseVersion: "1.21.11",
     loader: "fabric",
     launcherVersionType: "NOVA",
     iconPath: "/instance-icons/nova.png",

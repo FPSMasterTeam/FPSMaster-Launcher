@@ -413,11 +413,12 @@ function withPresetInstances(instances: Instance[]): Instance[] {
     if (preset.launcherVersionType === "EDGE") {
       return { ...preset };
     }
+    const keepLoaderVersion = saved.baseVersion === preset.baseVersion;
     return {
       ...preset,
       versionId: saved.versionId || preset.versionId,
-      loaderVersion: saved.loaderVersion,
-      optiFineVersion: saved.optiFineVersion
+      loaderVersion: keepLoaderVersion ? saved.loaderVersion : undefined,
+      optiFineVersion: keepLoaderVersion ? saved.optiFineVersion : undefined
     };
   });
   const custom = instances
