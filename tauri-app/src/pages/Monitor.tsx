@@ -155,7 +155,11 @@ export default function MonitorPage({ params }: MonitorPageProps) {
   }
 
   async function closeMonitorWindow() {
-    await getCurrentWindow().destroy();
+    try {
+      await invoke("destroy_current_window");
+    } catch {
+      await getCurrentWindow().destroy();
+    }
   }
 
   async function stopGame(): Promise<boolean> {

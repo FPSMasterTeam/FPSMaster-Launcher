@@ -45,20 +45,8 @@ jobs:
           should_publish="false"
 
           case "$ref" in
-            master|release|release/*)
+            master|release|release/*|beta|beta/*|nightly|nightly/*|cannary|cannary/*)
               channel="release"
-              should_publish="true"
-              ;;
-            beta|beta/*)
-              channel="beta"
-              should_publish="true"
-              ;;
-            nightly|nightly/*)
-              channel="nightly"
-              should_publish="true"
-              ;;
-            cannary|cannary/*)
-              channel="cannary"
               should_publish="true"
               ;;
           esac
