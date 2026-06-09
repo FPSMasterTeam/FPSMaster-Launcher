@@ -282,7 +282,7 @@ jobs:
               exit 1
             fi
 
-            upload_response="$(curl --fail --show-error --silent \
+            upload_response="$(curl --fail-with-body --show-error --silent \
               -X POST \
               -H "X-CI-Token: ${FPSMASTER_CI_UPLOAD_TOKEN}" \
               -F "file=@${artifact_path}" \
@@ -294,7 +294,7 @@ jobs:
             export FILE_SIZE="$file_size"
             python -c 'import json, os; upload = json.loads(os.environ["UPLOAD_RESPONSE"])["data"]; payload = dict(productCode=os.environ["PRODUCT_CODE"], channelCode=os.environ["CHANNEL"], versionName=os.environ["VERSION_NAME"], commitHash=os.environ["COMMIT_HASH"], artifactSourceType="UPLOADED_FILE", downloadUrl=upload["url"], fileBucket=upload.get("bucket") or "", fileKey=upload.get("key") or "", fileSize=int(os.environ["FILE_SIZE"]), checksum=os.environ["CHECKSUM"], recommended=True, mandatory=True, target=os.environ["TARGET"], changelog=os.environ["CHANGELOG"]); open("payload.json", "w", encoding="utf-8").write(json.dumps(payload, ensure_ascii=False))'
 
-            curl --fail --show-error --silent \
+            curl --fail-with-body --show-error --silent \
               -X POST \
               -H "Content-Type: application/json" \
               -H "X-CI-Token: ${FPSMASTER_CI_UPLOAD_TOKEN}" \
