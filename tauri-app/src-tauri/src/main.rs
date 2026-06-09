@@ -2819,16 +2819,25 @@ fn install_launcher_version_mods_blocking(
         .as_ref()
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty());
+    let clean_existing = clean_existing.unwrap_or(false);
 
     let marker_path = mods_dir.join(".fpsmaster-launcher-mods.json");
-    if is_mods_marker_up_to_date(
-        &marker_path,
-        &normalized_tag,
-        checksum.as_deref(),
-        normalized_manifest_url.as_deref(),
-        Some(normalized_url.as_str()),
-    )? && validate_installed_launcher_package(&mods_dir, &marker_path, None)?
-    {
+    let previous_marker = read_mods_marker(&marker_path)?;
+    let package_up_to_date = match previous_marker.as_ref() {
+        Some(marker) => {
+            is_mods_marker_up_to_date(
+                &marker_path,
+                &normalized_tag,
+                checksum.as_deref(),
+                normalized_manifest_url.as_deref(),
+                Some(normalized_url.as_str()),
+            )? && validate_installed_launcher_package(&mods_dir, &marker_path, Some(marker))?
+                && (!clean_existing
+                    || !mods_dir_has_unmanaged_files(&mods_dir, &marker_path, marker)?)
+        }
+        None => false,
+    };
+    if package_up_to_date {
         return Ok(LauncherModsInstallResult {
             target_dir: mods_dir.to_string_lossy().to_string(),
             installed_files: 0,
@@ -2838,14 +2847,13 @@ fn install_launcher_version_mods_blocking(
         });
     }
 
-    let previous_marker = read_mods_marker(&marker_path)?;
     let installed_files = if let Some(manifest_source) = normalized_manifest_url.as_deref() {
         install_launcher_manifest_package(
             manifest_source,
             &normalized_tag,
             &mods_dir,
             previous_marker.as_ref(),
-            clean_existing.unwrap_or(false),
+            clean_existing,
         )?
     } else {
         let download_file_name = infer_download_file_name(&normalized_url, &normalized_tag);
@@ -2891,7 +2899,7 @@ fn install_launcher_version_mods_blocking(
             &stage_dir,
             previous_marker.as_ref(),
             &installed_files,
-            clean_existing.unwrap_or(false),
+            clean_existing,
         ) {
             let _ = fs::remove_dir_all(&stage_dir);
             return Err(err);
@@ -7237,6 +7245,62 @@ fn mods_dir_has_payload(mods_dir: &Path, marker_path: &Path) -> Result<bool, Str
             continue;
         }
         return Ok(true);
+    }
+    Ok(false)
+}
+
+fn mods_dir_has_unmanaged_files(
+    mods_dir: &Path,
+    marker_path: &Path,
+    marker: &LauncherModsInstallMarker,
+) -> Result<bool, String> {
+    if !mods_dir.exists() {
+        return Ok(false);
+    }
+    if marker.files.is_empty() {
+        return mods_dir_has_payload(mods_dir, marker_path);
+    }
+    let managed_paths = marker
+        .files
+        .iter()
+        .map(|file| normalize_manifest_relative_path(&file.path))
+        .collect::<Result<HashSet<_>, _>>()?;
+    mods_dir_has_unmanaged_files_inner(mods_dir, mods_dir, marker_path, &managed_paths)
+}
+
+fn mods_dir_has_unmanaged_files_inner(
+    root_dir: &Path,
+    current_dir: &Path,
+    marker_path: &Path,
+    managed_paths: &HashSet<PathBuf>,
+) -> Result<bool, String> {
+    let read_dir = fs::read_dir(current_dir).map_err(|e| {
+        format!(
+            "Failed to inspect mods directory {}: {e}",
+            current_dir.to_string_lossy()
+        )
+    })?;
+    for entry in read_dir {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let path = entry.path();
+        if path == marker_path {
+            continue;
+        }
+        if path.is_dir() {
+            if mods_dir_has_unmanaged_files_inner(root_dir, &path, marker_path, managed_paths)? {
+                return Ok(true);
+            }
+            continue;
+        }
+        let relative_path = path.strip_prefix(root_dir).map_err(|e| {
+            format!(
+                "Failed to resolve mods file path {}: {e}",
+                path.to_string_lossy()
+            )
+        })?;
+        if !managed_paths.contains(relative_path) {
+            return Ok(true);
+        }
     }
     Ok(false)
 }

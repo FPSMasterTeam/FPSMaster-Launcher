@@ -29,7 +29,7 @@ export default function MonitorPage({ params }: MonitorPageProps) {
   const [status, setStatus] = useState(t("monitor.connecting"));
   const [tick, setTick] = useState(Date.now());
   const [exitedAt, setExitedAt] = useState<number | null>(null);
-  const [confirmAction, setConfirmAction] = useState<"stop" | "back" | null>(null);
+  const [confirmAction, setConfirmAction] = useState<"stop" | null>(null);
   const [stopping, setStopping] = useState(false);
 
   const cursorRef = useRef<number | null>(initialCursor > 0 ? initialCursor : null);
@@ -151,7 +151,11 @@ export default function MonitorPage({ params }: MonitorPageProps) {
 
   async function backToLauncher() {
     await invoke("show_main_window");
-    await getCurrentWindow().close();
+    await closeMonitorWindow();
+  }
+
+  async function closeMonitorWindow() {
+    await getCurrentWindow().destroy();
   }
 
   async function stopGame(): Promise<boolean> {
@@ -178,22 +182,13 @@ export default function MonitorPage({ params }: MonitorPageProps) {
     if (confirmAction === "stop") {
       await stopGame();
       setConfirmAction(null);
-      return;
     }
-    if (stats?.running === false) {
-      setConfirmAction(null);
-      await backToLauncher();
-      return;
-    }
-    await stopGame();
-    setConfirmAction(null);
-    await backToLauncher();
   }
 
   return (
     <div className="appWindow monitorWindow">
       <div>
-        <TitleBar title={version} />
+        <TitleBar title={version} onClose={closeMonitorWindow} />
       </div>
 
       <main className="monitorWorkspace monitorWorkspaceCompact">
@@ -218,11 +213,7 @@ export default function MonitorPage({ params }: MonitorPageProps) {
               <button
                 className="icon-button monitorUtilityButton !w-auto px-3"
                 onClick={() => {
-                  if (stats?.running === false) {
-                    void backToLauncher();
-                    return;
-                  }
-                  setConfirmAction("back");
+                  void backToLauncher();
                 }}
                 disabled={stopping}
                 type="button"
@@ -280,7 +271,7 @@ export default function MonitorPage({ params }: MonitorPageProps) {
                 {t("monitor.cancel")}
               </button>
               <button className="segment-chip is-active !min-h-10 px-4" onClick={() => void confirmAndExecute()} disabled={stopping} type="button">
-                {confirmAction === "back" ? t("monitor.confirmBack") : t("monitor.confirmStop")}
+                {t("monitor.confirmStop")}
               </button>
             </div>
           </Card>
