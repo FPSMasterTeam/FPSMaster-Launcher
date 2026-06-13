@@ -979,8 +979,8 @@ function Launcher() {
       instances
         .filter((item) => item.preset && item.launcherVersionType)
         .map(async (instance) => {
-          const presetAccess = resolvePresetAccessState(instance, launcherAuth?.user ?? null, targetMap);
-          if (presetAccess.state === "beta" || presetAccess.state === "pending-release") {
+          const presetAccess = resolvePresetAccessState(instance, targetMap);
+          if (presetAccess.state === "pending-release") {
             return [instance.id, createPresetPackageStatus(presetAccess.state, {
               versionTag: presetAccess.versionTag ?? null,
               targetVersionTag: presetAccess.versionTag ?? null,
@@ -1476,8 +1476,8 @@ function Launcher() {
   ) {
     if (!instance.preset || !instance.launcherVersionType) return;
 
-    const presetAccess = resolvePresetAccessState(instance, launcherAuth?.user ?? null, versionMapOverride ?? launcherVersions);
-    if (presetAccess.state === "beta" || presetAccess.state === "pending-release") {
+    const presetAccess = resolvePresetAccessState(instance, versionMapOverride ?? launcherVersions);
+    if (presetAccess.state === "pending-release") {
       setPresetPackageStatuses((prev) => ({
         ...prev,
         [instance.id]: createPresetPackageStatus(presetAccess.state, {
@@ -1931,8 +1931,8 @@ function Launcher() {
     if (ensureMandatoryLauncherUpdate()) {
       return;
     }
-    const presetAccess = resolvePresetAccessState(target, launcherAuth?.user ?? null, launcherVersions);
-    if (presetAccess.state === "beta" || presetAccess.state === "pending-release") {
+    const presetAccess = resolvePresetAccessState(target, launcherVersions);
+    if (presetAccess.state === "pending-release") {
       const errorText = presetAccess.lastError ?? t("app.status.authRequiredForPreset");
       setLaunchError(errorText);
       setStatus(errorText);
@@ -3165,27 +3165,19 @@ function createPresetPackageStatus(
 
 function resolvePresetAccessState(
   instance: Instance,
-  user: LauncherUser | null,
   versionMap: LauncherVersionMap
-): { state: "ok" | "beta" | "pending-release"; versionTag?: string | null; changelog?: string | null; lastError?: string | null } {
+): { state: "ok" | "pending-release"; versionTag?: string | null; changelog?: string | null; lastError?: string | null } {
   if (!instance.preset || !instance.launcherVersionType) {
     return { state: "ok" };
   }
   if (instance.launcherVersionType === "EDGE") {
     return { state: "ok" };
   }
-  const eligible = Boolean(user?.novaBetaEligible);
   const version = versionMap.NOVA;
-  if (!eligible) {
-    return {
-      state: "beta",
-      lastError: "Nova is still in beta for this account."
-    };
-  }
   if (!version) {
     return {
       state: "pending-release",
-      lastError: "Nova is approved for this account but not released yet."
+      lastError: "Nova has not been released yet."
     };
   }
   return {
