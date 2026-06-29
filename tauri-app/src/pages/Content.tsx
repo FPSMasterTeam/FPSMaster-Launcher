@@ -1,7 +1,7 @@
 import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
 import { Archive, Box, Download, File, Globe, HardDriveDownload, PackageCheck, Palette, Search, Sparkles, Trash2, X } from "lucide-react";
-import { type ChangeEvent, useEffect, useMemo, useRef, useState } from "react";
+import { memo, type ChangeEvent, useEffect, useMemo, useRef, useState } from "react";
 import Button from "../components/Button";
 import Card from "../components/Card";
 import Select from "../components/Select";
@@ -54,7 +54,7 @@ function contentSourceLabel(value: ContentSource, t: ReturnType<typeof useI18n>[
   return t("content.source.local");
 }
 
-export default function ContentPage({
+function ContentPage({
   instances,
   current,
   gameDir,
@@ -707,8 +707,8 @@ export default function ContentPage({
                         {canUpdate && <span className="badge badge-warning normal-case tracking-normal">{t("content.update")}</span>}
                       </div>
                       <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-[var(--text-muted)]">
-                        <span>{item.versionNumber}</span>
-                        {canUpdate && updateState?.latestVersionNumber && <span className="badge badge-warning normal-case tracking-normal">{updateState.latestVersionNumber}</span>}
+                        <span className="text-data">{item.versionNumber}</span>
+                        {canUpdate && updateState?.latestVersionNumber && <span className="badge badge-warning normal-case tracking-normal"><span className="text-data">{updateState.latestVersionNumber}</span></span>}
                         <span className="badge badge-muted normal-case tracking-normal">{contentSourceLabel(item.source, t)}</span>
                       </div>
                     </div>
@@ -747,3 +747,5 @@ export default function ContentPage({
     </div>
   );
 }
+
+export default memo(ContentPage);

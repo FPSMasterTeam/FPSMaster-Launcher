@@ -1,3 +1,4 @@
+import { memo } from "react";
 import { Award, BarChart3, Calendar, ChevronRight, Clock, Crown, CreditCard, ShieldCheck, Sparkles, Trophy, User } from "lucide-react";
 import Card from "../components/Card";
 import { useI18n } from "../i18n";
@@ -7,7 +8,7 @@ type AccountCenterPageProps = {
   launcherDashboard: LauncherDashboard | null;
 };
 
-export default function AccountCenterPage({ launcherDashboard }: AccountCenterPageProps) {
+function AccountCenterPage({ launcherDashboard }: AccountCenterPageProps) {
   const { t } = useI18n();
   const profileUser = launcherDashboard?.user ?? null;
   const profileStats = launcherDashboard?.stats ?? null;
@@ -212,3 +213,5 @@ function parseLevelNumber(levelStr: string): number {
   if (match) return parseInt(match[1], 10) || 1;
   return 1;
 }
+
+export default memo(AccountCenterPage);

@@ -1,0 +1,6 @@
+dist
+src-tauri/target
+node_modules
+src/locales
+pnpm-lock.yaml
+package-lock.json

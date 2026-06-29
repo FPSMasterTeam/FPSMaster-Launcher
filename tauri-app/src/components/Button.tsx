@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { memo } from 'react';
 
 interface ButtonProps extends React.ButtonHTMLAttributes<HTMLButtonElement> {
   variant?: 'primary' | 'minecraft-success' | 'minecraft-primary' | 'secondary' | 'outline' | 'ghost' | 'danger';
@@ -24,7 +24,7 @@ const Button: React.FC<ButtonProps> = ({
 
   const variants = {
     primary:
-      'bg-[var(--mc-grass)] text-white rounded-xl border border-[#25b87a]/50 hover:bg-[var(--mc-grass-dark)] hover:-translate-y-0.5',
+      'bg-[var(--mc-grass)] text-white rounded-xl border border-[#25b87a]/50 shadow-[inset_0_1px_0_rgba(255,255,255,0.18),0_6px_16px_rgba(2,8,16,0.32)] hover:bg-[var(--mc-grass-dark)] hover:-translate-y-0.5',
     secondary:
       'bg-[var(--bg-tertiary)] text-[var(--text-primary)] rounded-xl border border-white/5 hover:bg-[var(--bg-elevated)] hover:-translate-y-0.5',
     outline:
@@ -34,9 +34,9 @@ const Button: React.FC<ButtonProps> = ({
     danger:
       'bg-[var(--accent-danger)]/12 text-[var(--accent-danger)] hover:bg-[var(--accent-danger)]/20 rounded-xl border border-[#ff6b8f]/25',
     'minecraft-success':
-      'bg-[var(--mc-grass)] text-white rounded-xl border border-[#25b87a]/50 shadow-[0_8px_20px_rgba(95,111,255,0.2)] hover:bg-[var(--mc-grass-dark)] hover:shadow-[0_10px_24px_rgba(95,111,255,0.26)] hover:-translate-y-0.5',
+      'bg-[var(--mc-grass)] text-white rounded-xl border border-[#25b87a]/50 shadow-[inset_0_1px_0_rgba(255,255,255,0.18),0_8px_18px_rgba(2,8,16,0.35)] hover:bg-[var(--mc-grass-dark)] hover:-translate-y-0.5',
     'minecraft-primary':
-      'bg-[var(--mc-grass)] text-white rounded-xl border border-[#25b87a]/50 shadow-[0_8px_20px_rgba(95,111,255,0.2)] hover:bg-[var(--mc-grass-dark)] hover:shadow-[0_10px_24px_rgba(95,111,255,0.26)] hover:-translate-y-0.5',
+      'bg-[var(--mc-grass)] text-white rounded-xl border border-[#25b87a]/50 shadow-[inset_0_1px_0_rgba(255,255,255,0.18),0_8px_18px_rgba(2,8,16,0.35)] hover:bg-[var(--mc-grass-dark)] hover:-translate-y-0.5',
   };
 
   const sizes = {
@@ -68,4 +68,4 @@ const Button: React.FC<ButtonProps> = ({
   );
 };
 
-export default Button;
+export default memo(Button);

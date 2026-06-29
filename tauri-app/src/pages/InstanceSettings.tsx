@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { Archive, ArrowLeft, Copy, File, Folder, FolderOpen, MoreHorizontal, RefreshCw, Trash2, Ban, Check } from "lucide-react";
-import { type ReactNode, useEffect, useState } from "react";
+import { memo, type ReactNode, useEffect, useState } from "react";
 import Button from "../components/Button";
 import Card from "../components/Card";
 import { resolvePresetVersionId } from "../constants";
@@ -52,7 +52,7 @@ function emptySectionState(): Record<InstanceSection, SectionState> {
   };
 }
 
-export default function InstanceSettingsPage({
+function InstanceSettingsPage({
   instance,
   gameDir,
   busy,
@@ -392,3 +392,5 @@ function MetaBadge({ children }: { children: ReactNode }) {
     </span>
   );
 }
+
+export default memo(InstanceSettingsPage);

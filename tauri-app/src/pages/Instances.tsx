@@ -96,12 +96,12 @@ function InstancesPage({
               {!canAccess && <Lock size={12} className="text-[var(--text-muted)] shrink-0" />}
               {instance.preset && presetStatus && (presetStatus.state === "update-available" || presetStatus.state === "missing") && canAccess && (
                 <span className="badge badge-warning shrink-0 rounded-full px-2 py-1 text-[10px]">
-                  待更新
+                  {t("instances.status.updateAvailable")}
                 </span>
               )}
             </div>
             <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-[var(--text-secondary)]">
-              <span className="badge badge-muted rounded-full px-2 py-1 text-[10px]">
+              <span className="badge badge-muted text-data rounded-full px-2 py-1 text-[10px]">
                 {instance.baseVersion}
               </span>
               <span className={`badge rounded-full px-2 py-1 text-[10px] ${
@@ -114,7 +114,7 @@ function InstancesPage({
                 {loaderLabel(instance.loader, t)}
               </span>
               {!instance.preset && instance.launcherVersionType && (
-                <span className="text-[var(--text-muted)]">{instance.launcherVersionType}</span>
+                <span className="text-data text-[var(--text-muted)]">{instance.launcherVersionType}</span>
               )}
             </div>
           </div>

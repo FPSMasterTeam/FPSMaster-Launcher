@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { startTransition, useEffect, useRef, useState } from "react";
+import { memo, startTransition, useEffect, useRef, useState } from "react";
 import Card from "../components/Card";
 import TitleBar from "../components/TitleBar";
 import { useI18n } from "../i18n";
@@ -17,7 +17,7 @@ const MONITOR_UPTIME_TICK_INTERVAL_MS = 1000;
 const MONITOR_LOG_FLUSH_INTERVAL_MS = 300;
 const MONITOR_LOG_LINE_LIMIT = 1200;
 
-export default function MonitorPage({ params }: MonitorPageProps) {
+function MonitorPage({ params }: MonitorPageProps) {
   const { t } = useI18n();
   const pid = parseIntSafe(params.get("pid"), 0);
   const monitorStartedAt = useRef(parseIntSafe(params.get("startedAt"), Date.now())).current;
@@ -200,7 +200,7 @@ export default function MonitorPage({ params }: MonitorPageProps) {
           <div className="monitorHeroHeader monitorHeroHeaderCompact">
             <div className="monitorHeroIdentity">
               <p className="page-eyebrow">{t("monitor.brandTag")}</p>
-              <h1 className="monitorHeroTitle monitorHeroTitleCompact">{version}</h1>
+              <h1 className="monitorHeroTitle monitorHeroTitleCompact text-data">{version}</h1>
             </div>
             <div className="monitorActionRow">
               <button
@@ -265,7 +265,7 @@ export default function MonitorPage({ params }: MonitorPageProps) {
             <div className="modal-header !mb-3">
               <div>
                 <p className="page-eyebrow">{t("monitor.confirmTitle")}</p>
-                <h2 className="section-title mt-1">{version}</h2>
+                <h2 className="section-title mt-1 text-data">{version}</h2>
               </div>
               <span className="badge badge-muted normal-case tracking-normal">{pid > 0 ? `pid=${pid}` : "pid=N/A"}</span>
             </div>
@@ -308,7 +308,9 @@ function MetricRow({
   return (
     <div className={`monitorMetricRow ${compact ? "is-compact" : ""}`}>
       <span className="monitorMetricLabel">{label}</span>
-      <strong className="monitorMetricValue">{value}</strong>
+      <strong className="monitorMetricValue text-data">{value}</strong>
     </div>
   );
 }
+
+export default memo(MonitorPage);
