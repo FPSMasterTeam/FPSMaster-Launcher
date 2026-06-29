@@ -59,7 +59,6 @@ import {
 } from "./lib/instance";
 import { ensureJdk, openMonitor, syncAutostart, syncTrayBehavior } from "./lib/system";
 import { createPresetPackageStatus, resolvePresetAccessState } from "./lib/presetPackage";
-import { useResponsiveLayout } from "./hooks/useResponsiveLayout";
 import { useLauncherUpdate } from "./hooks/useLauncherUpdate";
 import { useLauncherData } from "./hooks/useLauncherData";
 import { useLauncherTelemetry } from "./hooks/useLauncherTelemetry";
@@ -160,8 +159,6 @@ export function App() {
 
 function Launcher() {
   const [page, setPage] = useState<Page>("home");
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
-  const { compactLayout } = useResponsiveLayout();
   const [instances, setInstances] = useState<Instance[]>(loadInstances);
   const [selected, setSelected] = useState<string>(
     localStorage.getItem(STORAGE_KEYS.selected) ?? PRESET_INSTANCES[0].id
@@ -239,7 +236,6 @@ function Launcher() {
     () => instances.find((item) => item.id === selected) ?? instances[0] ?? null,
     [instances, selected]
   );
-  const effectiveSidebarCollapsed = compactLayout ? true : sidebarCollapsed;
   const activeBackgroundUrl =
     resolveBackgroundAssetUrl(settings);
   const authenticated = Boolean(launcherAuth?.token?.trim());
@@ -2126,7 +2122,6 @@ function Launcher() {
   // Stable callback identities so React.memo children (Sidebar, pages) don't
   // re-render when an unrelated piece of App state changes (#5).
   const stableNavigate = useStableCallback(navigatePage);
-  const stableToggleSidebar = useStableCallback(() => setSidebarCollapsed((value) => !value));
   const stableLaunch = useStableCallback(launch);
   const stableLaunchToServer = useStableCallback(launchToServer);
   const stableRemoveInstance = useStableCallback(removeInstance);
@@ -2296,16 +2291,11 @@ function Launcher() {
           <div className="relative z-10 flex h-full w-full flex-1 pt-10">
             <Sidebar
               currentPage={page}
-              collapsed={effectiveSidebarCollapsed}
-              canToggleCollapse={!compactLayout}
               user={launcherAuth?.user ?? null}
-              onToggleCollapse={stableToggleSidebar}
               setPage={stableNavigate}
             />
 
             <main className="relative flex-1 overflow-hidden border-l border-white/5 bg-[var(--bg-secondary)]/34">
-              <div className="pointer-events-none absolute -right-40 -top-32 h-[460px] w-[460px] rounded-full bg-[var(--mc-grass)]/4 blur-[80px] opacity-25" />
-
               <div key={page} className="relative z-10 h-full page-transition">
                 <Suspense fallback={<PageFallback />}>
                   <PageRouter ctx={routerContext} />

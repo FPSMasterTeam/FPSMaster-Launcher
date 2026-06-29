@@ -196,7 +196,7 @@ function MonitorPage({ params }: MonitorPageProps) {
       </div>
 
       <main className="monitorWorkspace monitorWorkspaceCompact">
-        <Card as="section" variant="soft" className="monitorHeroCard monitorHeroCardCompact monitorPlainCard page-card rounded-[22px]" interactive={false}>
+        <Card as="section" variant="soft" className="monitorHeroCard monitorHeroCardCompact monitorPlainCard page-card rounded-[10px]" interactive={false}>
           <div className="monitorHeroHeader monitorHeroHeaderCompact">
             <div className="monitorHeroIdentity">
               <p className="page-eyebrow">{t("monitor.brandTag")}</p>
@@ -243,7 +243,7 @@ function MonitorPage({ params }: MonitorPageProps) {
           </div>
         </Card>
 
-        <Card as="section" variant="soft" className="monitorConsoleCard monitorConsoleCardExpanded monitorPlainCard page-card rounded-[22px]" interactive={false}>
+        <Card as="section" variant="soft" className="monitorConsoleCard monitorConsoleCardExpanded monitorPlainCard page-card rounded-[10px]" interactive={false}>
           <div className="monitorConsoleHead monitorConsoleHeadCompact">
             <h2 className="monitorConsoleTitle">{t("monitor.consoleOutput")}</h2>
           </div>

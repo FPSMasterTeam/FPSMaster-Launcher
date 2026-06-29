@@ -202,11 +202,11 @@ function InstanceSettingsPage({
   if (!instance) {
     return (
       <div className="page-shell">
-        <Card variant="frost" className="page-card max-w-xl rounded-[22px]" interactive={false}>
+        <Card variant="frost" className="page-card max-w-xl rounded-[10px]" interactive={false}>
           <h1 className="page-title !mt-0 !text-[28px]">{t("instanceFiles.title")}</h1>
           <p className="page-subtitle">{t("instanceFiles.noInstance")}</p>
           <div className="mt-5">
-            <Button variant="secondary" size="sm" className="gap-2 !rounded-2xl" onClick={onBack}>
+            <Button variant="secondary" size="sm" className="gap-2 !rounded-[10px]" onClick={onBack}>
               <ArrowLeft size={14} />
               {t("instanceFiles.back")}
             </Button>
@@ -230,23 +230,23 @@ function InstanceSettingsPage({
           </div>
         </div>
         <div className="page-header-actions">
-          <Button variant="outline" size="sm" className="gap-2 !rounded-2xl" disabled={busy} onClick={onRepair}>
+          <Button variant="outline" size="sm" className="gap-2 !rounded-[10px]" disabled={busy} onClick={onRepair}>
             <RefreshCw size={14} className={busy ? "animate-spin" : ""} />
             {t("instanceFiles.repair")}
           </Button>
-          <Button variant="outline" size="sm" className="gap-2 !rounded-2xl" disabled={busy} onClick={onDuplicate}>
+          <Button variant="outline" size="sm" className="gap-2 !rounded-[10px]" disabled={busy} onClick={onDuplicate}>
             <Copy size={14} />
             {t("instances.copy")}
           </Button>
-          <Button variant="outline" size="sm" className="gap-2 !rounded-2xl" disabled={busy} onClick={onExport}>
+          <Button variant="outline" size="sm" className="gap-2 !rounded-[10px]" disabled={busy} onClick={onExport}>
             <Archive size={14} />
             {t("instances.export")}
           </Button>
-          <Button variant="danger" size="sm" className="gap-2 !rounded-2xl" disabled={busy || instance?.preset} onClick={onDelete}>
+          <Button variant="danger" size="sm" className="gap-2 !rounded-[10px]" disabled={busy || instance?.preset} onClick={onDelete}>
             <Trash2 size={14} />
             {t("instances.delete")}
           </Button>
-          <Button variant="secondary" size="sm" className="gap-2 !rounded-2xl" onClick={onBack}>
+          <Button variant="secondary" size="sm" className="gap-2 !rounded-[10px]" onClick={onBack}>
             <ArrowLeft size={14} />
             {t("instanceFiles.back")}
           </Button>
@@ -254,7 +254,7 @@ function InstanceSettingsPage({
       </header>
 
       {/* Tab Navigation */}
-      <div className="segment-control mb-6 flex items-center gap-2 overflow-x-auto rounded-[20px] pb-1">
+      <div className="segment-control mb-6 flex items-center gap-2 overflow-x-auto rounded-[10px] pb-1">
         {SECTIONS.map((section) => {
           const isActive = activeTab === section.id;
           const state = sections[section.id];
@@ -279,7 +279,7 @@ function InstanceSettingsPage({
       {(() => {
         const state = sections[activeTab];
         return (
-          <Card variant="frost" className="page-card rounded-[22px]" interactive={false}>
+          <Card variant="frost" className="page-card rounded-[10px]" interactive={false}>
             <div className="section-header">
               <div className="section-header-main">
                 <h2 className="section-title">{sectionLabel(activeTab)}</h2>
@@ -289,14 +289,14 @@ function InstanceSettingsPage({
                 <Button
                   variant="outline"
                   size="sm"
-                  className="gap-1 !rounded-2xl"
+                  className="gap-1 !rounded-[10px]"
                   disabled={state.loading}
                   onClick={() => void refreshSection(activeTab, effectiveVersionId)}
                 >
                   <RefreshCw size={14} className={state.loading ? "animate-spin" : ""} />
                   {t("instanceFiles.refresh")}
                 </Button>
-                <Button variant="secondary" size="sm" className="gap-1 !rounded-2xl" onClick={() => void openSection(activeTab)}>
+                <Button variant="secondary" size="sm" className="gap-1 !rounded-[10px]" onClick={() => void openSection(activeTab)}>
                   <FolderOpen size={14} />
                   {t("instanceFiles.openFolder")}
                 </Button>
@@ -324,7 +324,7 @@ function InstanceSettingsPage({
                     return (
                       <li
                         key={entry.name}
-                        className={`surface-panel group relative flex items-center gap-2 rounded-[18px] px-3 py-2.5 transition-colors ${
+                        className={`surface-panel group relative flex items-center gap-2 rounded-[8px] px-3 py-2.5 transition-colors ${
                           entry.disabled
                             ? "opacity-60"
                             : "hover:border-[var(--border-medium)]"
@@ -387,7 +387,7 @@ function loaderLabel(
 
 function MetaBadge({ children }: { children: ReactNode }) {
   return (
-    <span className="badge badge-muted rounded-full px-2 py-1 text-[10px]">
+    <span className="badge badge-muted rounded-[5px] px-2 py-1 text-[10px]">
       {children}
     </span>
   );

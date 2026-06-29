@@ -43,7 +43,7 @@ export default function ServerDialog({
       >
         <div className="modal-header">
           <div className="flex items-center gap-4 min-w-0">
-            <div className="icon-tile h-16 w-16 rounded-[20px] shrink-0">
+            <div className="icon-tile h-16 w-16 rounded-[10px] shrink-0">
               {server.iconUrl ? (
                 <img src={server.iconUrl} alt={server.name} className="h-full w-full object-cover" />
               ) : server.iconPath ? (
@@ -78,7 +78,7 @@ export default function ServerDialog({
           )}
 
           {server.detailedDescription && (
-            <div className="surface-panel surface-panel-soft rounded-[20px] p-4 mb-4">
+            <div className="surface-panel surface-panel-soft rounded-[10px] p-4 mb-4">
               <p className="text-sm leading-6 text-[var(--text-secondary)] whitespace-pre-wrap">
                 {server.detailedDescription}
               </p>

@@ -97,7 +97,7 @@ function InstallPage({
               <h2 className="section-title">{t("install.selectVersion")}</h2>
               <p className="section-subtitle">{showSnapshots ? t("install.snapshots") : t("install.releases")}</p>
             </div>
-            <Card variant="soft" className="segment-control rounded-[18px] p-1" interactive={false}>
+            <Card variant="soft" className="segment-control rounded-[8px] p-1" interactive={false}>
               <button
                 onClick={() => {
                   if (showSnapshots) onToggleSnapshots();
@@ -126,7 +126,7 @@ function InstallPage({
                   <button
                     key={item}
                     onClick={() => onSelectMajor(item)}
-                    className={`badge min-h-11 rounded-2xl px-4 py-2 text-sm normal-case tracking-normal ${
+                    className={`badge min-h-11 rounded-[10px] px-4 py-2 text-sm normal-case tracking-normal ${
                       major === item
                         ? "badge-accent text-[var(--text-primary)]"
                         : "badge-muted hover:border-[var(--border-medium)] hover:text-[var(--text-primary)]"
@@ -185,7 +185,7 @@ function InstallPage({
               <button
                 key={item.id}
                 onClick={() => onSelectLoader(item.id as Loader)}
-                className={`surface-panel min-h-28 rounded-[20px] px-2 py-3 transition-all duration-[var(--duration-normal)] ${
+                className={`surface-panel min-h-28 rounded-[10px] px-2 py-3 transition-all duration-[var(--duration-normal)] ${
                   loader === item.id
                     ? "border-[rgba(var(--accent-rgb),0.3)] bg-[rgba(var(--accent-rgb),0.1)]"
                     : "hover:border-[var(--border-medium)] hover:bg-[rgba(255,255,255,0.05)]"
@@ -209,12 +209,12 @@ function InstallPage({
                   ? t("install.loadingLoaderVersions", { loader: loaderLabel(loader) })
                   : t("install.selectLoaderVersion", { loader: loaderLabel(loader) })}
               </p>
-              <Card variant="soft" className="surface-panel surface-panel-soft flex max-h-[320px] flex-wrap content-start gap-2 overflow-y-auto rounded-[18px] p-2 pr-3" interactive={false}>
+              <Card variant="soft" className="surface-panel surface-panel-soft flex max-h-[320px] flex-wrap content-start gap-2 overflow-y-auto rounded-[8px] p-2 pr-3" interactive={false}>
                 {loaderOptions.map((version) => (
                   <button
                     key={version}
                     onClick={() => onSelectLoaderVersion(version)}
-                    className={`badge min-h-11 rounded-2xl px-4 py-2 text-sm normal-case tracking-normal ${
+                    className={`badge min-h-11 rounded-[10px] px-4 py-2 text-sm normal-case tracking-normal ${
                       loaderVersion === version
                         ? "badge-accent text-[var(--text-primary)]"
                         : "badge-muted hover:border-[var(--border-medium)] hover:text-[var(--text-primary)]"
@@ -244,7 +244,7 @@ function InstallPage({
               type="button"
               onClick={onToggleOptiFine}
               disabled={Boolean(optiFineDisabledReason)}
-              className={`surface-panel flex w-full items-center justify-between gap-3 rounded-[20px] px-4 py-4 text-left transition-all duration-[var(--duration-normal)] ${
+              className={`surface-panel flex w-full items-center justify-between gap-3 rounded-[10px] px-4 py-4 text-left transition-all duration-[var(--duration-normal)] ${
                 optiFineEnabled
                   ? "border-[rgba(var(--accent-rgb),0.3)] bg-[rgba(var(--accent-rgb),0.1)]"
                   : "hover:border-[var(--border-medium)] hover:bg-[rgba(255,255,255,0.05)]"
@@ -259,7 +259,7 @@ function InstallPage({
                   </span>
                 </span>
               </span>
-              <span className={`badge rounded-full px-3 py-1 text-xs ${optiFineEnabled ? "badge-accent" : "badge-muted"}`}>
+              <span className={`badge rounded-[5px] px-3 py-1 text-xs ${optiFineEnabled ? "badge-accent" : "badge-muted"}`}>
                 {optiFineEnabled ? t("install.enabled") : t("install.disabled")}
               </span>
             </button>
@@ -272,14 +272,14 @@ function InstallPage({
                   ? t("install.loadingLoaderVersions", { loader: t("loader.optifine") })
                   : t("install.selectLoaderVersion", { loader: t("loader.optifine") })}
               </p>
-              <Card variant="soft" className="surface-panel surface-panel-soft flex max-h-44 flex-wrap gap-2 overflow-y-auto rounded-[18px] p-2" interactive={false}>
+              <Card variant="soft" className="surface-panel surface-panel-soft flex max-h-44 flex-wrap gap-2 overflow-y-auto rounded-[8px] p-2" interactive={false}>
                 {optiFineOptions.map((item) => (
                   <button
                     key={item.id}
                     onClick={() => onSelectOptiFineVersion(item.version)}
                     disabled={item.compatibility === "incompatible"}
                     title={item.incompatibilityReason ?? undefined}
-                    className={`badge min-h-11 rounded-2xl px-4 py-2 text-sm normal-case tracking-normal ${
+                    className={`badge min-h-11 rounded-[10px] px-4 py-2 text-sm normal-case tracking-normal ${
                       optiFineVersion === item.version
                         ? "badge-accent text-[var(--text-primary)]"
                         : item.compatibility === "incompatible"
@@ -300,7 +300,7 @@ function InstallPage({
             </div>
           )}
 
-          <Card variant="soft" className="surface-panel surface-panel-soft mb-6 rounded-[20px] p-4 text-sm" interactive={false}>
+          <Card variant="soft" className="surface-panel surface-panel-soft mb-6 rounded-[10px] p-4 text-sm" interactive={false}>
             <p className="mb-1 text-[var(--text-secondary)]">
               <span className="text-[var(--text-muted)]">{t("install.versionLabel")}</span>{" "}
               <span className="text-[var(--text-primary)]">{installVersion || "-"}</span>
@@ -319,7 +319,7 @@ function InstallPage({
             )}
           </Card>
 
-          <Button variant="primary" size="xl" fullWidth className="w-full justify-center gap-2 !rounded-2xl" disabled={installDisabled} onClick={onInstall}>
+          <Button variant="primary" size="xl" fullWidth className="w-full justify-center gap-2 !rounded-[10px]" disabled={installDisabled} onClick={onInstall}>
             <Plus size={18} />
             {installButtonText}
           </Button>
@@ -345,7 +345,7 @@ function VersionChip({
   return (
     <button
       onClick={onClick}
-      className={`linear-float badge min-h-11 rounded-2xl px-4 py-2 text-sm font-medium normal-case tracking-normal ${
+      className={`linear-float badge min-h-11 rounded-[10px] px-4 py-2 text-sm font-medium normal-case tracking-normal ${
         active
           ? "badge-accent text-[var(--text-primary)]"
           : "border-white/5 bg-[var(--bg-secondary)] text-[var(--text-secondary)] hover:border-white/10 hover:text-[var(--text-primary)]"
@@ -354,7 +354,7 @@ function VersionChip({
     >
       <span>{version}</span>
       {installed && (
-        <span className="badge badge-success ml-2 rounded-full px-2 py-1 text-[10px]">
+        <span className="badge badge-success ml-2 rounded-[5px] px-2 py-1 text-[10px]">
           {installedLabel}
         </span>
       )}

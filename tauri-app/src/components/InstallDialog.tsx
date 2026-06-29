@@ -13,7 +13,7 @@ export default function InstallDialog({ dialog, onClose, onCancel }: InstallDial
 
   return (
     <section className="modalOverlay">
-      <Card variant="strong" className="installDialogCard w-full max-w-[780px] rounded-3xl p-5 md:p-6" interactive={false}>
+      <Card variant="strong" className="installDialogCard w-full max-w-[780px] rounded-[10px] p-5 md:p-6" interactive={false}>
         <div className="panelHead">
           <h2 className="flex items-center gap-2">
             {!dialog.canClose ? <span className="installDialogSpinner minecraft-inline-spinner" aria-hidden="true" /> : null}
@@ -56,7 +56,7 @@ function InstallPhaseView({ phase }: { phase: InstallPhaseState }) {
   const status = translateStatus(phase.status, t);
 
   return (
-    <Card as="article" variant="soft" className="mt-3 rounded-2xl p-4" interactive={false}>
+    <Card as="article" variant="soft" className="mt-3 rounded-[10px] p-4" interactive={false}>
       <div className="phaseHeadRow">
         <p className="phaseTitle">{phase.title}</p>
         <p className={`phaseStatus ${phase.status}`}>
