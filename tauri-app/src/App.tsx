@@ -1,19 +1,18 @@
 import { getVersion as getAppVersion } from "@tauri-apps/api/app";
 import { invoke } from "@tauri-apps/api/core";
-import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { TauriEvent } from "@tauri-apps/api/event";
 import { listen } from "@tauri-apps/api/event";
 import packageInfo from "../package.json";
-import { useEffect, useMemo, useRef, useState } from "react";
-import { Minus, Square, X } from "lucide-react";
-import AppLogo from "./components/AppLogo";
-import Button from "./components/Button";
-import Card from "./components/Card";
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
+import AppBackground from "./components/AppBackground";
 import InstallDialog from "./components/InstallDialog";
+import LaunchErrorDialog from "./components/LaunchErrorDialog";
 import LaunchPrepareDialog from "./components/LaunchPrepareDialog";
 import Sidebar from "./components/Sidebar";
+import WindowTitleBar from "./components/WindowTitleBar";
 import {
+  DEFAULT_LOGIN_PREFS,
   DEFAULT_SETTINGS,
   LAUNCHER_API_BASE_URL,
   NEWS_ITEMS,
@@ -26,20 +25,53 @@ import {
   I18nProvider,
   resolveLocale
 } from "./i18n";
-import HomePage from "./pages/Home";
-import InstanceSettingsPage from "./pages/InstanceSettings";
-import InstallPage from "./pages/Install";
-import InstancesPage from "./pages/Instances";
+import {
+  mapLaunchPreparePhaseKey,
+  parseLaunchPrepareJdkLog,
+  parseLaunchProgressLog,
+  reduceLaunchPrepareItems,
+  translateLaunchPrepareMessage,
+  upsertLaunchPrepareLogItem
+} from "./lib/launchPrepare";
+import { isLauncherVersionCompatible } from "./lib/version";
+import {
+  formatLaunchError,
+  isAuthExpiredError,
+  normalizeLoginError
+} from "./lib/launcherError";
+import {
+  createOfflineMinecraftAccount,
+  parseMinecraftAccounts,
+  refreshMinecraftAccount,
+  resolveMinecraftLaunchIdentity
+} from "./lib/minecraftAccount";
+import {
+  normalizeStoredToken,
+  parseLauncherAuthState,
+  parseLauncherLoginPrefs,
+  readStoredLocale
+} from "./lib/launcherAuth";
+import {
+  createDuplicatedInstanceName,
+  createDuplicatedVersionId,
+  isLegacyDefaultGameDir,
+  loaderLabelKey
+} from "./lib/instance";
+import { ensureJdk, openMonitor, syncAutostart, syncTrayBehavior } from "./lib/system";
+import { createPresetPackageStatus, resolvePresetAccessState } from "./lib/presetPackage";
+import { useResponsiveLayout } from "./hooks/useResponsiveLayout";
+import { useLauncherUpdate } from "./hooks/useLauncherUpdate";
+import { useLauncherData } from "./hooks/useLauncherData";
+import { useLauncherTelemetry } from "./hooks/useLauncherTelemetry";
+import { useMinecraftAccounts } from "./hooks/useMinecraftAccounts";
+import { useInstallController } from "./hooks/useInstallController";
+import PageRouter, { type PageRouterContext } from "./components/PageRouter";
+// Login is the unauthenticated screen and Monitor is its own window route, so
+// they live in App directly. Every routed page is owned by PageRouter (each in
+// its own lazily-loaded chunk).
 import LoginPage from "./pages/Login";
-import MonitorPage from "./pages/Monitor";
-import ServersPage from "./pages/Servers";
-import ContentPage from "./pages/Content";
-import MandatoryUpdatePage from "./pages/MandatoryUpdate";
-import AccountCenterPage from "./pages/AccountCenter";
-import SettingsPage from "./pages/Settings";
+const MonitorPage = lazy(() => import("./pages/Monitor"));
 import type {
-  LauncherAppUpdateChannel,
-  DownloadedLauncherUpdate,
   FabricInstallResult,
   ForgeInstallResult,
   GameRuntimeStats,
@@ -51,24 +83,16 @@ import type {
   InstallPhaseState,
   Instance,
   InstanceExportResult,
-  InstanceImportResult,
   InstanceRepairResult,
   LaunchPrepareDialogState,
-  LaunchPrepareItem,
-  LaunchPrepareItemStatus,
   LaunchPreparePhaseKey,
   LaunchPreparePhaseState,
-  LauncherAppUpdateInfo,
+  LauncherAuthState,
+  LauncherVersionMap,
   LauncherLoginResult,
   LauncherModsInstallResult,
   LauncherPackageState,
-  NewsItem,
-  LauncherUser,
   LauncherVersion,
-  LauncherVersionType,
-  JdkEnsureResult,
-  LauncherDashboard,
-  LauncherHomePayload,
     LauncherLoginPrefs,
     Locale,
     LaunchExecutionResult,
@@ -78,19 +102,14 @@ import type {
   OptiFineVersion,
     Page,
   PresetPackageStatus,
-  ServerItem,
   Settings,
-  TelemetryOnlineSummary,
   UiLogPollResult
 } from "./types";
 import {
   clamp,
-  compareMajor,
   createPhaseState,
   createLaunchPrepareDialogState,
   createSessionId,
-  groupByMajor,
-  isSnapshot,
   applyTheme,
   loadInstances,
   loadSettings,
@@ -100,23 +119,7 @@ import {
 } from "./utils/launcher";
 import { loadSecureRaw, persistSecureJson } from "./utils/secureStorage";
 
-type LauncherAuthState = {
-  token: string;
-  user: LauncherUser;
-};
-
-const DEFAULT_LOGIN_PREFS: LauncherLoginPrefs = {
-  usernameOrEmail: "",
-  password: "",
-  rememberPassword: false,
-  autoLogin: false
-};
-
-type LauncherVersionMap = Record<LauncherVersionType, LauncherVersion | null>;
-
 const FALLBACK_LAUNCHER_VERSION = packageInfo.version;
-const LAUNCHER_ONLINE_REFRESH_INTERVAL_MS = 90_000;
-const LAUNCHER_ONLINE_REFRESH_JITTER_MS = 8_000;
 const LAUNCHER_LOG_POLL_INTERVAL_MS = 500;
 const LAUNCHER_RUNTIME_POLL_INTERVAL_MS = 1000;
 const LAUNCH_PREPARE_STEPS = 5;
@@ -125,6 +128,15 @@ const EMPTY_LAUNCHER_VERSIONS: LauncherVersionMap = {
   EDGE: null,
   NOVA: null
 };
+
+// Returns a referentially-stable function that always calls the latest `fn`.
+// Lets us hand stable callback props to React.memo children without worrying
+// about dependency arrays or stale closures.
+function useStableCallback<T extends (...args: never[]) => unknown>(fn: T): T {
+  const ref = useRef(fn);
+  ref.current = fn;
+  return useRef(((...args: Parameters<T>) => ref.current(...args)) as T).current;
+}
 
 export function App() {
   useEffect(() => {
@@ -137,7 +149,9 @@ export function App() {
     const locale = resolveLocale(params.get("lang") ?? readStoredLocale());
     return (
       <I18nProvider locale={locale} onLocaleChange={() => {}}>
-        <MonitorPage params={params} />
+        <Suspense fallback={<PageFallback />}>
+          <MonitorPage params={params} />
+        </Suspense>
       </I18nProvider>
     );
   }
@@ -147,56 +161,27 @@ export function App() {
 function Launcher() {
   const [page, setPage] = useState<Page>("home");
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
-  const [compactLayout, setCompactLayout] = useState(() =>
-    typeof window !== "undefined" ? window.innerWidth < 1120 : false
-  );
+  const { compactLayout } = useResponsiveLayout();
   const [instances, setInstances] = useState<Instance[]>(loadInstances);
   const [selected, setSelected] = useState<string>(
     localStorage.getItem(STORAGE_KEYS.selected) ?? PRESET_INSTANCES[0].id
   );
   const [settings, setSettings] = useState<Settings>(loadSettings);
-  const [minecraftAccounts, setMinecraftAccounts] = useState<MinecraftAccount[]>([]);
-  const [selectedMinecraftAccountId, setSelectedMinecraftAccountId] = useState<string | null>(() =>
-    loadSelectedMinecraftAccountId()
-  );
   const [launcherAuth, setLauncherAuth] = useState<LauncherAuthState | null>(null);
   const [launcherLoginPrefs, setLauncherLoginPrefs] = useState<LauncherLoginPrefs>(DEFAULT_LOGIN_PREFS);
   const [secureStorageReady, setSecureStorageReady] = useState(false);
   const [launcherVersions, setLauncherVersions] = useState<LauncherVersionMap>(EMPTY_LAUNCHER_VERSIONS);
   const [currentLauncherVersion, setCurrentLauncherVersion] = useState(FALLBACK_LAUNCHER_VERSION);
-  const [launcherNews, setLauncherNews] = useState<NewsItem[]>([]);
-  const [launcherServers, setLauncherServers] = useState<ServerItem[]>([]);
-  const [launcherDashboard, setLauncherDashboard] = useState<LauncherDashboard | null>(null);
-  const [launcherOnlineSummary, setLauncherOnlineSummary] = useState<TelemetryOnlineSummary | null>(null);
-  const [launcherAppUpdate, setLauncherAppUpdate] = useState<LauncherAppUpdateInfo | null>(null);
-  const [launcherAppUpdateChannels, setLauncherAppUpdateChannels] = useState<LauncherAppUpdateChannel[]>([]);
-  const [launcherAppUpdateChecking, setLauncherAppUpdateChecking] = useState(false);
-  const [launcherAppUpdateDownloading, setLauncherAppUpdateDownloading] = useState(false);
-  const [launcherAppUpdateDownload, setLauncherAppUpdateDownload] = useState<DownloadedLauncherUpdate | null>(null);
   const [presetPackageStatuses, setPresetPackageStatuses] = useState<Record<string, PresetPackageStatus>>({});
   const [launcherAuthLoading, setLauncherAuthLoading] = useState(false);
   const [launcherVersionLoading, setLauncherVersionLoading] = useState(false);
   const [defaultGameDir, setDefaultGameDir] = useState(() => DEFAULT_SETTINGS.gameDir);
   const [busy, setBusy] = useState(false);
-  const [catalogLoading, setCatalogLoading] = useState(false);
-  const [loaderLoading, setLoaderLoading] = useState(false);
   const [status, setStatus] = useState(() =>
     createTranslator(loadSettings().language)("app.status.ready")
   );
   const [authNotice, setAuthNotice] = useState<string | null>(null);
 
-  const [catalog, setCatalog] = useState<string[]>([]);
-  const [major, setMajor] = useState("");
-  const [showSnapshots, setShowSnapshots] = useState(false);
-  const [installVersion, setInstallVersion] = useState("");
-  const [loader, setLoader] = useState<Loader>("vanilla");
-  const [loaderOptions, setLoaderOptions] = useState<string[]>([]);
-  const [loaderVersion, setLoaderVersion] = useState("");
-  const [optiFineEnabled, setOptiFineEnabled] = useState(false);
-  const [optiFineLoading, setOptiFineLoading] = useState(false);
-  const [optiFineOptions, setOptiFineOptions] = useState<OptiFineVersion[]>([]);
-  const [optiFineVersion, setOptiFineVersion] = useState("");
-  const [installedVersions, setInstalledVersions] = useState<string[]>([]);
   const [activeGamePid, setActiveGamePid] = useState<number | null>(null);
   const [launchingInstanceId, setLaunchingInstanceId] = useState<string | null>(null);
   const [launchError, setLaunchError] = useState<string | null>(null);
@@ -206,67 +191,61 @@ function Launcher() {
 
   const [installDialog, setInstallDialog] = useState<InstallDialogState | null>(null);
   const [launchPrepareDialog, setLaunchPrepareDialog] = useState<LaunchPrepareDialogState | null>(null);
-  const [titlebarBusy, setTitlebarBusy] = useState(false);
   const [windowVisible, setWindowVisible] = useState(false);
-  const launcherSessionIdRef = useRef(loadOrCreateLauncherSessionId());
-  const launcherAuthTokenRef = useRef<string | null>(launcherAuth?.token?.trim() ?? null);
   const autoLoginAttemptedRef = useRef(false);
 
   const logCursorRef = useRef<number | null>(null);
   const pollingRef = useRef(false);
-  const loaderRequestRef = useRef(0);
-  const optiFineRequestRef = useRef(0);
-  const lastInstallPageRef = useRef(false);
   const launchingInstanceRef = useRef<string | null>(null);
   const installDialogRef = useRef<InstallDialogState | null>(null);
   const launchPrepareDialogRef = useRef<LaunchPrepareDialogState | null>(null);
 
   const t = useMemo(() => createTranslator(settings.language), [settings.language]);
-  const launcherAppUpdateAvailable = useMemo(
-    () =>
-      launcherAppUpdate !== null &&
-      compareMajor(launcherAppUpdate.version, currentLauncherVersion) > 0,
-    [currentLauncherVersion, launcherAppUpdate]
-  );
-  const launcherMandatoryUpdateRequired =
-    launcherAppUpdateAvailable && Boolean(launcherAppUpdate?.mandatory);
+  const backgroundMode = settings.minimizeToTray && !windowVisible;
+  const telemetry = useLauncherTelemetry({
+    token: launcherAuth?.token ?? null,
+    user: launcherAuth?.user ?? null,
+    playerName: settings.playerName,
+    backgroundMode,
+    t,
+    onAuthExpired: handleAuthExpired
+  });
+  const launcherUpdate = useLauncherUpdate({
+    token: launcherAuth?.token ?? null,
+    channel: settings.launcherUpdateChannel,
+    currentLauncherVersion,
+    t,
+    setStatus,
+    flushTelemetry: telemetry.flushSession
+  });
+  const launcherData = useLauncherData({
+    token: launcherAuth?.token ?? null,
+    t,
+    setStatus,
+    onAuthExpired: handleAuthExpired,
+    onMergeUser: (user) =>
+      setLauncherAuth((prev) => (prev ? { ...prev, user: { ...prev.user, ...user } } : prev)),
+    setOnlineSummary: telemetry.setOnlineSummary
+  });
+  const launcherMandatoryUpdateRequired = launcherUpdate.mandatoryRequired;
+  const mcAccounts = useMinecraftAccounts({
+    secureStorageReady,
+    playerName: settings.playerName,
+    authUserName: launcherAuth?.user?.username,
+    setPlayerName: (name) => setSettings((prev) => ({ ...prev, playerName: name }))
+  });
 
   const current = useMemo(
     () => instances.find((item) => item.id === selected) ?? instances[0] ?? null,
     [instances, selected]
   );
-  const currentMinecraftAccount = useMemo(() => {
-    if (minecraftAccounts.length === 0) {
-      return null;
-    }
-    return minecraftAccounts.find((item) => item.id === selectedMinecraftAccountId) ?? minecraftAccounts[0];
-  }, [minecraftAccounts, selectedMinecraftAccountId]);
-  const grouped = useMemo(() => groupByMajor(catalog), [catalog]);
-  const majors = useMemo(() => Object.keys(grouped).sort((a, b) => compareMajor(b, a)), [grouped]);
-  const majorVersions = major ? grouped[major] ?? [] : [];
   const effectiveSidebarCollapsed = compactLayout ? true : sidebarCollapsed;
-  const backgroundMode = settings.minimizeToTray && !windowVisible;
   const activeBackgroundUrl =
     resolveBackgroundAssetUrl(settings);
-  const snapshots = useMemo(() => catalog.filter(isSnapshot), [catalog]);
   const authenticated = Boolean(launcherAuth?.token?.trim());
   const launching = busy && launchingInstanceId !== null;
-  const installDisabled =
-    busy ||
-    catalogLoading ||
-    !installVersion ||
-    (loader !== "vanilla" && (loaderLoading || !loaderVersion)) ||
-    (optiFineEnabled && (optiFineLoading || !optiFineVersion || loader === "fabric"));
-  const optiFineDisabledReason =
-    loader === "fabric" ? t("install.optifineFabricConflict") : "";
   const loaderDisplayName = (value: Loader) => t(loaderLabelKey(value));
-  const installButtonText = busy
-    ? t("install.button.installing")
-    : catalogLoading
-      ? t("install.button.syncing")
-      : loader !== "vanilla" && loaderLoading
-        ? t("install.button.loadingLoader", { loader: loaderDisplayName(loader) })
-        : t("install.button.installSelected");
+  const installCtl = useInstallController({ page, busy, settings, t, setStatus });
 
   function ensureMandatoryLauncherUpdate(): boolean {
     if (!launcherMandatoryUpdateRequired) {
@@ -320,7 +299,7 @@ function Launcher() {
       setLauncherLoginPrefs(prefsRaw === null ? DEFAULT_LOGIN_PREFS : parseLauncherLoginPrefs(prefsRaw));
       const fallbackPlayerName = settings.playerName.trim() || "Player";
       const accounts = accountsRaw === null ? [] : parseMinecraftAccounts(accountsRaw);
-      setMinecraftAccounts(
+      mcAccounts.setAccounts(
         accounts.length > 0 ? accounts : [createOfflineMinecraftAccount(fallbackPlayerName)]
       );
       setSecureStorageReady(true);
@@ -330,21 +309,6 @@ function Launcher() {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-
-  useEffect(() => {
-    if (!secureStorageReady) return;
-    void persistSecureJson(STORAGE_KEYS.minecraftAccounts, minecraftAccounts).catch((error) => {
-      console.warn("[secure-storage] failed to persist minecraftAccounts:", error);
-    });
-  }, [minecraftAccounts, secureStorageReady]);
-
-  useEffect(() => {
-    if (selectedMinecraftAccountId) {
-      localStorage.setItem(STORAGE_KEYS.selectedMinecraftAccount, selectedMinecraftAccountId);
-      return;
-    }
-    localStorage.removeItem(STORAGE_KEYS.selectedMinecraftAccount);
-  }, [selectedMinecraftAccountId]);
 
   useEffect(() => {
     if (!secureStorageReady) return;
@@ -369,21 +333,21 @@ function Launcher() {
   useEffect(() => {
     if (!launcherAuth?.token) {
       setLauncherVersions(EMPTY_LAUNCHER_VERSIONS);
-      setLauncherDashboard(null);
-      setLauncherOnlineSummary(null);
+      launcherData.clearDashboard();
+      telemetry.setOnlineSummary(null);
       setPresetPackageStatuses({});
       setPage("home");
       if (!backgroundMode) {
-        void refreshLauncherHome(true);
+        void launcherData.refreshHome(true);
       }
       return;
     }
     if (backgroundMode) {
       return;
     }
-    void cacheLauncherTelemetrySession();
+    void telemetry.cacheSession();
     void refreshLauncherVersions(true);
-    void refreshLauncherHome(true, launcherAuth.token);
+    void launcherData.refreshHome(true, launcherAuth.token);
   }, [launcherAuth?.token, backgroundMode]);
 
   useEffect(() => {
@@ -416,110 +380,6 @@ function Launcher() {
       password
     }, true);
   }, [launcherAuth?.token, launcherAuthLoading, launcherLoginPrefs]);
-
-  useEffect(() => {
-    const currentToken = launcherAuth?.token?.trim() ?? null;
-    const previousToken = launcherAuthTokenRef.current;
-
-    if (!currentToken) {
-      if (previousToken) {
-        void flushLauncherTelemetrySession();
-      }
-      launcherAuthTokenRef.current = null;
-      return;
-    }
-
-    void cacheLauncherTelemetrySession();
-    launcherAuthTokenRef.current = currentToken;
-  }, [launcherAuth?.token, launcherAuth?.user?.id, launcherAuth?.user?.username, settings.playerName]);
-
-  useEffect(() => {
-    const token = launcherAuth?.token?.trim();
-    if (!token) {
-      setLauncherOnlineSummary(null);
-      return;
-    }
-
-    let active = true;
-
-    // Start heartbeat in Rust backend
-    const startHeartbeat = async () => {
-      try {
-        await invoke("start_launcher_heartbeat");
-      } catch (error) {
-        if (active && isAuthExpiredError(error)) {
-          handleAuthExpired(t("login.sessionExpired"));
-        }
-      }
-    };
-
-    const loadOnline = async () => {
-      if (backgroundMode) {
-        return;
-      }
-      try {
-        const summary = await fetchTelemetryOnlineSummary();
-        if (active) {
-          setLauncherOnlineSummary(summary);
-        }
-      } catch (error) {
-        if (active && isAuthExpiredError(error)) {
-          handleAuthExpired(t("login.sessionExpired"));
-          return;
-        }
-        if (active) {
-          setLauncherOnlineSummary(null);
-        }
-      }
-    };
-
-    let onlineTimer: number | null = null;
-    const scheduleOnlineRefresh = () => {
-      onlineTimer = window.setTimeout(async () => {
-        await loadOnline();
-        if (active && !backgroundMode) {
-          scheduleOnlineRefresh();
-        }
-      }, nextRecurringDelay(LAUNCHER_ONLINE_REFRESH_INTERVAL_MS, LAUNCHER_ONLINE_REFRESH_JITTER_MS));
-    };
-
-    void startHeartbeat();
-    if (!backgroundMode) {
-      void loadOnline();
-      scheduleOnlineRefresh();
-    }
-
-    return () => {
-      active = false;
-      // Stop heartbeat when token changes or component unmounts
-      invoke("stop_launcher_heartbeat").catch(() => {});
-      if (onlineTimer !== null) {
-        window.clearTimeout(onlineTimer);
-      }
-    };
-  }, [launcherAuth?.token, launcherAuth?.user?.username, backgroundMode]);
-
-  useEffect(() => {
-    if (minecraftAccounts.length === 0) {
-      const fallback = createOfflineMinecraftAccount(
-        settings.playerName.trim() || launcherAuth?.user?.username?.trim() || "Player"
-      );
-      setMinecraftAccounts([fallback]);
-      setSelectedMinecraftAccountId(fallback.id);
-      return;
-    }
-    if (!selectedMinecraftAccountId || !minecraftAccounts.some((item) => item.id === selectedMinecraftAccountId)) {
-      setSelectedMinecraftAccountId(minecraftAccounts[0].id);
-    }
-  }, [launcherAuth?.user?.username, minecraftAccounts, selectedMinecraftAccountId, settings.playerName]);
-
-  useEffect(() => {
-    const nextPlayerName = currentMinecraftAccount?.username?.trim();
-    if (!nextPlayerName || settings.playerName === nextPlayerName) {
-      return;
-    }
-    setSettings((prev) => ({ ...prev, playerName: nextPlayerName }));
-  }, [currentMinecraftAccount?.username, settings.playerName]);
 
   useEffect(() => {
     let disposed = false;
@@ -555,16 +415,8 @@ function Launcher() {
     if (backgroundMode || launcherAuth?.token) {
       return;
     }
-    void refreshLauncherHome(true);
+    void launcherData.refreshHome(true);
   }, [backgroundMode, launcherAuth?.token]);
-
-  useEffect(() => {
-    void refreshLauncherAppUpdateChannels();
-  }, []);
-
-  useEffect(() => {
-    void refreshLauncherAppUpdate(true);
-  }, [settings.launcherUpdateChannel]);
 
   useEffect(() => {
     applyTheme(settings.themeMode, settings.themeAccent, settings.customAccentHex);
@@ -589,54 +441,6 @@ function Launcher() {
   useEffect(() => {
     launchPrepareDialogRef.current = launchPrepareDialog;
   }, [launchPrepareDialog]);
-
-  useEffect(() => {
-    const inInstall = page === "install";
-    if (inInstall && !lastInstallPageRef.current) {
-      void refreshCatalog();
-    }
-    lastInstallPageRef.current = inInstall;
-  }, [page]);
-
-  useEffect(() => {
-    if (catalog.length === 0) return;
-    const nextVersion = resolveInstallVersion(catalog, grouped, major, showSnapshots, installVersion);
-    if (nextVersion !== installVersion) {
-      setInstallVersion(nextVersion);
-    }
-  }, [catalog, grouped, major, showSnapshots, installVersion]);
-
-  useEffect(() => {
-    loaderRequestRef.current += 1;
-    setLoaderOptions([]);
-    setLoaderVersion("");
-    if (page !== "install" || loader === "vanilla" || !installVersion) {
-      setLoaderLoading(false);
-      return;
-    }
-    void refreshLoader();
-  }, [page, loader, installVersion]);
-
-  useEffect(() => {
-    if (loader === "fabric" && optiFineEnabled) {
-      setOptiFineEnabled(false);
-    }
-  }, [loader, optiFineEnabled]);
-
-  useEffect(() => {
-    optiFineRequestRef.current += 1;
-    setOptiFineOptions([]);
-    setOptiFineVersion("");
-    if (page !== "install" || !optiFineEnabled || !installVersion || loader === "fabric") {
-      setOptiFineLoading(false);
-      return;
-    }
-    if (loader !== "vanilla" && !loaderVersion) {
-      setOptiFineLoading(false);
-      return;
-    }
-    void refreshOptiFine();
-  }, [page, optiFineEnabled, installVersion, loader, loaderVersion]);
 
   const shouldPollUiLogs =
     windowVisible &&
@@ -721,15 +525,6 @@ function Launcher() {
   useEffect(() => {
     void syncTrayBehavior(settings.minimizeToTray);
   }, [settings.minimizeToTray]);
-
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    const onResize = () => {
-      setCompactLayout(window.innerWidth < 1120);
-    };
-    window.addEventListener("resize", onResize);
-    return () => window.removeEventListener("resize", onResize);
-  }, []);
 
   useEffect(() => {
     let active = true;
@@ -1036,99 +831,6 @@ function Launcher() {
     setPresetPackageStatuses(Object.fromEntries(nextEntries));
   }
 
-  async function refreshLauncherHome(silent = false, tokenOverride?: string): Promise<void> {
-    const token = (tokenOverride ?? launcherAuth?.token ?? "").trim();
-    try {
-      const payload = await invoke<LauncherHomePayload>("launcher_get_home", {
-        baseUrl: LAUNCHER_API_BASE_URL,
-        token: token || null
-      });
-      setLauncherNews(payload.news ?? []);
-      setLauncherServers(payload.servers ?? []);
-      setLauncherOnlineSummary(payload.online ?? null);
-      if (payload.dashboard) {
-        setLauncherDashboard(payload.dashboard);
-        setLauncherAuth((prev) =>
-          prev
-            ? {
-                ...prev,
-                user: {
-                  ...prev.user,
-                  ...payload.dashboard?.user
-                }
-              }
-            : prev
-        );
-      } else if (!token) {
-        setLauncherDashboard(null);
-      }
-      if (!silent) {
-        setStatus(t("app.status.ready"));
-      }
-    } catch (error) {
-      const errorText = formatLaunchError(error);
-      if (token && isAuthExpiredError(error)) {
-        handleAuthExpired(t("login.sessionExpired"));
-        return;
-      }
-      if (!token) {
-        setLauncherNews([]);
-        setLauncherServers([]);
-        setLauncherOnlineSummary(null);
-      }
-      if (!silent) {
-        setStatus(t("app.status.failed", { error: errorText }));
-      }
-    }
-  }
-
-  async function refreshLauncherNews(silent = false): Promise<void> {
-    try {
-      const items = await invoke<NewsItem[]>("launcher_list_news", {
-        baseUrl: LAUNCHER_API_BASE_URL,
-        limit: 4
-      });
-      if (items.length > 0) {
-        setLauncherNews(items);
-        if (!silent) {
-          setStatus(t("app.status.loadedLauncherNews", { count: items.length }));
-        }
-      } else {
-        setLauncherNews([]);
-      }
-    } catch (error) {
-      setLauncherNews([]);
-      if (!silent) {
-        setStatus(t("app.status.failed", { error: formatLaunchError(error) }));
-      }
-    }
-  }
-
-  async function refreshLauncherServers(silent = false): Promise<void> {
-    try {
-      const token = (launcherAuth?.token ?? "").trim();
-      const headers: Record<string, string> = {
-        "Content-Type": "application/json"
-      };
-      if (token) {
-        headers["Authorization"] = `Bearer ${token}`;
-      }
-      const response = await fetch(`${LAUNCHER_API_BASE_URL}/api/v1/launcher/servers`, {
-        headers
-      });
-      const raw = await response.json();
-      const data = (raw as { success?: boolean; data?: ServerItem[] })?.data ?? [];
-      setLauncherServers(data);
-      if (!silent) {
-        setStatus(t("app.status.loadedServers", { count: data.length }));
-      }
-    } catch (error) {
-      if (!silent) {
-        setStatus(t("app.status.failed", { error: formatLaunchError(error) }));
-      }
-    }
-  }
-
   async function launchToServer(serverAddress: string): Promise<void> {
     if (!current) {
       setStatus(t("servers.noInstance"));
@@ -1151,7 +853,7 @@ function Launcher() {
     try {
       markLaunchPreparePhase("login", "running", "prepare", t("launch.progress.login"));
       setLaunchProgressText(t("launch.progress.login"));
-      const readyAccount = await ensureMinecraftAccountReadyForLaunch(currentMinecraftAccount, sessionId);
+      const readyAccount = await ensureMinecraftAccountReadyForLaunch(mcAccounts.currentAccount, sessionId);
       markLaunchPreparePhase("login", "done", "complete", t("launch.progress.loginCompleted"));
       const launchIdentity = resolveMinecraftLaunchIdentity(readyAccount, settings.playerName);
       markLaunchPreparePhase("check-instance", "running", "prepare", t("launch.progress.checkInstance"));
@@ -1234,157 +936,6 @@ function Launcher() {
     }
   }
 
-  async function refreshLauncherDashboard(silent = false, tokenOverride?: string): Promise<void> {
-    const token = (tokenOverride ?? launcherAuth?.token ?? "").trim();
-    if (!token) {
-      setLauncherDashboard(null);
-      return;
-    }
-
-    try {
-      const item = await invoke<LauncherDashboard>("launcher_get_dashboard", {
-        baseUrl: LAUNCHER_API_BASE_URL,
-        token
-      });
-      setLauncherDashboard(item);
-      setLauncherAuth((prev) =>
-        prev
-          ? {
-              ...prev,
-              user: {
-                ...prev.user,
-                ...item.user
-              }
-            }
-          : prev
-      );
-      if (!silent) {
-        setStatus(t("app.status.ready"));
-      }
-    } catch (error) {
-      const errorText = formatLaunchError(error);
-      if (token && isAuthExpiredError(error)) {
-        handleAuthExpired(t("login.sessionExpired"));
-        return;
-      }
-      setLauncherDashboard(null);
-      if (!silent) {
-        setStatus(t("app.status.failed", { error: errorText }));
-      }
-    }
-  }
-
-  async function refreshLauncherAppUpdateChannels(): Promise<void> {
-    try {
-      const items = await invoke<LauncherAppUpdateChannel[]>("launcher_list_app_update_channels", {
-        baseUrl: LAUNCHER_API_BASE_URL,
-        token: launcherAuth?.token ?? null
-      });
-      setLauncherAppUpdateChannels(items);
-    } catch {
-      setLauncherAppUpdateChannels([]);
-    }
-  }
-
-  async function refreshLauncherAppUpdate(silent = false): Promise<void> {
-    setLauncherAppUpdateChecking(true);
-    try {
-      const info = await invoke<LauncherAppUpdateInfo>("launcher_get_app_update", {
-        baseUrl: LAUNCHER_API_BASE_URL,
-        channel: settings.launcherUpdateChannel
-      });
-      setLauncherAppUpdate(info);
-      setLauncherAppUpdateDownload((prev) =>
-        prev?.version === info.version ? prev : null
-      );
-      if (!silent) {
-        setStatus(
-          compareMajor(info.version, currentLauncherVersion) > 0
-            ? t("settings.launcherUpdateAvailable", { version: info.version })
-            : t("settings.launcherUpToDate")
-        );
-      }
-    } catch (error) {
-      const errorText = formatLaunchError(error);
-      if (isLauncherAppUpdateMissing(errorText)) {
-        setLauncherAppUpdate(null);
-        setLauncherAppUpdateDownload(null);
-      } else if (!silent) {
-        setStatus(t("app.status.failed", { error: errorText }));
-      }
-    } finally {
-      setLauncherAppUpdateChecking(false);
-    }
-  }
-
-  async function installLauncherAppUpdate(): Promise<void> {
-    if (!launcherAppUpdate || !launcherAppUpdateAvailable) {
-      return;
-    }
-
-    setLauncherAppUpdateDownloading(true);
-    try {
-      setStatus(t("settings.launcherUpdateDownloading", { version: launcherAppUpdate.version }));
-      const download = await invoke<DownloadedLauncherUpdate>("download_launcher_app_update", {
-        downloadUrl: launcherAppUpdate.downloadUrl,
-        version: launcherAppUpdate.version,
-        checksum: launcherAppUpdate.checksum
-      });
-      setLauncherAppUpdateDownload(download);
-      await invoke("open_downloaded_file", { filePath: download.filePath });
-      setStatus(t("settings.launcherUpdateInstallerOpened", { file: download.fileName }));
-      await flushLauncherTelemetrySession();
-      await invoke("quit_launcher_app");
-    } catch (error) {
-      setStatus(t("app.status.failed", { error: formatLaunchError(error) }));
-    } finally {
-      setLauncherAppUpdateDownloading(false);
-    }
-  }
-
-  async function cacheLauncherTelemetrySession(
-    sessionUser?: { id?: string | null; username?: string | null }
-  ): Promise<void> {
-    try {
-      await invoke("launcher_cache_telemetry_session", {
-        session: buildLauncherTelemetrySession(sessionUser)
-      });
-    } catch {
-    }
-  }
-
-  async function flushLauncherTelemetrySession(): Promise<void> {
-    try {
-      await invoke("launcher_offline_telemetry_session");
-    } catch {
-    }
-  }
-
-  function buildLauncherTelemetrySession(sessionUser?: { id?: string | null; username?: string | null }) {
-    const user = sessionUser ?? launcherAuth?.user ?? null;
-    return {
-      baseUrl: LAUNCHER_API_BASE_URL,
-      clientName: "fpsmaster-launcher",
-      clientKind: "LAUNCHER",
-      sessionId: launcherSessionIdRef.current,
-      username: user?.username ?? settings.playerName,
-      playerUuid: user?.id ?? null
-    };
-  }
-
-  async function fetchTelemetryOnlineSummary(): Promise<TelemetryOnlineSummary> {
-    const response = await fetch(`${LAUNCHER_API_BASE_URL}/api/v1/telemetry/online?clientKind=LAUNCHER`);
-    const raw = (await response.json()) as {
-      success?: boolean;
-      message?: string;
-      data?: TelemetryOnlineSummary;
-    };
-    if (!response.ok || raw.success === false || !raw.data) {
-      throw new Error(raw.message || `online summary failed with HTTP ${response.status}`);
-    }
-    return raw.data;
-  }
-
   function persistLauncherLoginPrefs(next: LauncherLoginPrefs) {
     setLauncherLoginPrefs({
       usernameOrEmail: next.usernameOrEmail.trim(),
@@ -1395,10 +946,10 @@ function Launcher() {
   }
 
   function handleAuthExpired(message: string) {
-    void flushLauncherTelemetrySession();
+    void telemetry.flushSession();
     setLauncherAuth(null);
     setLauncherVersions(EMPTY_LAUNCHER_VERSIONS);
-    setLauncherDashboard(null);
+    launcherData.clearDashboard();
     setPresetPackageStatuses({});
     setPage("home");
     setAuthNotice(message);
@@ -1437,11 +988,11 @@ function Launcher() {
         user: result.user ?? {}
       });
       autoLoginAttemptedRef.current = false;
-      void cacheLauncherTelemetrySession({
+      void telemetry.cacheSession({
         username: result.user?.username,
         id: result.user?.id ?? null
       });
-      void refreshLauncherHome(true, normalizedToken);
+      void launcherData.refreshHome(true, normalizedToken);
       const refresh = await refreshLauncherVersions(false, normalizedToken);
       if (!refresh.error && refresh.map) {
         void syncPresetLauncherPackages(refresh.map);
@@ -1460,10 +1011,15 @@ function Launcher() {
   }
 
   function logoutLauncherAccount() {
-    void flushLauncherTelemetrySession();
+    void telemetry.flushSession();
+    // Manual logout must not bounce straight back in via auto-login.
+    // Block the once-per-session guard immediately and disable the
+    // auto-login preference so it stays off on the next launch too.
+    autoLoginAttemptedRef.current = true;
+    persistLauncherLoginPrefs({ ...launcherLoginPrefs, autoLogin: false });
     setLauncherAuth(null);
     setLauncherVersions(EMPTY_LAUNCHER_VERSIONS);
-    setLauncherDashboard(null);
+    launcherData.clearDashboard();
     setPresetPackageStatuses({});
     setPage("home");
     setAuthNotice(t("login.tip.signInToContinue"));
@@ -1963,7 +1519,7 @@ function Launcher() {
     try {
       markLaunchPreparePhase("login", "running", "prepare", t("launch.progress.login"));
       setLaunchProgressText(t("launch.progress.login"));
-      const readyAccount = await ensureMinecraftAccountReadyForLaunch(currentMinecraftAccount, sessionId);
+      const readyAccount = await ensureMinecraftAccountReadyForLaunch(mcAccounts.currentAccount, sessionId);
       markLaunchPreparePhase("login", "done", "complete", t("launch.progress.loginCompleted"));
       const launchIdentity = resolveMinecraftLaunchIdentity(readyAccount, settings.playerName);
       markLaunchPreparePhase("check-instance", "running", "prepare", t("launch.progress.checkInstance"));
@@ -2050,129 +1606,11 @@ function Launcher() {
     await launchTarget(current);
   }
 
-  async function refreshCatalog() {
-    if (catalogLoading) return;
-    setCatalogLoading(true);
-    setStatus(t("app.status.loadingVersions"));
-    try {
-      const [versions, installed] = await Promise.all([
-        invoke<string[]>("list_vanilla_versions", { downloadSource: settings.downloadSource }),
-        invoke<string[]>("list_installed_versions", { gameDir: settings.gameDir }).catch(() => [])
-      ]);
-      const groupedVersions = groupByMajor(versions);
-      const majorKeys = Object.keys(groupedVersions).sort((a, b) => compareMajor(b, a));
-      const nextMajor = majorKeys.includes(major) ? major : majorKeys[0] ?? "";
-      const nextVersion = resolveInstallVersion(
-        versions,
-        groupedVersions,
-        nextMajor,
-        showSnapshots,
-        installVersion
-      );
-
-      setCatalog(versions);
-      setInstalledVersions(installed);
-      setMajor(nextMajor);
-      setInstallVersion(nextVersion);
-      setStatus(t("app.status.loadedVersions", { count: versions.length }));
-    } catch (error) {
-      setStatus(t("app.status.failed", { error: String(error) }));
-    } finally {
-      setCatalogLoading(false);
-    }
-  }
-
-  async function refreshLoader() {
-    if (!installVersion || loader === "vanilla") return;
-    const requestId = loaderRequestRef.current + 1;
-    loaderRequestRef.current = requestId;
-    setLoaderLoading(true);
-    try {
-      const versions =
-        loader === "fabric"
-          ? await invoke<string[]>("list_fabric_loaders", {
-              gameVersion: installVersion,
-              downloadSource: settings.downloadSource
-            })
-          : await invoke<string[]>("list_forge_versions", {
-              gameVersion: installVersion,
-              downloadSource: settings.downloadSource
-            });
-
-      if (requestId !== loaderRequestRef.current) return;
-
-      const options = versions;
-      setLoaderOptions(options);
-      setLoaderVersion(options[0] ?? "");
-      setStatus(
-        options.length > 0
-          ? t("app.status.loadedLoaderVersions", {
-              count: options.length,
-              loader: loaderDisplayName(loader)
-            })
-          : t("app.status.noLoaderVersions", {
-              loader: loaderDisplayName(loader),
-              version: installVersion
-            })
-      );
-    } catch (error) {
-      if (requestId !== loaderRequestRef.current) return;
-      setLoaderOptions([]);
-      setLoaderVersion("");
-      setStatus(t("app.status.failed", { error: String(error) }));
-    } finally {
-      if (requestId === loaderRequestRef.current) {
-        setLoaderLoading(false);
-      }
-    }
-  }
-
-  async function refreshOptiFine() {
-    if (!installVersion || loader === "fabric") return;
-    const requestId = optiFineRequestRef.current + 1;
-    optiFineRequestRef.current = requestId;
-    setOptiFineLoading(true);
-    try {
-      const versions = await invoke<OptiFineVersion[]>("list_optifine_versions", {
-        gameVersion: installVersion,
-        loader,
-        loaderVersion: loader === "vanilla" ? null : loaderVersion,
-        downloadSource: settings.downloadSource
-      });
-
-      if (requestId !== optiFineRequestRef.current) return;
-
-      const options = versions.slice(0, 80);
-      const firstCompatible = options.find((item) => item.compatibility === "compatible") ?? null;
-      setOptiFineOptions(options);
-      setOptiFineVersion(firstCompatible?.version ?? "");
-      setStatus(
-        options.length > 0
-          ? t("app.status.loadedLoaderVersions", {
-              count: options.length,
-              loader: t("loader.optifine")
-            })
-          : t("app.status.noLoaderVersions", {
-              loader: t("loader.optifine"),
-              version: installVersion
-            })
-      );
-    } catch (error) {
-      if (requestId !== optiFineRequestRef.current) return;
-      setOptiFineOptions([]);
-      setOptiFineVersion("");
-      setStatus(t("app.status.failed", { error: String(error) }));
-    } finally {
-      if (requestId === optiFineRequestRef.current) {
-        setOptiFineLoading(false);
-      }
-    }
-  }
-
   async function install() {
     if (ensureMandatoryLauncherUpdate()) {
       return;
     }
+    const { installVersion, loader, loaderVersion, optiFineEnabled, optiFineVersion } = installCtl;
     if (!installVersion) return;
     if (loader !== "vanilla" && !loaderVersion) {
       setStatus(
@@ -2443,7 +1881,7 @@ function Launcher() {
         preset: false
       };
       setInstances((prev) => [duplicated, ...prev]);
-      setInstalledVersions((prev) =>
+      installCtl.setInstalledVersions((prev) =>
         prev.includes(duplicatedVersionId) ? prev : [duplicatedVersionId, ...prev]
       );
       setSelected(duplicated.id);
@@ -2497,7 +1935,7 @@ function Launcher() {
       setInstances((prev) =>
         prev.map((item) => (item.id === repaired.id ? repaired : item))
       );
-      setInstalledVersions((prev) =>
+      installCtl.setInstalledVersions((prev) =>
         prev.includes(result.versionId) ? prev : [result.versionId, ...prev]
       );
       if (repaired.preset) {
@@ -2620,12 +2058,13 @@ function Launcher() {
   }
 
   function updateSettings(next: Settings) {
-    if (currentMinecraftAccount?.type === "offline" && next.playerName !== settings.playerName) {
+    const activeAccount = mcAccounts.currentAccount;
+    if (activeAccount?.type === "offline" && next.playerName !== settings.playerName) {
       const normalizedName = next.playerName.trim();
       if (normalizedName) {
-        setMinecraftAccounts((prev) =>
+        mcAccounts.setAccounts((prev) =>
           prev.map((account) =>
-            account.id === currentMinecraftAccount.id
+            account.id === activeAccount.id
               ? {
                   ...account,
                   username: normalizedName
@@ -2644,70 +2083,6 @@ function Launcher() {
       ...prev,
       maxMemoryMb: Number.isFinite(next) ? clamp(next, 1024, 16384) : prev.maxMemoryMb
     }));
-  }
-
-  function addOfflineMinecraftAccount(username: string) {
-    const normalizedName = username.trim();
-    if (!normalizedName) {
-      return;
-    }
-    setMinecraftAccounts((prev) => {
-      const existing = prev.find(
-        (account) =>
-          account.type === "offline" &&
-          account.username.localeCompare(normalizedName, undefined, { sensitivity: "accent" }) === 0
-      );
-      const nextAccount = existing ?? createOfflineMinecraftAccount(normalizedName);
-      setSelectedMinecraftAccountId(nextAccount.id);
-      setSettings((currentSettings) => ({ ...currentSettings, playerName: normalizedName }));
-      return existing ? prev : [nextAccount, ...prev];
-    });
-  }
-
-  function saveMinecraftAccount(account: MinecraftAccount) {
-    const normalizedAccount = normalizeMinecraftAccount(account) ?? account;
-    setMinecraftAccounts((prev) => {
-      const next = [...prev];
-      const existingIndex = next.findIndex(
-        (item) =>
-          item.id === normalizedAccount.id ||
-          (item.type === "microsoft" &&
-            normalizedAccount.type === "microsoft" &&
-            item.uuid.trim().toLowerCase() === normalizedAccount.uuid.trim().toLowerCase())
-      );
-      if (existingIndex >= 0) {
-        next[existingIndex] = {
-          ...next[existingIndex],
-          ...normalizedAccount
-        };
-        return next;
-      }
-      return [normalizedAccount, ...next];
-    });
-    setSelectedMinecraftAccountId(normalizedAccount.id);
-    setSettings((currentSettings) => ({
-      ...currentSettings,
-      playerName: normalizedAccount.username
-    }));
-  }
-
-  function deleteMinecraftAccount(accountId: string) {
-    setMinecraftAccounts((prev) => {
-      const next = prev.filter((account) => account.id !== accountId);
-      if (next.length > 0) {
-        if (selectedMinecraftAccountId === accountId) {
-          const fallback = next[0];
-          setSelectedMinecraftAccountId(fallback.id);
-          setSettings((currentSettings) => ({ ...currentSettings, playerName: fallback.username }));
-        }
-        return next;
-      }
-
-      const fallback = createOfflineMinecraftAccount(settings.playerName.trim() || "Player");
-      setSelectedMinecraftAccountId(fallback.id);
-      setSettings((currentSettings) => ({ ...currentSettings, playerName: fallback.username }));
-      return [fallback];
-    });
   }
 
   async function ensureMinecraftAccountReadyForLaunch(
@@ -2734,249 +2109,11 @@ function Launcher() {
     }
 
     const refreshedAccount = await refreshMinecraftAccount(refreshToken, ipcSession);
-    saveMinecraftAccount(refreshedAccount);
+    mcAccounts.save(refreshedAccount);
     return refreshedAccount;
   }
 
-  function renderPage() {
-    if (page === "home") {
-      return (
-        <HomePage
-          availableInstances={instances}
-          launcherNews={launcherNews}
-          launcherServers={launcherServers}
-          launcherOnlineSummary={launcherOnlineSummary}
-          launcherUpdate={launcherAppUpdate}
-          launcherUpdateAvailable={launcherAppUpdateAvailable}
-          launcherUpdateDownloading={launcherAppUpdateDownloading}
-          launcherUpdateDownload={launcherAppUpdateDownload}
-          current={current}
-          busy={busy}
-          launching={launching}
-          launchProgressPercent={launchProgressPercent}
-          launchProgressText={launchProgressText}
-          user={launcherAuth?.user ?? null}
-          minecraftAccounts={minecraftAccounts}
-          currentMinecraftAccount={currentMinecraftAccount}
-          onSelect={setSelected}
-          onLaunch={launch}
-          onLaunchToServer={launchToServer}
-          onOpenSettings={() => navigatePage("settings")}
-          onOpenServers={() => navigatePage("servers")}
-          onSelectMinecraftAccount={setSelectedMinecraftAccountId}
-          onAddOfflineMinecraftAccount={addOfflineMinecraftAccount}
-          onSaveMicrosoftMinecraftAccount={saveMinecraftAccount}
-          onDeleteMinecraftAccount={deleteMinecraftAccount}
-        />
-      );
-    }
 
-    if (page === "servers") {
-      return (
-        <ServersPage
-          servers={launcherServers}
-          currentInstance={current}
-          busy={busy}
-          launching={launching}
-          launchProgressPercent={launchProgressPercent}
-          launchProgressText={launchProgressText}
-          user={launcherAuth?.user ?? null}
-          onLaunch={launchToServer}
-          onRefreshServers={() => refreshLauncherServers(false)}
-        />
-      );
-    }
-
-    if (page === "account-center") {
-      return <AccountCenterPage launcherDashboard={launcherDashboard} />;
-    }
-
-    if (page === "instances") {
-      return (
-        <InstancesPage
-          instances={instances}
-          launcherVersions={launcherVersions}
-          busy={busy}
-          launchingInstanceId={launchingInstanceId}
-          launchProgressPercent={launchProgressPercent}
-          launchProgressText={launchProgressText}
-          user={launcherAuth?.user ?? null}
-          presetPackageStatuses={presetPackageStatuses}
-          onDelete={removeInstance}
-          onGoInstall={() => navigatePage("install")}
-          onLaunchInstance={async (id) => {
-            const target = instances.find((item) => item.id === id);
-            if (!target) return;
-            setSelected(id);
-            await launchTarget(target);
-          }}
-          onOpenInstanceSettings={(id) => {
-            setSelected(id);
-            navigatePage("instance-settings");
-          }}
-        />
-      );
-    }
-
-    if (page === "instance-settings") {
-      return (
-        <InstanceSettingsPage
-          instance={current}
-          gameDir={settings.gameDir}
-          busy={busy}
-          onBack={() => navigatePage("instances")}
-          onRepair={() => {
-            if (current) {
-              void repairInstance(current.id);
-            }
-          }}
-          onDelete={() => {
-            if (current) {
-              void removeInstance(current.id);
-            }
-          }}
-          onDuplicate={() => {
-            if (current) {
-              void duplicateInstance(current.id);
-            }
-          }}
-          onExport={() => {
-            if (current) {
-              void exportInstance(current.id);
-            }
-          }}
-        />
-      );
-    }
-
-    if (page === "install") {
-      return (
-        <InstallPage
-          catalogLoading={catalogLoading}
-          catalogCount={catalog.length}
-          majors={majors}
-          major={major}
-          grouped={grouped}
-          showSnapshots={showSnapshots}
-          snapshots={snapshots}
-          majorVersions={majorVersions}
-          installVersion={installVersion}
-          loader={loader}
-          loaderLoading={loaderLoading}
-          loaderOptions={loaderOptions}
-          loaderVersion={loaderVersion}
-          optiFineEnabled={optiFineEnabled}
-          optiFineLoading={optiFineLoading}
-          optiFineOptions={optiFineOptions}
-          optiFineVersion={optiFineVersion}
-          optiFineDisabledReason={optiFineDisabledReason}
-          installedVersions={installedVersions}
-          installDisabled={installDisabled}
-          installButtonText={installButtonText}
-          onSelectMajor={(nextMajor) => {
-            setShowSnapshots(false);
-            setMajor(nextMajor);
-          }}
-          onToggleSnapshots={() => setShowSnapshots((value) => !value)}
-          onSelectInstallVersion={setInstallVersion}
-          onSelectLoader={setLoader}
-          onSelectLoaderVersion={setLoaderVersion}
-          onToggleOptiFine={() => {
-            if (loader === "fabric") {
-              setStatus(t("install.optifineFabricConflict"));
-              return;
-            }
-            setOptiFineEnabled((value) => !value);
-          }}
-          onSelectOptiFineVersion={setOptiFineVersion}
-          onInstall={install}
-        />
-      );
-    }
-
-    if (page === "content") {
-      return (
-        <ContentPage
-          instances={instances}
-          current={current}
-          gameDir={settings.gameDir}
-          curseforgeApiKey={settings.curseforgeApiKey}
-          busy={busy}
-          onSelectInstance={setSelected}
-          onStatusChange={setStatus}
-        />
-      );
-    }
-
-    if (page === "mandatory-update") {
-      return (
-        <MandatoryUpdatePage
-          launcherUpdate={launcherAppUpdate}
-          launcherUpdateDownloading={launcherAppUpdateDownloading}
-          launcherUpdateDownload={launcherAppUpdateDownload}
-          onInstallLauncherUpdate={() => void installLauncherAppUpdate()}
-        />
-      );
-    }
-
-    return (
-      <SettingsPage
-        settings={settings}
-        launcherCurrentVersion={currentLauncherVersion}
-        launcherUpdate={launcherAppUpdate}
-        launcherUpdateChannels={launcherAppUpdateChannels}
-        launcherUpdateAvailable={launcherAppUpdateAvailable}
-        launcherUpdateChecking={launcherAppUpdateChecking}
-        launcherUpdateDownloading={launcherAppUpdateDownloading}
-        launcherUpdateDownload={launcherAppUpdateDownload}
-        launcherUser={launcherAuth?.user ?? null}
-        onLogoutLauncherAccount={logoutLauncherAccount}
-        onRefreshLauncherUpdate={() => void refreshLauncherAppUpdate(false)}
-        onInstallLauncherUpdate={() => void installLauncherAppUpdate()}
-        onChange={updateSettings}
-        onClampMemory={updateMemory}
-        onReset={() =>
-            setSettings({
-              ...DEFAULT_SETTINGS,
-              gameDir: defaultGameDir,
-              language: settings.language,
-              themeMode: settings.themeMode,
-              themeAccent: settings.themeAccent,
-              customAccentHex: settings.customAccentHex
-            })
-        }
-      />
-    );
-}
-
-function isLauncherAppUpdateMissing(message: string): boolean {
-  const normalized = message.toLowerCase();
-  return (
-    normalized.includes("launcher app update config not found") ||
-    normalized.includes("http 404") ||
-    normalized.includes("not configured")
-  );
-}
-
-function nextRecurringDelay(baseMs: number, jitterMs: number): number {
-  if (jitterMs <= 0) {
-    return baseMs;
-  }
-  const offset = Math.round((Math.random() * 2 - 1) * jitterMs);
-  return Math.max(30_000, baseMs + offset);
-}
-
-async function withTitlebarGuard(action: () => Promise<void>) {
-    if (titlebarBusy) return;
-    setTitlebarBusy(true);
-    try {
-      await action();
-    } catch (error) {
-      console.error("Window action failed", error);
-    } finally {
-      setTitlebarBusy(false);
-    }
-  }
 
   async function closeLauncherWindow() {
     if (settings.minimizeToTray) {
@@ -2986,69 +2123,174 @@ async function withTitlebarGuard(action: () => Promise<void>) {
     await getCurrentWindow().close();
   }
 
+  // Stable callback identities so React.memo children (Sidebar, pages) don't
+  // re-render when an unrelated piece of App state changes (#5).
+  const stableNavigate = useStableCallback(navigatePage);
+  const stableToggleSidebar = useStableCallback(() => setSidebarCollapsed((value) => !value));
+  const stableLaunch = useStableCallback(launch);
+  const stableLaunchToServer = useStableCallback(launchToServer);
+  const stableRemoveInstance = useStableCallback(removeInstance);
+  const stableAddOfflineAccount = useStableCallback(mcAccounts.addOffline);
+  const stableSaveMinecraftAccount = useStableCallback(mcAccounts.save);
+  const stableDeleteMinecraftAccount = useStableCallback(mcAccounts.remove);
+  const stableInstall = useStableCallback(install);
+  const stableUpdateSettings = useStableCallback(updateSettings);
+  const stableUpdateMemory = useStableCallback(updateMemory);
+  const stableLogout = useStableCallback(logoutLauncherAccount);
+  const stableCloseWindow = useStableCallback(closeLauncherWindow);
+  const stableOnLocaleChange = useStableCallback((locale: Locale) => {
+    setSettings((prev) => ({ ...prev, language: locale }));
+    setStatus(createTranslator(locale)("app.status.ready"));
+  });
+  const goInstall = useStableCallback(() => navigatePage("install"));
+  const goSettings = useStableCallback(() => navigatePage("settings"));
+  const goServers = useStableCallback(() => navigatePage("servers"));
+  const goInstances = useStableCallback(() => navigatePage("instances"));
+  const onLaunchInstance = useStableCallback(async (id: string) => {
+    const target = instances.find((item) => item.id === id);
+    if (!target) return;
+    setSelected(id);
+    await launchTarget(target);
+  });
+  const onOpenInstanceSettings = useStableCallback((id: string) => {
+    setSelected(id);
+    navigatePage("instance-settings");
+  });
+  const onInstanceRepair = useStableCallback(() => {
+    if (current) void repairInstance(current.id);
+  });
+  const onInstanceDelete = useStableCallback(() => {
+    if (current) void removeInstance(current.id);
+  });
+  const onInstanceDuplicate = useStableCallback(() => {
+    if (current) void duplicateInstance(current.id);
+  });
+  const onInstanceExport = useStableCallback(() => {
+    if (current) void exportInstance(current.id);
+  });
+  const onSelectMajor = useStableCallback((nextMajor: string) => {
+    installCtl.setShowSnapshots(false);
+    installCtl.setMajor(nextMajor);
+  });
+  const onToggleSnapshots = useStableCallback(() => installCtl.setShowSnapshots((value) => !value));
+  const onToggleOptiFine = useStableCallback(() => {
+    if (installCtl.loader === "fabric") {
+      setStatus(t("install.optifineFabricConflict"));
+      return;
+    }
+    installCtl.setOptiFineEnabled((value) => !value);
+  });
+  const onRefreshServers = useStableCallback(() => launcherData.refreshServers(false));
+  const onRefreshLauncherUpdate = useStableCallback(() => void launcherUpdate.refresh(false));
+  const onInstallLauncherUpdate = useStableCallback(() => void launcherUpdate.install());
+  const onSettingsReset = useStableCallback(() =>
+    setSettings({
+      ...DEFAULT_SETTINGS,
+      gameDir: defaultGameDir,
+      language: settings.language,
+      themeMode: settings.themeMode,
+      themeAccent: settings.themeAccent,
+      customAccentHex: settings.customAccentHex
+    })
+  );
+
+  const routerContext: PageRouterContext = {
+    page,
+    instances,
+    current,
+    busy,
+    user: launcherAuth?.user ?? null,
+    settings,
+    launcherVersions,
+    presetPackageStatuses,
+    onSelect: setSelected,
+    onRemoveInstance: stableRemoveInstance,
+    onLaunchInstance,
+    onOpenInstanceSettings,
+    onInstanceRepair,
+    onInstanceDelete,
+    onInstanceDuplicate,
+    onInstanceExport,
+    launcherNews: launcherData.news,
+    launcherServers: launcherData.servers,
+    launcherOnlineSummary: telemetry.onlineSummary,
+    launcherDashboard: launcherData.dashboard,
+    currentLauncherVersion,
+    onRefreshServers,
+    launching,
+    launchingInstanceId,
+    launchProgressPercent,
+    launchProgressText,
+    onLaunch: stableLaunch,
+    onLaunchToServer: stableLaunchToServer,
+    minecraftAccounts: mcAccounts.accounts,
+    currentMinecraftAccount: mcAccounts.currentAccount,
+    onSelectMinecraftAccount: mcAccounts.setSelectedId,
+    onAddOfflineMinecraftAccount: stableAddOfflineAccount,
+    onSaveMinecraftAccount: stableSaveMinecraftAccount,
+    onDeleteMinecraftAccount: stableDeleteMinecraftAccount,
+    launcherUpdate: launcherUpdate.appUpdate,
+    launcherUpdateAvailable: launcherUpdate.available,
+    launcherUpdateChannels: launcherUpdate.channels,
+    launcherUpdateChecking: launcherUpdate.checking,
+    launcherUpdateDownloading: launcherUpdate.downloading,
+    launcherUpdateDownload: launcherUpdate.download,
+    onRefreshLauncherUpdate,
+    onInstallLauncherUpdate,
+    catalogLoading: installCtl.catalogLoading,
+    catalogCount: installCtl.catalog.length,
+    majors: installCtl.majors,
+    major: installCtl.major,
+    grouped: installCtl.grouped,
+    showSnapshots: installCtl.showSnapshots,
+    snapshots: installCtl.snapshots,
+    majorVersions: installCtl.majorVersions,
+    installVersion: installCtl.installVersion,
+    loader: installCtl.loader,
+    loaderLoading: installCtl.loaderLoading,
+    loaderOptions: installCtl.loaderOptions,
+    loaderVersion: installCtl.loaderVersion,
+    optiFineEnabled: installCtl.optiFineEnabled,
+    optiFineLoading: installCtl.optiFineLoading,
+    optiFineOptions: installCtl.optiFineOptions,
+    optiFineVersion: installCtl.optiFineVersion,
+    optiFineDisabledReason: installCtl.optiFineDisabledReason,
+    installedVersions: installCtl.installedVersions,
+    installDisabled: installCtl.installDisabled,
+    installButtonText: installCtl.installButtonText,
+    onSelectMajor,
+    onToggleSnapshots,
+    onSelectInstallVersion: installCtl.setInstallVersion,
+    onSelectLoader: installCtl.setLoader,
+    onSelectLoaderVersion: installCtl.setLoaderVersion,
+    onToggleOptiFine,
+    onSelectOptiFineVersion: installCtl.setOptiFineVersion,
+    onInstall: stableInstall,
+    gameDir: settings.gameDir,
+    curseforgeApiKey: settings.curseforgeApiKey,
+    onStatusChange: setStatus,
+    onGoInstall: goInstall,
+    onGoInstances: goInstances,
+    onGoSettings: goSettings,
+    onGoServers: goServers,
+    onLogoutLauncherAccount: stableLogout,
+    onChangeSettings: stableUpdateSettings,
+    onClampMemory: stableUpdateMemory,
+    onResetSettings: onSettingsReset
+  };
+
   return (
     <I18nProvider
       locale={settings.language}
-      onLocaleChange={(locale) => {
-        setSettings((prev) => ({ ...prev, language: locale }));
-        setStatus(createTranslator(locale)("app.status.ready"));
-      }}
+      onLocaleChange={stableOnLocaleChange}
     >
       <div className="launcher-shell relative flex h-screen w-screen overflow-hidden bg-[var(--bg-primary)] text-[var(--text-primary)] select-none pixel-pattern">
-        {activeBackgroundUrl && (
-          <div className="pointer-events-none absolute inset-0 z-0 overflow-hidden">
-            <div
-              className="absolute inset-0 bg-cover bg-center bg-no-repeat transition-opacity duration-[var(--duration-normal)]"
-              style={{
-                backgroundImage: `url("${activeBackgroundUrl}")`,
-                opacity: settings.backgroundOpacity / 100,
-                filter: `blur(${settings.backgroundBlur}px)`,
-                transform: settings.backgroundBlur > 0 ? "scale(1.04)" : "scale(1)"
-              }}
-            />
-            <div className="absolute inset-0 bg-[var(--bg-primary)]/16" />
-          </div>
-        )}
-        <div
-          className="fixed left-0 right-0 top-0 z-50 flex h-10 items-center justify-between border-b border-white/5 bg-[var(--bg-secondary)]/92 px-3"
-          data-tauri-drag-region
-        >
-          <div
-            className={`flex min-w-0 flex-1 items-center ${authenticated ? "gap-2" : "gap-3"}`}
-            data-tauri-drag-region
-          >
-            {!authenticated && <AppLogo size={24} className="rounded-md" />}
-            <span className="truncate text-sm font-semibold tracking-wide text-[var(--text-secondary)]">
-              {t("app.name")}
-            </span>
-          </div>
-          <div className="flex h-full items-center gap-0.5 window-no-drag" data-no-drag="true">
-            <button
-              type="button"
-              className="h-full px-4 text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-soft)] hover:shadow-[inset_0_0_0_1px_var(--border-medium),0_0_16px_rgba(var(--accent-rgb),0.16)] transition-all duration-150 window-no-drag"
-              data-no-drag="true"
-              onClick={() => withTitlebarGuard(() => getCurrentWindow().minimize())}
-            >
-              <Minus size={13} />
-            </button>
-            <button
-              type="button"
-              className="h-full px-4 text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-soft)] hover:shadow-[inset_0_0_0_1px_var(--border-medium),0_0_16px_rgba(var(--accent-rgb),0.16)] transition-all duration-150 window-no-drag"
-              data-no-drag="true"
-              onClick={() => withTitlebarGuard(() => getCurrentWindow().toggleMaximize())}
-            >
-              <Square size={11} />
-            </button>
-            <button
-              type="button"
-              className="h-full px-4 text-[var(--text-muted)] hover:text-[var(--accent-danger)] hover:bg-[var(--accent-danger)]/10 hover:shadow-[inset_0_0_0_1px_var(--accent-danger)] transition-all duration-150 window-no-drag"
-              data-no-drag="true"
-              onClick={() => withTitlebarGuard(closeLauncherWindow)}
-            >
-              <X size={13} />
-            </button>
-          </div>
-        </div>
+        <AppBackground
+          url={activeBackgroundUrl}
+          opacity={settings.backgroundOpacity}
+          blur={settings.backgroundBlur}
+        />
+        <WindowTitleBar authenticated={authenticated} onClose={stableCloseWindow} />
 
         {authenticated ? (
           <div className="relative z-10 flex h-full w-full flex-1 pt-10">
@@ -3057,29 +2299,28 @@ async function withTitlebarGuard(action: () => Promise<void>) {
               collapsed={effectiveSidebarCollapsed}
               canToggleCollapse={!compactLayout}
               user={launcherAuth?.user ?? null}
-              onToggleCollapse={() => setSidebarCollapsed((value) => !value)}
-              setPage={navigatePage}
+              onToggleCollapse={stableToggleSidebar}
+              setPage={stableNavigate}
             />
 
             <main className="relative flex-1 overflow-hidden border-l border-white/5 bg-[var(--bg-secondary)]/34">
-              <div className="pointer-events-none absolute -right-32 -top-24 h-[420px] w-[420px] rounded-full bg-[var(--mc-grass)]/8 blur-[42px] opacity-38" />
-              <div className="pointer-events-none absolute -bottom-32 -left-24 h-[360px] w-[360px] rounded-full bg-[var(--mc-grass)]/6 blur-[38px] opacity-30" />
+              <div className="pointer-events-none absolute -right-40 -top-32 h-[460px] w-[460px] rounded-full bg-[var(--mc-grass)]/4 blur-[80px] opacity-25" />
 
               <div key={page} className="relative z-10 h-full page-transition">
-                {renderPage()}
+                <Suspense fallback={<PageFallback />}>
+                  <PageRouter ctx={routerContext} />
+                </Suspense>
               </div>
             </main>
           </div>
         ) : (
-          <main className="relative z-10 flex h-full w-full flex-1 items-center justify-center px-4 pb-4 pt-10">
-            <div className="w-full max-w-[520px]">
-              <LoginPage
-                loading={launcherAuthLoading}
-                initialPrefs={launcherLoginPrefs}
-                statusText={authNotice}
-                onSubmit={loginLauncherAccount}
-              />
-            </div>
+          <main className="relative z-10 flex h-full w-full flex-1 items-center justify-center overflow-hidden px-6 py-8">
+            <LoginPage
+              loading={launcherAuthLoading}
+              initialPrefs={launcherLoginPrefs}
+              statusText={authNotice}
+              onSubmit={loginLauncherAccount}
+            />
           </main>
         )}
 
@@ -3092,809 +2333,23 @@ async function withTitlebarGuard(action: () => Promise<void>) {
         )}
 
         {authenticated && launchError && (
-          <div className="fixed inset-0 z-[95] flex items-center justify-center bg-[var(--bg-primary)]/82 p-6">
-            <Card variant="frost" className="w-full max-w-lg rounded-2xl p-6" interactive={false}>
-              <h3 className="text-xl font-semibold text-[var(--accent-danger)]">
-                {t("launch.error.title")}
-              </h3>
-              <p className="mt-2 text-sm text-[var(--text-secondary)]">{t("launch.error.subtitle")}</p>
-              <div className="mt-4 rounded-xl border border-[#ff6b8f]/25 bg-[#ff6b8f]/10 px-4 py-3">
-                <p className="text-sm leading-6 text-[var(--text-primary)] break-all">{launchError}</p>
-              </div>
-              <div className="mt-6 flex justify-end">
-                <Button size="sm" variant="primary" onClick={() => setLaunchError(null)}>
-                  {t("launch.error.confirm")}
-                </Button>
-              </div>
-            </Card>
-          </div>
+          <LaunchErrorDialog message={launchError} onConfirm={() => setLaunchError(null)} />
         )}
       </div>
     </I18nProvider>
   );
 }
 
-function isLauncherVersionCompatible(
-  currentLauncherVersion: string,
-  minLauncherVersion?: null | string,
-): boolean {
-  const required = (minLauncherVersion ?? "").trim();
-  if (!required) {
-    return true;
-  }
-    return compareSemanticVersion(currentLauncherVersion, required) >= 0;
-}
-
-function compareSemanticVersion(current: string, required: string): number {
-  const currentParts = normalizeSemanticVersion(current);
-  const requiredParts = normalizeSemanticVersion(required);
-  const maxLength = Math.max(currentParts.length, requiredParts.length, 3);
-  for (let index = 0; index < maxLength; index += 1) {
-    const left = currentParts[index] ?? 0;
-    const right = requiredParts[index] ?? 0;
-    if (left > right) return 1;
-    if (left < right) return -1;
-  }
-  return 0;
-}
-
-function normalizeSemanticVersion(input: string): number[] {
-  return input
-    .trim()
-    .split(".")
-    .map((part) => {
-      const match = part.match(/\d+/);
-      return match ? Number.parseInt(match[0], 10) : 0;
-    });
-}
-
-function createPresetPackageStatus(
-  state: PresetPackageStatus["state"],
-  overrides: Partial<Omit<PresetPackageStatus, "state">> = {}
-): PresetPackageStatus {
-  return {
-    state,
-    versionTag: null,
-    installedVersionTag: null,
-    targetVersionTag: null,
-    changelog: null,
-    lastError: null,
-    ...overrides
-  };
-}
-
-function resolvePresetAccessState(
-  instance: Instance,
-  versionMap: LauncherVersionMap
-): { state: "ok" | "pending-release"; versionTag?: string | null; changelog?: string | null; lastError?: string | null } {
-  if (!instance.preset || !instance.launcherVersionType) {
-    return { state: "ok" };
-  }
-  if (instance.launcherVersionType === "EDGE") {
-    return { state: "ok" };
-  }
-  const version = versionMap.NOVA;
-  if (!version) {
-    return {
-      state: "pending-release",
-      lastError: "Nova has not been released yet."
-    };
-  }
-  return {
-    state: "ok",
-    versionTag: version.versionName,
-    changelog: version.changelog ?? null
-  };
-}
-
-function formatLaunchError(error: unknown): string {
-  const raw = String(error ?? "");
-  if (raw === "") return "Unknown launch error";
-  if (raw.startsWith("Error: ")) {
-    return raw.slice("Error: ".length).trim();
-  }
-  return raw.trim();
-}
-
-function normalizeLoginError(
-  error: unknown,
-  t: ReturnType<typeof createTranslator>
-): string {
-  let text = formatLaunchError(error);
-  text = text.replace(/^login request failed:\s*/i, "").trim();
-  text = text.replace(/^login failed with http \d+:\s*/i, "").trim();
-  text = text.replace(/^login failed:\s*/i, "").trim();
-
-  const maybeJson = text.match(/(\{[\s\S]*\}|\[[\s\S]*\])$/);
-  if (maybeJson) {
-    const parsed = tryExtractMessageFromJson(maybeJson[1]);
-    if (parsed) {
-      return parsed;
-    }
-  }
-
-  if (text === "") {
-    return t("login.failed");
-  }
-  return text;
-}
-
-function tryExtractMessageFromJson(raw: string): string | null {
-  try {
-    const value = JSON.parse(raw) as unknown;
-    return findMessageInUnknown(value);
-  } catch {
-    return null;
-  }
-}
-
-function findMessageInUnknown(value: unknown): string | null {
-  if (typeof value === "string") {
-    const trimmed = value.trim();
-    return trimmed === "" ? null : trimmed;
-  }
-  if (Array.isArray(value)) {
-    for (const item of value) {
-      const found = findMessageInUnknown(item);
-      if (found) return found;
-    }
-    return null;
-  }
-  if (value && typeof value === "object") {
-    const record = value as Record<string, unknown>;
-    for (const key of ["message", "error", "detail", "msg", "reason"]) {
-      const candidate = record[key];
-      if (typeof candidate === "string" && candidate.trim() !== "") {
-        return candidate.trim();
-      }
-    }
-    for (const nested of Object.values(record)) {
-      const found = findMessageInUnknown(nested);
-      if (found) return found;
-    }
-  }
-  return null;
-}
-
-function parseLaunchProgressLog(message: string): { percent?: number; text: string } | null {
-  const text = message.trim();
-  if (!text) return null;
-
-  const match = text.match(/JDK download progress:\s*(\d+)%/);
-  if (match) {
-    const parsed = Number.parseInt(match[1], 10);
-    if (Number.isFinite(parsed)) {
-      return { percent: Math.min(100, Math.max(0, parsed)), text };
-    }
-  }
-
-  if (text.startsWith("JDK download succeeded") || text.startsWith("JDK ready") || text.startsWith("JDK already exists")) {
-    return { percent: 100, text };
-  }
-
-  if (text.startsWith("Downloading JDK ")) {
-    return { percent: 30, text };
-  }
-
-  if (text.startsWith("Extracting JDK archive")) {
-    return { percent: 60, text };
-  }
-
-  if (text.startsWith("launch game:")) {
-    return { percent: 90, text: text.replace(/^launch game:\s*/i, "Starting game process") };
-  }
-
-  if (text.startsWith("[process] started pid=")) {
-    return { percent: 100, text: "Game process started" };
-  }
-  return null;
-}
-
-function parseLaunchPrepareJdkLog(message: string): {
-  message: string;
-  stage?: string;
-  phaseStatus?: LaunchPreparePhaseState["status"];
-  current?: number;
-  total?: number;
-  downloaded?: number;
-  cached?: number;
-  item: LaunchPrepareItem;
-} | null {
-  const text = message.trim();
-  if (!text) {
-    return null;
-  }
-
-  const progressMatch = text.match(/^JDK download progress:\s*(\d+)%\s*\((\d+)\/(\d+)\s+bytes\)$/i);
-  if (progressMatch) {
-    const percent = Number.parseInt(progressMatch[1], 10);
-    const currentBytes = Number.parseInt(progressMatch[2], 10);
-    const totalBytes = Number.parseInt(progressMatch[3], 10);
-    return {
-      message: text,
-      stage: "download",
-      phaseStatus: "running",
-      current: Number.isFinite(percent) ? percent : 0,
-      total: 100,
-      item: {
-        id: "jdk-download",
-        name: "JDK Runtime",
-        kind: "jdk",
-        status: percent >= 100 ? "done" : "running",
-        currentBytes,
-        totalBytes,
-        message: text,
-        updatedAt: Date.now()
-      }
-    };
-  }
-
-  const bytesOnlyMatch = text.match(/^JDK download progress:\s*(\d+)\s+bytes$/i);
-  if (bytesOnlyMatch) {
-    const currentBytes = Number.parseInt(bytesOnlyMatch[1], 10);
-    return {
-      message: text,
-      stage: "download",
-      phaseStatus: "running",
-      item: {
-        id: "jdk-download",
-        name: "JDK Runtime",
-        kind: "jdk",
-        status: "running",
-        currentBytes,
-        totalBytes: null,
-        message: text,
-        updatedAt: Date.now()
-      }
-    };
-  }
-
-  if (text.startsWith("Managed JDK already exists")) {
-    return {
-      message: text,
-      stage: "complete",
-      phaseStatus: "done",
-      current: 100,
-      total: 100,
-      downloaded: 0,
-      cached: 1,
-      item: {
-        id: "jdk-download",
-        name: "JDK Runtime",
-        kind: "jdk",
-        status: "cached",
-        currentBytes: 0,
-        totalBytes: null,
-        message: text,
-        updatedAt: Date.now()
-      }
-    };
-  }
-
-  if (text.startsWith("Resolving Mojang runtime") || text.startsWith("Installing Mojang runtime")) {
-    return {
-      message: text,
-      stage: "prepare",
-      phaseStatus: "running",
-      item: {
-        id: "jdk-download",
-        name: "JDK Runtime",
-        kind: "jdk",
-        status: "running",
-        currentBytes: 0,
-        totalBytes: null,
-        message: text,
-        updatedAt: Date.now()
-      }
-    };
-  }
-
-  if (text.startsWith("Fetching Mojang Java all.json") || text.startsWith("Fetching Mojang Java manifest")) {
-    return {
-      message: text,
-      stage: "prepare",
-      phaseStatus: "running",
-      item: {
-        id: "jdk-manifest",
-        name: text.includes("all.json") ? "Runtime Index" : "Runtime Manifest",
-        kind: "jdk-meta",
-        status: "running",
-        currentBytes: 0,
-        totalBytes: null,
-        message: text,
-        updatedAt: Date.now()
-      }
-    };
-  }
-
-  const runtimeMatch = text.match(/^Mojang runtime progress:\s*(\d+)\/(\d+)\s+downloaded=(\d+)\s+cached=(\d+)$/i);
-  if (runtimeMatch) {
-    const current = Number.parseInt(runtimeMatch[1], 10);
-    const total = Number.parseInt(runtimeMatch[2], 10);
-    const downloaded = Number.parseInt(runtimeMatch[3], 10);
-    const cached = Number.parseInt(runtimeMatch[4], 10);
-    return {
-      message: text,
-      stage: current >= total ? "complete" : "download",
-      phaseStatus: current >= total ? "done" : "running",
-      current,
-      total,
-      downloaded,
-      cached,
-      item: {
-        id: "jdk-runtime-files",
-        name: "Runtime Files",
-        kind: "jdk",
-        status: current >= total ? "done" : "running",
-        currentBytes: current,
-        totalBytes: total,
-        message: text,
-        updatedAt: Date.now()
-      }
-    };
-  }
-
-  if (text.startsWith("JDK ready ") || text.startsWith("JDK download succeeded")) {
-    return {
-      message: text,
-      stage: "complete",
-      phaseStatus: "done",
-      current: 100,
-      total: 100,
-      item: {
-        id: "jdk-download",
-        name: "JDK Runtime",
-        kind: "jdk",
-        status: "done",
-        currentBytes: 100,
-        totalBytes: 100,
-        message: text,
-        updatedAt: Date.now()
-      }
-    };
-  }
-
-  return null;
-}
-
-function mapLaunchPreparePhaseKey(phase?: string): LaunchPreparePhaseKey | null {
-  if (phase === "login") return "login";
-  if (phase === "vanilla") return "vanilla";
-  if (phase === "fabric") return "fabric";
-  if (phase === "forge") return "forge";
-  if (phase === "runtime") return "runtime";
-  return null;
+function PageFallback() {
+  return (
+    <div className="flex h-full w-full items-center justify-center">
+      <div className="h-7 w-7 animate-spin rounded-full border-2 border-white/15 border-t-[var(--mc-grass)]" />
+    </div>
+  );
 }
 
 function selectDefaultEdgeOptiFineVersion(versions: OptiFineVersion[]): OptiFineVersion | undefined {
   return versions.find((item) => item.compatibility !== "incompatible");
 }
 
-function translateLaunchPrepareMessage(
-  ipc: InstallIpcEvent,
-  t: ReturnType<typeof useI18n>["t"]
-): string | null {
-  if (ipc.phase !== "login") {
-    return ipc.message ?? null;
-  }
-  if (ipc.stage === "microsoft") return t("launch.progress.loginMicrosoft");
-  if (ipc.stage === "xbox") return t("launch.progress.loginXbox");
-  if (ipc.stage === "xsts") return t("launch.progress.loginXsts");
-  if (ipc.stage === "minecraft") return t("launch.progress.loginMinecraft");
-  if (ipc.stage === "profile") return t("launch.progress.loginProfile");
-  return ipc.message ?? null;
-}
 
-function reduceLaunchPrepareItems(items: LaunchPrepareItem[], ipc: InstallIpcEvent): LaunchPrepareItem[] {
-  if (!ipc.event.startsWith("item-")) {
-    return items;
-  }
-  const itemId = ipc.itemId?.trim();
-  if (!itemId) {
-    return items;
-  }
-
-  const existingIndex = items.findIndex((item) => item.id === itemId);
-  const existing = existingIndex >= 0 ? items[existingIndex] : null;
-  const nextStatus = resolveLaunchPrepareItemStatus(ipc, existing?.status);
-  const nextItem: LaunchPrepareItem = {
-    id: itemId,
-    name: ipc.itemName?.trim() || existing?.name || itemId,
-    kind: ipc.itemKind?.trim() || existing?.kind || "file",
-    status: nextStatus,
-    currentBytes: typeof ipc.itemCurrentBytes === "number" ? ipc.itemCurrentBytes : existing?.currentBytes ?? 0,
-    totalBytes:
-      typeof ipc.itemTotalBytes === "number"
-        ? ipc.itemTotalBytes
-        : existing?.totalBytes ?? null,
-    message: ipc.message?.trim() || existing?.message || "",
-    updatedAt: Date.now()
-  };
-
-  const next = existingIndex >= 0 ? [...items] : [nextItem, ...items];
-  if (existingIndex >= 0) {
-    next[existingIndex] = nextItem;
-  }
-
-  next.sort((left, right) => {
-    const leftRank = launchPrepareItemRank(left.status);
-    const rightRank = launchPrepareItemRank(right.status);
-    if (leftRank !== rightRank) {
-      return leftRank - rightRank;
-    }
-    return right.updatedAt - left.updatedAt;
-  });
-
-  return next;
-}
-
-function resolveLaunchPrepareItemStatus(
-  ipc: InstallIpcEvent,
-  previous?: LaunchPrepareItemStatus
-): LaunchPrepareItemStatus {
-  if (ipc.event === "item-error") return "error";
-  if (ipc.event === "item-complete") {
-    return ipc.itemCached ? "cached" : "done";
-  }
-  if (ipc.event === "item-progress" || ipc.event === "item-start") {
-    if ((ipc.message ?? "").trim().toLowerCase() === "queued") {
-      return "pending";
-    }
-    return "running";
-  }
-  return previous ?? "pending";
-}
-
-function launchPrepareItemRank(status: LaunchPrepareItemStatus): number {
-  if (status === "running") return 0;
-  if (status === "pending") return 1;
-  if (status === "error") return 2;
-  if (status === "done") return 3;
-  return 4;
-}
-
-function upsertLaunchPrepareLogItem(items: LaunchPrepareItem[], item: LaunchPrepareItem): LaunchPrepareItem[] {
-  const index = items.findIndex((entry) => entry.id === item.id);
-  const next = index >= 0 ? [...items] : [item, ...items];
-  if (index >= 0) {
-    next[index] = item;
-  }
-  next.sort((left, right) => {
-    const leftRank = launchPrepareItemRank(left.status);
-    const rightRank = launchPrepareItemRank(right.status);
-    if (leftRank !== rightRank) {
-      return leftRank - rightRank;
-    }
-    return right.updatedAt - left.updatedAt;
-  });
-  return next.slice(0, 4);
-}
-
-async function ensureJdk(gameDir: string, versionId: string, downloadThreads: number): Promise<JdkEnsureResult> {
-  return invoke<JdkEnsureResult>("ensure_jdk", { gameDir, versionId, downloadThreads });
-}
-
-async function refreshMinecraftAccount(refreshToken: string, ipcSession?: string): Promise<MinecraftAccount> {
-  return invoke<MinecraftAccount>("refresh_minecraft_account", { refreshToken, ipcSession });
-}
-
-async function syncAutostart(enabled: boolean): Promise<void> {
-  try {
-    await invoke("set_launch_on_startup", { enabled });
-  } catch {
-  }
-}
-
-async function syncTrayBehavior(minimizeToTray: boolean): Promise<void> {
-  try {
-    await invoke("configure_tray_behavior", { minimizeToTray });
-  } catch {
-  }
-}
-
-async function openMonitor(pid: number, instanceName: string, cursor: number, locale: Locale) {
-  const params = new URLSearchParams({
-    view: "monitor",
-    pid: String(pid),
-    version: instanceName,
-    startedAt: String(Date.now()),
-    cursor: String(cursor),
-    lang: locale
-  });
-
-  const monitorLabel = `runtime-monitor-${Date.now()}-${Math.floor(Math.random() * 10000)}`;
-  const win = new WebviewWindow(monitorLabel, {
-    title: `Runtime - ${instanceName}`,
-    width: 980,
-    height: 720,
-    minWidth: 760,
-    minHeight: 520,
-    decorations: false,
-    url: `/?${params.toString()}`
-  });
-
-  await new Promise<void>((resolve, reject) => {
-    void win.once("tauri://created", () => resolve());
-    void win.once("tauri://error", (event) => {
-      reject(new Error(String((event as { payload?: unknown }).payload ?? "create monitor failed")));
-    });
-  });
-
-  return win;
-}
-
-function parseLauncherAuthState(raw: string): LauncherAuthState | null {
-  try {
-    const parsed = JSON.parse(raw) as Partial<LauncherAuthState>;
-    const token = normalizeStoredToken(parsed?.token);
-    if (!parsed || !token) {
-      return null;
-    }
-    return {
-      token,
-      user: (parsed.user as LauncherUser | undefined) ?? {}
-    };
-  } catch {
-    return null;
-  }
-}
-
-function parseLauncherLoginPrefs(raw: string): LauncherLoginPrefs {
-  try {
-    const parsed = JSON.parse(raw) as Partial<LauncherLoginPrefs>;
-    const rememberPassword = Boolean(parsed?.rememberPassword);
-    return {
-      usernameOrEmail: typeof parsed?.usernameOrEmail === "string" ? parsed.usernameOrEmail : "",
-      password: rememberPassword && typeof parsed?.password === "string" ? parsed.password : "",
-      rememberPassword,
-      autoLogin: rememberPassword && Boolean(parsed?.autoLogin)
-    };
-  } catch {
-    return DEFAULT_LOGIN_PREFS;
-  }
-}
-
-function parseMinecraftAccounts(raw: string): MinecraftAccount[] {
-  try {
-    const parsed = JSON.parse(raw) as unknown;
-    if (!Array.isArray(parsed)) {
-      return [];
-    }
-    return parsed
-      .map(normalizeMinecraftAccount)
-      .filter((value): value is MinecraftAccount => value !== null);
-  } catch {
-    return [];
-  }
-}
-
-function loadSelectedMinecraftAccountId(): string | null {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEYS.selectedMinecraftAccount)?.trim();
-    return raw || null;
-  } catch {
-    return null;
-  }
-}
-
-function normalizeMinecraftAccount(raw: unknown): MinecraftAccount | null {
-  if (!raw || typeof raw !== "object") {
-    return null;
-  }
-  const value = raw as Partial<MinecraftAccount>;
-  const type = value.type === "microsoft" ? "microsoft" : "offline";
-  const username = typeof value.username === "string" ? value.username.trim() : "";
-  if (!username) {
-    return null;
-  }
-  const uuid =
-    typeof value.uuid === "string" && value.uuid.trim()
-      ? value.uuid
-      : "00000000-0000-0000-0000-000000000000";
-  return {
-    id:
-      typeof value.id === "string" && value.id.trim()
-        ? value.id
-        : type === "microsoft"
-          ? createMicrosoftAccountId(uuid)
-          : createSessionId(),
-    type,
-    username,
-    uuid,
-    accessToken:
-      typeof value.accessToken === "string" && value.accessToken.trim()
-        ? value.accessToken
-        : type === "offline"
-          ? "offline"
-          : "",
-    refreshToken:
-      typeof value.refreshToken === "string" && value.refreshToken.trim()
-        ? value.refreshToken
-        : null,
-    xuid: typeof value.xuid === "string" && value.xuid.trim() ? value.xuid : null,
-    skinUrl: typeof value.skinUrl === "string" && value.skinUrl.trim() ? value.skinUrl : null,
-    expiresAt: typeof value.expiresAt === "number" ? value.expiresAt : null,
-    addedAt: typeof value.addedAt === "number" ? value.addedAt : Date.now()
-  };
-}
-
-function createOfflineMinecraftAccount(username: string): MinecraftAccount {
-  return {
-    id: createSessionId(),
-    type: "offline",
-    username: username.trim() || "Player",
-    uuid: "00000000-0000-0000-0000-000000000000",
-    accessToken: "offline",
-    refreshToken: null,
-    xuid: null,
-    skinUrl: null,
-    expiresAt: null,
-    addedAt: Date.now()
-  };
-}
-
-function createMicrosoftAccountId(uuid: string): string {
-  return `microsoft-${uuid.trim().toLowerCase()}`;
-}
-
-function resolveMinecraftLaunchIdentity(
-  account: MinecraftAccount | null,
-  fallbackPlayerName: string
-): { playerName: string; uuid: string; accessToken: string } {
-  const fallbackName = fallbackPlayerName.trim() || "Player";
-  if (!account) {
-    return {
-      playerName: fallbackName,
-      uuid: "00000000-0000-0000-0000-000000000000",
-      accessToken: "offline"
-    };
-  }
-  if (account.type === "microsoft") {
-    if (!account.uuid.trim() || !account.accessToken.trim()) {
-      throw new Error("Minecraft premium account is not logged in yet");
-    }
-    return {
-      playerName: account.username,
-      uuid: account.uuid,
-      accessToken: account.accessToken
-    };
-  }
-  return {
-    playerName: account.username,
-    uuid: account.uuid || "00000000-0000-0000-0000-000000000000",
-    accessToken: account.accessToken || "offline"
-  };
-}
-
-function isAuthExpiredError(error: unknown): boolean {
-  const normalized = formatLaunchError(error).trim().toLowerCase();
-  if (!normalized) return false;
-  if (normalized === "token is required" || normalized === "authentication required") {
-    return true;
-  }
-  // Match "HTTP 401" or "HTTP 401 - message"
-  if (/\bhttp\s*401\b/i.test(normalized)) {
-    return true;
-  }
-  // Match "HTTP 403" for auth-related forbidden
-  if (/\bhttp\s*403\b/i.test(normalized)) {
-    return true;
-  }
-  if (/\b(jwt|token)\b.*\b(expired|invalid|revoked)\b/i.test(normalized)) {
-    return true;
-  }
-  if (/\b(invalid|expired|missing)\b.*\b(jwt|token|authorization)\b/i.test(normalized)) {
-    return true;
-  }
-  if (normalized.includes("bearer") && normalized.includes("invalid")) {
-    return true;
-  }
-  // Common auth error messages from APIs
-  const authErrorPatterns = [
-    "unauthorized",
-    "forbidden",
-    "access denied",
-    "not authenticated",
-    "authentication failed",
-    "session expired",
-    "session invalid",
-    "login required",
-    "please login",
-    "请先登录",
-    "未授权",
-    "登录已过期",
-    "登录失效",
-    "认证失败",
-    "token无效",
-    "token过期"
-  ];
-  return authErrorPatterns.some(pattern => normalized.includes(pattern));
-}
-
-function loadOrCreateLauncherSessionId(): string {
-  try {
-    const existing = localStorage.getItem(STORAGE_KEYS.launcherSessionId)?.trim();
-    if (existing) {
-      return existing;
-    }
-    const created = createSessionId();
-    localStorage.setItem(STORAGE_KEYS.launcherSessionId, created);
-    return created;
-  } catch {
-    return createSessionId();
-  }
-}
-
-function normalizeStoredToken(raw: unknown): string | null {
-  if (typeof raw !== "string") return null;
-  let token = raw.trim().replace(/^"+|"+$/g, "").trim();
-  if (token.toLowerCase().startsWith("bearer ")) {
-    token = token.slice(7).trim();
-  }
-  return token || null;
-}
-
-function readStoredLocale(): Locale | null {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEYS.settings);
-    if (!raw) return null;
-    const parsed = JSON.parse(raw) as Partial<Settings>;
-    if (parsed.language === "en-US" || parsed.language === "zh-CN") {
-      return parsed.language;
-    }
-  } catch {
-  }
-  return null;
-}
-
-function loaderLabelKey(loader: Loader) {
-  if (loader === "forge") return "loader.forge" as const;
-  if (loader === "fabric") return "loader.fabric" as const;
-  return "loader.vanilla" as const;
-}
-
-function createDuplicatedInstanceName(sourceName: string, instances: Instance[]): string {
-  const existingNames = new Set(instances.map((item) => item.name.trim().toLowerCase()));
-  const baseName = `${sourceName} Copy`;
-  if (!existingNames.has(baseName.trim().toLowerCase())) {
-    return baseName;
-  }
-
-  let index = 2;
-  while (index < 1000) {
-    const candidate = `${baseName} ${index}`;
-    if (!existingNames.has(candidate.trim().toLowerCase())) {
-      return candidate;
-    }
-    index += 1;
-  }
-  return `${baseName} ${Date.now()}`;
-}
-
-function createDuplicatedVersionId(sourceVersionId: string, instances: Instance[]): string {
-  const existingIds = new Set(instances.map((item) => item.versionId.trim().toLowerCase()));
-  const slugBase = slugifyInstanceKey(sourceVersionId);
-  let index = 1;
-  while (index < 1000) {
-    const candidate = `${slugBase}-copy-${index}`;
-    if (!existingIds.has(candidate.toLowerCase())) {
-      return candidate;
-    }
-    index += 1;
-  }
-  return `${slugBase}-copy-${Date.now()}`;
-}
-
-function slugifyInstanceKey(raw: string): string {
-  const normalized = raw
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "");
-  return normalized || "instance";
-}
-
-function isLegacyDefaultGameDir(value: string): boolean {
-  const normalized = value.trim().replace(/\\/g, "/").toLowerCase();
-  return normalized === "" || normalized === "./.minecraft" || normalized === ".minecraft";
-}

@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { memo, useMemo, useState } from "react";
 import { ArrowLeft, ArrowRight, Server as ServerIcon, Users } from "lucide-react";
 import { useI18n } from "../i18n";
 import Button from "../components/Button";
@@ -25,7 +25,7 @@ type ServersPageProps = {
   onRefreshServers: () => void;
 };
 
-export default function ServersPage({
+function ServersPage({
   servers,
   currentInstance,
   busy,
@@ -101,7 +101,7 @@ export default function ServersPage({
       <div className="page-shell flex-1">
         <header className="page-header mb-6">
           <div className="page-header-main">
-            <p className="page-eyebrow">FPSMaster Launcher</p>
+            <p className="page-eyebrow">{t("servers.count", { count: servers.length })}</p>
             <h1 className="page-title">{t("servers.title")}</h1>
             <p className="page-subtitle">{t("servers.subtitle")}</p>
           </div>
@@ -151,7 +151,7 @@ export default function ServersPage({
                 </div>
                 <div className="min-w-0 flex-1">
                   <p className="truncate text-base font-semibold text-[var(--text-primary)]">{server.name}</p>
-                  <p className="truncate text-sm text-[var(--text-muted)]">{server.address}</p>
+                  <p className="text-data truncate text-sm text-[var(--text-muted)]">{server.address}</p>
                   {server.description && (
                     <p className="mt-1 truncate text-xs text-[var(--text-muted)]">{server.description}</p>
                   )}
@@ -173,7 +173,7 @@ export default function ServersPage({
             >
               <ArrowLeft size={16} />
             </Button>
-            <span className="text-sm text-[var(--text-secondary)]">
+            <span className="text-data text-sm text-[var(--text-secondary)]">
               {currentPage} / {totalPages}
             </span>
             <Button
@@ -210,3 +210,5 @@ export default function ServersPage({
     </div>
   );
 }
+
+export default memo(ServersPage);

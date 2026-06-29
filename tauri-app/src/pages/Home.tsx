@@ -453,14 +453,14 @@ function HomePage({
         </section>
       </div>
 
-      <footer className="sticky-footer-bar px-4 py-3 md:px-5 xl:px-6">
-        <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_minmax(260px,320px)] md:items-stretch md:gap-4">
+      <footer className="sticky-footer-bar px-4 py-2.5 md:px-5 xl:px-6">
+        <div className="grid gap-2.5 md:grid-cols-[minmax(0,1fr)_minmax(220px,260px)] md:items-stretch md:gap-3">
           <button
-            className="surface-list-item group min-h-[56px] w-full rounded-[18px] text-left"
+            className="surface-list-item group min-h-[48px] w-full rounded-[14px] text-left !gap-2.5 !px-3 !py-2"
             onClick={() => setPickerOpen(true)}
             type="button"
           >
-            <div className="icon-tile relative h-8 w-8 rounded-[12px] border-[rgba(var(--accent-rgb),0.24)]">
+            <div className="icon-tile relative h-8 w-8 rounded-[10px] border-[rgba(var(--accent-rgb),0.24)]">
               {selectedInstanceIcon ? (
                 <img src={selectedInstanceIcon} alt={selectedInstance?.name ?? "instance"} className="h-full w-full object-cover" />
               ) : null}
@@ -471,38 +471,38 @@ function HomePage({
               )}
             </div>
             <div className="min-w-0 flex-1">
-              <p className={`truncate text-sm font-semibold ${selectedInstance && !canAccessInstance(selectedInstance, user) ? "text-[var(--text-muted)]" : "text-[var(--text-primary)]"}`}>
+              <p className={`truncate text-[13px] font-semibold leading-tight ${selectedInstance && !canAccessInstance(selectedInstance, user) ? "text-[var(--text-muted)]" : "text-[var(--text-primary)]"}`}>
                 {selectedInstance ? selectedInstance.name : t("home.noInstance")}
               </p>
               {selectedInstance && (
-                <p className="truncate text-[11px] text-[var(--text-muted)]">
+                <p className="text-data truncate text-[10px] leading-tight text-[var(--text-muted)]">
                   {[selectedInstance.baseVersion, selectedLoaderLabel, selectedInstance.launcherVersionType]
                     .filter(Boolean)
                     .join(" · ")}
                 </p>
               )}
             </div>
-            <ChevronRight size={16} className="shrink-0 text-[var(--text-muted)] transition-colors group-hover:text-[var(--text-primary)]" />
+            <ChevronRight size={15} className="shrink-0 text-[var(--text-muted)] transition-colors group-hover:text-[var(--text-primary)]" />
           </button>
 
           <Button
             variant="primary"
-            size="lg"
-            className="min-h-[56px] w-full justify-center !rounded-[18px]"
+            size="md"
+            className="min-h-[48px] w-full justify-center !rounded-[14px]"
             disabled={busy || !selectedInstance || !canAccessInstance(selectedInstance, user)}
             launchProgress={launching}
             launchProgressPercent={launchProgressPercent}
             onClick={onLaunch}
           >
             <span className="flex w-full flex-col items-center justify-center text-center leading-tight">
-              <span className="flex items-center justify-center gap-2.5">
-                <Play fill="currentColor" size={16} />
+              <span className="flex items-center justify-center gap-2">
+                <Play fill="currentColor" size={15} />
                 {launching
                   ? `${t("home.launching")}${typeof launchProgressPercent === "number" ? ` ${launchProgressPercent}%` : ""}`
                   : t("home.launch")}
               </span>
               {launching && (
-                <span className="mt-1 text-[11px] font-medium text-white/85">
+                <span className="mt-0.5 text-[10px] font-medium text-white/85">
                   {launchProgressText || t("launch.progress.preparing")}
                 </span>
               )}

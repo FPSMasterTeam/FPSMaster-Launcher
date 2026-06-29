@@ -14,7 +14,7 @@ import {
 } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
-import { type ChangeEvent, type KeyboardEvent, type ReactNode, useEffect, useRef, useState } from "react";
+import { memo, type ChangeEvent, type KeyboardEvent, type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import Button from "../components/Button";
 import Card from "../components/Card";
 import Select from "../components/Select";
@@ -50,7 +50,7 @@ type SettingsPageProps = {
   onReset: () => void;
 };
 
-export default function SettingsPage({
+function SettingsPage({
   settings,
   launcherCurrentVersion,
   launcherUpdate,
@@ -117,7 +117,7 @@ export default function SettingsPage({
         }
       }
     } catch (error) {
-      setGameDirError(`打开目录选择器失败：${String(error)}`);
+      setGameDirError(t("settings.gameDirPickerFailed", { error: String(error) }));
     }
   }
 
@@ -138,18 +138,24 @@ export default function SettingsPage({
     "mirror-first",
     "official-first"
   ];
-  const accentOptions: Array<{ id: ThemeAccent; swatch: string }> = [
-    { id: "emerald", swatch: "#25b87a" },
-    { id: "cyan", swatch: "#2b7fff" },
-    { id: "violet", swatch: "#7b61ff" },
-    { id: "sunset", swatch: "#e06c51" },
-    { id: "rose", swatch: "#e4578f" },
-    { id: "amber", swatch: "#e2a62a" },
-    { id: "sky", swatch: "#23a3d8" },
-    { id: "lime", swatch: "#77c043" },
-    { id: "custom", swatch: settings.customAccentHex }
-  ];
-  const presetAccentOptions = accentOptions.filter((accent) => accent.id !== "custom");
+  const accentOptions: Array<{ id: ThemeAccent; swatch: string }> = useMemo(
+    () => [
+      { id: "emerald", swatch: "#25b87a" },
+      { id: "cyan", swatch: "#2b7fff" },
+      { id: "violet", swatch: "#7b61ff" },
+      { id: "sunset", swatch: "#e06c51" },
+      { id: "rose", swatch: "#e4578f" },
+      { id: "amber", swatch: "#e2a62a" },
+      { id: "sky", swatch: "#23a3d8" },
+      { id: "lime", swatch: "#77c043" },
+      { id: "custom", swatch: settings.customAccentHex }
+    ],
+    [settings.customAccentHex]
+  );
+  const presetAccentOptions = useMemo(
+    () => accentOptions.filter((accent) => accent.id !== "custom"),
+    [accentOptions]
+  );
   const activeAccentColor =
     settings.themeAccent === "background"
       ? settings.customAccentHex
@@ -329,7 +335,7 @@ export default function SettingsPage({
     ? formatPublishedAt(launcherUpdate.publishedAt, t("settings.launcherUpdateUnknownDate"))
     : "--";
   const hasLauncherUpdateNotes = Boolean(launcherUpdate?.notes?.trim());
-  const availableLauncherChannels = (() => {
+  const availableLauncherChannels = useMemo(() => {
     const normalizedCurrent = settings.launcherUpdateChannel.trim() || "beta";
     const items = launcherUpdateChannels
       .filter((item) => item.code.trim() !== "")
@@ -341,7 +347,7 @@ export default function SettingsPage({
       return items;
     }
     return [{ code: normalizedCurrent, name: normalizedCurrent }, ...items];
-  })();
+  }, [settings.launcherUpdateChannel, launcherUpdateChannels]);
 
   return (
     <div className="page-shell">
@@ -533,7 +539,6 @@ export default function SettingsPage({
                               </span>
                               <div>
                                 <p className="text-sm font-semibold text-[var(--text-primary)]">{t(`settings.theme.${mode}` as const)}</p>
-                                <p className="text-xs text-[var(--text-muted)]">{isDark ? t("settings.theme.dark") : t("settings.theme.light")}</p>
                               </div>
                             </div>
                             <span className={`selection-indicator ${selected ? "is-active" : ""}`} />
@@ -748,7 +753,7 @@ export default function SettingsPage({
               <div>
                 <div className="mb-1 flex items-center justify-between">
                   <FieldLabel>{t("settings.backgroundOpacity")}</FieldLabel>
-                  <span className="text-xs font-semibold text-[var(--text-secondary)]">{settings.backgroundOpacity}%</span>
+                  <span className="text-data text-xs font-semibold text-[var(--text-secondary)]">{settings.backgroundOpacity}%</span>
                 </div>
                 <input
                   type="range"
@@ -765,7 +770,7 @@ export default function SettingsPage({
               <div>
                 <div className="mb-1 flex items-center justify-between">
                   <FieldLabel>{t("settings.backgroundBlur")}</FieldLabel>
-                  <span className="text-xs font-semibold text-[var(--text-secondary)]">{settings.backgroundBlur}px</span>
+                  <span className="text-data text-xs font-semibold text-[var(--text-secondary)]">{settings.backgroundBlur}px</span>
                 </div>
                 <input
                   type="range"
@@ -863,7 +868,7 @@ export default function SettingsPage({
                       ) : null}
                       {launcherUpdate.checksum ? (
                         <span className="badge badge-muted normal-case tracking-normal">
-                          SHA-256: {launcherUpdate.checksum}
+                          SHA-256: <span className="text-data">{launcherUpdate.checksum}</span>
                         </span>
                       ) : null}
                     </div>
@@ -1047,3 +1052,5 @@ function normalizeHexColor(input: string): string | null {
   }
   return null;
 }
+
+export default memo(SettingsPage);

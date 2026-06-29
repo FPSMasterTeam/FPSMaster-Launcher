@@ -1,5 +1,5 @@
 import { Box, Eye, Layers, PenTool, Plus } from "lucide-react";
-import { useMemo } from "react";
+import { memo, useMemo } from "react";
 import Button from "../components/Button";
 import Card from "../components/Card";
 import { useI18n } from "../i18n";
@@ -37,7 +37,7 @@ type InstallPageProps = {
   onInstall: () => void;
 };
 
-export default function InstallPage({
+function InstallPage({
   catalogLoading,
   catalogCount,
   majors,
@@ -361,3 +361,5 @@ function VersionChip({
     </button>
   );
 }
+
+export default memo(InstallPage);

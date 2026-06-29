@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { ChevronDown, Crown, LoaderCircle, Plus, User, X } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useI18n } from "../i18n";
 import type { MinecraftAccount, MinecraftAuthConfig } from "../types";
@@ -16,7 +16,7 @@ type MinecraftProfileCardProps = {
 
 type AccountDialogMode = "offline" | "microsoft";
 
-export default function MinecraftProfileCard({
+function MinecraftProfileCard({
   accounts,
   currentAccount,
   onSelectAccount,
@@ -359,3 +359,5 @@ function MinecraftAvatar({ skinUrl, title, className }: { skinUrl: string | null
     </span>
   );
 }
+
+export default memo(MinecraftProfileCard);
