@@ -1,18 +1,21 @@
 import {
   AlertTriangle,
+  ArrowRight,
+  BarChart3,
   Calendar,
   Check,
   ChevronRight,
+  Clock,
   Gamepad2,
   Lock,
   Play,
   Search,
   Sparkles,
-  Users,
-  X
+  X,
+  Zap
 } from "lucide-react";
 import { createPortal } from "react-dom";
-import { useMemo, useState } from "react";
+import { memo, useMemo, useState } from "react";
 import Button from "../components/Button";
 import Card from "../components/Card";
 import MinecraftProfileCard from "../components/MinecraftProfileCard";
@@ -22,6 +25,7 @@ import type {
   DownloadedLauncherUpdate,
   Instance,
   LauncherAppUpdateInfo,
+  LauncherDashboard,
   MinecraftAccount,
   LauncherUser,
   NewsItem,
@@ -35,6 +39,7 @@ type HomePageProps = {
   launcherNews: NewsItem[];
   launcherServers: ServerItem[];
   launcherOnlineSummary: TelemetryOnlineSummary | null;
+  launcherDashboard: LauncherDashboard | null;
   launcherUpdate: LauncherAppUpdateInfo | null;
   launcherUpdateAvailable: boolean;
   launcherUpdateDownloading: boolean;
@@ -58,18 +63,19 @@ type HomePageProps = {
   onDeleteMinecraftAccount: (accountId: string) => void;
 };
 
-function canAccessInstance(instance: Instance, user: LauncherUser | null): boolean {
-  if (instance.launcherVersionType === "NOVA") {
-    return Boolean(user?.novaBetaEligible);
-  }
+function canAccessInstance(_instance: Instance, _user: LauncherUser | null): boolean {
+  // All client instances (Edge/Nova/Extreme) are open to every user. Channel-level entitlements
+  // (e.g. nova/extreme beta & nightly require sponsor) are enforced by the backend, which only
+  // returns the versions a user may access from /launcher/versions/available.
   return true;
 }
 
-export default function HomePage({
+function HomePage({
   availableInstances,
   launcherNews,
   launcherServers,
   launcherOnlineSummary,
+  launcherDashboard,
   launcherUpdate,
   launcherUpdateAvailable,
   launcherUpdateDownloading,
@@ -116,14 +122,40 @@ export default function HomePage({
     });
   }, [availableInstances, pickerQuery]);
 
-  const presetInstances = filteredInstances.filter((instance) => instance.preset);
-  const customInstances = filteredInstances.filter((instance) => !instance.preset);
-  const launcherUpdateDate = launcherUpdate?.publishedAt
-    ? new Date(launcherUpdate.publishedAt).toLocaleDateString()
-    : null;
+  const presetInstances = useMemo(
+    () => filteredInstances.filter((instance) => instance.preset),
+    [filteredInstances]
+  );
+  const customInstances = useMemo(
+    () => filteredInstances.filter((instance) => !instance.preset),
+    [filteredInstances]
+  );
+  const launcherUpdateDate = useMemo(
+    () =>
+      launcherUpdate?.publishedAt
+        ? new Date(launcherUpdate.publishedAt).toLocaleDateString()
+        : null,
+    [launcherUpdate?.publishedAt]
+  );
   const selectedLoaderLabel = selectedInstance ? loaderLabel(selectedInstance.loader, t) : null;
-  const launcherOnlineCount = launcherOnlineSummary?.launcher ?? null;
   const activeNewsContent = (activeNews?.content ?? activeNews?.summary ?? "").trim();
+
+  const instanceLaunchable = Boolean(selectedInstance) && canAccessInstance(selectedInstance as Instance, user);
+  const quickJoinDisabled = busy || launching || !instanceLaunchable;
+  const launchAsName = currentMinecraftAccount?.username ?? t("nav.player");
+  const isOfflineAccount = !currentMinecraftAccount || currentMinecraftAccount.type === "offline";
+  const quickServers = useMemo(() => launcherServers.slice(0, 4), [launcherServers]);
+
+  const weeklyHours = launcherDashboard?.weeklyPlaytime?.totalHours ?? 0;
+  const sessionCount = launcherDashboard?.stats?.playSessionCount ?? 0;
+  const levelLabel = resolveHomeLevel(user);
+  const experience = typeof user?.experience === "number" ? user.experience : null;
+  const nextLevelNeed = typeof user?.nextLevelNeed === "number" ? user.nextLevelNeed : null;
+  const expPercent =
+    experience !== null && nextLevelNeed && nextLevelNeed > 0
+      ? Math.min(100, Math.round((experience / nextLevelNeed) * 100))
+      : null;
+  const expText = experience !== null && nextLevelNeed ? `${experience}/${nextLevelNeed}` : null;
 
   const closePicker = () => {
     setPickerClosing(true);
@@ -154,16 +186,22 @@ export default function HomePage({
       <div className="page-shell flex-1">
         <header className="page-header mb-6">
           <div className="page-header-main">
-            <div className="flex flex-wrap items-center gap-2">
-              <p className="page-eyebrow">FPSMaster Launcher</p>
-              {typeof launcherOnlineCount === "number" && (
-                <span className="badge badge-accent">
-                  {t("home.onlineTag", { count: launcherOnlineCount })}
+            <p className="page-eyebrow">{t("home.welcomeBack")}</p>
+            <h1 className="page-title">{t("home.loadout.ready")}</h1>
+            {launcherOnlineSummary && (
+              <div className="mt-3 flex flex-wrap items-center gap-2">
+                <span className="badge badge-accent gap-1.5 normal-case tracking-normal">
+                  <span className="home-online-dot" aria-hidden="true" />
+                  {t("home.online.launcher", { count: launcherOnlineSummary.launcher })}
                 </span>
-              )}
-            </div>
-            <h1 className="page-title">{t("home.welcomeBack")}</h1>
-            <p className="page-subtitle">{t("home.dashboardReady")}</p>
+                <span className="badge badge-muted normal-case tracking-normal">
+                  {t("home.online.edge", { count: launcherOnlineSummary.edge })}
+                </span>
+                <span className="badge badge-muted normal-case tracking-normal">
+                  {t("home.online.nova", { count: launcherOnlineSummary.nova })}
+                </span>
+              </div>
+            )}
           </div>
           <div className="page-header-actions">
             <MinecraftProfileCard
@@ -221,7 +259,143 @@ export default function HomePage({
           </section>
         )}
 
-        <section className="page-grid page-grid-two">
+        <section className="mb-5">
+          <Card variant="frost" className="page-card page-card-roomy rounded-[22px]" interactive={false}>
+            <div className="section-header !mb-5">
+              <div className="section-header-main">
+                <h2 className="section-title">{t("home.selectedInstance")}</h2>
+              </div>
+              <button
+                className="segment-chip px-4 !min-h-10"
+                type="button"
+                onClick={() => setPickerOpen(true)}
+              >
+                {t("home.loadout.change")}
+              </button>
+            </div>
+
+            <div className="home-loadout">
+              <div className="icon-tile relative h-16 w-16 rounded-[18px]">
+                {selectedInstanceIcon ? (
+                  <img
+                    src={selectedInstanceIcon}
+                    alt={selectedInstance?.name ?? "instance"}
+                    className="h-full w-full object-cover"
+                  />
+                ) : (
+                  <Gamepad2 size={24} className="text-[var(--text-muted)]" />
+                )}
+                {selectedInstance && !instanceLaunchable && (
+                  <div className="absolute inset-0 flex items-center justify-center bg-black/50">
+                    <Lock size={16} className="text-white/70" />
+                  </div>
+                )}
+              </div>
+              <div className="min-w-0 flex-1">
+                <p className="truncate text-xl font-bold leading-tight text-[var(--text-primary)]">
+                  {selectedInstance ? selectedInstance.name : t("home.noInstance")}
+                </p>
+                {selectedInstance && (
+                  <p className="text-data mt-1.5 truncate text-sm text-[var(--text-secondary)]">
+                    {[selectedInstance.baseVersion, selectedLoaderLabel, selectedInstance.launcherVersionType]
+                      .filter(Boolean)
+                      .join("   ·   ")}
+                  </p>
+                )}
+                <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-2">
+                  <span className="text-xs text-[var(--text-muted)]">
+                    {t("home.loadout.launchAs", { name: launchAsName })}
+                  </span>
+                  {isOfflineAccount && (
+                    <span className="inline-flex items-center gap-1.5 text-xs font-medium text-[#f4c15b]">
+                      <AlertTriangle size={12} className="shrink-0" />
+                      {t("home.loadout.offlineNote")}
+                    </span>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            {quickServers.length > 0 && (
+              <div className="home-quickjoin">
+                <div className="home-quickjoin-head">
+                  <Zap size={14} className="text-[var(--mc-grass)]" />
+                  <span>{t("home.quickJoin")}</span>
+                </div>
+                <div className="home-quickjoin-row">
+                  {quickServers.map((server) => (
+                    <button
+                      key={server.id ?? server.address}
+                      type="button"
+                      className="home-join-chip"
+                      disabled={quickJoinDisabled}
+                      title={`${server.name} · ${server.address}`}
+                      onClick={() => onLaunchToServer(server.address)}
+                    >
+                      <span className="home-join-chip-icon">
+                        {server.iconPath ? (
+                          <img src={server.iconPath} alt={server.name} />
+                        ) : (
+                          server.name.slice(0, 1)
+                        )}
+                      </span>
+                      <span className="min-w-0">
+                        <span className="home-join-chip-name truncate">{server.name}</span>
+                        <span className="home-join-chip-mode truncate">{server.mode}</span>
+                      </span>
+                    </button>
+                  ))}
+                  <button
+                    type="button"
+                    className="home-join-more"
+                    onClick={onOpenServers}
+                    aria-label={t("home.viewAll")}
+                  >
+                    <ArrowRight size={16} />
+                  </button>
+                </div>
+              </div>
+            )}
+          </Card>
+        </section>
+
+        {launcherDashboard && (
+          <section className="mb-5 grid gap-3 sm:grid-cols-3">
+            <div className="metric-tile">
+              <p className="metric-label">
+                <Clock size={13} />
+                <span>{t("home.stats.weekly")}</span>
+              </p>
+              <p className="metric-value text-data !text-lg">{weeklyHours.toFixed(1)}h</p>
+            </div>
+            <div className="metric-tile">
+              <p className="metric-label">
+                <BarChart3 size={13} />
+                <span>{t("home.profile.sessions")}</span>
+              </p>
+              <p className="metric-value text-data !text-lg">{sessionCount}</p>
+            </div>
+            <div className="metric-tile">
+              <p className="metric-label">
+                <Sparkles size={13} />
+                <span>{t("home.stats.level")}</span>
+              </p>
+              <div className="mt-2.5 flex items-center justify-between gap-3">
+                <span className="text-data text-base font-bold text-[var(--text-primary)]">{levelLabel}</span>
+                {expText && (
+                  <span className="text-data text-[11px] text-[var(--text-muted)]">{expText}</span>
+                )}
+              </div>
+              {expPercent !== null && (
+                <div className="home-level-bar mt-2">
+                  <div className="home-level-bar-fill" style={{ width: `${expPercent}%` }} />
+                </div>
+              )}
+            </div>
+          </section>
+        )}
+
+        <section>
           <Card variant="frost" className="page-card page-card-roomy rounded-[22px]" interactive={false}>
             <div className="section-header">
               <div className="section-header-main">
@@ -235,6 +409,7 @@ export default function HomePage({
                 <button
                   className="segment-chip px-4 !min-h-10"
                   type="button"
+                  disabled={launcherNews.length === 0}
                   onClick={() => setActiveNews(launcherNews[0] ?? null)}
                 >
                   {t("home.viewAll")}
@@ -242,100 +417,36 @@ export default function HomePage({
               </div>
             </div>
             {launcherNews.length > 0 ? (
-              <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
-                {launcherNews.map((news) => (
+              <div className="grid gap-1">
+                {launcherNews.slice(0, 5).map((news) => (
                   <button
                     key={news.id ?? news.title}
                     type="button"
-                    className="text-left"
+                    className="home-news-row"
                     onClick={() => setActiveNews(news)}
                   >
-                    <Card
-                      as="article"
-                      variant="soft"
-                      className="page-card page-card-compact h-full rounded-[20px]"
-                      interactive={false}
-                    >
-                      <div className="flex flex-wrap items-center gap-2">
-                        <span className={`badge ${news.pinned ? "badge-accent" : "badge-muted"}`}>
-                          {news.pinned ? t("home.news.pinnedTag") : t("home.news.tag")}
-                        </span>
-                        {news.publishedAt && (
-                          <span className="text-xs text-[var(--text-muted)]">
-                            {new Date(news.publishedAt).toLocaleDateString()}
-                          </span>
-                        )}
-                      </div>
-                      <h3 className="mt-3 text-base font-semibold leading-tight text-[var(--text-primary)]">
-                        {news.title}
-                      </h3>
-                      <p className="mt-2 text-sm leading-6 text-[var(--text-secondary)]">
-                        {news.summary}
-                      </p>
-                      <p className="mt-4 text-xs font-semibold uppercase tracking-[0.12em] text-[var(--mc-grass)]">
-                        {t("home.news.open")}
-                      </p>
-                    </Card>
+                    <span className={`badge shrink-0 ${news.pinned ? "badge-accent" : "badge-muted"}`}>
+                      {news.pinned ? t("home.news.pinnedTag") : t("home.news.tag")}
+                    </span>
+                    <span className="min-w-0 flex-1 truncate text-sm font-medium text-[var(--text-primary)]">
+                      {news.title}
+                    </span>
+                    {news.publishedAt && (
+                      <span className="text-data shrink-0 text-xs text-[var(--text-muted)]">
+                        {new Date(news.publishedAt).toLocaleDateString()}
+                      </span>
+                    )}
+                    <ChevronRight size={15} className="shrink-0 text-[var(--text-muted)]" />
                   </button>
                 ))}
               </div>
             ) : (
-              <div className="empty-state">
-                <Calendar size={42} className="empty-state-icon" />
-                <p className="empty-state-title">{t("home.latestNews")}</p>
-                <p className="empty-state-text">{t("home.dashboardReady")}</p>
-              </div>
-            )}
-          </Card>
-
-          <Card variant="frost" className="page-card page-card-roomy rounded-[22px]" interactive={false}>
-            <div className="section-header">
-              <div className="section-header-main">
-                <h2 className="section-title flex items-center gap-2">
-                  <Users size={18} className="text-[var(--mc-grass)]" />
-                  {t("home.topServers")}
-                </h2>
-                <p className="section-subtitle">{t("home.moreServers")}</p>
-              </div>
-              <div className="section-toolbar">
-                <button
-                  className="segment-chip px-4 !min-h-10"
-                  type="button"
-                  onClick={onOpenServers}
-                >
-                  {t("home.viewAll")}
+              <div className="home-news-empty">
+                <p className="text-sm text-[var(--text-secondary)]">{t("home.news.emptyTitle")}</p>
+                <button type="button" className="home-news-empty-action" onClick={onOpenServers}>
+                  {t("home.news.emptyAction")}
+                  <ArrowRight size={14} />
                 </button>
-              </div>
-            </div>
-            {launcherServers.length > 0 ? (
-              <div className="surface-list">
-                {launcherServers.map((server) => (
-                  <button
-                    key={server.id ?? server.address}
-                    className="surface-list-item w-full text-left"
-                    type="button"
-                    onClick={() => setActiveServer(server)}
-                  >
-                    <div className="icon-tile h-10 w-10 rounded-[14px]">
-                      {server.iconPath ? (
-                        <img src={server.iconPath} alt={server.name} className="h-full w-full object-cover" />
-                      ) : (
-                        server.name.slice(0, 1)
-                      )}
-                    </div>
-                    <div className="min-w-0 flex-1">
-                      <p className="truncate text-sm font-semibold text-[var(--text-primary)]">{server.name}</p>
-                      <p className="truncate text-xs text-[var(--text-muted)]">{server.address}</p>
-                    </div>
-                    <span className="badge badge-muted">{server.mode}</span>
-                  </button>
-                ))}
-              </div>
-            ) : (
-              <div className="empty-state min-h-[180px]">
-                <Users size={40} className="empty-state-icon" />
-                <p className="empty-state-title">{t("home.topServers")}</p>
-                <p className="empty-state-text">{t("home.dashboardReady")}</p>
               </div>
             )}
           </Card>
@@ -647,6 +758,20 @@ function InstanceSelectRow({
   );
 }
 
+function resolveHomeLevel(user: LauncherUser | null): string {
+  const dynamicLevel = user?.level ?? user?.userLevel ?? user?.membershipLevel;
+  if (typeof dynamicLevel === "number" && Number.isFinite(dynamicLevel)) {
+    return `Lv.${Math.max(0, Math.floor(dynamicLevel))}`;
+  }
+  if (typeof dynamicLevel === "string") {
+    const normalized = dynamicLevel.trim();
+    if (normalized) {
+      return /^lv\.?/i.test(normalized) ? normalized : `Lv.${normalized}`;
+    }
+  }
+  return "Lv.1";
+}
+
 function loaderLabel(
   loader: Instance["loader"],
   t: ReturnType<typeof useI18n>["t"]
@@ -655,3 +780,5 @@ function loaderLabel(
   if (loader === "fabric") return t("loader.fabric");
   return t("loader.vanilla");
 }
+
+export default memo(HomePage);
