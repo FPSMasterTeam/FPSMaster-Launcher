@@ -1,3 +1,4 @@
+import { memo } from "react";
 import { AlertTriangle, Download, ShieldAlert } from "lucide-react";
 import Button from "../components/Button";
 import Card from "../components/Card";
@@ -11,7 +12,7 @@ type MandatoryUpdatePageProps = {
   onInstallLauncherUpdate: () => void;
 };
 
-export default function MandatoryUpdatePage({
+function MandatoryUpdatePage({
   launcherUpdate,
   launcherUpdateDownloading,
   launcherUpdateDownload,
@@ -93,3 +94,5 @@ export default function MandatoryUpdatePage({
     </div>
   );
 }
+
+export default memo(MandatoryUpdatePage);

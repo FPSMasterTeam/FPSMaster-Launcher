@@ -1,16 +1,44 @@
-import { createContext, type ReactNode, useContext, useMemo } from "react";
+import { createContext, type ReactNode, useContext, useMemo, useRef } from "react";
 import type { Locale } from "./types";
 
+// en-US is kept static: it is the type source and the runtime fallback.
+// Other locales are split into their own chunks and loaded on demand
+// (see loadLocale). main.tsx preloads the active locale before first
+// render so the synchronous translator never produces a flash.
 import enUS from "./locales/en-US";
-import zhCN from "./locales/zh-CN";
 
-const translations = {
-  "en-US": enUS,
-  "zh-CN": zhCN,
-} as const;
-
-export type TranslationKey = keyof (typeof translations)["en-US"];
+export type TranslationKey = keyof typeof enUS;
 type TranslationValues = Record<string, string | number>;
+type LocaleTable = Record<TranslationKey, string>;
+
+const translations: Record<Locale, LocaleTable> = {
+  "en-US": enUS,
+  "zh-CN": enUS // placeholder until the zh-CN chunk is loaded
+};
+
+const localeLoaders: Record<Locale, (() => Promise<{ default: LocaleTable }>) | null> = {
+  "en-US": null,
+  "zh-CN": () => import("./locales/zh-CN") as Promise<{ default: LocaleTable }>
+};
+
+const loadedLocales = new Set<Locale>(["en-US"]);
+
+export async function loadLocale(locale: Locale): Promise<void> {
+  if (loadedLocales.has(locale)) {
+    return;
+  }
+  const loader = localeLoaders[locale];
+  if (!loader) {
+    return;
+  }
+  try {
+    const mod = await loader();
+    translations[locale] = mod.default;
+    loadedLocales.add(locale);
+  } catch (error) {
+    console.warn(`[i18n] failed to load locale ${locale}:`, error);
+  }
+}
 
 export const LOCALE_OPTIONS: readonly Locale[] = ["en-US", "zh-CN"];
 
@@ -69,13 +97,29 @@ export function I18nProvider({
   onLocaleChange: (locale: Locale) => void;
   children: ReactNode;
 }) {
+  // Keep the latest callback in a ref so `setLocale` (and therefore the
+  // context value) stays referentially stable even when the parent passes
+  // a fresh inline `onLocaleChange` every render.
+  const onLocaleChangeRef = useRef(onLocaleChange);
+  onLocaleChangeRef.current = onLocaleChange;
+
+  const setLocale = useMemo(
+    () => async (next: Locale) => {
+      await loadLocale(next);
+      onLocaleChangeRef.current(next);
+    },
+    []
+  );
+
+  // Value only changes when the locale actually changes — not on every
+  // parent render — so consumers of useI18n() no longer re-render needlessly.
   const value = useMemo<I18nContextValue>(
     () => ({
       locale,
-      setLocale: onLocaleChange,
+      setLocale,
       t: createTranslator(locale)
     }),
-    [locale, onLocaleChange]
+    [locale, setLocale]
   );
 
   return <I18nContext.Provider value={value}>{children}</I18nContext.Provider>;

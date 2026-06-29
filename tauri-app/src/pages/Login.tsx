@@ -1,10 +1,10 @@
-import { LogIn, ShieldCheck } from "lucide-react";
-import { FormEvent, useState } from "react";
+import { Boxes, CloudCog, LogIn, ShieldCheck, Zap } from "lucide-react";
+import { memo, FormEvent, useEffect, useState } from "react";
 import AppLogo from "../components/AppLogo";
 import Button from "../components/Button";
 import Card from "../components/Card";
 import { Checkbox } from "../components/Checkbox";
-import { useI18n } from "../i18n";
+import { useI18n, type TranslationKey } from "../i18n";
 import type { LauncherLoginPrefs } from "../types";
 
 type LoginPageProps = {
@@ -14,13 +14,33 @@ type LoginPageProps = {
   onSubmit: (prefs: LauncherLoginPrefs) => Promise<string | null>;
 };
 
-export default function LoginPage({ loading, initialPrefs, statusText, onSubmit }: LoginPageProps) {
+const CAROUSEL_SLIDES: ReadonlyArray<{
+  icon: typeof Boxes;
+  titleKey: TranslationKey;
+  descKey: TranslationKey;
+}> = [
+  { icon: Boxes, titleKey: "login.carousel.0.title", descKey: "login.carousel.0.desc" },
+  { icon: Zap, titleKey: "login.carousel.1.title", descKey: "login.carousel.1.desc" },
+  { icon: CloudCog, titleKey: "login.carousel.2.title", descKey: "login.carousel.2.desc" }
+];
+
+const CAROUSEL_INTERVAL = 5000;
+
+function LoginPage({ loading, initialPrefs, statusText, onSubmit }: LoginPageProps) {
   const { t } = useI18n();
   const [identity, setIdentity] = useState(initialPrefs.usernameOrEmail);
   const [password, setPassword] = useState(initialPrefs.password);
   const [rememberPassword, setRememberPassword] = useState(initialPrefs.rememberPassword);
   const [autoLogin, setAutoLogin] = useState(initialPrefs.autoLogin && initialPrefs.rememberPassword);
   const [errorText, setErrorText] = useState("");
+  const [slide, setSlide] = useState(0);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      setSlide((current) => (current + 1) % CAROUSEL_SLIDES.length);
+    }, CAROUSEL_INTERVAL);
+    return () => window.clearInterval(timer);
+  }, []);
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -42,102 +62,164 @@ export default function LoginPage({ loading, initialPrefs, statusText, onSubmit 
   }
 
   return (
-    <div className="page-shell page-shell-centered relative w-full px-2 sm:px-4">
-      <div className="pointer-events-none absolute -left-16 -top-16 h-56 w-56 rounded-full bg-[var(--mc-grass)]/16 blur-2xl" />
-      <Card as="section" variant="strong" className="page-card page-card-roomy relative w-full max-w-[560px] overflow-hidden rounded-[24px] border border-white/10 shadow-[0_20px_48px_rgba(4,8,14,0.34)]" interactive={false}>
-        <div className="pointer-events-none absolute -right-14 -top-14 h-40 w-40 rounded-full bg-[var(--mc-grass)]/12 blur-2xl" />
+    <div className="login-shell relative flex w-full items-center justify-center px-4 py-8">
+      {/* Ambient glow lives behind the card (not inside it) so it never gets clipped. */}
+      <div className="login-glow login-glow-a" aria-hidden />
+      <div className="login-glow login-glow-b" aria-hidden />
 
-        <header className="relative mb-7 flex items-center gap-4">
-          <AppLogo size={56} className="rounded-2xl border border-white/10 shadow-[0_0_0_1px_var(--border-subtle),0_10px_30px_rgba(37,184,122,0.22)]" />
-          <div>
-            <p className="page-eyebrow">FPSMaster</p>
-            <h1 className="page-title !mt-1 !text-[34px]">{t("login.title")}</h1>
-            <p className="page-subtitle !mt-1 !text-sm">{t("login.subtitle")}</p>
-          </div>
-        </header>
-
-        <form className="field-stack relative" onSubmit={(event) => void submit(event)}>
-          <div>
-            <label className="field-label">{t("login.account")}</label>
-            <input
-              type="text"
-              value={identity}
-              onChange={(event) => setIdentity(event.target.value)}
-              className="ui-input"
-            />
+      <Card
+        as="section"
+        variant="strong"
+        className="login-card relative grid w-full max-w-[940px] overflow-hidden rounded-[28px] border border-white/10 shadow-[0_24px_60px_rgba(4,8,14,0.42)] lg:grid-cols-[1.05fr_1fr]"
+        interactive={false}
+      >
+        {/* Left: feature carousel */}
+        <aside className="login-aside relative hidden flex-col justify-between overflow-hidden p-9 lg:flex">
+          <div className="relative flex items-center gap-3">
+            <AppLogo size={40} className="rounded-xl border border-white/10 shadow-[0_8px_24px_rgba(37,184,122,0.28)]" />
+            <div className="leading-tight">
+              <p className="text-sm font-semibold tracking-wide text-white">FPSMaster</p>
+              <p className="text-xs text-white/55">{t("login.brand.tagline")}</p>
+            </div>
           </div>
 
-          <div>
-            <label className="field-label">{t("login.password")}</label>
-            <input
-              type="password"
-              value={password}
-              onChange={(event) => setPassword(event.target.value)}
-              className="ui-input"
-            />
-          </div>
+          <div className="relative mt-8">
+            <div className="login-slides">
+              {CAROUSEL_SLIDES.map((item, index) => {
+                const Icon = item.icon;
+                return (
+                  <div
+                    key={item.titleKey}
+                    className={`login-slide ${index === slide ? "is-active" : ""}`}
+                    aria-hidden={index !== slide}
+                  >
+                    <span className="login-slide-icon">
+                      <Icon size={22} />
+                    </span>
+                    <h2 className="login-slide-title">{t(item.titleKey)}</h2>
+                    <p className="login-slide-desc">{t(item.descKey)}</p>
+                  </div>
+                );
+              })}
+            </div>
 
-          <div className="field-grid field-grid-two">
-            <label className="surface-panel flex cursor-pointer items-center gap-3 rounded-2xl px-3 py-3 text-sm text-[var(--text-secondary)] transition-colors hover:border-[var(--border-medium)]">
-              <Checkbox
-                checked={rememberPassword}
-                onCheckedChange={(checked) => {
-                  const isChecked = checked === true;
-                  setRememberPassword(isChecked);
-                  if (!isChecked) {
-                    setAutoLogin(false);
-                  }
-                }}
+            <div className="login-dots" role="tablist" aria-label="carousel">
+              {CAROUSEL_SLIDES.map((item, index) => (
+                <button
+                  key={item.titleKey}
+                  type="button"
+                  className={`login-dot ${index === slide ? "is-active" : ""}`}
+                  aria-label={t(item.titleKey)}
+                  aria-selected={index === slide}
+                  role="tab"
+                  onClick={() => setSlide(index)}
+                />
+              ))}
+            </div>
+          </div>
+        </aside>
+
+        {/* Right: login form */}
+        <div className="login-form relative flex flex-col justify-center p-8 sm:p-10">
+          <header className="mb-7">
+            <div className="mb-4 flex items-center gap-3 lg:hidden">
+              <AppLogo size={44} className="rounded-2xl border border-white/10 shadow-[0_10px_30px_rgba(37,184,122,0.22)]" />
+              <p className="page-eyebrow !m-0">FPSMaster</p>
+            </div>
+            <p className="page-eyebrow hidden lg:block">FPSMaster</p>
+            <h1 className="page-title !mt-1 !text-[30px]">{t("login.title")}</h1>
+            <p className="page-subtitle !mt-2 !text-sm">{t("login.subtitle")}</p>
+          </header>
+
+          <form className="field-stack relative" onSubmit={(event) => void submit(event)}>
+            <div>
+              <label className="field-label">{t("login.account")}</label>
+              <input
+                type="text"
+                value={identity}
+                onChange={(event) => setIdentity(event.target.value)}
+                className="ui-input"
+                autoComplete="username"
               />
-              <span>{t("login.rememberPassword")}</span>
-            </label>
+            </div>
 
-            <label className={`surface-panel flex items-center gap-3 rounded-2xl px-3 py-3 text-sm transition-colors ${rememberPassword ? "cursor-pointer text-[var(--text-secondary)] hover:border-[var(--border-medium)]" : "cursor-not-allowed text-[var(--text-muted)] opacity-70"}`}>
-              <Checkbox
-                checked={rememberPassword && autoLogin}
-                disabled={!rememberPassword}
-                onCheckedChange={(checked) => setAutoLogin(checked === true)}
+            <div>
+              <label className="field-label">{t("login.password")}</label>
+              <input
+                type="password"
+                value={password}
+                onChange={(event) => setPassword(event.target.value)}
+                className="ui-input"
+                autoComplete="current-password"
               />
-              <span>{t("login.autoLogin")}</span>
-            </label>
-          </div>
-
-          {!rememberPassword && autoLogin && (
-            <div className="notice notice-warning">
-              <div>
-                <p className="notice-title">{t("login.rememberPassword")}</p>
-                <p className="notice-text">{t("login.autoLoginRequiresRemember")}</p>
-              </div>
             </div>
-          )}
 
-          {errorText && (
-            <div className="notice notice-danger">
-              <div>
-                <p className="notice-text !mt-0">{errorText}</p>
-              </div>
+            <div className="login-options">
+              <label className="login-option">
+                <Checkbox
+                  className="!h-4 !w-4"
+                  checked={rememberPassword}
+                  onCheckedChange={(checked) => {
+                    const isChecked = checked === true;
+                    setRememberPassword(isChecked);
+                    if (!isChecked) {
+                      setAutoLogin(false);
+                    }
+                  }}
+                />
+                <span>{t("login.rememberPassword")}</span>
+              </label>
+
+              <label className={`login-option ${rememberPassword ? "" : "is-disabled"}`}>
+                <Checkbox
+                  className="!h-4 !w-4"
+                  checked={rememberPassword && autoLogin}
+                  disabled={!rememberPassword}
+                  onCheckedChange={(checked) => setAutoLogin(checked === true)}
+                />
+                <span>{t("login.autoLogin")}</span>
+              </label>
             </div>
-          )}
 
-          {statusText ? (
-            <div className="notice">
-              <div>
-                <p className="notice-text !mt-0">{statusText}</p>
+            {!rememberPassword && autoLogin && (
+              <div className="notice notice-warning">
+                <div>
+                  <p className="notice-title">{t("login.rememberPassword")}</p>
+                  <p className="notice-text">{t("login.autoLoginRequiresRemember")}</p>
+                </div>
               </div>
+            )}
+
+            {errorText && (
+              <div className="notice notice-danger">
+                <div>
+                  <p className="notice-text !mt-0">{errorText}</p>
+                </div>
+              </div>
+            )}
+
+            {statusText ? (
+              <div className="notice">
+                <div>
+                  <p className="notice-text !mt-0">{statusText}</p>
+                </div>
+              </div>
+            ) : null}
+
+            <Button type="submit" variant="primary" size="lg" className="w-full justify-center gap-2 !rounded-2xl" disabled={loading}>
+              <LogIn size={16} />
+              {loading ? t("login.loggingIn") : t("login.login")}
+            </Button>
+
+            <div className="flex items-center justify-center gap-2 pt-1 text-xs text-[var(--text-muted)]">
+              <ShieldCheck size={14} className="text-[var(--mc-grass)]" />
+              {t("login.tip.signInToContinue")}
             </div>
-          ) : null}
-
-          <Button type="submit" variant="primary" size="lg" className="w-full justify-center gap-2 !rounded-2xl" disabled={loading}>
-            <LogIn size={16} />
-            {loading ? t("login.loggingIn") : t("login.login")}
-          </Button>
-
-          <div className="flex items-center justify-center gap-2 pt-1 text-xs text-[var(--text-muted)]">
-            <ShieldCheck size={14} className="text-[var(--mc-grass)]" />
-            {t("login.tip.signInToContinue")}
-          </div>
-        </form>
+          </form>
+        </div>
       </Card>
     </div>
   );
 }
+
+export default memo(LoginPage);

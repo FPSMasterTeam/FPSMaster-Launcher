@@ -437,6 +437,13 @@ export type LauncherVersion = {
   createdAt?: string | null;
 };
 
+export type LauncherAuthState = {
+  token: string;
+  user: LauncherUser;
+};
+
+export type LauncherVersionMap = Record<LauncherVersionType, LauncherVersion | null>;
+
 export type LauncherModsInstallResult = {
   targetDir: string;
   installedFiles: number;

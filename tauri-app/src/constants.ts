@@ -1,4 +1,11 @@
-import type { Instance, NewsItem, Settings } from "./types";
+import type { Instance, LauncherLoginPrefs, NewsItem, Settings } from "./types";
+
+export const DEFAULT_LOGIN_PREFS: LauncherLoginPrefs = {
+  usernameOrEmail: "",
+  password: "",
+  rememberPassword: false,
+  autoLogin: false
+};
 
 export const STORAGE_KEYS = {
   instances: "fpsmaster.instances",

@@ -1,3 +1,4 @@
+import { memo } from "react";
 import { ChevronsLeft, ChevronsRight, Compass, Crown, Gamepad2, Home, Server, Settings, Trophy } from "lucide-react";
 import AppLogo from "./AppLogo";
 import { useI18n } from "../i18n";
@@ -12,7 +13,7 @@ type SidebarProps = {
   setPage: (page: Page) => void;
 };
 
-export default function Sidebar({
+function Sidebar({
   currentPage,
   collapsed,
   canToggleCollapse,
@@ -69,7 +70,7 @@ export default function Sidebar({
                 collapsed ? "justify-center" : "justify-center lg:justify-start"
               } ${
                 active
-                  ? "border-[rgba(var(--accent-rgb),0.25)] bg-[var(--linear-card-bg)] text-[var(--text-primary)] shadow-[0_0_0_1px_rgba(var(--accent-rgb),var(--linear-hover-ring)),0_8px_18px_rgba(2,8,16,0.22),0_0_14px_rgba(var(--accent-rgb),var(--linear-hover-halo))]"
+                  ? "border-[rgba(var(--accent-rgb),0.22)] bg-[var(--linear-card-bg)] text-[var(--text-primary)] shadow-[inset_0_1px_0_rgba(255,255,255,0.05),0_6px_14px_rgba(2,8,16,0.28)]"
                   : "border-transparent text-[var(--text-secondary)] hover:border-white/5 hover:bg-[var(--surface-soft)] hover:text-[var(--text-primary)]"
               }`}
               aria-label={item.label}
@@ -231,3 +232,5 @@ function resolveRoleBadgeClass(role: string): string {
   }
   return "bg-[var(--bg-elevated)] text-[var(--text-secondary)]";
 }
+
+export default memo(Sidebar);

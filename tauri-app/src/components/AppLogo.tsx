@@ -1,3 +1,4 @@
+import { memo } from "react";
 import launcherIcon from "../assets/launcher.png";
 
 type AppLogoProps = {
@@ -5,7 +6,7 @@ type AppLogoProps = {
   className?: string;
 };
 
-export default function AppLogo({ size = 24, className = "" }: AppLogoProps) {
+function AppLogo({ size = 24, className = "" }: AppLogoProps) {
   return (
     <img
       src={launcherIcon}
@@ -17,3 +18,5 @@ export default function AppLogo({ size = 24, className = "" }: AppLogoProps) {
     />
   );
 }
+
+export default memo(AppLogo);
