@@ -1,5 +1,5 @@
 import { Lock, Plus, Search, Settings, Play, Sparkles, Gamepad2 } from "lucide-react";
-import { useMemo, useState } from "react";
+import { memo, useMemo, useState } from "react";
 import Button from "../components/Button";
 import Card from "../components/Card";
 import { useI18n } from "../i18n";
@@ -21,14 +21,14 @@ type InstancesPageProps = {
   onOpenInstanceSettings: (id: string) => void;
 };
 
-function canAccessInstance(instance: Instance, user: LauncherUser | null): boolean {
-  if (instance.launcherVersionType === "NOVA") {
-    return Boolean(user?.novaBetaEligible);
-  }
+function canAccessInstance(_instance: Instance, _user: LauncherUser | null): boolean {
+  // All client instances (Edge/Nova/Extreme) are open to every user. Channel-level entitlements
+  // (e.g. nova/extreme beta & nightly require sponsor) are enforced by the backend, which only
+  // returns the versions a user may access from /launcher/versions/available.
   return true;
 }
 
-export default function InstancesPage({
+function InstancesPage({
   instances,
   launcherVersions,
   busy,
@@ -321,3 +321,5 @@ function resolvePresetStatusTone(state: PresetPackageStatus["state"]): string {
   }
   return "border-white/10 bg-[var(--surface-soft)] text-[var(--text-secondary)]";
 }
+
+export default memo(InstancesPage);
