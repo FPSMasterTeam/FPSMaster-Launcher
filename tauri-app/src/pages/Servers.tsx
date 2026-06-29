@@ -129,7 +129,7 @@ function ServersPage({
         </div>
 
         {/* Server List */}
-        <Card variant="soft" className="page-card rounded-[20px]" interactive={false}>
+        <Card variant="soft" className="page-card rounded-[10px]" interactive={false}>
           <div className="surface-list">
             {paginatedServers.map((server) => (
               <button
@@ -138,7 +138,7 @@ function ServersPage({
                 type="button"
                 onClick={() => setSelectedServer(server)}
               >
-                <div className="icon-tile h-12 w-12 rounded-[16px]">
+                <div className="icon-tile h-12 w-12 rounded-[8px]">
                   {server.iconUrl ? (
                     <img src={server.iconUrl} alt={server.name} className="h-full w-full object-cover" />
                   ) : server.iconPath ? (

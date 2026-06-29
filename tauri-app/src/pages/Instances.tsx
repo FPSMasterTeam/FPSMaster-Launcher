@@ -1,4 +1,4 @@
-import { Lock, Plus, Search, Settings, Play, Sparkles, Gamepad2 } from "lucide-react";
+import { Lock, Plus, Search, Settings, Play, Swords, Gamepad2 } from "lucide-react";
 import { memo, useMemo, useState } from "react";
 import Button from "../components/Button";
 import Card from "../components/Card";
@@ -75,10 +75,10 @@ function InstancesPage({
     const canAccess = canAccessInstance(instance, user);
 
     return (
-      <Card as="article" key={instance.id} variant="frost" className={`page-card page-card-compact flex flex-col rounded-[22px] ${!canAccess ? "opacity-60" : ""}`} interactive={false}>
+      <Card as="article" key={instance.id} variant="frost" className={`page-card page-card-compact flex flex-col rounded-[10px] ${!canAccess ? "opacity-60" : ""}`} interactive={false}>
         <div className="flex items-center gap-3">
           <div className="relative shrink-0">
-            <div className="h-14 w-14 overflow-hidden rounded-[18px] border border-white/5 bg-[var(--bg-elevated)]">
+            <div className="h-14 w-14 overflow-hidden rounded-[8px] border border-white/5 bg-[var(--bg-elevated)]">
               {icon ? <img src={icon} alt={instance.name} className="h-full w-full object-cover" /> : null}
               {!canAccess && (
                 <div className="absolute inset-0 flex items-center justify-center bg-black/50">
@@ -95,16 +95,16 @@ function InstancesPage({
               </h3>
               {!canAccess && <Lock size={12} className="text-[var(--text-muted)] shrink-0" />}
               {instance.preset && presetStatus && (presetStatus.state === "update-available" || presetStatus.state === "missing") && canAccess && (
-                <span className="badge badge-warning shrink-0 rounded-full px-2 py-1 text-[10px]">
+                <span className="badge badge-warning shrink-0 rounded-[5px] px-2 py-1 text-[10px]">
                   {t("instances.status.updateAvailable")}
                 </span>
               )}
             </div>
             <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-[var(--text-secondary)]">
-              <span className="badge badge-muted text-data rounded-full px-2 py-1 text-[10px]">
+              <span className="badge badge-muted text-data rounded-[5px] px-2 py-1 text-[10px]">
                 {instance.baseVersion}
               </span>
-              <span className={`badge rounded-full px-2 py-1 text-[10px] ${
+              <span className={`badge rounded-[5px] px-2 py-1 text-[10px] ${
                 instance.loader === "forge"
                   ? "badge-warning text-amber-400"
                   : instance.loader === "fabric"
@@ -165,7 +165,7 @@ function InstancesPage({
           <Card as="span" variant="frost" className="page-card page-card-compact inline-flex rounded-full px-3 py-1.5 text-xs text-[var(--text-secondary)]" interactive={false}>
             {t("instances.count", { count: filteredInstances.length })}
           </Card>
-          <Button variant="primary" size="lg" className="gap-2 !rounded-2xl" onClick={onGoInstall}>
+          <Button variant="primary" size="lg" className="gap-2 !rounded-[10px]" onClick={onGoInstall}>
             <Plus size={16} />
             {t("instances.createInstall")}
           </Button>
@@ -187,9 +187,9 @@ function InstancesPage({
       {fpsMasterInstances.length > 0 && (
         <div className="mb-6">
           <div className="mb-3 flex items-center gap-2 px-1">
-            <Sparkles size={16} className="text-[var(--mc-grass)]" />
+            <Swords size={16} className="text-[var(--mc-grass)]" />
             <h2 className="text-sm font-semibold uppercase tracking-[0.16em] text-[var(--mc-grass)]">FPSMaster</h2>
-            <span className="badge badge-accent rounded-full px-2 py-1 text-xs normal-case tracking-normal">
+            <span className="badge badge-accent rounded-[5px] px-2 py-1 text-xs normal-case tracking-normal">
               {fpsMasterInstances.length}
             </span>
           </div>
@@ -207,7 +207,7 @@ function InstancesPage({
             <h2 className="text-sm font-semibold uppercase tracking-[0.16em] text-[var(--text-secondary)]">
               {t("nav.myGames")}
             </h2>
-            <span className="badge badge-muted rounded-full px-2 py-1 text-xs normal-case tracking-normal">
+            <span className="badge badge-muted rounded-[5px] px-2 py-1 text-xs normal-case tracking-normal">
               {regularInstances.length}
             </span>
           </div>

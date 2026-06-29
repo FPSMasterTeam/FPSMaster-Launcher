@@ -45,7 +45,7 @@ export default class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBo
         <button
           type="button"
           onClick={this.handleReload}
-          className="rounded-xl border border-[#25b87a]/50 bg-[var(--mc-grass)] px-5 py-2.5 text-sm font-medium text-white transition-colors hover:bg-[var(--mc-grass-dark)]"
+          className="rounded-[8px] border border-[#25b87a]/50 bg-[var(--mc-grass)] px-5 py-2.5 text-sm font-medium text-white transition-colors hover:bg-[var(--mc-grass-dark)]"
         >
           重新加载
         </button>

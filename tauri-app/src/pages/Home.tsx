@@ -10,7 +10,8 @@ import {
   Lock,
   Play,
   Search,
-  Sparkles,
+  Swords,
+  TrendingUp,
   X,
   Zap
 } from "lucide-react";
@@ -190,14 +191,13 @@ function HomePage({
             <h1 className="page-title">{t("home.loadout.ready")}</h1>
             {launcherOnlineSummary && (
               <div className="mt-3 flex flex-wrap items-center gap-2">
-                <span className="badge badge-accent gap-1.5 normal-case tracking-normal">
-                  <span className="home-online-dot" aria-hidden="true" />
+                <span className="badge badge-accent">
                   {t("home.online.launcher", { count: launcherOnlineSummary.launcher })}
                 </span>
-                <span className="badge badge-muted normal-case tracking-normal">
+                <span className="badge badge-muted">
                   {t("home.online.edge", { count: launcherOnlineSummary.edge })}
                 </span>
-                <span className="badge badge-muted normal-case tracking-normal">
+                <span className="badge badge-muted">
                   {t("home.online.nova", { count: launcherOnlineSummary.nova })}
                 </span>
               </div>
@@ -217,7 +217,7 @@ function HomePage({
 
         {launcherUpdate && launcherUpdateAvailable && (
           <section className="mb-5">
-            <Card variant="frost" className="page-card rounded-[22px]" interactive={false}>
+            <Card variant="frost" className="page-card rounded-[10px]" interactive={false}>
               <div className="notice notice-warning">
                 <AlertTriangle size={18} className="mt-0.5 shrink-0 text-amber-300" />
                 <div className="min-w-0 flex-1">
@@ -260,7 +260,7 @@ function HomePage({
         )}
 
         <section className="mb-5">
-          <Card variant="frost" className="page-card page-card-roomy rounded-[22px]" interactive={false}>
+          <Card variant="frost" className="page-card page-card-roomy rounded-[10px]" interactive={false}>
             <div className="section-header !mb-5">
               <div className="section-header-main">
                 <h2 className="section-title">{t("home.selectedInstance")}</h2>
@@ -275,7 +275,7 @@ function HomePage({
             </div>
 
             <div className="home-loadout">
-              <div className="icon-tile relative h-16 w-16 rounded-[18px]">
+              <div className="icon-tile relative h-16 w-16 rounded-[8px]">
                 {selectedInstanceIcon ? (
                   <img
                     src={selectedInstanceIcon}
@@ -377,7 +377,7 @@ function HomePage({
             </div>
             <div className="metric-tile">
               <p className="metric-label">
-                <Sparkles size={13} />
+                <TrendingUp size={13} />
                 <span>{t("home.stats.level")}</span>
               </p>
               <div className="mt-2.5 flex items-center justify-between gap-3">
@@ -396,7 +396,7 @@ function HomePage({
         )}
 
         <section>
-          <Card variant="frost" className="page-card page-card-roomy rounded-[22px]" interactive={false}>
+          <Card variant="frost" className="page-card page-card-roomy rounded-[10px]" interactive={false}>
             <div className="section-header">
               <div className="section-header-main">
                 <h2 className="section-title flex items-center gap-2">
@@ -453,10 +453,10 @@ function HomePage({
         </section>
       </div>
 
-      <footer className="sticky-footer-bar px-4 py-2.5 md:px-5 xl:px-6">
+      <footer className="sticky-footer-bar px-5 py-2.5 xl:px-8">
         <div className="grid gap-2.5 md:grid-cols-[minmax(0,1fr)_minmax(220px,260px)] md:items-stretch md:gap-3">
           <button
-            className="surface-list-item group min-h-[48px] w-full rounded-[14px] text-left !gap-2.5 !px-3 !py-2"
+            className="surface-list-item group min-h-[48px] w-full rounded-[8px] text-left !gap-2.5 !px-3 !py-2"
             onClick={() => setPickerOpen(true)}
             type="button"
           >
@@ -488,7 +488,7 @@ function HomePage({
           <Button
             variant="primary"
             size="md"
-            className="min-h-[48px] w-full justify-center !rounded-[14px]"
+            className="min-h-[48px] w-full justify-center !rounded-[8px]"
             disabled={busy || !selectedInstance || !canAccessInstance(selectedInstance, user)}
             launchProgress={launching}
             launchProgressPercent={launchProgressPercent}
@@ -552,7 +552,7 @@ function HomePage({
                   {presetInstances.length > 0 && (
                     <div>
                       <div className="mb-3 flex items-center gap-2 px-1">
-                        <Sparkles size={16} className="text-[var(--mc-grass)]" />
+                        <Swords size={16} className="text-[var(--mc-grass)]" />
                         <h4 className="text-sm font-semibold uppercase tracking-[0.16em] text-[var(--mc-grass)]">FPSMaster</h4>
                         <span className="badge badge-accent normal-case tracking-normal">{presetInstances.length}</span>
                       </div>
@@ -650,7 +650,7 @@ function HomePage({
               </div>
 
               <div className="modal-body">
-                <div className="surface-panel surface-panel-soft rounded-[20px] p-4">
+                <div className="surface-panel surface-panel-soft rounded-[10px] p-4">
                   <p className="text-sm leading-7 whitespace-pre-wrap text-[var(--text-secondary)]">
                     {activeNewsContent || t("home.news.dialogEmpty")}
                   </p>
@@ -710,7 +710,7 @@ function InstanceSelectRow({
       disabled={!selectable}
       className={`surface-list-item w-full text-left ${active ? "is-active" : ""} ${!selectable ? "cursor-not-allowed opacity-50" : ""}`}
     >
-      <div className={`icon-tile relative ${compact ? "h-10 w-10 rounded-[14px]" : ""}`}>
+      <div className={`icon-tile relative ${compact ? "h-10 w-10 rounded-[8px]" : ""}`}>
         {icon ? <img src={icon} alt={instance.name} className="h-full w-full object-cover" /> : null}
         {!selectable && (
           <div className="absolute inset-0 flex items-center justify-center bg-black/50">

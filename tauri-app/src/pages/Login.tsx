@@ -70,13 +70,13 @@ function LoginPage({ loading, initialPrefs, statusText, onSubmit }: LoginPagePro
       <Card
         as="section"
         variant="strong"
-        className="login-card relative grid w-full max-w-[940px] overflow-hidden rounded-[28px] border border-white/10 shadow-[0_24px_60px_rgba(4,8,14,0.42)] lg:grid-cols-[1.05fr_1fr]"
+        className="login-card relative grid w-full max-w-[940px] overflow-hidden rounded-[10px] border border-white/10 shadow-[0_24px_60px_rgba(4,8,14,0.42)] lg:grid-cols-[1.05fr_1fr]"
         interactive={false}
       >
         {/* Left: feature carousel */}
         <aside className="login-aside relative hidden flex-col justify-between overflow-hidden p-9 lg:flex">
           <div className="relative flex items-center gap-3">
-            <AppLogo size={40} className="rounded-xl border border-white/10 shadow-[0_8px_24px_rgba(37,184,122,0.28)]" />
+            <AppLogo size={40} className="rounded-[8px] border border-white/10 shadow-[0_8px_24px_rgba(37,184,122,0.28)]" />
             <div className="leading-tight">
               <p className="text-sm font-semibold tracking-wide text-white">FPSMaster</p>
               <p className="text-xs text-white/55">{t("login.brand.tagline")}</p>
@@ -123,7 +123,7 @@ function LoginPage({ loading, initialPrefs, statusText, onSubmit }: LoginPagePro
         <div className="login-form relative flex flex-col justify-center p-8 sm:p-10">
           <header className="mb-7">
             <div className="mb-4 flex items-center gap-3 lg:hidden">
-              <AppLogo size={44} className="rounded-2xl border border-white/10 shadow-[0_10px_30px_rgba(37,184,122,0.22)]" />
+              <AppLogo size={44} className="rounded-[10px] border border-white/10 shadow-[0_10px_30px_rgba(37,184,122,0.22)]" />
               <p className="page-eyebrow !m-0">FPSMaster</p>
             </div>
             <p className="page-eyebrow hidden lg:block">FPSMaster</p>
@@ -206,7 +206,7 @@ function LoginPage({ loading, initialPrefs, statusText, onSubmit }: LoginPagePro
               </div>
             ) : null}
 
-            <Button type="submit" variant="primary" size="lg" className="w-full justify-center gap-2 !rounded-2xl" disabled={loading}>
+            <Button type="submit" variant="primary" size="lg" className="w-full justify-center gap-2 !rounded-[10px]" disabled={loading}>
               <LogIn size={16} />
               {loading ? t("login.loggingIn") : t("login.login")}
             </Button>

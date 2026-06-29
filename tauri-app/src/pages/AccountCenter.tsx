@@ -1,5 +1,5 @@
 import { memo } from "react";
-import { Award, BarChart3, Calendar, ChevronRight, Clock, Crown, CreditCard, ShieldCheck, Sparkles, Trophy, User } from "lucide-react";
+import { Award, BarChart3, Calendar, ChevronRight, Clock, Crown, CreditCard, ShieldCheck, Trophy, User } from "lucide-react";
 import Card from "../components/Card";
 import { useI18n } from "../i18n";
 import type { LauncherDashboard } from "../types";
@@ -42,12 +42,12 @@ function AccountCenterPage({ launcherDashboard }: AccountCenterPageProps) {
 
       <div className="page-grid page-grid-two">
         {/* Main Profile Card */}
-        <Card variant="frost" className="page-card overflow-hidden rounded-[22px] md:p-6" interactive={false}>
+        <Card variant="frost" className="page-card overflow-hidden rounded-[10px] md:p-6" interactive={false}>
           {/* Profile Header with Avatar */}
           <div className="flex items-start gap-4">
             {/* Enhanced Avatar */}
             <div className="relative">
-              <div className="relative flex h-20 w-20 shrink-0 items-center justify-center overflow-hidden rounded-2xl border border-white/5 bg-[var(--bg-elevated)] shadow-lg">
+              <div className="relative flex h-20 w-20 shrink-0 items-center justify-center overflow-hidden rounded-[10px] border border-white/8 bg-[var(--bg-elevated)]">
                 {/* Avatar image or fallback */}
                 {profileUser?.avatarUrl ? (
                   <img src={profileUser.avatarUrl} alt={profileUser.username ?? "avatar"} className="h-full w-full object-cover" />
@@ -58,12 +58,12 @@ function AccountCenterPage({ launcherDashboard }: AccountCenterPageProps) {
                 )}
 
                 {/* Status indicator */}
-                <div className="absolute bottom-1 right-1 h-3 w-3 rounded-full border-2 border-[var(--bg-elevated)] bg-[var(--mc-grass)] shadow-sm" />
+                <div className="absolute bottom-1 right-1 h-3 w-3 rounded-full border-2 border-[var(--bg-elevated)] bg-[var(--mc-grass)]" />
               </div>
 
               {/* Level Badge */}
               <div className="absolute -bottom-2 -right-2">
-                <div className="flex items-center justify-center rounded-full bg-gradient-to-br from-[var(--mc-grass)] to-emerald-600 p-1.5 shadow-lg ring-2 ring-[var(--bg-elevated)]">
+                <div className="flex items-center justify-center rounded-full bg-[var(--mc-grass)] p-1.5 ring-2 ring-[var(--bg-elevated)]">
                   <Trophy size={12} className="text-white" />
                 </div>
               </div>
@@ -76,7 +76,7 @@ function AccountCenterPage({ launcherDashboard }: AccountCenterPageProps) {
                   {profileUser?.username ?? t("nav.player")}
                 </h2>
                 {isAdmin && (
-                  <div className="badge badge-warning gap-1 rounded-full px-2 py-1">
+                  <div className="badge badge-warning gap-1 rounded-[5px] px-2 py-1">
                     <Crown size={12} className="text-amber-400" />
                     <span className="text-[10px] font-semibold text-amber-400">ADMIN</span>
                   </div>
@@ -89,19 +89,18 @@ function AccountCenterPage({ launcherDashboard }: AccountCenterPageProps) {
 
               {/* User Level Display - No "Level" label */}
               <div className="mt-3 flex items-center gap-3">
-                <div className="badge badge-accent gap-1.5 rounded-full px-3 py-1.5 normal-case tracking-normal">
-                  <Sparkles size={11} className="text-[var(--mc-grass)]" />
-                  <span className="text-sm font-bold text-[var(--mc-grass)]">{userLevel}</span>
+                <div className="badge badge-accent gap-1.5 rounded-[5px] px-3 py-1.5 normal-case tracking-normal">
+                  <span className="text-data text-sm font-bold text-[var(--mc-grass)]">{userLevel}</span>
                 </div>
 
                 {/* Role Badge - Only show for non-admin users */}
                 {!isAdmin && !isSponsor && (
-                  <div className="badge badge-muted rounded-full px-3 py-1 normal-case tracking-normal text-xs">
+                  <div className="badge badge-muted rounded-[5px] px-3 py-1 normal-case tracking-normal text-xs">
                     普通会员
                   </div>
                 )}
                 {isSponsor && (
-                  <div className="badge badge-accent rounded-full px-3 py-1 normal-case tracking-normal text-xs">
+                  <div className="badge badge-accent rounded-[5px] px-3 py-1 normal-case tracking-normal text-xs">
                     Pro会员
                   </div>
                 )}
@@ -119,13 +118,13 @@ function AccountCenterPage({ launcherDashboard }: AccountCenterPageProps) {
         </Card>
 
         {/* Activity Card */}
-        <Card variant="frost" className="page-card overflow-hidden rounded-[22px] md:p-6" interactive={false}>
+        <Card variant="frost" className="page-card overflow-hidden rounded-[10px] md:p-6" interactive={false}>
           <div className="flex items-center justify-between gap-2">
             <h2 className="flex items-center gap-2 text-lg font-semibold text-[var(--text-primary)]">
               <Clock size={18} className="text-[var(--mc-grass)]" />
               {t("account.activity")}
             </h2>
-            <span className="badge badge-muted rounded-full px-3 py-1 text-[11px] normal-case tracking-normal">
+            <span className="badge badge-muted rounded-[5px] px-3 py-1 text-[11px] normal-case tracking-normal">
               {t("account.totalHours", { hours: profileStats?.totalPlayHours ?? 0 })}
             </span>
           </div>
@@ -136,7 +135,7 @@ function AccountCenterPage({ launcherDashboard }: AccountCenterPageProps) {
 
           {/* Weekly Playtime Visual */}
           {playtimeChart.length > 0 ? (
-            <div className="surface-panel surface-panel-soft mt-4 rounded-[18px] p-4">
+            <div className="surface-panel surface-panel-soft mt-4 rounded-[8px] p-4">
               <div className="mb-2 flex items-center justify-between">
                 <span className="text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)]">{t("account.weeklyActivity")}</span>
                 <Calendar size={14} className="text-[var(--text-muted)]" />
@@ -153,10 +152,10 @@ function AccountCenterPage({ launcherDashboard }: AccountCenterPageProps) {
                       title={`${day.date}: ${day.playHours.toFixed(1)}h`}
                     >
                       <div
-                        className={`w-full rounded-t-sm transition-all duration-200 ${
+                        className={`w-full rounded-t-[2px] transition-all duration-200 ${
                           isToday
-                            ? "bg-gradient-to-t from-[var(--mc-grass)] to-emerald-400"
-                            : "bg-[var(--mc-grass)]/40 hover:bg-[var(--mc-grass)]/60"
+                            ? "bg-[var(--mc-grass)]"
+                            : "bg-[var(--mc-grass)]/35 hover:bg-[var(--mc-grass)]/55"
                         }`}
                         style={{ height: `${Math.max(height, 5)}%` }}
                       />

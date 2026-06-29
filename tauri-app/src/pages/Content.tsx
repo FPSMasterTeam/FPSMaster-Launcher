@@ -1,6 +1,6 @@
 import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
-import { Archive, Box, Download, File, Globe, HardDriveDownload, PackageCheck, Palette, Search, Sparkles, Trash2, X } from "lucide-react";
+import { Archive, Box, Download, File, Globe, HardDriveDownload, PackageCheck, PackageOpen, Palette, Search, Trash2, X } from "lucide-react";
 import { memo, type ChangeEvent, useEffect, useMemo, useRef, useState } from "react";
 import Button from "../components/Button";
 import Card from "../components/Card";
@@ -438,7 +438,7 @@ function ContentPage({
 
       <section className="content-layout">
         <aside className="content-sidebar">
-          <Card variant="frost" className="page-card rounded-[22px]" interactive={false}>
+          <Card variant="frost" className="page-card rounded-[10px]" interactive={false}>
             <div className="content-nav-group">
               <p className="content-nav-label">{t("content.downloadResources")}</p>
               <div className="content-primary-tabs content-primary-tabs-vertical">
@@ -527,7 +527,7 @@ function ContentPage({
         </aside>
 
         <div className="content-main">
-          <Card variant="frost" className="page-card page-card-compact mb-4 rounded-[22px]" interactive={false}>
+          <Card variant="frost" className="page-card page-card-compact mb-4 rounded-[10px]" interactive={false}>
             <div className="content-topbar-card">
               <div className="content-topbar-instance">
                 <Select value={currentInstance?.id ?? ""} onValueChange={onSelectInstance}>
@@ -593,7 +593,7 @@ function ContentPage({
           {(worldImportMode || filteredUpdatableItems.length > 0) && (
             <div className="mb-5 flex flex-wrap justify-end gap-2">
               {worldImportMode && (
-                <Button variant="primary" size="md" className="!rounded-2xl gap-2" disabled={busy || importingWorld || !currentInstance} onClick={() => worldFileInputRef.current?.click()}>
+                <Button variant="primary" size="md" className="!rounded-[10px] gap-2" disabled={busy || importingWorld || !currentInstance} onClick={() => worldFileInputRef.current?.click()}>
                   <Download size={16} />
                   {importingWorld ? t("content.importingWorld") : t("content.selectZipFile")}
                 </Button>
@@ -603,7 +603,7 @@ function ContentPage({
                 <Button
                   variant="secondary"
                   size="sm"
-                  className="!rounded-2xl gap-2 border-amber-500/25 bg-amber-500/8 text-amber-200 hover:bg-amber-500/12"
+                  className="!rounded-[10px] gap-2 border-amber-500/25 bg-amber-500/8 text-amber-200 hover:bg-amber-500/12"
                   disabled={busy || batchUpdating || checkingUpdates}
                   onClick={() => void updateAllProjects()}
                 >
@@ -627,7 +627,7 @@ function ContentPage({
           {rightTab === "search" ? (
             !hasSearched || loading ? (
               <div className="empty-state">
-                <Sparkles size={40} className="empty-state-icon" />
+                <PackageOpen size={40} className="empty-state-icon" />
                 <p className="empty-state-title">{loading && !query.trim() ? t("content.loadingTrending") : t("content.searchResults")}</p>
                 <p className="empty-state-text">{loading && !query.trim() ? t("content.loadingTrending") : t("content.searchHint")}</p>
               </div>
@@ -647,9 +647,9 @@ function ContentPage({
                   const actionBusy = busy || installingProjectId === itemKey;
                   const installProgress = contentInstallProgress?.projectKey === itemKey ? contentInstallProgress : null;
                   return (
-                    <Card key={itemKey} variant="frost" className={`page-card page-card-compact rounded-[20px] ${isInstalled ? "border-[rgba(var(--accent-rgb),0.28)]" : ""}`} interactive={false}>
+                    <Card key={itemKey} variant="frost" className={`page-card page-card-compact rounded-[10px] ${isInstalled ? "border-[rgba(var(--accent-rgb),0.28)]" : ""}`} interactive={false}>
                       <div className="flex gap-4">
-                        <div className="icon-tile h-14 w-14 rounded-[18px]">
+                        <div className="icon-tile h-14 w-14 rounded-[8px]">
                           {item.iconUrl ? <img src={item.iconUrl} alt={item.title} className="h-full w-full object-cover" /> : <Archive size={18} />}
                         </div>
                         <div className="min-w-0 flex-1">
@@ -668,7 +668,7 @@ function ContentPage({
                           <Button
                             variant={isInstalled && !canUpdate ? "outline" : "primary"}
                             size="sm"
-                            className="content-download-button !rounded-2xl gap-2"
+                            className="content-download-button !rounded-[10px] gap-2"
                             disabled={actionBusy}
                             launchProgress={Boolean(installProgress)}
                             launchProgressPercent={installProgress?.percent ?? null}
@@ -717,7 +717,7 @@ function ContentPage({
                         <Button
                           variant="secondary"
                           size="sm"
-                          className="content-download-button !rounded-2xl gap-2"
+                          className="content-download-button !rounded-[10px] gap-2"
                           disabled={isItemBusy}
                           launchProgress={Boolean(installProgress)}
                           launchProgressPercent={installProgress?.percent ?? null}

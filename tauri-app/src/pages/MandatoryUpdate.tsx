@@ -23,10 +23,10 @@ function MandatoryUpdatePage({
   return (
     <div className="page-shell page-shell-centered">
       <div className="w-full max-w-3xl">
-        <Card variant="strong" className="page-card page-card-roomy rounded-[28px] border border-amber-500/25 bg-amber-500/8 md:p-10" interactive={false}>
+        <Card variant="strong" className="page-card page-card-roomy rounded-[10px] border border-amber-500/25 bg-amber-500/8 md:p-10" interactive={false}>
           <div className="flex flex-col gap-6 md:flex-row md:items-start md:justify-between">
             <div className="min-w-0">
-              <div className="badge badge-warning gap-2 rounded-full px-3 py-1 text-[11px]">
+              <div className="badge badge-warning gap-2 rounded-[5px] px-3 py-1 text-[11px]">
                 <ShieldAlert size={14} />
                 {t("mandatoryUpdate.badge")}
               </div>
@@ -38,7 +38,7 @@ function MandatoryUpdatePage({
               </p>
             </div>
 
-            <div className="surface-panel rounded-[20px] border-amber-400/20 bg-[var(--bg-secondary)]/75 px-4 py-3 text-sm text-[var(--text-secondary)]">
+            <div className="surface-panel rounded-[10px] border-amber-400/20 bg-[var(--bg-secondary)]/75 px-4 py-3 text-sm text-[var(--text-secondary)]">
               <div className="field-label !mb-0">
                 {t("mandatoryUpdate.summaryLabel")}
               </div>
@@ -52,7 +52,7 @@ function MandatoryUpdatePage({
           </div>
 
           <div className="mt-8 grid gap-4 md:grid-cols-2">
-            <Card variant="soft" className="page-card rounded-[20px] p-5" interactive={false}>
+            <Card variant="soft" className="page-card rounded-[10px] p-5" interactive={false}>
               <div className="flex items-center gap-2 text-sm font-semibold text-[var(--text-primary)]">
                 <AlertTriangle size={16} className="text-amber-300" />
                 {t("mandatoryUpdate.blockedTitle")}
@@ -62,7 +62,7 @@ function MandatoryUpdatePage({
               </p>
             </Card>
 
-            <Card variant="soft" className="page-card rounded-[20px] p-5" interactive={false}>
+            <Card variant="soft" className="page-card rounded-[10px] p-5" interactive={false}>
               <div className="text-sm font-semibold text-[var(--text-primary)]">
                 {t("mandatoryUpdate.nextTitle")}
               </div>
@@ -81,7 +81,7 @@ function MandatoryUpdatePage({
             <Button
               variant="primary"
               size="lg"
-              className="gap-2 !rounded-2xl"
+              className="gap-2 !rounded-[10px]"
               onClick={onInstallLauncherUpdate}
               disabled={!launcherUpdate || launcherUpdateDownloading}
             >

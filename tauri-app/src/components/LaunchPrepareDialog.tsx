@@ -25,7 +25,7 @@ export default function LaunchPrepareDialog({ dialog, onClose }: LaunchPrepareDi
 
   return (
     <section className="modalOverlay">
-      <Card variant="strong" className="w-full max-w-[560px] rounded-3xl p-5 md:p-6" interactive={false}>
+      <Card variant="strong" className="w-full max-w-[560px] rounded-[10px] p-5 md:p-6" interactive={false}>
         <div className="panelHead">
           <div>
             <h2>{t("launch.prepare.title", { name: dialog.instanceName })}</h2>
