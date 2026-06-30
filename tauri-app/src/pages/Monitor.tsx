@@ -1,33 +1,37 @@
 import { invoke } from "@tauri-apps/api/core";
-import { getCurrentWindow } from "@tauri-apps/api/window";
-import { memo, startTransition, useEffect, useRef, useState } from "react";
+import { ArrowLeft, Power, Trash2 } from "lucide-react";
+import { memo, startTransition, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import Card from "../components/Card";
-import TitleBar from "../components/TitleBar";
 import { useI18n } from "../i18n";
 import type { GameRuntimeStats, UiLogPollResult } from "../types";
-import { formatDuration, parseIntSafe, prefix } from "../utils/launcher";
+import { formatDuration, prefix } from "../utils/launcher";
 
+// The monitor renders as a view inside the main window (not a separate webview window),
+// so it takes plain props and a close callback instead of URL params + window controls.
 type MonitorPageProps = {
-  params: URLSearchParams;
+  pid: number;
+  version: string;
+  initialCursor: number;
+  startedAt: number;
+  onClose: () => void;
 };
 
-const MONITOR_LOG_POLL_INTERVAL_MS = 800;
-const MONITOR_RUNTIME_POLL_INTERVAL_MS = 1000;
+const MONITOR_LOG_POLL_INTERVAL_MS = 1000;
+const MONITOR_RUNTIME_POLL_INTERVAL_MS = 2000;
 const MONITOR_UPTIME_TICK_INTERVAL_MS = 1000;
 const MONITOR_LOG_FLUSH_INTERVAL_MS = 300;
-const MONITOR_LOG_LINE_LIMIT = 1200;
+const MONITOR_LOG_LINE_LIMIT = 1000;
+const MONITOR_LOG_LINE_HEIGHT = 18;
+const MONITOR_LOG_OVERSCAN = 12;
 
-function MonitorPage({ params }: MonitorPageProps) {
+function MonitorPage({ pid, version, initialCursor, startedAt, onClose }: MonitorPageProps) {
   const { t } = useI18n();
-  const pid = parseIntSafe(params.get("pid"), 0);
-  const monitorStartedAt = useRef(parseIntSafe(params.get("startedAt"), Date.now())).current;
-  const initialCursor = parseIntSafe(params.get("cursor"), 0);
-  const version = params.get("version") ?? "unknown";
+  const monitorStartedAt = useRef(startedAt).current;
 
   const [logLines, setLogLines] = useState<string[]>([]);
   const [stats, setStats] = useState<GameRuntimeStats | null>(null);
   const [status, setStatus] = useState(t("monitor.connecting"));
-  const [tick, setTick] = useState(Date.now());
+  const [tick, setTick] = useState(startedAt);
   const [exitedAt, setExitedAt] = useState<number | null>(null);
   const [confirmAction, setConfirmAction] = useState<"stop" | null>(null);
   const [stopping, setStopping] = useState(false);
@@ -38,7 +42,10 @@ function MonitorPage({ params }: MonitorPageProps) {
   const logLinesRef = useRef<string[]>([]);
   const pendingLogLinesRef = useRef<string[]>([]);
   const flushLogsScheduledRef = useRef<number | null>(null);
-  const logViewportRef = useRef<HTMLDivElement | null>(null);
+  const logsTimerRef = useRef<number | null>(null);
+  const runtimeTimerRef = useRef<number | null>(null);
+  const tickTimerRef = useRef<number | null>(null);
+  const winddownRef = useRef(false);
 
   useEffect(() => {
     return () => {
@@ -87,6 +94,32 @@ function MonitorPage({ params }: MonitorPageProps) {
       }
     };
 
+    // Once the game process has exited there is nothing more to sample. Keeping the
+    // 1s runtime/uptime polls and the 800ms log rescan running forever pegs the
+    // renderer and makes the window unresponsive (buttons, close). Stop the live
+    // updates after one final log catch-up so the window goes genuinely idle.
+    const windDown = () => {
+      if (winddownRef.current) return;
+      winddownRef.current = true;
+      if (runtimeTimerRef.current !== null) {
+        window.clearInterval(runtimeTimerRef.current);
+        runtimeTimerRef.current = null;
+      }
+      if (tickTimerRef.current !== null) {
+        window.clearInterval(tickTimerRef.current);
+        tickTimerRef.current = null;
+      }
+      // Catch any final lines, then stop log polling too.
+      void pollLogs();
+      window.setTimeout(() => {
+        void pollLogs();
+        if (logsTimerRef.current !== null) {
+          window.clearInterval(logsTimerRef.current);
+          logsTimerRef.current = null;
+        }
+      }, 1500);
+    };
+
     const pollRuntime = async () => {
       if (!active || runtimePollingRef.current) return;
       if (pid <= 0) {
@@ -107,6 +140,9 @@ function MonitorPage({ params }: MonitorPageProps) {
           setExitedAt((previous) => previous ?? Date.now());
         }
         setStatus(out.running ? t("monitor.processRunning") : t("monitor.processExited"));
+        if (!out.running) {
+          windDown();
+        }
       } catch (error) {
         if (!active) return;
         setStatus(t("monitor.runtimePollingFailed", { error: String(error) }));
@@ -117,11 +153,11 @@ function MonitorPage({ params }: MonitorPageProps) {
 
     void pollLogs();
     void pollRuntime();
-    const logsTimer = window.setInterval(() => void pollLogs(), MONITOR_LOG_POLL_INTERVAL_MS);
-    const runtimeTimer = window.setInterval(() => {
+    logsTimerRef.current = window.setInterval(() => void pollLogs(), MONITOR_LOG_POLL_INTERVAL_MS);
+    runtimeTimerRef.current = window.setInterval(() => {
       void pollRuntime();
     }, MONITOR_RUNTIME_POLL_INTERVAL_MS);
-    const tickTimer = window.setInterval(() => {
+    tickTimerRef.current = window.setInterval(() => {
       setTick(Date.now());
     }, MONITOR_UPTIME_TICK_INTERVAL_MS);
 
@@ -131,36 +167,26 @@ function MonitorPage({ params }: MonitorPageProps) {
         window.clearTimeout(flushLogsScheduledRef.current);
         flushLogsScheduledRef.current = null;
       }
-      window.clearInterval(logsTimer);
-      window.clearInterval(runtimeTimer);
-      window.clearInterval(tickTimer);
+      if (logsTimerRef.current !== null) {
+        window.clearInterval(logsTimerRef.current);
+        logsTimerRef.current = null;
+      }
+      if (runtimeTimerRef.current !== null) {
+        window.clearInterval(runtimeTimerRef.current);
+        runtimeTimerRef.current = null;
+      }
+      if (tickTimerRef.current !== null) {
+        window.clearInterval(tickTimerRef.current);
+        tickTimerRef.current = null;
+      }
     };
   }, [pid, t]);
-
-  useEffect(() => {
-    const viewport = logViewportRef.current;
-    if (!viewport) return;
-    viewport.scrollTop = viewport.scrollHeight;
-  }, [logLines]);
 
   const uptimeMs = Math.max(0, (exitedAt ?? tick) - monitorStartedAt);
   const uptime = formatDuration(uptimeMs);
   const memory = stats?.memoryMb === null || stats?.memoryMb === undefined ? "N/A" : `${stats.memoryMb} MB`;
   const runtimeStateLabel = stats?.running === false ? t("monitor.exited") : t("monitor.running");
   const pidLabel = pid > 0 ? pid : "N/A";
-
-  async function backToLauncher() {
-    await invoke("show_main_window");
-    await closeMonitorWindow();
-  }
-
-  async function closeMonitorWindow() {
-    try {
-      await invoke("destroy_current_window");
-    } catch {
-      await getCurrentWindow().destroy();
-    }
-  }
 
   async function stopGame(): Promise<boolean> {
     if (pid <= 0) {
@@ -190,11 +216,7 @@ function MonitorPage({ params }: MonitorPageProps) {
   }
 
   return (
-    <div className="appWindow monitorWindow">
-      <div>
-        <TitleBar title={version} onClose={closeMonitorWindow} />
-      </div>
-
+    <div className="monitorEmbeddedRoot">
       <main className="monitorWorkspace monitorWorkspaceCompact">
         <Card as="section" variant="soft" className="monitorHeroCard monitorHeroCardCompact monitorPlainCard page-card rounded-[10px]" interactive={false}>
           <div className="monitorHeroHeader monitorHeroHeaderCompact">
@@ -204,7 +226,9 @@ function MonitorPage({ params }: MonitorPageProps) {
             </div>
             <div className="monitorActionRow">
               <button
-                className="icon-button monitorUtilityButton !w-auto px-3"
+                className="monitorIconBtn"
+                title={t("monitor.clearLogs")}
+                aria-label={t("monitor.clearLogs")}
                 onClick={() => {
                   logLinesRef.current = [];
                   pendingLogLinesRef.current = [];
@@ -212,25 +236,27 @@ function MonitorPage({ params }: MonitorPageProps) {
                 }}
                 type="button"
               >
-                {t("monitor.clearLogs")}
+                <Trash2 size={16} aria-hidden="true" />
               </button>
               <button
-                className="icon-button monitorUtilityButton !w-auto px-3"
-                onClick={() => {
-                  void backToLauncher();
-                }}
+                className="monitorIconBtn"
+                title={t("monitor.backLauncher")}
+                aria-label={t("monitor.backLauncher")}
+                onClick={onClose}
                 disabled={stopping}
                 type="button"
               >
-                {t("monitor.backLauncher")}
+                <ArrowLeft size={16} aria-hidden="true" />
               </button>
               <button
-                className="icon-button icon-button-danger monitorUtilityButton !w-auto px-3"
+                className="monitorIconBtn monitorIconBtn-danger"
+                title={t("monitor.endGame")}
+                aria-label={t("monitor.endGame")}
                 onClick={() => setConfirmAction("stop")}
                 disabled={stopping || !(stats?.running ?? true)}
                 type="button"
               >
-                {t("monitor.endGame")}
+                <Power size={16} aria-hidden="true" />
               </button>
             </div>
           </div>
@@ -247,15 +273,7 @@ function MonitorPage({ params }: MonitorPageProps) {
           <div className="monitorConsoleHead monitorConsoleHeadCompact">
             <h2 className="monitorConsoleTitle">{t("monitor.consoleOutput")}</h2>
           </div>
-          <div ref={logViewportRef} className="logBox monitorConsoleBody monitorConsoleBodyExpanded">
-            <div className="monitorLogList">
-              {logLines.map((line, index) => (
-                <div key={`${index}-${line.slice(0, 32)}`} className="monitorLogLine">
-                  {line}
-                </div>
-              ))}
-            </div>
-          </div>
+          <LogConsole lines={logLines} />
         </Card>
       </main>
 
@@ -284,6 +302,68 @@ function MonitorPage({ params }: MonitorPageProps) {
     </div>
   );
 }
+
+// Virtualized console: renders only the lines in (and just around) the viewport, so the
+// DOM and its GPU layer stay tiny regardless of how many lines or how long they are.
+// A non-virtualized log grows into a huge wide/tall layer that the compositor keeps
+// re-managing — costly even when the window is idle and nothing is changing.
+const LogConsole = memo(function LogConsole({ lines }: { lines: string[] }) {
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+  const pinnedRef = useRef(true);
+  const [scrollTop, setScrollTop] = useState(0);
+  const [viewportHeight, setViewportHeight] = useState(360);
+
+  const onScroll = useCallback(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    pinnedRef.current = el.scrollHeight - el.scrollTop - el.clientHeight <= MONITOR_LOG_LINE_HEIGHT * 2;
+    setScrollTop(el.scrollTop);
+  }, []);
+
+  useLayoutEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    setViewportHeight(el.clientHeight);
+    const observer = new ResizeObserver(() => setViewportHeight(el.clientHeight));
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
+
+  // Keep following the tail when the user is pinned to the bottom.
+  useLayoutEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    if (pinnedRef.current) {
+      el.scrollTop = el.scrollHeight;
+      setScrollTop(el.scrollTop);
+    }
+  }, [lines]);
+
+  const total = lines.length;
+  const totalHeight = total * MONITOR_LOG_LINE_HEIGHT;
+  const start = Math.max(0, Math.floor(scrollTop / MONITOR_LOG_LINE_HEIGHT) - MONITOR_LOG_OVERSCAN);
+  const visibleCount = Math.ceil(viewportHeight / MONITOR_LOG_LINE_HEIGHT) + MONITOR_LOG_OVERSCAN * 2;
+  const end = Math.min(total, start + visibleCount);
+  const visible = lines.slice(start, end);
+
+  return (
+    <div
+      ref={scrollRef}
+      className="logBox monitorConsoleBody monitorConsoleBodyExpanded monitorLogScroll"
+      onScroll={onScroll}
+    >
+      <div style={{ height: totalHeight, position: "relative" }}>
+        <div style={{ position: "absolute", top: start * MONITOR_LOG_LINE_HEIGHT, left: 0, right: 0 }}>
+          {visible.map((line, index) => (
+            <div key={start + index} className="monitorLogRow">
+              {line}
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+});
 
 function appendMonitorLogLines(current: string[], incoming: string[]): string[] {
   if (incoming.length === 0) {

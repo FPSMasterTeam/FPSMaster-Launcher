@@ -85,7 +85,6 @@ function HomePage({
   busy,
   launching,
   launchProgressPercent,
-  launchProgressText,
   user,
   minecraftAccounts,
   currentMinecraftAccount,
@@ -494,18 +493,11 @@ function HomePage({
             launchProgressPercent={launchProgressPercent}
             onClick={onLaunch}
           >
-            <span className="flex w-full flex-col items-center justify-center text-center leading-tight">
-              <span className="flex items-center justify-center gap-2">
-                <Play fill="currentColor" size={15} />
-                {launching
-                  ? `${t("home.launching")}${typeof launchProgressPercent === "number" ? ` ${launchProgressPercent}%` : ""}`
-                  : t("home.launch")}
-              </span>
-              {launching && (
-                <span className="mt-0.5 text-[10px] font-medium text-white/85">
-                  {launchProgressText || t("launch.progress.preparing")}
-                </span>
-              )}
+            <span className="flex items-center justify-center gap-2">
+              <Play fill="currentColor" size={15} />
+              {launching
+                ? `${t("home.launching")}${typeof launchProgressPercent === "number" ? ` ${launchProgressPercent}%` : ""}`
+                : t("home.launch")}
             </span>
           </Button>
         </div>
