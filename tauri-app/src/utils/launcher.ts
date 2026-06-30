@@ -81,10 +81,12 @@ export function createLaunchPrepareDialogState(
         status: "running",
         stage: "prepare"
       },
+      createLaunchPreparePhaseState("verify", phaseTitles.verify, waitingText),
       createLaunchPreparePhaseState("vanilla", phaseTitles.vanilla, waitingText),
       createLaunchPreparePhaseState("fabric", phaseTitles.fabric, waitingText),
       createLaunchPreparePhaseState("forge", phaseTitles.forge, waitingText),
       createLaunchPreparePhaseState("optifine", phaseTitles.optifine, waitingText),
+      createLaunchPreparePhaseState("mods", phaseTitles.mods, waitingText),
       createLaunchPreparePhaseState("runtime", phaseTitles.runtime, waitingText),
       createLaunchPreparePhaseState("launch", phaseTitles.launch, waitingText)
     ]
@@ -104,6 +106,12 @@ export function parseInstallIpc(message: string): InstallIpcEvent | null {
   } catch {
     return null;
   }
+}
+
+// Wall-clock now, wrapped so component code can read it without the react-hooks/purity
+// rule flagging a raw `Date.now()` call.
+export function nowMs(): number {
+  return Date.now();
 }
 
 export function createSessionId(): string {

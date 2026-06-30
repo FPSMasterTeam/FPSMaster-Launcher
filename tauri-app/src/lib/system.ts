@@ -1,8 +1,25 @@
 // Thin wrappers over Tauri system commands + small timing helper.
 // Extracted from App.tsx.
 import { invoke } from "@tauri-apps/api/core";
-import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
+import { getAllWebviewWindows, WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import type { JdkEnsureResult, Locale } from "../types";
+
+const MONITOR_LABEL_PREFIX = "runtime-monitor-";
+
+// Each launch spawns a fresh monitor window; close any leftover ones first so they
+// don't pile up as zombie webviews still polling/re-rendering in the background.
+async function closeExistingMonitorWindows(): Promise<void> {
+  try {
+    const windows = await getAllWebviewWindows();
+    await Promise.all(
+      windows
+        .filter((win) => win.label.startsWith(MONITOR_LABEL_PREFIX))
+        .map((win) => win.destroy().catch(() => win.close().catch(() => {})))
+    );
+  } catch {
+    // best-effort cleanup
+  }
+}
 
 export async function ensureJdk(
   gameDir: string,
@@ -43,7 +60,9 @@ export async function openMonitor(
     lang: locale
   });
 
-  const monitorLabel = `runtime-monitor-${Date.now()}-${Math.floor(Math.random() * 10000)}`;
+  await closeExistingMonitorWindows();
+
+  const monitorLabel = `${MONITOR_LABEL_PREFIX}${Date.now()}-${Math.floor(Math.random() * 10000)}`;
   const win = new WebviewWindow(monitorLabel, {
     title: `Runtime - ${instanceName}`,
     width: 980,

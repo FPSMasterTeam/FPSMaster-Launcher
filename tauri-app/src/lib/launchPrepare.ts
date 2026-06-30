@@ -215,9 +215,12 @@ export function parseLaunchPrepareJdkLog(message: string): {
 
 export function mapLaunchPreparePhaseKey(phase?: string): LaunchPreparePhaseKey | null {
   if (phase === "login") return "login";
+  if (phase === "verify") return "verify";
   if (phase === "vanilla") return "vanilla";
   if (phase === "fabric") return "fabric";
   if (phase === "forge") return "forge";
+  if (phase === "optifine") return "optifine";
+  if (phase === "mods") return "mods";
   if (phase === "runtime") return "runtime";
   return null;
 }

@@ -2910,68 +2910,30 @@ button:disabled {
   background: rgba(255, 255, 255, 0.03);
 }
 
-.launchPrepareCompactTop {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-}
-
-.launchPrepareCompactTitle {
-  margin: 0;
-  font-size: 15px;
-  font-weight: 700;
-  color: var(--text-primary);
-}
-
-.launchPrepareCompactTrack {
-  margin-top: 10px;
-}
-
-.launchPrepareCompactMeta {
-  display: flex;
-  justify-content: space-between;
-  gap: 12px;
-  margin-top: 8px;
-  font-size: 12px;
-  color: var(--muted);
-}
-
-.launchPrepareCompactItems {
+.launchPrepareBars {
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  margin-top: 12px;
+  gap: 14px;
 }
 
-.launchPrepareCompactItem {
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: 8px;
-  padding: 10px;
-  background: rgba(6, 12, 20, 0.3);
-}
-
-.launchPrepareCompactItem.running {
-  border-color: rgba(119, 209, 121, 0.25);
-}
-
-.launchPrepareCompactItem.cached {
-  border-color: rgba(129, 140, 248, 0.22);
-}
-
-.launchPrepareCompactItem.error {
-  border-color: rgba(251, 113, 133, 0.28);
-}
-
-.launchPrepareCompactItemHead {
+.launchPrepareBar {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
+  flex-direction: column;
+  gap: 6px;
 }
 
-.launchPrepareCompactItemName {
-  margin: 0;
+.launchPrepareBar .progressTrack {
+  margin-top: 0;
+}
+
+.launchPrepareBarHead {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.launchPrepareBarLabel {
   min-width: 0;
   font-size: 13px;
   font-weight: 600;
@@ -2981,39 +2943,122 @@ button:disabled {
   text-overflow: ellipsis;
 }
 
-.launchPrepareItemBadge {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-width: 52px;
-  height: 22px;
-  border-radius: 999px;
-  padding: 0 8px;
-  font-size: 11px;
+.launchPrepareBarPercent {
+  flex: 0 0 auto;
+  font-size: 13px;
   font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  background: rgba(255, 255, 255, 0.08);
+  font-variant-numeric: tabular-nums;
   color: var(--text-primary);
 }
 
-.launchPrepareItemBadge.cached {
-  color: #c7d2fe;
-  background: rgba(129, 140, 248, 0.18);
+.launchPrepareTotalTrack {
+  height: 6px;
 }
 
-.launchPrepareItemBadge.done {
-  color: #bbf7d0;
-  background: rgba(34, 197, 94, 0.18);
+.launchPrepareTotalFill {
+  background: linear-gradient(90deg, var(--accent, #25b87a), var(--mc-grass));
 }
 
-.launchPrepareItemBadge.error {
+.progressFill.isError {
+  background: #fb7185;
+}
+
+.launchPrepareBarMeta {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.launchPrepareBarMessage {
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.launchPrepareBarCounts {
+  flex: 0 0 auto;
+  font-variant-numeric: tabular-nums;
+}
+
+.launchPrepareFiles {
+  margin-top: 14px;
+  border-top: 1px solid var(--line);
+  padding-top: 12px;
+}
+
+.launchPrepareFilesHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+}
+
+.launchPrepareFileList {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.launchPrepareFileRow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 3px 2px;
+}
+
+.launchPrepareFileName {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 12px;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.launchPrepareFileRow.error .launchPrepareFileName {
   color: #fecdd3;
-  background: rgba(251, 113, 133, 0.18);
 }
 
-.launchPrepareItemTrack {
-  margin-top: 8px;
+.launchPrepareFileTrack {
+  flex: 0 0 72px;
+  width: 72px;
+  margin-top: 0;
+}
+
+.launchPrepareFileBadge {
+  flex: 0 0 auto;
+  min-width: 44px;
+  text-align: right;
+  font-size: 11px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+}
+
+.launchPrepareFileBadge.running {
+  color: var(--mc-grass);
+}
+
+.launchPrepareFileBadge.cached {
+  color: #c7d2fe;
+}
+
+.launchPrepareFileBadge.done {
+  color: #bbf7d0;
+}
+
+.launchPrepareFileBadge.error {
+  color: #fecdd3;
 }
 
 .phaseHeadRow {
@@ -3457,6 +3502,60 @@ button:disabled {
   padding: 0 12px;
   border-radius: 10px;
   font-size: 12px;
+}
+
+.monitorIconBtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text-secondary);
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+
+.monitorIconBtn:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.09);
+  color: var(--text-primary);
+  border-color: rgba(255, 255, 255, 0.18);
+}
+
+.monitorIconBtn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.monitorIconBtn-danger:hover:not(:disabled) {
+  background: rgba(251, 113, 133, 0.14);
+  color: #fb7185;
+  border-color: rgba(251, 113, 133, 0.4);
+}
+
+.monitorEmbeddedRoot {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  flex-direction: column;
+}
+
+.monitorLogScroll {
+  overflow: auto;
+  /* Isolate scroll/paint so log updates don't invalidate the rest of the window. */
+  contain: layout paint;
+}
+
+.monitorLogRow {
+  height: 18px;
+  line-height: 18px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-primary);
+  white-space: pre;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .monitorStatusInline {

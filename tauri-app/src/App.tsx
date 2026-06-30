@@ -1,7 +1,6 @@
 import { getVersion as getAppVersion } from "@tauri-apps/api/app";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { TauriEvent } from "@tauri-apps/api/event";
 import { listen } from "@tauri-apps/api/event";
 import packageInfo from "../package.json";
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
@@ -57,7 +56,7 @@ import {
   isLegacyDefaultGameDir,
   loaderLabelKey
 } from "./lib/instance";
-import { ensureJdk, openMonitor, syncAutostart, syncTrayBehavior } from "./lib/system";
+import { ensureJdk, syncAutostart, syncTrayBehavior } from "./lib/system";
 import { createPresetPackageStatus, resolvePresetAccessState } from "./lib/presetPackage";
 import { useLauncherUpdate } from "./hooks/useLauncherUpdate";
 import { useLauncherData } from "./hooks/useLauncherData";
@@ -109,6 +108,7 @@ import {
   createPhaseState,
   createLaunchPrepareDialogState,
   createSessionId,
+  nowMs,
   applyTheme,
   loadInstances,
   loadSettings,
@@ -122,6 +122,22 @@ const FALLBACK_LAUNCHER_VERSION = packageInfo.version;
 const LAUNCHER_LOG_POLL_INTERVAL_MS = 500;
 const LAUNCHER_RUNTIME_POLL_INTERVAL_MS = 1000;
 const LAUNCH_PREPARE_STEPS = 5;
+
+// EDGE re-resolves the latest Forge/OptiFine online on every launch. Cache those
+// lookups for the app session so repeat launches don't pay the network round-trip
+// each time, while still re-checking periodically to keep the "always latest" intent.
+const EDGE_LOADER_CACHE_TTL_MS = 30 * 60 * 1000;
+const edgeLoaderListCache = new Map<string, { at: number; value: unknown }>();
+
+async function cachedLoaderLookup<T>(key: string, run: () => Promise<T>): Promise<T> {
+  const hit = edgeLoaderListCache.get(key);
+  if (hit && Date.now() - hit.at < EDGE_LOADER_CACHE_TTL_MS) {
+    return hit.value as T;
+  }
+  const value = await run();
+  edgeLoaderListCache.set(key, { at: Date.now(), value });
+  return value;
+}
 
 const EMPTY_LAUNCHER_VERSIONS: LauncherVersionMap = {
   EDGE: null,
@@ -143,17 +159,6 @@ export function App() {
     applyTheme(settings.themeMode, settings.themeAccent, settings.customAccentHex);
   }, []);
 
-  const params = new URLSearchParams(window.location.search);
-  if (params.get("view") === "monitor") {
-    const locale = resolveLocale(params.get("lang") ?? readStoredLocale());
-    return (
-      <I18nProvider locale={locale} onLocaleChange={() => {}}>
-        <Suspense fallback={<PageFallback />}>
-          <MonitorPage params={params} />
-        </Suspense>
-      </I18nProvider>
-    );
-  }
   return <Launcher />;
 }
 
@@ -185,6 +190,12 @@ function Launcher() {
   const [launchProgressPercent, setLaunchProgressPercent] = useState<number | null>(null);
   const [launchProgressText, setLaunchProgressText] = useState("");
   const [monitorWindowOpen, setMonitorWindowOpen] = useState(false);
+  const [activeMonitor, setActiveMonitor] = useState<{
+    pid: number;
+    version: string;
+    cursor: number;
+    startedAt: number;
+  } | null>(null);
 
   const [installDialog, setInstallDialog] = useState<InstallDialogState | null>(null);
   const [launchPrepareDialog, setLaunchPrepareDialog] = useState<LaunchPrepareDialogState | null>(null);
@@ -902,34 +913,18 @@ function Launcher() {
       return;
     }
 
-    try {
-      const monitorWindow = await openMonitor(
-        launchResult.pid,
-        current.name,
-        logCursorRef.current ?? 0,
-        settings.language
-      );
-      setMonitorWindowOpen(true);
-      void monitorWindow.once(TauriEvent.WINDOW_DESTROYED, () => {
-        setMonitorWindowOpen(false);
-      });
-      if (settings.hideMainOnLaunch) {
-        await getCurrentWindow().hide();
-      }
-      setActiveGamePid(launchResult.pid);
-      setStatus(t("app.status.gameStarted", { pid: launchResult.pid }));
-    } catch (error) {
-      setStatus(
-        t("app.status.gameStartedMonitorFailed", {
-          pid: launchResult.pid,
-          error: String(error)
-        })
-      );
-    } finally {
-      completeLaunchPrepare();
-      setBusy(false);
-      setLaunchingInstanceId(null);
-    }
+    setActiveMonitor({
+      pid: launchResult.pid,
+      version: current.name,
+      cursor: logCursorRef.current ?? 0,
+      startedAt: nowMs()
+    });
+    setMonitorWindowOpen(true);
+    setActiveGamePid(launchResult.pid);
+    setStatus(t("app.status.gameStarted", { pid: launchResult.pid }));
+    completeLaunchPrepare();
+    setBusy(false);
+    setLaunchingInstanceId(null);
   }
 
   function persistLauncherLoginPrefs(next: LauncherLoginPrefs) {
@@ -1024,7 +1019,8 @@ function Launcher() {
 
   async function ensurePresetModsReady(
     instance: Instance,
-    versionMapOverride?: LauncherVersionMap | null
+    versionMapOverride?: LauncherVersionMap | null,
+    launchSessionId?: string
   ) {
     if (!instance.preset || !instance.launcherVersionType) return;
 
@@ -1106,7 +1102,8 @@ function Launcher() {
         checksum: targetVersion.checksum,
         manifestUrl: targetVersion.manifestUrl,
         versionTag: targetVersion.versionName,
-        cleanExisting: instance.launcherVersionType === "NOVA"
+        cleanExisting: instance.launcherVersionType === "NOVA",
+        ipcSession: launchSessionId
       });
       setPresetPackageStatuses((prev) => ({
         ...prev,
@@ -1257,22 +1254,30 @@ function Launcher() {
         }
       }
       if (installed) {
-        markLaunchPreparePhase("check-instance", "done", "complete", t("launch.progress.checkInstance"));
         if (workingInstance.launcherVersionType === "EDGE") {
-          const optiFineVersions = await invoke<OptiFineVersion[]>("list_optifine_versions", {
-            gameVersion: workingInstance.baseVersion,
-            loader: workingInstance.loader,
-            loaderVersion: null,
-            downloadSource: settings.downloadSource
-          });
+          markLaunchPreparePhase("check-instance", "running", "resolve", t("launch.progress.resolveLoader"));
+          const optiFineVersions = await cachedLoaderLookup(
+            `optifine|${workingInstance.baseVersion}|${workingInstance.loader}|${settings.downloadSource}`,
+            () =>
+              invoke<OptiFineVersion[]>("list_optifine_versions", {
+                gameVersion: workingInstance.baseVersion,
+                loader: workingInstance.loader,
+                loaderVersion: null,
+                downloadSource: settings.downloadSource
+              })
+          );
           const selectedOptiFine = selectDefaultEdgeOptiFineVersion(optiFineVersions);
           const latestOptiFine = selectedOptiFine?.version ?? "";
           let edgeInstanceChanged = false;
           if (workingInstance.loader === "forge") {
-            const forgeVersions = await invoke<string[]>("list_forge_versions", {
-              gameVersion: workingInstance.baseVersion,
-              downloadSource: settings.downloadSource
-            });
+            const forgeVersions = await cachedLoaderLookup(
+              `forge|${workingInstance.baseVersion}|${settings.downloadSource}`,
+              () =>
+                invoke<string[]>("list_forge_versions", {
+                  gameVersion: workingInstance.baseVersion,
+                  downloadSource: settings.downloadSource
+                })
+            );
             const latestForgeVersion = forgeVersions[0] ?? "";
             if (!latestForgeVersion) {
               throw new Error(`No forge version available for ${workingInstance.baseVersion}`);
@@ -1333,8 +1338,20 @@ function Launcher() {
             );
           }
         }
-        await ensurePresetModsReady(workingInstance);
+        markLaunchPreparePhase("check-instance", "done", "complete", t("launch.progress.checkInstance"));
+        markLaunchPreparePhase("verify", "running", "prepare", t("launch.progress.verify"));
+        await invoke("verify_installed_files", {
+          gameDir: settings.gameDir,
+          versionId: workingInstance.versionId,
+          downloadSource: settings.downloadSource,
+          downloadThreads: settings.downloadThreads,
+          ipcSession: launchSessionId
+        });
+        markLaunchPreparePhase("verify", "done", "complete", t("launch.progress.verifyCompleted"));
+        markLaunchPreparePhase("mods", "running", "prepare", t("launch.progress.syncMods"));
+        await ensurePresetModsReady(workingInstance, undefined, launchSessionId);
         await ensureManagedContentUpToDate(workingInstance);
+        markLaunchPreparePhase("mods", "done", "complete", t("launch.progress.syncModsCompleted"));
         return workingInstance;
       }
     }
@@ -1347,11 +1364,10 @@ function Launcher() {
       })
     );
     const sessionId = launchSessionId ?? createSessionId();
-    markLaunchPreparePhase("check-instance", "running", "prepare", t("app.status.missingAutoInstall", {
-      versionId: workingInstance.versionId,
-      baseVersion: workingInstance.baseVersion,
-      loader: loaderDisplayName(workingInstance.loader)
-    }));
+    // Complete check-instance before the install phases begin: the dialog shows the
+    // first "running" phase, so leaving check-instance running here would shadow the
+    // real vanilla/forge/optifine download progress behind a stuck "checking" header.
+    markLaunchPreparePhase("check-instance", "done", "complete", t("launch.progress.checkInstance"));
     markLaunchPreparePhase("vanilla", "running", "prepare", t("install.phase.preparing", { version: workingInstance.baseVersion }));
     const vanilla = await invoke<InstallResult>("install_vanilla", {
       gameDir: settings.gameDir,
@@ -1472,8 +1488,10 @@ function Launcher() {
     setInstances((prev) =>
       prev.map((item) => (item.id === updatedInstance.id ? updatedInstance : item))
     );
-    await ensurePresetModsReady(updatedInstance);
+    markLaunchPreparePhase("mods", "running", "prepare", t("launch.progress.syncMods"));
+    await ensurePresetModsReady(updatedInstance, undefined, sessionId);
     await ensureManagedContentUpToDate(updatedInstance);
+    markLaunchPreparePhase("mods", "done", "complete", t("launch.progress.syncModsCompleted"));
     setStatus(t("app.status.autoInstallCompleted", { name: updatedInstance.name }));
     markLaunchPreparePhase("check-instance", "done", "complete", t("app.status.autoInstallCompleted", { name: updatedInstance.name }));
     return updatedInstance;
@@ -1567,34 +1585,18 @@ function Launcher() {
       return;
     }
 
-    try {
-      const monitorWindow = await openMonitor(
-        launchResult.pid,
-        target.name,
-        logCursorRef.current ?? 0,
-        settings.language
-      );
-      setMonitorWindowOpen(true);
-      void monitorWindow.once(TauriEvent.WINDOW_DESTROYED, () => {
-        setMonitorWindowOpen(false);
-      });
-      if (settings.hideMainOnLaunch) {
-        await getCurrentWindow().hide();
-      }
-      setActiveGamePid(launchResult.pid);
-      setStatus(t("app.status.gameStarted", { pid: launchResult.pid }));
-    } catch (error) {
-      setStatus(
-        t("app.status.gameStartedMonitorFailed", {
-          pid: launchResult.pid,
-          error: String(error)
-        })
-      );
-    } finally {
-      completeLaunchPrepare();
-      setBusy(false);
-      setLaunchingInstanceId(null);
-    }
+    setActiveMonitor({
+      pid: launchResult.pid,
+      version: target.name,
+      cursor: logCursorRef.current ?? 0,
+      startedAt: nowMs()
+    });
+    setMonitorWindowOpen(true);
+    setActiveGamePid(launchResult.pid);
+    setStatus(t("app.status.gameStarted", { pid: launchResult.pid }));
+    completeLaunchPrepare();
+    setBusy(false);
+    setLaunchingInstanceId(null);
   }
 
   async function launch() {
@@ -1969,6 +1971,13 @@ function Launcher() {
     setLaunchPrepareDialog(null);
   }
 
+  // Back to the launcher from the in-window monitor. The game keeps running; the
+  // launcher's runtime probe (now ungated) reconciles activeGamePid once it exits.
+  function closeActiveMonitor() {
+    setActiveMonitor(null);
+    setMonitorWindowOpen(false);
+  }
+
   function openLaunchPrepare(instance: Instance, sessionId: string) {
     setLaunchPrepareDialog(
       createLaunchPrepareDialogState(
@@ -1978,10 +1987,12 @@ function Launcher() {
         {
           login: t("launch.prepare.phase.login"),
           "check-instance": t("launch.prepare.phase.check-instance"),
+          verify: t("launch.prepare.phase.verify"),
           vanilla: t("launch.prepare.phase.vanilla"),
           fabric: t("launch.prepare.phase.fabric"),
           forge: t("launch.prepare.phase.forge"),
           optifine: t("launch.prepare.phase.optifine"),
+          mods: t("launch.prepare.phase.mods"),
           runtime: t("launch.prepare.phase.runtime"),
           launch: t("launch.prepare.phase.launch")
         },
@@ -2288,21 +2299,35 @@ function Launcher() {
         <WindowTitleBar authenticated={authenticated} onClose={stableCloseWindow} />
 
         {authenticated ? (
-          <div className="relative z-10 flex h-full w-full flex-1 pt-10">
-            <Sidebar
-              currentPage={page}
-              user={launcherAuth?.user ?? null}
-              setPage={stableNavigate}
-            />
+          activeMonitor ? (
+            <div className="relative z-10 flex h-full w-full flex-1 flex-col pt-10">
+              <Suspense fallback={<PageFallback />}>
+                <MonitorPage
+                  pid={activeMonitor.pid}
+                  version={activeMonitor.version}
+                  initialCursor={activeMonitor.cursor}
+                  startedAt={activeMonitor.startedAt}
+                  onClose={closeActiveMonitor}
+                />
+              </Suspense>
+            </div>
+          ) : (
+            <div className="relative z-10 flex h-full w-full flex-1 pt-10">
+              <Sidebar
+                currentPage={page}
+                user={launcherAuth?.user ?? null}
+                setPage={stableNavigate}
+              />
 
-            <main className="relative flex-1 overflow-hidden border-l border-white/5 bg-[var(--bg-secondary)]/34">
-              <div key={page} className="relative z-10 h-full page-transition">
-                <Suspense fallback={<PageFallback />}>
-                  <PageRouter ctx={routerContext} />
-                </Suspense>
-              </div>
-            </main>
-          </div>
+              <main className="relative flex-1 overflow-hidden border-l border-white/5 bg-[var(--bg-secondary)]/34">
+                <div key={page} className="relative z-10 h-full page-transition">
+                  <Suspense fallback={<PageFallback />}>
+                    <PageRouter ctx={routerContext} />
+                  </Suspense>
+                </div>
+              </main>
+            </div>
+          )
         ) : (
           <main className="relative z-10 flex h-full w-full flex-1 items-center justify-center overflow-hidden px-6 py-8">
             <LoginPage
@@ -2319,7 +2344,7 @@ function Launcher() {
         )}
 
         {authenticated && launchPrepareDialog && launchPrepareDialog.open && (
-          <LaunchPrepareDialog dialog={launchPrepareDialog} onClose={closeLaunchPrepareDialog} />
+          <LaunchPrepareDialog key={launchPrepareDialog.sessionId} dialog={launchPrepareDialog} onClose={closeLaunchPrepareDialog} />
         )}
 
         {authenticated && launchError && (
