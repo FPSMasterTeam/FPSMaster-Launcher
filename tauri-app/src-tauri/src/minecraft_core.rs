@@ -321,6 +321,22 @@ pub(crate) fn resolve_java_runtime_requirement(
     })
 }
 
+/// True when this profile must run under an x64 (Rosetta) JVM on Apple Silicon: its
+/// native libraries (LWJGL) ship no arm64 macOS build, so a native arm64 JVM would fail
+/// to load them. Detected by the absence of any `arm64` macOS native classifier in the
+/// merged metadata — present only in MC 1.19+ (LWJGL 3.3.1+). Always false off Apple
+/// Silicon, where the native runtime is the only choice anyway.
+pub(crate) fn macos_requires_x64_runtime(game_dir: &Path, version_id: &str) -> bool {
+    if !(cfg!(target_os = "macos") && std::env::consts::ARCH == "aarch64") {
+        return false;
+    }
+    let Ok(descriptor) = resolve_version_descriptor(game_dir, version_id, 0) else {
+        // Can't tell — assume native; the runtime check would surface a clearer error.
+        return false;
+    };
+    !descriptor.merged.to_string().contains("arm64")
+}
+
 pub(crate) fn install_vanilla(
     window: Option<&tauri::Window>,
     game_dir: &Path,
@@ -467,6 +483,105 @@ pub(crate) fn install_vanilla(
         version_json_path: version_json_path.to_string_lossy().to_string(),
         libraries_downloaded,
         assets_downloaded,
+    })
+}
+
+/// Verify the integrity of an already-installed profile (client jar, libraries and
+/// assets) by re-hashing every declared file against the SHA1 recorded in the local
+/// metadata, repairing any missing or corrupt file. Reuses the install download path
+/// (which skips files whose SHA1 already matches and re-downloads the rest) so the UI
+/// gets the same per-item progress feedback as a fresh install, under a `verify` phase.
+///
+/// Metadata is resolved fully offline from the local `<version>.json` (and its
+/// `inheritsFrom` chain), so an intact installation verifies without any network call
+/// and never re-runs loader processors — network is only touched to repair a bad file.
+pub(crate) fn verify_installed_files(
+    window: Option<&tauri::Window>,
+    game_dir: &Path,
+    version_id: &str,
+    download_source_id: Option<&str>,
+    download_threads: usize,
+    ipc_session: Option<&str>,
+) -> Result<crate::VerifyResult, String> {
+    install_cancel_error(ipc_session)?;
+    let source = DownloadSource::from_id(download_source_id)?;
+    let phase = "verify";
+    emit_install_phase_start(
+        window,
+        ipc_session,
+        phase,
+        "prepare",
+        &format!("Verifying installed files for {version_id}"),
+    );
+
+    let descriptor = resolve_version_descriptor(game_dir, version_id, 0)?;
+    let merged = &descriptor.merged;
+    let jar_version_id = descriptor.jar_version_id.clone();
+    let version_dir = game_dir.join("versions").join(&jar_version_id);
+
+    emit_install_phase_start(window, ipc_session, phase, "client", "Verify client jar");
+    let client_repaired = download_client(
+        window,
+        merged,
+        &version_dir,
+        &jar_version_id,
+        phase,
+        ipc_session,
+        source,
+    )?;
+    emit_install_progress(
+        window,
+        ipc_session,
+        phase,
+        "client",
+        1,
+        1,
+        if client_repaired { 1 } else { 0 },
+        if client_repaired { 0 } else { 1 },
+        if client_repaired {
+            "Client jar repaired"
+        } else {
+            "Client jar verified"
+        },
+    );
+
+    emit_install_phase_start(window, ipc_session, phase, "libraries", "Verify libraries");
+    let libraries_repaired = download_libraries(
+        window,
+        merged,
+        game_dir,
+        phase,
+        ipc_session,
+        source,
+        download_threads,
+    )?;
+
+    emit_install_phase_start(window, ipc_session, phase, "assets", "Verify assets");
+    let assets_repaired = download_assets(
+        window,
+        merged,
+        game_dir,
+        phase,
+        ipc_session,
+        source,
+        download_threads,
+    )?;
+
+    let repaired = i32::from(client_repaired) + libraries_repaired + assets_repaired;
+    emit_install_phase_complete(
+        window,
+        ipc_session,
+        phase,
+        "complete",
+        &format!("Verify completed version={version_id} repaired={repaired}"),
+    );
+
+    Ok(crate::VerifyResult {
+        version_id: version_id.to_string(),
+        client_repaired,
+        libraries_repaired,
+        assets_repaired,
+        repaired,
     })
 }
 
@@ -2268,6 +2383,13 @@ fn download_file_with_ipc(
                     Ok(actual) if actual.eq_ignore_ascii_case(expected_sha1) => {}
                     Ok(actual) => {
                         let _ = fs::remove_file(&tmp);
+                        emit_log(
+                            window,
+                            "warn",
+                            &format!(
+                                "Checksum mismatch for {label}: expected sha1={expected_sha1}, got {actual}; re-downloading"
+                            ),
+                        );
                         last_error = Some(format!(
                             "SHA1 mismatch for {url}: expected={expected_sha1} actual={actual}"
                         ));
@@ -2278,7 +2400,10 @@ fn download_file_with_ipc(
                                 artifact,
                                 Some(0),
                                 total.or(Some(downloaded_bytes)),
-                                &format!("Retrying ({attempt}/{})", DOWNLOAD_RETRY_ATTEMPTS - 1),
+                                &format!(
+                                    "Checksum failed, retrying ({attempt}/{})",
+                                    DOWNLOAD_RETRY_ATTEMPTS - 1
+                                ),
                             );
                         }
                         continue;

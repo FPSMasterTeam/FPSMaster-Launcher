@@ -77,6 +77,19 @@ struct InstallResult {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+struct VerifyResult {
+    #[serde(rename = "versionId")]
+    version_id: String,
+    #[serde(rename = "clientRepaired")]
+    client_repaired: bool,
+    #[serde(rename = "librariesRepaired")]
+    libraries_repaired: i32,
+    #[serde(rename = "assetsRepaired")]
+    assets_repaired: i32,
+    repaired: i32,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
 struct LaunchPlan {
     command: Vec<String>,
     classpath: String,
@@ -586,8 +599,8 @@ const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 const TRAY_SHOW_ID: &str = "tray_show";
 const TRAY_HIDE_ID: &str = "tray_hide";
 const TRAY_QUIT_ID: &str = "tray_quit";
-const GAME_RUNTIME_CACHE_TTL_MS: u128 = 2500;
-const GAME_RUNTIME_SAMPLE_INTERVAL_MS: u64 = 1000;
+const GAME_RUNTIME_CACHE_TTL_MS: u128 = 3000;
+const GAME_RUNTIME_SAMPLE_INTERVAL_MS: u64 = 2000;
 #[derive(Debug, Clone, Serialize)]
 struct GameRuntimeStats {
     pid: i64,
@@ -1765,9 +1778,12 @@ fn ensure_jdk_blocking(
         minecraft_core::resolve_java_runtime_requirement(Some(&game_dir_path), &version_id, None)?;
 
     let major = requirement.major_version.max(8);
-    let runtime_root = managed_jdk_runtime_root(&game_dir_path, major);
+    // On Apple Silicon, a profile whose native libs (LWJGL) ship no arm64 build must run
+    // under an x64 (Rosetta) JVM — a native arm64 JVM can't load x64 .dylibs.
+    let needs_x64 = minecraft_core::macos_requires_x64_runtime(&game_dir_path, &version_id);
+    let runtime_root = managed_jdk_runtime_root(&game_dir_path, major, needs_x64);
     let java_path =
-        ensure_managed_jdk_runtime(Some(&window), &runtime_root, major, download_threads)?;
+        ensure_managed_jdk_runtime(Some(&window), &runtime_root, major, download_threads, needs_x64)?;
 
     emit_log(
         Some(&window),
@@ -2750,6 +2766,7 @@ fn install_world_archive_with_metadata(
 
 #[tauri::command]
 async fn install_launcher_version_mods(
+    window: tauri::Window,
     game_dir: String,
     version_id: String,
     download_url: String,
@@ -2757,9 +2774,12 @@ async fn install_launcher_version_mods(
     checksum: Option<String>,
     manifest_url: Option<String>,
     clean_existing: Option<bool>,
+    ipc_session: Option<String>,
 ) -> Result<LauncherModsInstallResult, String> {
     tauri::async_runtime::spawn_blocking(move || {
         install_launcher_version_mods_blocking(
+            Some(&window),
+            ipc_session.as_deref(),
             game_dir,
             version_id,
             download_url,
@@ -2797,6 +2817,8 @@ async fn get_launcher_package_state(
 }
 
 fn install_launcher_version_mods_blocking(
+    window: Option<&tauri::Window>,
+    ipc_session: Option<&str>,
     game_dir: String,
     version_id: String,
     download_url: String,
@@ -2858,6 +2880,8 @@ fn install_launcher_version_mods_blocking(
 
     let installed_files = if let Some(manifest_source) = normalized_manifest_url.as_deref() {
         install_launcher_manifest_package(
+            window,
+            ipc_session,
             manifest_source,
             &normalized_tag,
             &mods_dir,
@@ -2872,12 +2896,46 @@ fn install_launcher_version_mods_blocking(
             now_epoch_millis(),
             download_file_name
         ));
+        emit_launch_prepare_ipc(
+            ipc_session,
+            "progress",
+            "mods",
+            "download",
+            Some(0),
+            Some(1),
+            &format!("Downloading package {download_file_name}"),
+            None,
+        );
+        emit_launch_prepare_item(
+            ipc_session,
+            "item-start",
+            "mods",
+            &normalized_url,
+            &download_file_name,
+            "package",
+            Some(0),
+            None,
+            None,
+            "Downloading",
+        );
         let download_result = download_file_blocking(
             None,
             "launcher-mods",
             &normalized_url,
             &temp_download_path,
             normalize_download_threads(Some(DEFAULT_DOWNLOAD_THREADS)),
+        );
+        emit_launch_prepare_item(
+            ipc_session,
+            "item-complete",
+            "mods",
+            &normalized_url,
+            &download_file_name,
+            "package",
+            None,
+            None,
+            Some(false),
+            "Downloaded",
         );
         if let Err(err) = download_result {
             let _ = fs::remove_file(&temp_download_path);
@@ -3014,12 +3072,15 @@ fn get_launcher_package_state_blocking(
 }
 
 fn install_launcher_manifest_package(
+    window: Option<&tauri::Window>,
+    ipc_session: Option<&str>,
     manifest_url: &str,
     expected_version_tag: &str,
     mods_dir: &Path,
     previous_marker: Option<&LauncherModsInstallMarker>,
     clean_existing: bool,
 ) -> Result<Vec<LauncherInstalledFileRecord>, String> {
+    let _ = window;
     let manifest = fetch_launcher_package_manifest(manifest_url)?;
     if let Some(manifest_version_tag) = manifest
         .version_tag
@@ -3040,7 +3101,8 @@ fn install_launcher_manifest_package(
     }
 
     let stage_dir = create_launcher_mods_stage_dir(mods_dir)?;
-    let install_result = install_manifest_files_into_stage(manifest_url, &manifest, &stage_dir);
+    let install_result =
+        install_manifest_files_into_stage(ipc_session, manifest_url, &manifest, &stage_dir);
     if let Err(err) = install_result {
         let _ = fs::remove_dir_all(&stage_dir);
         return Err(err);
@@ -3231,6 +3293,7 @@ fn prune_empty_launcher_parent_dirs(mods_dir: &Path, relative_path: &Path) -> Re
 }
 
 fn install_manifest_files_into_stage(
+    ipc_session: Option<&str>,
     manifest_url: &str,
     manifest: &LauncherPackageManifest,
     stage_dir: &Path,
@@ -3238,8 +3301,19 @@ fn install_manifest_files_into_stage(
     let client = build_blocking_http_client()?;
     let base_url = resolve_manifest_base_url(manifest_url, manifest.base_url.as_deref())?;
     let mut installed_files = Vec::new();
+    let total = manifest.files.len() as i32;
+    emit_launch_prepare_ipc(
+        ipc_session,
+        "progress",
+        "mods",
+        "download",
+        Some(0),
+        Some(total),
+        "Syncing mods",
+        None,
+    );
 
-    for entry in &manifest.files {
+    for (index, entry) in manifest.files.iter().enumerate() {
         let relative_path = normalize_manifest_relative_path(&entry.path)?;
         let resolved_url = resolve_manifest_file_url(&base_url, entry)?;
         let target_path = stage_dir.join(&relative_path);
@@ -3252,7 +3326,36 @@ fn install_manifest_files_into_stage(
             })?;
         }
 
+        let file_name = relative_path
+            .file_name()
+            .map(|value| value.to_string_lossy().to_string())
+            .unwrap_or_else(|| relative_path.to_string_lossy().to_string());
+        emit_launch_prepare_item(
+            ipc_session,
+            "item-start",
+            "mods",
+            &entry.path,
+            &file_name,
+            "mod",
+            entry.size.map(|_| 0),
+            entry.size.map(|size| size as i64),
+            None,
+            "Downloading",
+        );
+
         download_file_quiet_blocking(&client, &resolved_url, &target_path).map_err(|err| {
+            emit_launch_prepare_item(
+                ipc_session,
+                "item-error",
+                "mods",
+                &entry.path,
+                &file_name,
+                "mod",
+                None,
+                None,
+                None,
+                "Failed",
+            );
             format!(
                 "Failed to download manifest file {} from {}: {err}",
                 relative_path.display(),
@@ -3291,6 +3394,29 @@ fn install_manifest_files_into_stage(
             &target_path,
             &relative_path,
         )?);
+
+        emit_launch_prepare_item(
+            ipc_session,
+            "item-complete",
+            "mods",
+            &entry.path,
+            &file_name,
+            "mod",
+            entry.size.map(|size| size as i64),
+            entry.size.map(|size| size as i64),
+            Some(false),
+            "Downloaded",
+        );
+        emit_launch_prepare_ipc(
+            ipc_session,
+            "progress",
+            "mods",
+            "download",
+            Some(index as i32 + 1),
+            Some(total),
+            &format!("Synced {} ({}/{})", file_name, index + 1, total),
+            None,
+        );
     }
 
     if installed_files.is_empty() {
@@ -5197,6 +5323,34 @@ async fn install_vanilla(
 }
 
 #[tauri::command]
+async fn verify_installed_files(
+    window: tauri::Window,
+    game_dir: String,
+    version_id: String,
+    download_source: Option<String>,
+    download_threads: Option<i32>,
+    ipc_session: Option<String>,
+) -> Result<VerifyResult, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let session = ipc_session.clone();
+        let game_dir_path = resolve_game_dir_path(&game_dir)?;
+        let normalized_download_threads = normalize_download_threads(download_threads);
+        let result = minecraft_core::verify_installed_files(
+            Some(&window),
+            &game_dir_path,
+            &version_id,
+            download_source.as_deref(),
+            normalized_download_threads,
+            ipc_session.as_deref(),
+        );
+        clear_install_cancel(session.as_deref());
+        result
+    })
+    .await
+    .map_err(|e| format!("Failed to join verify task: {e}"))?
+}
+
+#[tauri::command]
 async fn build_vanilla_launch_plan(
     window: tauri::Window,
     game_dir: String,
@@ -5363,8 +5517,8 @@ fn launch_vanilla_blocking(
         .take()
         .ok_or_else(|| "Failed to capture game stderr".to_string())?;
 
-    let stdout_handle = pump_game_stream(stdout, window.clone(), "stdout");
-    let stderr_handle = pump_game_stream(stderr, window.clone(), "stderr");
+    let stdout_handle = pump_game_stream(stdout, "stdout");
+    let stderr_handle = pump_game_stream(stderr, "stderr");
     if should_wait {
         let status = child
             .wait()
@@ -5974,8 +6128,16 @@ fn parse_csv_line(line: &str) -> Vec<String> {
     fields
 }
 
-fn managed_jdk_runtime_root(game_dir: &Path, major: i32) -> PathBuf {
-    game_dir.join("runtime").join(format!("jdk-{major}"))
+fn managed_jdk_runtime_root(game_dir: &Path, major: i32, x64: bool) -> PathBuf {
+    // x64 (Rosetta/emulated) runtimes live in a separate dir so a version that needs
+    // x64 natives (e.g. MC 1.18) never reuses a native-arch runtime of the same major
+    // installed for a newer version (e.g. MC 1.19) — and vice versa.
+    let name = if x64 {
+        format!("jdk-{major}-x64")
+    } else {
+        format!("jdk-{major}")
+    };
+    game_dir.join("runtime").join(name)
 }
 
 fn ensure_managed_jdk_runtime(
@@ -5983,6 +6145,7 @@ fn ensure_managed_jdk_runtime(
     runtime_root: &Path,
     major: i32,
     download_threads: Option<i32>,
+    force_x64: bool,
 ) -> Result<PathBuf, String> {
     fs::create_dir_all(runtime_root).map_err(|e| {
         format!(
@@ -6005,18 +6168,56 @@ fn ensure_managed_jdk_runtime(
 
     let normalized_download_threads = normalize_download_threads(download_threads);
     let component = mojang_java_component_for_major(major);
+    let platform_keys = mojang_java_platform_keys();
+    let native_key = platform_keys.first().copied();
+    let x64_key = platform_keys.last().copied();
     emit_log(
         window,
         "info",
-        &format!("Resolving Mojang runtime component={component} major={major}"),
+        &format!("Resolving Mojang runtime component={component} major={major} force_x64={force_x64}"),
     );
-    install_mojang_java_runtime(
-        window,
-        runtime_root,
-        component,
-        major,
-        normalized_download_threads,
-    )?;
+
+    if force_x64 {
+        // The game ships only x64 native libs (old LWJGL); the JVM must be x64 too, so
+        // it runs under Rosetta 2 / Windows-on-ARM emulation. A native-arch JVM here
+        // would fail to load the natives (UnsatisfiedLinkError).
+        let key = x64_key
+            .ok_or_else(|| format!("No x64 Mojang runtime platform for major={major}"))?;
+        if !install_mojang_java_runtime(window, runtime_root, component, major, normalized_download_threads, &[key])? {
+            return Err(format!("No x64 Mojang runtime available for {component}"));
+        }
+    } else {
+        // 1) Mojang's runtime for the native CPU arch (no emulation).
+        let native = native_key
+            .ok_or_else(|| format!("Unsupported platform for Mojang runtime, major={major}"))?;
+        let installed =
+            install_mojang_java_runtime(window, runtime_root, component, major, normalized_download_threads, &[native])?;
+        if !installed {
+            // 2) Mojang has no native build (e.g. macOS arm64 + Java 8/16). Try a native
+            //    third-party JRE before considering emulation.
+            emit_log(
+                window,
+                "info",
+                &format!("No native Mojang runtime for {component}; fetching native JRE for major={major}"),
+            );
+            match install_native_jre_archive(window, runtime_root, major, normalized_download_threads) {
+                Ok(()) => {}
+                Err(native_err) => {
+                    // 3) Last resort: Mojang's x64 build via emulation.
+                    emit_log(
+                        window,
+                        "warn",
+                        &format!("Native JRE unavailable ({native_err}); falling back to emulated x64 runtime"),
+                    );
+                    let key = x64_key
+                        .ok_or_else(|| format!("No Java runtime available for major={major}"))?;
+                    if !install_mojang_java_runtime(window, runtime_root, component, major, normalized_download_threads, &[key])? {
+                        return Err(format!("No Java runtime available for major={major}"));
+                    }
+                }
+            }
+        }
+    }
 
     locate_java_binary(runtime_root)
         .ok_or_else(|| "JDK extracted but java executable not found".to_string())
@@ -6032,7 +6233,6 @@ fn apply_windows_silent_spawn(_command: &mut Command) {}
 
 fn pump_game_stream<R: Read + Send + 'static>(
     stream: R,
-    window: tauri::Window,
     level: &'static str,
 ) -> thread::JoinHandle<()> {
     thread::spawn(move || {
@@ -6049,14 +6249,10 @@ fn pump_game_stream<R: Read + Send + 'static>(
                     if line.is_empty() {
                         continue;
                     }
-                    let line_for_emit = line.clone();
-                    let _ = window.emit(
-                        "game-log",
-                        CoreLogEvent {
-                            level: level.to_string(),
-                            message: line_for_emit,
-                        },
-                    );
+                    // The UI reads game output by polling `poll_ui_logs`, so we only
+                    // need to record it in the store. Emitting a Tauri event per line
+                    // (nothing listens) flooded the process with serialization/IPC for
+                    // every Minecraft log line — a major CPU sink during gameplay.
                     push_ui_log("game", level, &line);
                 }
                 Err(_) => break,
@@ -6262,9 +6458,10 @@ async fn install_forge(
             Some(value) => value,
             None => ensure_managed_jdk_runtime(
                 Some(&window),
-                &managed_jdk_runtime_root(&game_dir_path, 17),
+                &managed_jdk_runtime_root(&game_dir_path, 17, false),
                 17,
                 Some(normalized_download_threads as i32),
+                false,
             )?
             .to_string_lossy()
             .to_string(),
@@ -6390,6 +6587,53 @@ pub(crate) fn emit_launch_prepare_ipc(
     push_ui_log("core", "stderr", &line);
 }
 
+/// Emits a per-item launch-prepare event (a single downloaded file) so the prepare
+/// dialog can show it as a file row under the given phase, like the install phases do.
+#[allow(clippy::too_many_arguments)]
+fn emit_launch_prepare_item(
+    session: Option<&str>,
+    event: &str,
+    phase: &str,
+    item_id: &str,
+    item_name: &str,
+    item_kind: &str,
+    current_bytes: Option<i64>,
+    total_bytes: Option<i64>,
+    cached: Option<bool>,
+    message: &str,
+) {
+    let Some(session) = session.filter(|value| !value.trim().is_empty()) else {
+        return;
+    };
+    let mut payload = serde_json::Map::new();
+    payload.insert("channel".to_string(), "launch-prepare".into());
+    payload.insert("session".to_string(), session.trim().into());
+    payload.insert("event".to_string(), event.into());
+    payload.insert("phase".to_string(), phase.into());
+    payload.insert("stage".to_string(), "download".into());
+    payload.insert("itemId".to_string(), item_id.into());
+    payload.insert("itemName".to_string(), item_name.into());
+    payload.insert("itemKind".to_string(), item_kind.into());
+    if let Some(current_bytes) = current_bytes {
+        payload.insert("itemCurrentBytes".to_string(), current_bytes.into());
+    }
+    if let Some(total_bytes) = total_bytes {
+        payload.insert("itemTotalBytes".to_string(), total_bytes.into());
+    }
+    if let Some(cached) = cached {
+        payload.insert("itemCached".to_string(), cached.into());
+    }
+    if !message.trim().is_empty() {
+        payload.insert("message".to_string(), message.into());
+    }
+    let line = format!(
+        "[ipc]{}",
+        serde_json::to_string(&serde_json::Value::Object(payload))
+            .unwrap_or_else(|_| "{}".to_string())
+    );
+    push_ui_log("core", "stderr", &line);
+}
+
 fn strip_windows_verbatim_prefix(path: &Path) -> PathBuf {
     let raw = path.to_string_lossy();
     if cfg!(windows) {
@@ -6410,59 +6654,76 @@ fn mojang_java_component_for_major(major: i32) -> &'static str {
     match major {
         25.. => "java-runtime-epsilon",
         21..=24 => "java-runtime-delta",
-        17..=20 => "java-runtime-beta",
+        // gamma and beta are both Java 17, but gamma is the current component and ships
+        // a native arm64 build while beta does not — prefer gamma to stay off Rosetta.
+        17..=20 => "java-runtime-gamma",
         16 => "java-runtime-alpha",
         _ => "jre-legacy",
     }
 }
 
-fn mojang_java_platform_key() -> Option<&'static str> {
+/// Mojang java-runtime platform keys to try, in priority order. On ARM platforms the
+/// older runtimes (jre-legacy / java-runtime-alpha, used by MC ≤ 1.16) ship no native
+/// arm64 build, so we fall back to the x64 build — it runs under Rosetta 2 (macOS) or
+/// Windows-on-ARM emulation. Newer runtimes resolve to the native arm64 build first.
+fn mojang_java_platform_keys() -> Vec<&'static str> {
     if cfg!(windows) {
         match env::consts::ARCH {
-            "x86" | "i686" => Some("windows-x86"),
-            "x86_64" => Some("windows-x64"),
-            "aarch64" => Some("windows-arm64"),
-            _ => None,
+            "x86" | "i686" => vec!["windows-x86"],
+            "x86_64" => vec!["windows-x64"],
+            "aarch64" => vec!["windows-arm64", "windows-x64"],
+            _ => Vec::new(),
         }
     } else if cfg!(target_os = "linux") {
         match env::consts::ARCH {
-            "x86" | "i686" => Some("linux-i386"),
-            "x86_64" => Some("linux"),
-            _ => None,
+            "x86" | "i686" => vec!["linux-i386"],
+            "x86_64" => vec!["linux"],
+            _ => Vec::new(),
         }
     } else if cfg!(target_os = "macos") {
         match env::consts::ARCH {
-            "x86_64" => Some("mac-os"),
-            "aarch64" => Some("mac-os-arm64"),
-            _ => None,
+            "x86_64" => vec!["mac-os"],
+            "aarch64" => vec!["mac-os-arm64", "mac-os"],
+            _ => Vec::new(),
         }
     } else {
-        None
+        Vec::new()
     }
 }
 
+/// Installs a Mojang java-runtime `component`, trying each platform key in order and
+/// using the first that ships a build. Returns `Ok(false)` when none of the given
+/// platforms have the component (so the caller can decide on a fallback), `Ok(true)`
+/// when a runtime was installed.
 fn install_mojang_java_runtime(
     window: Option<&tauri::Window>,
     runtime_root: &Path,
     component: &str,
     major: i32,
     download_threads: usize,
-) -> Result<(), String> {
-    let platform = mojang_java_platform_key()
-        .ok_or_else(|| format!("Unsupported platform for Mojang runtime, major={major}"))?;
+    platform_keys: &[&str],
+) -> Result<bool, String> {
+    if platform_keys.is_empty() {
+        return Err(format!("Unsupported platform for Mojang runtime, major={major}"));
+    }
     let all_downloads: MojangJavaAllDownloads =
         fetch_json(window, "Mojang Java all.json", MOJANG_JAVA_ALL_JSON_URL)?;
-    let platform_downloads = all_downloads
-        .get(platform)
-        .ok_or_else(|| format!("Mojang runtime platform not found: {platform}"))?;
-    let candidates = platform_downloads
-        .get(component)
-        .ok_or_else(|| format!("Mojang runtime component not found: {component}"))?;
-    let candidate = candidates
-        .iter()
-        .find(|item| parse_java_major_version(&item.version.name) >= major)
-        .or_else(|| candidates.first())
-        .ok_or_else(|| format!("No Mojang runtime candidate found for {component}"))?;
+    // Pick the first platform that actually ships a build for this component.
+    let selected = platform_keys.iter().find_map(|platform| {
+        let candidates = all_downloads.get(*platform)?.get(component)?;
+        if candidates.is_empty() {
+            return None;
+        }
+        let candidate = candidates
+            .iter()
+            .find(|item| parse_java_major_version(&item.version.name) >= major)
+            .or_else(|| candidates.first())?;
+        Some((*platform, candidate))
+    });
+    let (platform, candidate) = match selected {
+        Some(found) => found,
+        None => return Ok(false),
+    };
 
     emit_log(
         window,
@@ -6476,6 +6737,102 @@ fn install_mojang_java_runtime(
     let manifest: MojangJavaManifest =
         fetch_json(window, "Mojang Java manifest", &candidate.manifest.url)?;
     download_mojang_runtime_files(window, runtime_root, &manifest, download_threads)?;
+    Ok(true)
+}
+
+/// A native third-party JRE (Azul Zulu) used when Mojang ships no native build for this
+/// CPU — e.g. Apple Silicon needs Java 8/16, which Mojang only provides as x64. Running
+/// a native arm64 build keeps the game off Rosetta 2.
+#[derive(Debug, Deserialize)]
+struct AzulPackage {
+    name: String,
+    download_url: String,
+    sha256_hash: String,
+}
+
+fn azul_os() -> Option<&'static str> {
+    if cfg!(windows) {
+        Some("windows")
+    } else if cfg!(target_os = "linux") {
+        Some("linux")
+    } else if cfg!(target_os = "macos") {
+        Some("macos")
+    } else {
+        None
+    }
+}
+
+fn azul_arch() -> Option<&'static str> {
+    match env::consts::ARCH {
+        "aarch64" => Some("aarch64"),
+        "x86_64" => Some("x64"),
+        "x86" | "i686" => Some("x86"),
+        _ => None,
+    }
+}
+
+/// Downloads and extracts a native Zulu JRE for the given Java major into `runtime_root`.
+fn install_native_jre_archive(
+    window: Option<&tauri::Window>,
+    runtime_root: &Path,
+    major: i32,
+    download_threads: usize,
+) -> Result<(), String> {
+    let os = azul_os().ok_or_else(|| "Unsupported OS for native JRE".to_string())?;
+    let arch = azul_arch().ok_or_else(|| "Unsupported CPU arch for native JRE".to_string())?;
+    let archive_type = if cfg!(windows) { "zip" } else { "tar.gz" };
+    let api_url = format!(
+        "https://api.azul.com/metadata/v1/zulu/packages/?java_version={major}&os={os}&arch={arch}\
+&archive_type={archive_type}&java_package_type=jre&javafx_bundled=false&latest=true\
+&release_status=ga&page_size=1&include_fields=sha256_hash,download_url"
+    );
+    let packages: Vec<AzulPackage> = fetch_json(window, "Azul Zulu metadata", &api_url)?;
+    let package = packages.into_iter().next().ok_or_else(|| {
+        format!("No native Zulu JRE available for Java {major} on {os}/{arch}")
+    })?;
+
+    emit_log(
+        window,
+        "info",
+        &format!("Downloading JDK {} (native {arch})", package.name),
+    );
+    let archive_path = runtime_root.join(format!(".zulu-download.{archive_type}"));
+    download_file_blocking(window, "native-jre", &package.download_url, &archive_path, download_threads)?;
+    verify_file_sha256(&archive_path, &package.sha256_hash)
+        .map_err(|e| format!("Native JRE checksum failed: {e}"))?;
+
+    emit_log(window, "info", "Extracting JDK archive");
+    let extract_result = if archive_type == "zip" {
+        extract_zip_into(&archive_path, runtime_root)
+    } else {
+        extract_tar_gz_into(&archive_path, runtime_root)
+    };
+    let _ = fs::remove_file(&archive_path);
+    extract_result?;
+    Ok(())
+}
+
+fn extract_tar_gz_into(archive_path: &Path, dest: &Path) -> Result<(), String> {
+    let file = fs::File::open(archive_path)
+        .map_err(|e| format!("Failed opening archive {}: {e}", archive_path.display()))?;
+    let decoder = flate2::read::GzDecoder::new(BufReader::new(file));
+    let mut archive = tar::Archive::new(decoder);
+    archive.set_preserve_permissions(true);
+    archive.set_overwrite(true);
+    archive
+        .unpack(dest)
+        .map_err(|e| format!("Failed extracting JRE archive: {e}"))?;
+    Ok(())
+}
+
+fn extract_zip_into(archive_path: &Path, dest: &Path) -> Result<(), String> {
+    let file = fs::File::open(archive_path)
+        .map_err(|e| format!("Failed opening archive {}: {e}", archive_path.display()))?;
+    let mut archive =
+        zip::ZipArchive::new(file).map_err(|e| format!("Invalid JRE archive: {e}"))?;
+    archive
+        .extract(dest)
+        .map_err(|e| format!("Failed extracting JRE archive: {e}"))?;
     Ok(())
 }
 
@@ -6617,7 +6974,14 @@ fn process_mojang_runtime_entry(
     entry: &MojangJavaRemoteEntry,
     download_threads: usize,
 ) -> Result<bool, String> {
-    let target = runtime_root.join(relative_path.replace('/', "\\"));
+    // Manifest paths are always forward-slash separated. Join component-by-component so
+    // the OS separator is used on every platform — `replace('/', "\\")` would create a
+    // single file literally named "a\b\c" on macOS/Linux (where '\' isn't a separator).
+    let target = relative_path
+        .replace('\\', "/")
+        .split('/')
+        .filter(|component| !component.is_empty() && *component != ".." && *component != ".")
+        .fold(runtime_root.to_path_buf(), |acc, component| acc.join(component));
     match entry.entry_type.as_str() {
         "directory" => {
             fs::create_dir_all(&target).map_err(|e| e.to_string())?;
@@ -8387,6 +8751,7 @@ fn main() {
             install_launcher_version_mods,
             list_vanilla_versions,
             install_vanilla,
+            verify_installed_files,
             build_vanilla_launch_plan,
             launch_vanilla,
             cancel_install,

@@ -236,10 +236,12 @@ export type LaunchPrepareItemStatus = "pending" | "running" | "done" | "cached" 
 export type LaunchPreparePhaseKey =
   | "login"
   | "check-instance"
+  | "verify"
   | "vanilla"
   | "fabric"
   | "forge"
   | "optifine"
+  | "mods"
   | "runtime"
   | "launch";
 
