@@ -9,9 +9,9 @@ use std::fs;
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum DownloadSource {
@@ -2258,7 +2258,7 @@ fn download_file_with_ipc(
 
     emit_download_item_start(window, session, artifact, Some(0), None, "Queued");
     let tmp = target.with_extension("download");
-    let client = build_blocking_http_client()?;
+    let client = download_http_client()?;
     let mut last_error = None;
     for url in urls {
         for attempt in 1..=DOWNLOAD_RETRY_ATTEMPTS {
@@ -2321,6 +2321,7 @@ fn download_file_with_ipc(
             let mut buffer = [0_u8; DOWNLOAD_PROGRESS_CHUNK_SIZE];
             let mut downloaded_bytes = 0_u64;
             let mut stream_failed = None::<String>;
+            let mut last_progress_emit = Instant::now();
             loop {
                 install_cancel_error(session)?;
                 match response.read(&mut buffer) {
@@ -2331,14 +2332,17 @@ fn download_file_with_ipc(
                             break;
                         }
                         downloaded_bytes += read_bytes as u64;
-                        emit_download_item_progress(
-                            window,
-                            session,
-                            artifact,
-                            Some(downloaded_bytes),
-                            total,
-                            "Downloading",
-                        );
+                        if last_progress_emit.elapsed() >= DOWNLOAD_PROGRESS_EMIT_INTERVAL {
+                            last_progress_emit = Instant::now();
+                            emit_download_item_progress(
+                                window,
+                                session,
+                                artifact,
+                                Some(downloaded_bytes),
+                                total,
+                                "Downloading",
+                            );
+                        }
                     }
                     Err(error) => {
                         stream_failed = Some(format!("Failed reading {label} response from {url}: {error}"));
@@ -3110,6 +3114,22 @@ struct DownloadJob {
 }
 
 const DOWNLOAD_RETRY_ATTEMPTS: usize = 3;
+// Progress IPC per item at most this often; the dialog only refreshes on a 500ms
+// poll, so per-64KB-chunk events were pure serialization overhead.
+const DOWNLOAD_PROGRESS_EMIT_INTERVAL: Duration = Duration::from_millis(200);
+
+// One shared HTTP client for all file downloads. reqwest pools keep-alive connections
+// per client, so building a client per file (the previous behavior) forced a fresh
+// DNS + TCP + TLS handshake for every one of the thousands of small asset/library
+// files — the dominant cost of an install, far ahead of actual transfer time.
+fn download_http_client() -> Result<&'static reqwest::blocking::Client, String> {
+    static CLIENT: OnceLock<reqwest::blocking::Client> = OnceLock::new();
+    if let Some(client) = CLIENT.get() {
+        return Ok(client);
+    }
+    let client = build_blocking_http_client()?;
+    Ok(CLIENT.get_or_init(|| client))
+}
 
 fn download_jobs_in_parallel(
     window: Option<&tauri::Window>,
