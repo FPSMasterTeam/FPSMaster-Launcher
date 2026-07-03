@@ -1,7 +1,7 @@
 import { getVersion as getAppVersion } from "@tauri-apps/api/app";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { listen } from "@tauri-apps/api/event";
+import { listen, TauriEvent } from "@tauri-apps/api/event";
 import packageInfo from "../package.json";
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import AppBackground from "./components/AppBackground";
@@ -56,7 +56,7 @@ import {
   isLegacyDefaultGameDir,
   loaderLabelKey
 } from "./lib/instance";
-import { ensureJdk, syncAutostart, syncTrayBehavior } from "./lib/system";
+import { ensureJdk, openMonitor, syncAutostart, syncTrayBehavior } from "./lib/system";
 import { createPresetPackageStatus, resolvePresetAccessState } from "./lib/presetPackage";
 import { useLauncherUpdate } from "./hooks/useLauncherUpdate";
 import { useLauncherData } from "./hooks/useLauncherData";
@@ -108,7 +108,6 @@ import {
   createPhaseState,
   createLaunchPrepareDialogState,
   createSessionId,
-  nowMs,
   applyTheme,
   loadInstances,
   loadSettings,
@@ -141,7 +140,8 @@ async function cachedLoaderLookup<T>(key: string, run: () => Promise<T>): Promis
 
 const EMPTY_LAUNCHER_VERSIONS: LauncherVersionMap = {
   EDGE: null,
-  NOVA: null
+  NOVA: null,
+  EXTREME: null
 };
 
 // Returns a referentially-stable function that always calls the latest `fn`.
@@ -159,6 +159,19 @@ export function App() {
     applyTheme(settings.themeMode, settings.themeAccent, settings.customAccentHex);
   }, []);
 
+  // The runtime monitor opens as its own webview window pointed at
+  // `/?view=monitor&...` (see openMonitor in lib/system.ts).
+  const params = new URLSearchParams(window.location.search);
+  if (params.get("view") === "monitor") {
+    const locale = resolveLocale(params.get("lang") ?? readStoredLocale());
+    return (
+      <I18nProvider locale={locale} onLocaleChange={() => {}}>
+        <Suspense fallback={<PageFallback />}>
+          <MonitorPage params={params} />
+        </Suspense>
+      </I18nProvider>
+    );
+  }
   return <Launcher />;
 }
 
@@ -190,12 +203,6 @@ function Launcher() {
   const [launchProgressPercent, setLaunchProgressPercent] = useState<number | null>(null);
   const [launchProgressText, setLaunchProgressText] = useState("");
   const [monitorWindowOpen, setMonitorWindowOpen] = useState(false);
-  const [activeMonitor, setActiveMonitor] = useState<{
-    pid: number;
-    version: string;
-    cursor: number;
-    startedAt: number;
-  } | null>(null);
 
   const [installDialog, setInstallDialog] = useState<InstallDialogState | null>(null);
   const [launchPrepareDialog, setLaunchPrepareDialog] = useState<LaunchPrepareDialogState | null>(null);
@@ -690,7 +697,7 @@ function Launcher() {
   }
 
   function pickLatestLauncherVersions(entries: LauncherVersion[]): LauncherVersionMap {
-    const out: LauncherVersionMap = { EDGE: null, NOVA: null };
+    const out: LauncherVersionMap = { EDGE: null, NOVA: null, EXTREME: null };
     const scoreOf = (item: LauncherVersion): number => {
       const raw = item.createdAt ?? "";
       const parsed = Date.parse(raw);
@@ -698,7 +705,8 @@ function Launcher() {
     };
 
     for (const item of entries) {
-      if (item.versionType !== "EDGE" && item.versionType !== "NOVA") continue;
+      if (item.versionType !== "EDGE" && item.versionType !== "NOVA" && item.versionType !== "EXTREME")
+        continue;
       if (!isLauncherVersionCompatible(currentLauncherVersion, item.minLauncherVersion)) continue;
       const current = out[item.versionType];
       const shouldReplace =
@@ -913,18 +921,36 @@ function Launcher() {
       return;
     }
 
-    setActiveMonitor({
-      pid: launchResult.pid,
-      version: current.name,
-      cursor: logCursorRef.current ?? 0,
-      startedAt: nowMs()
-    });
-    setMonitorWindowOpen(true);
-    setActiveGamePid(launchResult.pid);
-    setStatus(t("app.status.gameStarted", { pid: launchResult.pid }));
+    await openMonitorForLaunch(launchResult.pid, current.name);
     completeLaunchPrepare();
     setBusy(false);
     setLaunchingInstanceId(null);
+  }
+
+  // Opens the runtime monitor as its own webview window and wires the launcher-side
+  // bookkeeping (activeGamePid, monitorWindowOpen). Failure to open the window is
+  // non-fatal: the game keeps running and the launcher reports it via status.
+  async function openMonitorForLaunch(pid: number, instanceName: string) {
+    try {
+      const monitorWindow = await openMonitor(pid, instanceName, logCursorRef.current ?? 0, settings.language);
+      setMonitorWindowOpen(true);
+      void monitorWindow.once(TauriEvent.WINDOW_DESTROYED, () => {
+        setMonitorWindowOpen(false);
+      });
+      if (settings.hideMainOnLaunch) {
+        await getCurrentWindow().hide();
+      }
+      setActiveGamePid(pid);
+      setStatus(t("app.status.gameStarted", { pid }));
+    } catch (error) {
+      setActiveGamePid(pid);
+      setStatus(
+        t("app.status.gameStartedMonitorFailed", {
+          pid,
+          error: String(error)
+        })
+      );
+    }
   }
 
   function persistLauncherLoginPrefs(next: LauncherLoginPrefs) {
@@ -1520,6 +1546,13 @@ function Launcher() {
       setActiveGamePid(null);
     }
 
+    // FPSMaster-Extreme is a native binary, not a Java instance — install and
+    // launch it through the native-app path instead of the vanilla pipeline.
+    if (target.launcherVersionType === "EXTREME") {
+      await launchExtreme(target);
+      return;
+    }
+
     const sessionId = createSessionId();
     openLaunchPrepare(target, sessionId);
     markLaunchPreparePhase("check-instance", "running", "prepare", t("launch.progress.checkInstance"));
@@ -1585,15 +1618,106 @@ function Launcher() {
       return;
     }
 
-    setActiveMonitor({
-      pid: launchResult.pid,
-      version: target.name,
-      cursor: logCursorRef.current ?? 0,
-      startedAt: nowMs()
-    });
-    setMonitorWindowOpen(true);
-    setActiveGamePid(launchResult.pid);
-    setStatus(t("app.status.gameStarted", { pid: launchResult.pid }));
+    await openMonitorForLaunch(launchResult.pid, target.name);
+    completeLaunchPrepare();
+    setBusy(false);
+    setLaunchingInstanceId(null);
+  }
+
+  // Install + launch the native FPSMaster-Extreme client. Bypasses the Java
+  // vanilla/loader pipeline: downloads the native tarball (install_native_app),
+  // best-effort extracts vanilla 1.8.9 assets (prepare_extreme_assets), then
+  // spawns the binary (launch_native_app). See MiniCraft/docs/LAUNCHER_INTEGRATION.md.
+  async function launchExtreme(target: Instance) {
+    const sessionId = createSessionId();
+    openLaunchPrepare(target, sessionId);
+    setLaunchError(null);
+    setLaunchingInstanceId(target.id);
+    setLaunchProgressPercent(0);
+    setBusy(true);
+    setStatus(t("app.status.launching", { name: target.name }));
+
+    let launchResult: LaunchExecutionResult | null = null;
+    try {
+      // 1. Resolve the EXTREME distributable from the backend registry.
+      const token = launcherAuth?.token?.trim() ?? "";
+      let targetVersion = launcherVersions.EXTREME;
+      if (!targetVersion && token) {
+        const refresh = await refreshLauncherVersions(true, token);
+        if (refresh.error) throw new Error(refresh.error);
+        targetVersion = refresh.map?.EXTREME ?? null;
+      }
+      if (!targetVersion) {
+        throw new Error(t("app.status.authRequiredForPreset"));
+      }
+      if (!isLauncherVersionCompatible(currentLauncherVersion, targetVersion.minLauncherVersion)) {
+        throw new Error(
+          t("app.status.launcherUpgradeRequired", { required: targetVersion.minLauncherVersion ?? "-" })
+        );
+      }
+
+      // 2. Download + install the native binary.
+      markLaunchPreparePhase("check-instance", "running", "prepare", t("launch.progress.checkInstance"));
+      setLaunchProgressPercent(20);
+      setLaunchProgressText(t("launch.progress.checkInstance"));
+      await invoke("install_native_app", {
+        gameDir: settings.gameDir,
+        versionId: target.versionId,
+        downloadUrl: targetVersion.downloadUrl,
+        versionTag: targetVersion.versionName,
+        checksum: targetVersion.checksum
+      });
+      markLaunchPreparePhase("check-instance", "done", "complete", t("launch.progress.checkInstance"));
+
+      // 3. Best-effort: extract vanilla 1.8.9 assets to feed the client (§5). If
+      // no 1.8.9 client jar is present yet, launch without --assets and let the
+      // client fall back to its own resolution.
+      markLaunchPreparePhase("runtime", "running", "prepare", t("launch.progress.prepareRuntime"));
+      setLaunchProgressPercent(55);
+      setLaunchProgressText(t("launch.progress.prepareRuntime"));
+      let assetsPath: string | undefined;
+      try {
+        assetsPath = await invoke<string>("prepare_extreme_assets", {
+          gameDir: settings.gameDir,
+          versionId: target.versionId
+        });
+      } catch {
+        assetsPath = undefined;
+      }
+      markLaunchPreparePhase("runtime", "done", "complete", t("launch.progress.prepareRuntime"));
+
+      // 4. Spawn the native process (offline username for v1; see §7).
+      markLaunchPreparePhase("launch", "running", "prepare", t("launch.progress.buildCommand"));
+      setLaunchProgressPercent(85);
+      setLaunchProgressText(t("launch.progress.buildCommand"));
+      const playerName = settings.playerName?.trim() || "FPSMaster";
+      launchResult = await invoke<LaunchExecutionResult>("launch_native_app", {
+        gameDir: settings.gameDir,
+        versionId: target.versionId,
+        playerName,
+        assetsPath,
+        waitForExit: false
+      });
+      setLaunchProgressPercent(100);
+      setLaunchProgressText(t("launch.progress.startingGame"));
+      markLaunchPreparePhase("launch", "done", "complete", t("launch.progress.startingGame"));
+    } catch (error) {
+      const errorText = formatLaunchError(error);
+      setStatus(t("app.status.launchFailed", { error: errorText }));
+      setLaunchError(errorText);
+      failLaunchPrepare(errorText);
+      setBusy(false);
+      setLaunchingInstanceId(null);
+      return;
+    }
+
+    if (!launchResult) {
+      setBusy(false);
+      setLaunchingInstanceId(null);
+      return;
+    }
+
+    await openMonitorForLaunch(launchResult.pid, target.name);
     completeLaunchPrepare();
     setBusy(false);
     setLaunchingInstanceId(null);
@@ -1971,13 +2095,6 @@ function Launcher() {
     setLaunchPrepareDialog(null);
   }
 
-  // Back to the launcher from the in-window monitor. The game keeps running; the
-  // launcher's runtime probe (now ungated) reconciles activeGamePid once it exits.
-  function closeActiveMonitor() {
-    setActiveMonitor(null);
-    setMonitorWindowOpen(false);
-  }
-
   function openLaunchPrepare(instance: Instance, sessionId: string) {
     setLaunchPrepareDialog(
       createLaunchPrepareDialogState(
@@ -2291,43 +2408,32 @@ function Launcher() {
       onLocaleChange={stableOnLocaleChange}
     >
       <div className="launcher-shell relative flex h-screen w-screen overflow-hidden bg-[var(--bg-primary)] text-[var(--text-primary)] select-none pixel-pattern">
+        {/* Drop the blurred full-window background while the monitor window is open:
+            the game hogs the GPU, and a live-blurred compositor layer is the single
+            most expensive thing this window paints. */}
         <AppBackground
-          url={activeBackgroundUrl}
+          url={monitorWindowOpen ? null : activeBackgroundUrl}
           opacity={settings.backgroundOpacity}
           blur={settings.backgroundBlur}
         />
         <WindowTitleBar authenticated={authenticated} onClose={stableCloseWindow} />
 
         {authenticated ? (
-          activeMonitor ? (
-            <div className="relative z-10 flex h-full w-full flex-1 flex-col pt-10">
-              <Suspense fallback={<PageFallback />}>
-                <MonitorPage
-                  pid={activeMonitor.pid}
-                  version={activeMonitor.version}
-                  initialCursor={activeMonitor.cursor}
-                  startedAt={activeMonitor.startedAt}
-                  onClose={closeActiveMonitor}
-                />
-              </Suspense>
-            </div>
-          ) : (
-            <div className="relative z-10 flex h-full w-full flex-1 pt-10">
-              <Sidebar
-                currentPage={page}
-                user={launcherAuth?.user ?? null}
-                setPage={stableNavigate}
-              />
+          <div className="relative z-10 flex h-full w-full flex-1 pt-10">
+            <Sidebar
+              currentPage={page}
+              user={launcherAuth?.user ?? null}
+              setPage={stableNavigate}
+            />
 
-              <main className="relative flex-1 overflow-hidden border-l border-white/5 bg-[var(--bg-secondary)]/34">
-                <div key={page} className="relative z-10 h-full page-transition">
-                  <Suspense fallback={<PageFallback />}>
-                    <PageRouter ctx={routerContext} />
-                  </Suspense>
-                </div>
-              </main>
-            </div>
-          )
+            <main className="relative flex-1 overflow-hidden border-l border-white/5 bg-[var(--bg-secondary)]/34">
+              <div key={page} className="relative z-10 h-full page-transition">
+                <Suspense fallback={<PageFallback />}>
+                  <PageRouter ctx={routerContext} />
+                </Suspense>
+              </div>
+            </main>
+          </div>
         ) : (
           <main className="relative z-10 flex h-full w-full flex-1 items-center justify-center overflow-hidden px-6 py-8">
             <LoginPage
