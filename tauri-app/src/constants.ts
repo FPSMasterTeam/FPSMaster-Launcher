@@ -71,6 +71,20 @@ export const PRESET_INSTANCES: readonly Instance[] = [
     launcherVersionType: "NOVA",
     iconPath: "/instance-icons/nova.png",
     preset: true
+  },
+  {
+    // Native Rust client (fpsmaster_app), not a Java instance — installed and
+    // launched via the launcher's native-app path, not the vanilla/loader
+    // pipeline. `baseVersion`/`loader` are informational only; the
+    // `launcherVersionType: "EXTREME"` discriminator drives the native path.
+    id: "preset-extreme",
+    name: "FPSMaster Extreme (1.8.9)",
+    versionId: "FPSMaster-Extreme",
+    baseVersion: "1.8.9",
+    loader: "vanilla",
+    launcherVersionType: "EXTREME",
+    iconPath: "/instance-icons/extreme.png",
+    preset: true
   }
 ];
 
@@ -80,6 +94,9 @@ export function resolvePresetVersionId(instanceId: string): string | null {
   }
   if (instanceId === "preset-1.20.1-fabric") {
     return "FPSMaster-Nova";
+  }
+  if (instanceId === "preset-extreme") {
+    return "FPSMaster-Extreme";
   }
   return null;
 }

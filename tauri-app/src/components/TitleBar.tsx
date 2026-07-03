@@ -55,12 +55,19 @@ export default function TitleBar({ title, subtitle, onClose }: TitleBarProps) {
       setIsMaximized(await win.isMaximized());
     });
 
+  // Tauri only starts a window drag when the mousedown TARGET itself carries
+  // data-tauri-drag-region, so every element layered over the bar needs the
+  // attribute too — the header alone is almost fully covered by its children.
   return (
     <header className="customTitlebar" data-tauri-drag-region onDoubleClick={() => void toggleMaximize()}>
-      <div className="titleMain">
-        <div className="titleDragRegion">
-          <p className="titleText">{title}</p>
-          <p className="titleSubtext">{subtitle ?? ""}</p>
+      <div className="titleMain" data-tauri-drag-region>
+        <div className="titleDragRegion" data-tauri-drag-region>
+          <p className="titleText" data-tauri-drag-region>
+            {title}
+          </p>
+          <p className="titleSubtext" data-tauri-drag-region>
+            {subtitle ?? ""}
+          </p>
         </div>
       </div>
       <div className="titleControls window-no-drag">

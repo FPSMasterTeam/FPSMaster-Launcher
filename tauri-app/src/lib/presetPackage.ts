@@ -26,11 +26,14 @@ export function resolvePresetAccessState(
   if (instance.launcherVersionType === "EDGE") {
     return { state: "ok" };
   }
-  const version = versionMap.NOVA;
+  // NOVA and EXTREME are gated: each resolves against its own catalog entry, which is only
+  // present once released (and, for premium channels, once the account is entitled).
+  const version = versionMap[instance.launcherVersionType];
   if (!version) {
+    const label = instance.launcherVersionType === "EXTREME" ? "Extreme" : "Nova";
     return {
       state: "pending-release",
-      lastError: "Nova has not been released yet."
+      lastError: `${label} has not been released yet.`
     };
   }
   return {

@@ -591,6 +591,7 @@ struct UiLogStore {
 }
 
 static UI_LOG_STORE: OnceLock<Mutex<UiLogStore>> = OnceLock::new();
+static PROCESS_MEMORY_SAMPLER: OnceLock<Mutex<sysinfo::System>> = OnceLock::new();
 static GAME_RUNTIME_STARTS: OnceLock<Mutex<HashMap<i64, std::time::Instant>>> = OnceLock::new();
 static GAME_RUNTIME_CACHE: OnceLock<Mutex<HashMap<i64, CachedGameRuntimeStats>>> = OnceLock::new();
 static GAME_RUNTIME_SAMPLER_STARTED: OnceLock<()> = OnceLock::new();
@@ -601,6 +602,8 @@ const TRAY_HIDE_ID: &str = "tray_hide";
 const TRAY_QUIT_ID: &str = "tray_quit";
 const GAME_RUNTIME_CACHE_TTL_MS: u128 = 3000;
 const GAME_RUNTIME_SAMPLE_INTERVAL_MS: u64 = 2000;
+// The monitor UI keeps at most 1000 log lines, so poll batches beyond that are wasted work.
+const UI_LOG_POLL_MAX_ENTRIES: usize = 1000;
 #[derive(Debug, Clone, Serialize)]
 struct GameRuntimeStats {
     pid: i64,
@@ -913,19 +916,25 @@ fn flush_launcher_telemetry_session(app: &AppHandle) {
     }
 }
 
+// Async so it runs on the async runtime instead of the main thread: polls arrive
+// every second while the game is running, and cloning + serializing a log batch on
+// the main thread stalls window event handling (visible jank under game load).
 #[tauri::command]
-fn poll_ui_logs(after_seq: Option<u64>) -> UiLogPollResult {
+async fn poll_ui_logs(after_seq: Option<u64>) -> UiLogPollResult {
     if let Ok(store) = ui_log_store().lock() {
-        let entries = if let Some(after) = after_seq {
-            store
-                .entries
-                .iter()
-                .filter(|entry| entry.seq > after)
-                .cloned()
-                .collect()
-        } else {
-            store.entries.iter().cloned().collect()
-        };
+        // The UI keeps at most 1000 lines, so returning more per poll is pure
+        // serialization waste; on a burst (or first poll over the full backlog)
+        // an uncapped batch can be thousands of entries. nextSeq still advances
+        // past the skipped entries — older lines are dropped, never re-sent.
+        let matches = |entry: &&UiLogEntry| after_seq.map_or(true, |after| entry.seq > after);
+        let matched = store.entries.iter().filter(matches).count();
+        let entries = store
+            .entries
+            .iter()
+            .filter(matches)
+            .skip(matched.saturating_sub(UI_LOG_POLL_MAX_ENTRIES))
+            .cloned()
+            .collect();
         return UiLogPollResult {
             entries,
             next_seq: store.next_seq,
@@ -937,8 +946,9 @@ fn poll_ui_logs(after_seq: Option<u64>) -> UiLogPollResult {
     }
 }
 
+// Async for the same reason as poll_ui_logs: keep the periodic poll off the main thread.
 #[tauri::command]
-fn poll_game_runtime(pid: i64) -> Result<GameRuntimeStats, String> {
+async fn poll_game_runtime(pid: i64) -> Result<GameRuntimeStats, String> {
     if pid <= 0 {
         return Err("Invalid pid".to_string());
     }
@@ -1072,8 +1082,16 @@ fn create_tray(app: &AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+// spawn_blocking: this sleeps and spawns kill/taskkill subprocesses — on the main
+// thread that froze the whole window for ~0.5s when stopping the game.
 #[tauri::command]
-fn terminate_game_process(pid: i64, force: Option<bool>) -> Result<bool, String> {
+async fn terminate_game_process(pid: i64, force: Option<bool>) -> Result<bool, String> {
+    tauri::async_runtime::spawn_blocking(move || terminate_game_process_blocking(pid, force))
+        .await
+        .map_err(|e| format!("Failed to join terminate task: {e}"))?
+}
+
+fn terminate_game_process_blocking(pid: i64, force: Option<bool>) -> Result<bool, String> {
     if pid <= 0 {
         return Err("Invalid pid".to_string());
     }
@@ -1291,7 +1309,19 @@ fn rename_version_profile(
 }
 
 fn is_launcher_preset_version_id(version_id: &str) -> bool {
-    matches!(version_id, "FPSMaster-Edge" | "FPSMaster-Nova")
+    matches!(
+        version_id,
+        "FPSMaster-Edge" | "FPSMaster-Nova" | "FPSMaster-Extreme"
+    )
+}
+
+/// FPSMaster-Extreme is a native Rust client (`fpsmaster_app`), not a Java
+/// Minecraft instance. It is installed and launched through the native-app path
+/// (`install_native_app` / `launch_native_app`), bypassing the vanilla/loader
+/// download and `build_vanilla_launch_plan` Java launch. Other presets return
+/// false and keep flowing through the standard Minecraft pipeline.
+fn is_native_app_version_id(version_id: &str) -> bool {
+    matches!(version_id, "FPSMaster-Extreme")
 }
 
 #[tauri::command]
@@ -5590,6 +5620,412 @@ fn clear_runtime_pid(pid: i64) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Native-app distributables (FPSMaster-Extreme)
+//
+// Extreme ships as a native `fpsmaster_app` binary, not a Java Minecraft
+// instance, so it bypasses the vanilla/loader install and `launch_vanilla`
+// Java pipeline. It is downloaded as a tarball, verified, extracted into
+// `{gameDir}/apps/<versionId>/`, and launched directly with that dir as the
+// working directory (the client resolves mods/resourcepacks/local_assets/config
+// relative to CWD). Contract: MiniCraft/docs/LAUNCHER_INTEGRATION.md.
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Serialize, Deserialize)]
+struct NativeAppInstallMarker {
+    #[serde(rename = "versionTag")]
+    version_tag: String,
+    #[serde(default)]
+    checksum: Option<String>,
+    #[serde(rename = "downloadUrl", default)]
+    download_url: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct NativeAppInstallResult {
+    #[serde(rename = "installDir")]
+    install_dir: String,
+    #[serde(rename = "versionTag")]
+    version_tag: String,
+    skipped: bool,
+}
+
+fn native_app_binary_name() -> &'static str {
+    if cfg!(windows) {
+        "fpsmaster_app.exe"
+    } else {
+        "fpsmaster_app"
+    }
+}
+
+fn native_app_install_dir(game_dir_path: &Path, version_id: &str) -> PathBuf {
+    game_dir_path.join("apps").join(version_id)
+}
+
+fn native_app_marker_path(install_dir: &Path) -> PathBuf {
+    install_dir.join(".fpsmaster-launcher-app.json")
+}
+
+/// Best-effort: drop the macOS quarantine attribute from a freshly extracted
+/// tree so a signed+notarized binary launches without a Gatekeeper prompt.
+/// A no-op (and ignored failure) on non-macOS.
+fn clear_quarantine(_path: &Path) {
+    #[cfg(target_os = "macos")]
+    {
+        let _ = Command::new("xattr")
+            .args(["-dr", "com.apple.quarantine"])
+            .arg(_path)
+            .status();
+    }
+}
+
+#[tauri::command]
+async fn install_native_app(
+    game_dir: String,
+    version_id: String,
+    download_url: String,
+    version_tag: Option<String>,
+    checksum: Option<String>,
+) -> Result<NativeAppInstallResult, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        install_native_app_blocking(game_dir, version_id, download_url, version_tag, checksum)
+    })
+    .await
+    .map_err(|e| format!("Failed to join native app install task: {e}"))?
+}
+
+fn install_native_app_blocking(
+    game_dir: String,
+    version_id: String,
+    download_url: String,
+    version_tag: Option<String>,
+    checksum: Option<String>,
+) -> Result<NativeAppInstallResult, String> {
+    if !is_native_app_version_id(&version_id) {
+        return Err(format!("{version_id} is not a native-app distributable"));
+    }
+    let normalized_url = download_url.trim().to_string();
+    if normalized_url.is_empty() {
+        return Err("downloadUrl is empty".to_string());
+    }
+    let normalized_tag = version_tag
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| normalized_url.clone());
+    let normalized_checksum = checksum
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+
+    let game_dir_path = resolve_game_dir_path(&game_dir)?;
+    let install_dir = native_app_install_dir(&game_dir_path, &version_id);
+    let marker_path = native_app_marker_path(&install_dir);
+    let binary_path = install_dir.join(native_app_binary_name());
+
+    // Up to date? Same tag + checksum and the binary is present → skip.
+    if binary_path.exists() {
+        if let Ok(bytes) = fs::read(&marker_path) {
+            if let Ok(marker) = serde_json::from_slice::<NativeAppInstallMarker>(&bytes) {
+                if marker.version_tag == normalized_tag
+                    && marker.checksum == normalized_checksum
+                {
+                    return Ok(NativeAppInstallResult {
+                        install_dir: install_dir.to_string_lossy().to_string(),
+                        version_tag: normalized_tag,
+                        skipped: true,
+                    });
+                }
+            }
+        }
+    }
+
+    let client = reqwest::blocking::Client::builder()
+        .user_agent(JDK_DOWNLOAD_USER_AGENT)
+        .connect_timeout(Duration::from_secs(30))
+        .timeout(Duration::from_secs(600))
+        .redirect(reqwest::redirect::Policy::limited(10))
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    let tmp_dir = game_dir_path.join("apps").join(".downloads");
+    fs::create_dir_all(&tmp_dir)
+        .map_err(|e| format!("Failed to create download dir {}: {e}", tmp_dir.display()))?;
+    let archive_path = tmp_dir.join(format!("{version_id}-{normalized_tag}.tar.gz"));
+
+    download_file_quiet_blocking(&client, &normalized_url, &archive_path)?;
+    if let Some(expected) = normalized_checksum.as_deref() {
+        verify_file_sha256(&archive_path, expected).map_err(|err| {
+            let _ = fs::remove_file(&archive_path);
+            format!("Checksum mismatch for {version_id}: {err}")
+        })?;
+    }
+
+    // Replace the install dir atomically-ish: extract into a fresh temp, then swap.
+    if install_dir.exists() {
+        fs::remove_dir_all(&install_dir)
+            .map_err(|e| format!("Failed to clear {}: {e}", install_dir.display()))?;
+    }
+    fs::create_dir_all(&install_dir)
+        .map_err(|e| format!("Failed to create {}: {e}", install_dir.display()))?;
+    extract_tar_gz_into(&archive_path, &install_dir)?;
+    let _ = fs::remove_file(&archive_path);
+
+    if !binary_path.exists() {
+        return Err(format!(
+            "Extracted package is missing {} at {}",
+            native_app_binary_name(),
+            binary_path.display()
+        ));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Ok(meta) = fs::metadata(&binary_path) {
+            let mut perms = meta.permissions();
+            perms.set_mode(perms.mode() | 0o755);
+            let _ = fs::set_permissions(&binary_path, perms);
+        }
+    }
+    clear_quarantine(&install_dir);
+
+    let marker = NativeAppInstallMarker {
+        version_tag: normalized_tag.clone(),
+        checksum: normalized_checksum,
+        download_url: Some(normalized_url),
+    };
+    let marker_bytes =
+        serde_json::to_vec_pretty(&marker).map_err(|e| format!("Failed to encode marker: {e}"))?;
+    fs::write(&marker_path, marker_bytes)
+        .map_err(|e| format!("Failed to write marker {}: {e}", marker_path.display()))?;
+
+    Ok(NativeAppInstallResult {
+        install_dir: install_dir.to_string_lossy().to_string(),
+        version_tag: normalized_tag,
+        skipped: false,
+    })
+}
+
+/// Extract the vanilla 1.8.9 `assets/` tree out of the Minecraft client jar the
+/// launcher already downloaded, into `{installDir}/local_assets/minecraft-1.8.9/`,
+/// and return the `assets/minecraft` path to feed the client's `--assets`. Runs
+/// once; subsequent calls short-circuit if the tree is already present. This is
+/// how Extreme gets textures/sounds legally without bundling Mojang assets — see
+/// LAUNCHER_INTEGRATION.md §5.
+#[tauri::command]
+async fn prepare_extreme_assets(
+    game_dir: String,
+    version_id: String,
+) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || prepare_extreme_assets_blocking(game_dir, version_id))
+        .await
+        .map_err(|e| format!("Failed to join asset-prep task: {e}"))?
+}
+
+fn prepare_extreme_assets_blocking(game_dir: String, version_id: String) -> Result<String, String> {
+    let game_dir_path = resolve_game_dir_path(&game_dir)?;
+    let install_dir = native_app_install_dir(&game_dir_path, &version_id);
+    let assets_root = install_dir
+        .join("local_assets")
+        .join("minecraft-1.8.9");
+    let assets_minecraft = assets_root.join("assets").join("minecraft");
+    if assets_minecraft.is_dir() {
+        return Ok(assets_minecraft.to_string_lossy().to_string());
+    }
+
+    // The launcher installs vanilla clients under versions/<id>/<id>.jar.
+    let jar_path = game_dir_path
+        .join("versions")
+        .join("1.8.9")
+        .join("1.8.9.jar");
+    if !jar_path.exists() {
+        return Err(format!(
+            "1.8.9 client jar not found at {} — install the vanilla 1.8.9 client first",
+            jar_path.display()
+        ));
+    }
+
+    let file = fs::File::open(&jar_path)
+        .map_err(|e| format!("Failed opening client jar {}: {e}", jar_path.display()))?;
+    let mut zip = zip::ZipArchive::new(BufReader::new(file))
+        .map_err(|e| format!("Invalid client jar: {e}"))?;
+    let mut extracted = 0usize;
+    for i in 0..zip.len() {
+        let mut entry = zip
+            .by_index(i)
+            .map_err(|e| format!("Failed reading jar entry: {e}"))?;
+        let name = entry.name().to_string();
+        // Only the resource tree; skip .class files and META-INF.
+        if !name.starts_with("assets/") || name.ends_with('/') {
+            continue;
+        }
+        let out_path = assets_root.join(&name);
+        if let Some(parent) = out_path.parent() {
+            fs::create_dir_all(parent)
+                .map_err(|e| format!("Failed to create {}: {e}", parent.display()))?;
+        }
+        let mut out = fs::File::create(&out_path)
+            .map_err(|e| format!("Failed to write {}: {e}", out_path.display()))?;
+        std::io::copy(&mut entry, &mut out)
+            .map_err(|e| format!("Failed extracting {name}: {e}"))?;
+        extracted += 1;
+    }
+    if extracted == 0 || !assets_minecraft.is_dir() {
+        return Err("Client jar contained no assets/minecraft resources".to_string());
+    }
+    Ok(assets_minecraft.to_string_lossy().to_string())
+}
+
+#[tauri::command]
+async fn launch_native_app(
+    window: tauri::Window,
+    game_dir: String,
+    version_id: String,
+    player_name: Option<String>,
+    assets_path: Option<String>,
+    server_address: Option<String>,
+    wait_for_exit: Option<bool>,
+) -> Result<LaunchExecutionResult, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        launch_native_app_blocking(
+            window,
+            game_dir,
+            version_id,
+            player_name,
+            assets_path,
+            server_address,
+            wait_for_exit,
+        )
+    })
+    .await
+    .map_err(|e| format!("Failed to join native launch task: {e}"))?
+}
+
+fn launch_native_app_blocking(
+    window: tauri::Window,
+    game_dir: String,
+    version_id: String,
+    player_name: Option<String>,
+    assets_path: Option<String>,
+    server_address: Option<String>,
+    wait_for_exit: Option<bool>,
+) -> Result<LaunchExecutionResult, String> {
+    if !is_native_app_version_id(&version_id) {
+        return Err(format!("{version_id} is not a native-app distributable"));
+    }
+    if let Some(pid) = detect_active_game_pid() {
+        return Err(format!(
+            "Another game process is already running (pid={pid}). Stop it before launching a new instance."
+        ));
+    }
+
+    let game_dir_path = resolve_game_dir_path(&game_dir)?;
+    let install_dir = native_app_install_dir(&game_dir_path, &version_id);
+    let binary_path = install_dir.join(native_app_binary_name());
+    if !binary_path.exists() {
+        return Err(format!(
+            "{version_id} is not installed (missing {})",
+            binary_path.display()
+        ));
+    }
+
+    // Build the CLI per the launch contract (LAUNCHER_INTEGRATION.md §6). The
+    // working directory is the install dir (set by spawn_game_process), which the
+    // client needs to resolve mods/resourcepacks/local_assets/config.
+    let mut args: Vec<String> = Vec::new();
+    if let Some(assets) = assets_path
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+    {
+        args.push("--assets".to_string());
+        args.push(assets);
+    }
+    if let Some(server) = server_address
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+    {
+        args.push("--connect".to_string());
+        args.push(server);
+    }
+    if let Some(name) = player_name
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+    {
+        args.push("--username".to_string());
+        args.push(name);
+    }
+
+    let executable = binary_path.to_string_lossy().to_string();
+    emit_log(
+        Some(&window),
+        "info",
+        &format!("launch native app: {}", format_quoted_command(&executable, &args)),
+    );
+
+    let mut child = spawn_game_process(&install_dir, &executable, &args)?;
+    let pid = i64::from(child.id());
+    if let Ok(mut store) = game_runtime_starts().lock() {
+        store.insert(pid, std::time::Instant::now());
+    }
+    ensure_game_runtime_sampler();
+    push_ui_log("game", "stdout", &format!("[process] started pid={pid}"));
+
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| "Failed to capture game stdout".to_string())?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| "Failed to capture game stderr".to_string())?;
+    let stdout_handle = pump_game_stream(stdout, "stdout");
+    let stderr_handle = pump_game_stream(stderr, "stderr");
+
+    let should_wait = wait_for_exit.unwrap_or(false);
+    if should_wait {
+        let status = child
+            .wait()
+            .map_err(|e| format!("Failed waiting game process: {e}"))?;
+        let _ = stdout_handle.join();
+        let _ = stderr_handle.join();
+        let exit_code = status.code().unwrap_or(-1);
+        let _ = window.emit("game-exit", GameExitEvent { pid, exit_code });
+        push_ui_log("game", "exit", &format!("process exited pid={pid} code={exit_code}"));
+        clear_runtime_pid(pid);
+        return Ok(LaunchExecutionResult {
+            version_id,
+            pid,
+            wait_for_exit: true,
+            exit_code: Some(exit_code),
+            main_class: "native".to_string(),
+            shell: "direct".to_string(),
+            command: std::iter::once(executable).chain(args).collect(),
+        });
+    }
+
+    let wait_window = window.clone();
+    thread::spawn(move || {
+        let exit_code = child
+            .wait()
+            .ok()
+            .and_then(|status| status.code())
+            .unwrap_or(-1);
+        let _ = stdout_handle.join();
+        let _ = stderr_handle.join();
+        let _ = wait_window.emit("game-exit", GameExitEvent { pid, exit_code });
+        push_ui_log("game", "exit", &format!("process exited pid={pid} code={exit_code}"));
+        clear_runtime_pid(pid);
+    });
+
+    Ok(LaunchExecutionResult {
+        version_id,
+        pid,
+        wait_for_exit: false,
+        exit_code: None,
+        main_class: "native".to_string(),
+        shell: "direct".to_string(),
+        command: std::iter::once(executable).chain(args).collect(),
+    })
+}
+
 fn detect_active_game_pid() -> Option<i64> {
     let pids = if let Ok(store) = game_runtime_starts().lock() {
         store.keys().copied().collect::<Vec<_>>()
@@ -6015,117 +6451,34 @@ fn default_game_dir_path() -> Result<PathBuf, String> {
         .map_err(|e| format!("Failed resolving default game dir: {e}"))
 }
 
+// In-process memory query via sysinfo. The previous implementation spawned
+// `ps`/`tasklist` on every sample (every 2s while a game runs) — subprocess
+// creation is expensive, especially on Windows, and adds contention exactly
+// when the game is loading the machine. Returns Ok(None) when the process is
+// gone, which is also how callers detect "not running".
 fn query_process_memory_kb(pid: i64) -> Result<Option<u64>, String> {
-    if cfg!(windows) {
-        return query_windows_process_memory_kb(pid);
+    let pid_u32 = match u32::try_from(pid) {
+        Ok(value) => value,
+        Err(_) => return Ok(None),
+    };
+    let sys_pid = sysinfo::Pid::from_u32(pid_u32);
+    let mut system = process_memory_sampler()
+        .lock()
+        .map_err(|e| format!("Process sampler lock poisoned: {e}"))?;
+    let refreshed = system.refresh_processes_specifics(
+        sysinfo::ProcessesToUpdate::Some(&[sys_pid]),
+        true,
+        sysinfo::ProcessRefreshKind::nothing().with_memory(),
+    );
+    if refreshed == 0 {
+        return Ok(None);
     }
-    query_unix_process_memory_kb(pid)
+    // memory() is in bytes.
+    Ok(system.process(sys_pid).map(|process| process.memory() / 1024))
 }
 
-fn query_windows_process_memory_kb(pid: i64) -> Result<Option<u64>, String> {
-    let filter = format!("PID eq {pid}");
-    let mut command = Command::new("tasklist");
-    command.args(["/FI", &filter, "/FO", "CSV", "/NH"]);
-    apply_windows_silent_spawn(&mut command);
-    let output = command
-        .output()
-        .map_err(|e| format!("Failed to query tasklist: {e}"))?;
-
-    if !output.status.success() {
-        return Err(format!(
-            "tasklist failed with status {:?}",
-            output.status.code()
-        ));
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let line = stdout
-        .lines()
-        .map(str::trim)
-        .find(|item| !item.is_empty())
-        .unwrap_or("");
-
-    if line.is_empty() {
-        return Ok(None);
-    }
-
-    if !line.starts_with('"') {
-        return Ok(None);
-    }
-
-    let lower = line.to_ascii_lowercase();
-    if lower.starts_with("info:") || lower.contains("no tasks are running") {
-        return Ok(None);
-    }
-
-    let fields = parse_csv_line(line);
-    if fields.len() < 5 {
-        return Ok(Some(0));
-    }
-
-    let digits: String = fields[4].chars().filter(|c| c.is_ascii_digit()).collect();
-    if digits.is_empty() {
-        return Ok(Some(0));
-    }
-    let kb = digits.parse::<u64>().unwrap_or(0);
-    Ok(Some(kb))
-}
-
-#[cfg(not(windows))]
-fn query_unix_process_memory_kb(pid: i64) -> Result<Option<u64>, String> {
-    let output = Command::new("ps")
-        .args(["-o", "rss=", "-p", &pid.to_string()])
-        .output()
-        .map_err(|e| format!("Failed to query ps: {e}"))?;
-
-    if !output.status.success() {
-        return Ok(None);
-    }
-
-    let value = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if value.is_empty() {
-        return Ok(None);
-    }
-    let kb = value
-        .parse::<u64>()
-        .map_err(|e| format!("Failed parsing rss value: {e}"))?;
-    Ok(Some(kb))
-}
-
-#[cfg(windows)]
-fn query_unix_process_memory_kb(_pid: i64) -> Result<Option<u64>, String> {
-    Ok(None)
-}
-
-fn parse_csv_line(line: &str) -> Vec<String> {
-    let mut fields = Vec::new();
-    let mut current = String::new();
-    let mut in_quotes = false;
-    let chars: Vec<char> = line.chars().collect();
-    let mut i = 0;
-    while i < chars.len() {
-        let ch = chars[i];
-        if ch == '"' {
-            if in_quotes && i + 1 < chars.len() && chars[i + 1] == '"' {
-                current.push('"');
-                i += 2;
-                continue;
-            }
-            in_quotes = !in_quotes;
-            i += 1;
-            continue;
-        }
-        if ch == ',' && !in_quotes {
-            fields.push(current.clone());
-            current.clear();
-            i += 1;
-            continue;
-        }
-        current.push(ch);
-        i += 1;
-    }
-    fields.push(current);
-    fields
+fn process_memory_sampler() -> &'static Mutex<sysinfo::System> {
+    PROCESS_MEMORY_SAMPLER.get_or_init(|| Mutex::new(sysinfo::System::new()))
 }
 
 fn managed_jdk_runtime_root(game_dir: &Path, major: i32, x64: bool) -> PathBuf {
@@ -6138,6 +6491,23 @@ fn managed_jdk_runtime_root(game_dir: &Path, major: i32, x64: bool) -> PathBuf {
         format!("jdk-{major}")
     };
     game_dir.join("runtime").join(name)
+}
+
+// Whether the emulated-x64 runtime for this Java major should come from Azul Zulu
+// instead of Mojang. Only the macOS Java 8 case (jre-legacy = 8u74) is known-broken:
+// LWJGL 2 versions (MC <= 1.12) go through AWT, whose ancient build crashes on
+// macOS >= 14.4. LWJGL 3 majors (16/17) don't use AWT for the window, so Mojang's
+// builds stay in use there.
+fn prefers_zulu_over_mojang_x64(major: i32, force_x64: bool) -> bool {
+    cfg!(target_os = "macos") && force_x64 && major == 8
+}
+
+// Mojang's macOS runtimes extract as <root>/jre.bundle/Contents/Home/bin/java; Zulu
+// archives never contain a `jre.bundle` component. Used to spot pre-Zulu installs.
+fn is_mojang_bundle_layout(java_path: &Path) -> bool {
+    java_path
+        .components()
+        .any(|component| component.as_os_str() == "jre.bundle")
 }
 
 fn ensure_managed_jdk_runtime(
@@ -6155,15 +6525,33 @@ fn ensure_managed_jdk_runtime(
     })?;
 
     if let Some(java_path) = locate_java_binary(runtime_root) {
-        emit_log(
-            window,
-            "info",
-            &format!(
-                "Managed JDK already exists major={major} path={}",
-                java_path.to_string_lossy()
-            ),
-        );
-        return Ok(java_path);
+        if prefers_zulu_over_mojang_x64(major, force_x64) && is_mojang_bundle_layout(&java_path) {
+            // A Mojang jre-legacy install from before the Zulu switch — it crashes on
+            // modern macOS (see below), so wipe it and reinstall instead of reusing it.
+            emit_log(
+                window,
+                "warn",
+                "Replacing Mojang jre-legacy x64 runtime: its AWT crashes on macOS 14.4+",
+            );
+            fs::remove_dir_all(runtime_root)
+                .map_err(|e| format!("Failed removing outdated runtime {}: {e}", runtime_root.display()))?;
+            fs::create_dir_all(runtime_root).map_err(|e| {
+                format!(
+                    "Failed creating runtime dir {}: {e}",
+                    runtime_root.display()
+                )
+            })?;
+        } else {
+            emit_log(
+                window,
+                "info",
+                &format!(
+                    "Managed JDK already exists major={major} path={}",
+                    java_path.to_string_lossy()
+                ),
+            );
+            return Ok(java_path);
+        }
     }
 
     let normalized_download_threads = normalize_download_threads(download_threads);
@@ -6183,7 +6571,26 @@ fn ensure_managed_jdk_runtime(
         // would fail to load the natives (UnsatisfiedLinkError).
         let key = x64_key
             .ok_or_else(|| format!("No x64 Mojang runtime platform for major={major}"))?;
-        if !install_mojang_java_runtime(window, runtime_root, component, major, normalized_download_threads, &[key])? {
+        // Mojang's only x64 Java 8 for macOS is jre-legacy (8u74, from 2016). AWT in
+        // builds that old crashes on macOS >= 14.4 the moment LWJGL 2 creates the game
+        // window: an AppKit CADisplayLink change makes the flush observer throw, and
+        // +[NSApplication _crashOnException:] takes the process down with SIGILL
+        // (fixed upstream in 8u412). Install a current Zulu x64 JRE instead and keep
+        // the Mojang runtime only as a fallback when Azul is unreachable.
+        let mut installed = false;
+        if prefers_zulu_over_mojang_x64(major, force_x64) {
+            match install_zulu_jre_archive(window, runtime_root, major, normalized_download_threads, "x64") {
+                Ok(()) => installed = true,
+                Err(zulu_err) => emit_log(
+                    window,
+                    "warn",
+                    &format!("Zulu x64 JRE unavailable ({zulu_err}); falling back to Mojang x64 runtime"),
+                ),
+            }
+        }
+        if !installed
+            && !install_mojang_java_runtime(window, runtime_root, component, major, normalized_download_threads, &[key])?
+        {
             return Err(format!("No x64 Mojang runtime available for {component}"));
         }
     } else {
@@ -6778,8 +7185,21 @@ fn install_native_jre_archive(
     major: i32,
     download_threads: usize,
 ) -> Result<(), String> {
-    let os = azul_os().ok_or_else(|| "Unsupported OS for native JRE".to_string())?;
     let arch = azul_arch().ok_or_else(|| "Unsupported CPU arch for native JRE".to_string())?;
+    install_zulu_jre_archive(window, runtime_root, major, download_threads, arch)
+}
+
+/// Downloads and extracts a Zulu JRE for an explicit CPU arch into `runtime_root`.
+/// Used both for the native-arch path and for the emulated-x64 path on macOS, where a
+/// current Zulu build replaces Mojang's unusably old jre-legacy.
+fn install_zulu_jre_archive(
+    window: Option<&tauri::Window>,
+    runtime_root: &Path,
+    major: i32,
+    download_threads: usize,
+    arch: &str,
+) -> Result<(), String> {
+    let os = azul_os().ok_or_else(|| "Unsupported OS for native JRE".to_string())?;
     let archive_type = if cfg!(windows) { "zip" } else { "tar.gz" };
     let api_url = format!(
         "https://api.azul.com/metadata/v1/zulu/packages/?java_version={major}&os={os}&arch={arch}\
@@ -6794,7 +7214,7 @@ fn install_native_jre_archive(
     emit_log(
         window,
         "info",
-        &format!("Downloading JDK {} (native {arch})", package.name),
+        &format!("Downloading JDK {} ({os}/{arch})", package.name),
     );
     let archive_path = runtime_root.join(format!(".zulu-download.{archive_type}"));
     download_file_blocking(window, "native-jre", &package.download_url, &archive_path, download_threads)?;
@@ -8749,6 +9169,9 @@ fn main() {
             import_world_archive,
             get_launcher_package_state,
             install_launcher_version_mods,
+            install_native_app,
+            prepare_extreme_assets,
+            launch_native_app,
             list_vanilla_versions,
             install_vanilla,
             verify_installed_files,
