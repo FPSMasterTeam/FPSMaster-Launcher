@@ -1,19 +1,17 @@
 import { invoke } from "@tauri-apps/api/core";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { ArrowLeft, Power, Trash2 } from "lucide-react";
 import { memo, startTransition, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import Card from "../components/Card";
+import TitleBar from "../components/TitleBar";
 import { useI18n } from "../i18n";
 import type { GameRuntimeStats, UiLogPollResult } from "../types";
-import { formatDuration, prefix } from "../utils/launcher";
+import { formatDuration, nowMs, parseIntSafe, prefix } from "../utils/launcher";
 
-// The monitor renders as a view inside the main window (not a separate webview window),
-// so it takes plain props and a close callback instead of URL params + window controls.
+// The monitor runs in its own webview window; launch parameters arrive via the
+// window URL (see openMonitor in lib/system.ts) instead of React props.
 type MonitorPageProps = {
-  pid: number;
-  version: string;
-  initialCursor: number;
-  startedAt: number;
-  onClose: () => void;
+  params: URLSearchParams;
 };
 
 const MONITOR_LOG_POLL_INTERVAL_MS = 1000;
@@ -24,14 +22,17 @@ const MONITOR_LOG_LINE_LIMIT = 1000;
 const MONITOR_LOG_LINE_HEIGHT = 18;
 const MONITOR_LOG_OVERSCAN = 12;
 
-function MonitorPage({ pid, version, initialCursor, startedAt, onClose }: MonitorPageProps) {
+function MonitorPage({ params }: MonitorPageProps) {
   const { t } = useI18n();
-  const monitorStartedAt = useRef(startedAt).current;
+  const pid = parseIntSafe(params.get("pid"), 0);
+  const monitorStartedAt = useRef(parseIntSafe(params.get("startedAt"), nowMs())).current;
+  const initialCursor = parseIntSafe(params.get("cursor"), 0);
+  const version = params.get("version") ?? "unknown";
 
   const [logLines, setLogLines] = useState<string[]>([]);
   const [stats, setStats] = useState<GameRuntimeStats | null>(null);
   const [status, setStatus] = useState(t("monitor.connecting"));
-  const [tick, setTick] = useState(startedAt);
+  const [tick, setTick] = useState(monitorStartedAt);
   const [exitedAt, setExitedAt] = useState<number | null>(null);
   const [confirmAction, setConfirmAction] = useState<"stop" | null>(null);
   const [stopping, setStopping] = useState(false);
@@ -95,9 +96,9 @@ function MonitorPage({ pid, version, initialCursor, startedAt, onClose }: Monito
     };
 
     // Once the game process has exited there is nothing more to sample. Keeping the
-    // 1s runtime/uptime polls and the 800ms log rescan running forever pegs the
-    // renderer and makes the window unresponsive (buttons, close). Stop the live
-    // updates after one final log catch-up so the window goes genuinely idle.
+    // runtime/uptime polls and the log rescan running forever pegs the renderer and
+    // makes the window unresponsive (buttons, close). Stop the live updates after
+    // one final log catch-up so the window goes genuinely idle.
     const windDown = () => {
       if (winddownRef.current) return;
       winddownRef.current = true;
@@ -188,6 +189,19 @@ function MonitorPage({ pid, version, initialCursor, startedAt, onClose }: Monito
   const runtimeStateLabel = stats?.running === false ? t("monitor.exited") : t("monitor.running");
   const pidLabel = pid > 0 ? pid : "N/A";
 
+  async function backToLauncher() {
+    await invoke("show_main_window");
+    await closeMonitorWindow();
+  }
+
+  async function closeMonitorWindow() {
+    try {
+      await invoke("destroy_current_window");
+    } catch {
+      await getCurrentWindow().destroy();
+    }
+  }
+
   async function stopGame(): Promise<boolean> {
     if (pid <= 0) {
       setStatus(t("monitor.invalidPid"));
@@ -216,7 +230,11 @@ function MonitorPage({ pid, version, initialCursor, startedAt, onClose }: Monito
   }
 
   return (
-    <div className="monitorEmbeddedRoot">
+    <div className="appWindow monitorWindow">
+      <div>
+        <TitleBar title={version} onClose={closeMonitorWindow} />
+      </div>
+
       <main className="monitorWorkspace monitorWorkspaceCompact">
         <Card as="section" variant="soft" className="monitorHeroCard monitorHeroCardCompact monitorPlainCard page-card rounded-[10px]" interactive={false}>
           <div className="monitorHeroHeader monitorHeroHeaderCompact">
@@ -242,7 +260,9 @@ function MonitorPage({ pid, version, initialCursor, startedAt, onClose }: Monito
                 className="monitorIconBtn"
                 title={t("monitor.backLauncher")}
                 aria-label={t("monitor.backLauncher")}
-                onClick={onClose}
+                onClick={() => {
+                  void backToLauncher();
+                }}
                 disabled={stopping}
                 type="button"
               >
