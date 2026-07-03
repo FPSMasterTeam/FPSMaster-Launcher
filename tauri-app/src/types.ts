@@ -21,7 +21,7 @@ export type ThemeAccent =
   | "background"
   | "custom";
 export type BackgroundSource = "local" | "web-random" | "system";
-export type LauncherVersionType = "EDGE" | "NOVA";
+export type LauncherVersionType = "EDGE" | "NOVA" | "EXTREME";
 export type MinecraftAccountType = "offline" | "microsoft";
 export type ContentSource = "modrinth" | "curseforge" | "local";
 export type OnlineContentSource = Exclude<ContentSource, "local">;

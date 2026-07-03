@@ -571,43 +571,40 @@ fn launcher_list_available_versions_blocking(
     if normalized_token.is_empty() {
         return Err("Token is required".to_string());
     }
-    let types: Vec<String> = if let Some(input) = version_type {
-        let item = input.trim().to_uppercase();
-        if item.is_empty() {
-            vec!["EDGE".to_string(), "NOVA".to_string()]
-        } else {
-            vec![item]
-        }
-    } else {
-        vec!["EDGE".to_string(), "NOVA".to_string()]
-    };
+    // Optional client-side filter kept for callers that still pass a specific type; the new
+    // catalog endpoint returns every entitled client product in one call.
+    let type_filter = version_type
+        .map(|item| item.trim().to_uppercase())
+        .filter(|item| !item.is_empty());
 
     let client = reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(20))
         .build()
         .map_err(|e| format!("Failed to build HTTP client: {e}"))?;
 
-    let mut merged = Vec::new();
-    for version_type_item in types {
-        let mut url = reqwest::Url::parse(&format!(
-            "{normalized_base}/api/v1/launcher/versions/available"
-        ))
-        .map_err(|e| format!("Invalid versions endpoint URL: {e}"))?;
-        url.query_pairs_mut()
-            .append_pair("versionType", &version_type_item);
-        let response = client
-            .get(url)
-            .bearer_auth(&normalized_token)
-            .send()
-            .map_err(|e| format!("Versions request failed: {e}"))?;
-        let status = response.status();
-        let text = response
-            .text()
-            .map_err(|e| format!("Failed to read versions response: {e}"))?;
-        let mut items = parse_launcher_versions_response(status, &text)?;
-        merged.append(&mut items);
+    // New release system: one authenticated per-platform catalog call replaces the legacy
+    // per-versionType /versions/available fan-out. `target` scopes native products (extreme)
+    // to this platform; Java products (edge/nova) are platform-agnostic and always included.
+    let mut url = reqwest::Url::parse(&format!(
+        "{normalized_base}/api/v1/launcher/releases/available"
+    ))
+    .map_err(|e| format!("Invalid releases endpoint URL: {e}"))?;
+    url.query_pairs_mut()
+        .append_pair("target", &current_launcher_update_target());
+    let response = client
+        .get(url)
+        .bearer_auth(&normalized_token)
+        .send()
+        .map_err(|e| format!("Releases request failed: {e}"))?;
+    let status = response.status();
+    let text = response
+        .text()
+        .map_err(|e| format!("Failed to read releases response: {e}"))?;
+    let mut items = parse_launcher_versions_response(status, &text)?;
+    if let Some(filter) = type_filter {
+        items.retain(|item| item.version_type.eq_ignore_ascii_case(&filter));
     }
-    Ok(merged)
+    Ok(items)
 }
 
 pub(crate) fn normalize_api_base_url(base_url: &str) -> Result<String, String> {
