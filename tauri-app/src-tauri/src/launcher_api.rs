@@ -764,6 +764,16 @@ fn parse_launcher_versions_response(
     {
         if !status.is_success() || !envelope.success {
             let is_auth_error = status.as_u16() == 401 || status.as_u16() == 403;
+            // A 404 here means the release-catalog route itself didn't match on the server
+            // (e.g. a backend still mid-deploy, or a launcher/backend version skew). The raw
+            // framework body for that is "Unable to find matching target resource method",
+            // which is meaningless to a player — replace it with something actionable.
+            if status.as_u16() == 404 {
+                return Err(
+                    "Release service is temporarily unavailable (HTTP 404). Please try again in a moment."
+                        .to_string(),
+                );
+            }
             let message = envelope
                 .message
                 .and_then(|value| {

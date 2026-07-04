@@ -1077,6 +1077,37 @@ function Launcher() {
     if (!targetVersion) {
       const refresh = await refreshLauncherVersions(true, token);
       if (refresh.error) {
+        // The release catalog is only needed to CHECK for a newer package. If this instance
+        // already has a mod package installed on disk, a catalog hiccup (backend redeploy, a
+        // transient 404, offline) must not block launching what's already installed — degrade
+        // to the installed version instead of aborting the launch with a raw backend error.
+        let installedTag: string | null = null;
+        try {
+          const state = await invoke<LauncherPackageState>("get_launcher_package_state", {
+            gameDir: settings.gameDir,
+            versionId: instance.versionId
+          });
+          if (state.installed) {
+            installedTag = state.versionTag ?? null;
+          }
+        } catch {
+          // fall through to throw below
+        }
+        if (installedTag !== null) {
+          console.warn(
+            "[preset-mods] release catalog unavailable, launching installed package:",
+            refresh.error
+          );
+          setPresetPackageStatuses((prev) => ({
+            ...prev,
+            [instance.id]: createPresetPackageStatus("ready", {
+              versionTag: installedTag,
+              installedVersionTag: installedTag,
+              targetVersionTag: installedTag
+            })
+          }));
+          return;
+        }
         throw new Error(refresh.error);
       }
       targetVersion = refresh.map?.[instance.launcherVersionType] ?? null;
