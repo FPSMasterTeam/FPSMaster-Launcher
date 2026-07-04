@@ -2932,7 +2932,7 @@ fn install_launcher_version_mods_blocking(
             "mods",
             "download",
             Some(0),
-            Some(1),
+            Some(100),
             &format!("Downloading package {download_file_name}"),
             None,
         );
@@ -2948,12 +2948,47 @@ fn install_launcher_version_mods_blocking(
             None,
             "Downloading",
         );
+        // The package is a single file, so unlike the manifest path there is no
+        // per-file counter to move the bar. Stream byte-level progress instead so the
+        // prepare dialog's task bar and the file row advance while it downloads.
+        let progress_session = ipc_session.map(str::to_string);
+        let progress_item_id = normalized_url.clone();
+        let progress_item_name = download_file_name.clone();
+        let progress_callback: DownloadProgressCallback =
+            Arc::new(move |downloaded: u64, total: Option<u64>| {
+                emit_launch_prepare_item(
+                    progress_session.as_deref(),
+                    "item-progress",
+                    "mods",
+                    &progress_item_id,
+                    &progress_item_name,
+                    "package",
+                    Some(downloaded as i64),
+                    total.map(|value| value as i64),
+                    None,
+                    "Downloading",
+                );
+                if let Some(total) = total.filter(|value| *value > 0) {
+                    let percent = (downloaded.saturating_mul(100) / total).min(100) as i32;
+                    emit_launch_prepare_ipc(
+                        progress_session.as_deref(),
+                        "progress",
+                        "mods",
+                        "download",
+                        Some(percent),
+                        Some(100),
+                        &format!("Downloading {progress_item_name} ({percent}%)"),
+                        None,
+                    );
+                }
+            });
         let download_result = download_file_blocking(
             None,
             "launcher-mods",
             &normalized_url,
             &temp_download_path,
             normalize_download_threads(Some(DEFAULT_DOWNLOAD_THREADS)),
+            Some(progress_callback),
         );
         emit_launch_prepare_item(
             ipc_session,
@@ -7217,7 +7252,7 @@ fn install_zulu_jre_archive(
         &format!("Downloading JDK {} ({os}/{arch})", package.name),
     );
     let archive_path = runtime_root.join(format!(".zulu-download.{archive_type}"));
-    download_file_blocking(window, "native-jre", &package.download_url, &archive_path, download_threads)?;
+    download_file_blocking(window, "native-jre", &package.download_url, &archive_path, download_threads, None)?;
     verify_file_sha256(&archive_path, &package.sha256_hash)
         .map_err(|e| format!("Native JRE checksum failed: {e}"))?;
 
@@ -7521,7 +7556,7 @@ fn download_file_with_sha1(
     expected_sha1: &str,
     download_threads: usize,
 ) -> Result<(), String> {
-    download_file_blocking(window, source_name, url, target, download_threads)?;
+    download_file_blocking(window, source_name, url, target, download_threads, None)?;
     let sha1 = compute_sha1_hex(target)?;
     if !sha1.eq_ignore_ascii_case(expected_sha1) {
         return Err(format!(
@@ -7594,12 +7629,18 @@ struct MojangJavaRemoteEntry {
     target: String,
 }
 
+/// Reports raw byte progress during a download: `(downloaded_bytes, total_bytes)`.
+/// Owned (`Arc`) so it can be cloned into the parallel-download worker threads,
+/// which require `'static + Send + Sync` closures.
+type DownloadProgressCallback = Arc<dyn Fn(u64, Option<u64>) + Send + Sync>;
+
 fn download_file_blocking(
     window: Option<&tauri::Window>,
     source_name: &str,
     url: &str,
     target: &Path,
     download_threads: usize,
+    progress: Option<DownloadProgressCallback>,
 ) -> Result<(), String> {
     const MIN_PARALLEL_SIZE: u64 = 8 * 1024 * 1024;
     const MIN_PART_SIZE: u64 = 4 * 1024 * 1024;
@@ -7637,13 +7678,14 @@ fn download_file_blocking(
                         target,
                         total_size,
                         part_count,
+                        progress,
                     );
                 }
             }
         }
     }
 
-    download_file_blocking_single(window, &client, source_name, url, target)
+    download_file_blocking_single(window, &client, source_name, url, target, progress)
 }
 
 fn probe_parallel_download_support(
@@ -7676,6 +7718,7 @@ fn download_file_blocking_single(
     source_name: &str,
     url: &str,
     target: &Path,
+    progress: Option<DownloadProgressCallback>,
 ) -> Result<(), String> {
     let mut last_error = String::new();
     for attempt in 1..=3 {
@@ -7759,6 +7802,9 @@ fn download_file_blocking_single(
                             "info",
                             &format!("JDK download progress: {percent}% ({downloaded}/{total_size} bytes)"),
                         );
+                        if let Some(callback) = progress.as_ref() {
+                            callback(downloaded, Some(total_size));
+                        }
                     }
                 }
             } else if downloaded % (1024 * 1024) < 64 * 1024 {
@@ -7767,6 +7813,9 @@ fn download_file_blocking_single(
                     "info",
                     &format!("JDK download progress: {downloaded} bytes"),
                 );
+                if let Some(callback) = progress.as_ref() {
+                    callback(downloaded, None);
+                }
             }
         }
     }
@@ -7787,6 +7836,7 @@ fn download_file_blocking_parallel(
     target: &Path,
     total_size: u64,
     part_count: usize,
+    progress_cb: Option<DownloadProgressCallback>,
 ) -> Result<(), String> {
     let tmp = target.with_extension("download");
     let chunk_size = total_size.div_ceil(part_count as u64);
@@ -7808,6 +7858,7 @@ fn download_file_blocking_parallel(
         let source_name = source_name.to_string();
         let progress = Arc::clone(&progress);
         let last_percent = Arc::clone(&last_percent);
+        let progress_callback = progress_cb.clone();
         let window = window.cloned();
         part_paths.push(part_path.clone());
         handles.push(thread::spawn(move || -> Result<(), String> {
@@ -7855,6 +7906,9 @@ fn download_file_blocking_parallel(
                                 "JDK download progress: {percent}% ({downloaded}/{total_size} bytes)"
                             ),
                         );
+                        if let Some(callback) = progress_callback.as_ref() {
+                            callback(downloaded, Some(total_size));
+                        }
                     }
                 }
             }
