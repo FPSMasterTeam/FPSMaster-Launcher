@@ -2049,7 +2049,29 @@ fn replace_variables(input: &str, variables: &HashMap<String, String>) -> String
 }
 
 fn should_omit_resolved_arg(arg: &str) -> bool {
-    arg.trim().is_empty() || arg.contains("${")
+    let trimmed = arg.trim();
+    trimmed.is_empty() || is_bare_unresolved_placeholder(trimmed)
+}
+
+/// True only when the whole token is a single unresolved `${name}` placeholder
+/// (`name` being the launcher's identifier form: ASCII letters/digits/`_`), e.g.
+/// `${quickPlayRealms}`.
+///
+/// The previous check was `arg.contains("${")`, which discarded *any* argument
+/// merely containing the two characters `${` — including a legitimate launch
+/// argument whose path contains them, such as a game directory like
+/// `D:\games\mc${x}\.minecraft` (and the `--gameDir` value pointing at it), or a
+/// joined system property like `-Dfoo=${bar}`. Minecraft's own unresolved feature
+/// placeholders (`${quickPlayPath}`, `${quickPlayRealms}`, …) are always
+/// standalone tokens, so restricting the drop to whole-token placeholders keeps
+/// every real path/argument intact while still discarding the template leftovers.
+fn is_bare_unresolved_placeholder(arg: &str) -> bool {
+    arg.len() > 3
+        && arg.starts_with("${")
+        && arg.ends_with('}')
+        && arg[2..arg.len() - 1]
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_')
 }
 
 fn normalize_jvm_arguments(args: Vec<String>) -> Vec<String> {
@@ -3465,8 +3487,8 @@ fn emit_install_item_ipc(
 mod tests {
     use super::{
         build_rule_features, build_vanilla_launch_plan, forge_profile_id_candidates,
-        resolve_java_runtime_requirement, resolve_optifine_compatibility, DownloadSource,
-        VanillaLaunchRequest,
+        resolve_java_runtime_requirement, resolve_optifine_compatibility, should_omit_resolved_arg,
+        DownloadSource, VanillaLaunchRequest,
     };
     use serde_json::json;
     use std::fs;
@@ -3701,5 +3723,31 @@ mod tests {
 
         assert_eq!(candidates[0], "1.20.1-forge-47.0.35");
         assert!(candidates.iter().any(|item| item == "1.20.1-forge-47.0.35"));
+    }
+
+    #[test]
+    fn omit_arg_drops_only_bare_unresolved_placeholders() {
+        // Standalone unresolved template tokens are still dropped.
+        assert!(should_omit_resolved_arg("${quickPlayRealms}"));
+        assert!(should_omit_resolved_arg("  ${quickPlayPath}  "));
+        assert!(should_omit_resolved_arg("${game_directory}"));
+        assert!(should_omit_resolved_arg(""));
+    }
+
+    #[test]
+    fn omit_arg_keeps_real_paths_and_joined_props() {
+        // Real launch arguments must survive even when they contain `${`.
+        assert!(!should_omit_resolved_arg(r"D:\games\mc${test}\.minecraft"));
+        assert!(!should_omit_resolved_arg(
+            r"-Djava.library.path=C:\Users\a${b}\natives"
+        ));
+        // A joined property with an unresolved value is passed through literally
+        // rather than silently dropped (harmless, and never true for MC's own args).
+        assert!(!should_omit_resolved_arg("-Dfoo=${bar}"));
+        // Chinese / spaced paths were never at risk but are covered for regression.
+        assert!(!should_omit_resolved_arg(
+            r"C:\Users\张三\AppData\Roaming\FPSMaster"
+        ));
+        assert!(!should_omit_resolved_arg(r"C:\Program Files\Eclipse Adoptium"));
     }
 }
