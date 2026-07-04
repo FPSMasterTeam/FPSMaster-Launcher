@@ -1088,7 +1088,9 @@ fn create_tray(app: &AppHandle) -> Result<(), String> {
 async fn terminate_game_process(pid: i64, force: Option<bool>) -> Result<bool, String> {
     tauri::async_runtime::spawn_blocking(move || terminate_game_process_blocking(pid, force))
         .await
-        .map_err(|e| format!("Failed to join terminate task: {e}"))?
+        .map_err(|e| format!("Failed to join terminate task: {e}"))
+        .and_then(std::convert::identity)
+        .inspect_err(|e| log_command_error("terminate_game_process", e))
 }
 
 fn terminate_game_process_blocking(pid: i64, force: Option<bool>) -> Result<bool, String> {
@@ -1651,7 +1653,9 @@ async fn import_instance_archive(
         import_instance_archive_blocking(game_dir, archive_name, archive_data, target_version_id)
     })
     .await
-    .map_err(|e| format!("Failed to join instance import task: {e}"))?
+    .map_err(|e| format!("Failed to join instance import task: {e}"))
+    .and_then(std::convert::identity)
+    .inspect_err(|e| log_command_error("import_instance_archive", e))
 }
 
 #[tauri::command]
@@ -1674,7 +1678,9 @@ async fn repair_instance_runtime(
         )
     })
     .await
-    .map_err(|e| format!("Failed to join instance repair task: {e}"))?
+    .map_err(|e| format!("Failed to join instance repair task: {e}"))
+    .and_then(std::convert::identity)
+    .inspect_err(|e| log_command_error("repair_instance_runtime", e))
 }
 
 fn rewrite_version_profile_id(json_path: &Path, version_id: &str) -> Result<(), String> {
@@ -1794,7 +1800,9 @@ async fn ensure_jdk(
         ensure_jdk_blocking(window_clone, game_dir, version_id, download_threads)
     })
     .await
-    .map_err(|e| format!("Failed to join ensure_jdk task: {e}"))?
+    .map_err(|e| format!("Failed to join ensure_jdk task: {e}"))
+    .and_then(std::convert::identity)
+    .inspect_err(|e| log_command_error("ensure_jdk", e))
 }
 
 fn ensure_jdk_blocking(
@@ -1990,7 +1998,9 @@ async fn modrinth_search_projects(
         modrinth_search_projects_blocking(query, project_type, game_version, loader, limit)
     })
     .await
-    .map_err(|e| format!("Failed to join Modrinth search task: {e}"))?
+    .map_err(|e| format!("Failed to join Modrinth search task: {e}"))
+    .and_then(std::convert::identity)
+    .inspect_err(|e| log_command_error("modrinth_search_projects", e))
 }
 
 #[tauri::command]
@@ -2017,7 +2027,9 @@ async fn install_modrinth_project(
         )
     })
     .await
-    .map_err(|e| format!("Failed to join Modrinth install task: {e}"))?
+    .map_err(|e| format!("Failed to join Modrinth install task: {e}"))
+    .and_then(std::convert::identity)
+    .inspect_err(|e| log_command_error("install_modrinth_project", e))
 }
 
 #[tauri::command]
@@ -2040,7 +2052,9 @@ async fn curseforge_search_projects(
         )
     })
     .await
-    .map_err(|e| format!("Failed to join CurseForge search task: {e}"))?
+    .map_err(|e| format!("Failed to join CurseForge search task: {e}"))
+    .and_then(std::convert::identity)
+    .inspect_err(|e| log_command_error("curseforge_search_projects", e))
 }
 
 #[tauri::command]
@@ -2069,7 +2083,9 @@ async fn install_curseforge_project(
         )
     })
     .await
-    .map_err(|e| format!("Failed to join CurseForge install task: {e}"))?
+    .map_err(|e| format!("Failed to join CurseForge install task: {e}"))
+    .and_then(std::convert::identity)
+    .inspect_err(|e| log_command_error("install_curseforge_project", e))
 }
 
 #[tauri::command]
@@ -2081,7 +2097,9 @@ async fn list_installed_content(
         list_installed_content_blocking(game_dir, version_id)
     })
     .await
-    .map_err(|e| format!("Failed to join installed content task: {e}"))?
+    .map_err(|e| format!("Failed to join installed content task: {e}"))
+    .and_then(std::convert::identity)
+    .inspect_err(|e| log_command_error("list_installed_content", e))
 }
 
 #[tauri::command]
@@ -2096,7 +2114,9 @@ async fn uninstall_installed_content(
         uninstall_installed_content_blocking(game_dir, version_id, source, project_id, content_type)
     })
     .await
-    .map_err(|e| format!("Failed to join uninstall content task: {e}"))?
+    .map_err(|e| format!("Failed to join uninstall content task: {e}"))
+    .and_then(std::convert::identity)
+    .inspect_err(|e| log_command_error("uninstall_installed_content", e))
 }
 
 #[tauri::command]
@@ -2117,7 +2137,9 @@ async fn check_installed_content_updates(
         )
     })
     .await
-    .map_err(|e| format!("Failed to join content updates task: {e}"))?
+    .map_err(|e| format!("Failed to join content updates task: {e}"))
+    .and_then(std::convert::identity)
+    .inspect_err(|e| log_command_error("check_installed_content_updates", e))
 }
 
 #[tauri::command]
@@ -2132,7 +2154,9 @@ async fn import_world_archive(
         import_world_archive_blocking(game_dir, version_id, archive_name, archive_data, world_name)
     })
     .await
-    .map_err(|e| format!("Failed to join world import task: {e}"))?
+    .map_err(|e| format!("Failed to join world import task: {e}"))
+    .and_then(std::convert::identity)
+    .inspect_err(|e| log_command_error("import_world_archive", e))
 }
 
 fn modrinth_search_projects_blocking(
@@ -2820,7 +2844,9 @@ async fn install_launcher_version_mods(
         )
     })
     .await
-    .map_err(|e| format!("Failed to join launcher mods install task: {e}"))?
+    .map_err(|e| format!("Failed to join launcher mods install task: {e}"))
+    .and_then(std::convert::identity)
+    .inspect_err(|e| log_command_error("install_launcher_version_mods", e))
 }
 
 #[tauri::command]
@@ -2843,7 +2869,9 @@ async fn get_launcher_package_state(
         )
     })
     .await
-    .map_err(|e| format!("Failed to join launcher package state task: {e}"))?
+    .map_err(|e| format!("Failed to join launcher package state task: {e}"))
+    .and_then(std::convert::identity)
+    .inspect_err(|e| log_command_error("get_launcher_package_state", e))
 }
 
 fn install_launcher_version_mods_blocking(
@@ -5356,7 +5384,9 @@ async fn list_vanilla_versions(
         minecraft_core::list_vanilla_versions(Some(&window), download_source.as_deref())
     })
     .await
-    .map_err(|e| format!("Failed to join vanilla version listing task: {e}"))?
+    .map_err(|e| format!("Failed to join vanilla version listing task: {e}"))
+    .and_then(std::convert::identity)
+    .inspect_err(|e| log_command_error("list_vanilla_versions", e))
 }
 
 #[tauri::command]
@@ -5384,7 +5414,9 @@ async fn install_vanilla(
         result
     })
     .await
-    .map_err(|e| format!("Failed to join vanilla install task: {e}"))?
+    .map_err(|e| format!("Failed to join vanilla install task: {e}"))
+    .and_then(std::convert::identity)
+    .inspect_err(|e| log_command_error("install_vanilla", e))
 }
 
 #[tauri::command]
@@ -5412,7 +5444,9 @@ async fn verify_installed_files(
         result
     })
     .await
-    .map_err(|e| format!("Failed to join verify task: {e}"))?
+    .map_err(|e| format!("Failed to join verify task: {e}"))
+    .and_then(std::convert::identity)
+    .inspect_err(|e| log_command_error("verify_installed_files", e))
 }
 
 #[tauri::command]
@@ -5456,7 +5490,9 @@ async fn build_vanilla_launch_plan(
         .map(|value| value.plan)
     })
     .await
-    .map_err(|e| format!("Failed to join launch plan task: {e}"))?
+    .map_err(|e| format!("Failed to join launch plan task: {e}"))
+    .and_then(std::convert::identity)
+    .inspect_err(|e| log_command_error("build_vanilla_launch_plan", e))
 }
 
 #[tauri::command]
@@ -5489,7 +5525,9 @@ async fn launch_vanilla(
         )
     })
     .await
-    .map_err(|e| format!("Failed to join launch task: {e}"))?
+    .map_err(|e| format!("Failed to join launch task: {e}"))
+    .and_then(std::convert::identity)
+    .inspect_err(|e| log_command_error("launch_vanilla", e))
 }
 
 fn launch_vanilla_blocking(
@@ -5552,7 +5590,7 @@ fn launch_vanilla_blocking(
     );
 
     let should_wait = wait_for_exit.unwrap_or(false);
-    let mut child = match spawn_game_process(&runtime_dir, &executable, &args) {
+    let mut child = match spawn_game_process(Some(&window), &runtime_dir, &executable, &args) {
         Ok(child) => child,
         Err(error) => {
             cleanup_launch_natives_dir(&natives_dir);
@@ -5663,7 +5701,7 @@ fn clear_runtime_pid(pid: i64) {
 // Java pipeline. It is downloaded as a tarball, verified, extracted into
 // `{gameDir}/apps/<versionId>/`, and launched directly with that dir as the
 // working directory (the client resolves mods/resourcepacks/local_assets/config
-// relative to CWD). Contract: MiniCraft/docs/LAUNCHER_INTEGRATION.md.
+// relative to CWD). Contract: FPSMaster-Extreme/docs/LAUNCHER_INTEGRATION.md.
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -5726,7 +5764,9 @@ async fn install_native_app(
         install_native_app_blocking(game_dir, version_id, download_url, version_tag, checksum)
     })
     .await
-    .map_err(|e| format!("Failed to join native app install task: {e}"))?
+    .map_err(|e| format!("Failed to join native app install task: {e}"))
+    .and_then(std::convert::identity)
+    .inspect_err(|e| log_command_error("install_native_app", e))
 }
 
 fn install_native_app_blocking(
@@ -5852,7 +5892,9 @@ async fn prepare_extreme_assets(
 ) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || prepare_extreme_assets_blocking(game_dir, version_id))
         .await
-        .map_err(|e| format!("Failed to join asset-prep task: {e}"))?
+        .map_err(|e| format!("Failed to join asset-prep task: {e}"))
+        .and_then(std::convert::identity)
+        .inspect_err(|e| log_command_error("prepare_extreme_assets", e))
 }
 
 fn prepare_extreme_assets_blocking(game_dir: String, version_id: String) -> Result<String, String> {
@@ -5931,7 +5973,9 @@ async fn launch_native_app(
         )
     })
     .await
-    .map_err(|e| format!("Failed to join native launch task: {e}"))?
+    .map_err(|e| format!("Failed to join native launch task: {e}"))
+    .and_then(std::convert::identity)
+    .inspect_err(|e| log_command_error("launch_native_app", e))
 }
 
 fn launch_native_app_blocking(
@@ -5995,7 +6039,7 @@ fn launch_native_app_blocking(
         &format!("launch native app: {}", format_quoted_command(&executable, &args)),
     );
 
-    let mut child = spawn_game_process(&install_dir, &executable, &args)?;
+    let mut child = spawn_game_process(Some(&window), &install_dir, &executable, &args)?;
     let pid = i64::from(child.id());
     if let Ok(mut store) = game_runtime_starts().lock() {
         store.insert(pid, std::time::Instant::now());
@@ -6357,8 +6401,15 @@ fn open_path_in_explorer(path: &Path) -> Result<(), String> {
 pub(crate) fn open_file_with_system(path: &Path) -> Result<(), String> {
     #[cfg(windows)]
     {
+        // `cmd /C start` re-parses its own command line, so a path containing cmd
+        // metacharacters (`&`, `^`, spaces, …) must be wrapped in quotes or cmd
+        // mis-splits it (e.g. `C:\a&b` runs `b` as a second command). `start` also
+        // treats the first quoted token as the window title, hence the empty `""`.
+        // `raw_arg` bypasses Rust's own arg quoting — which leaves a metachar-only,
+        // space-free path unquoted — and lets us wrap the path ourselves. A Windows
+        // path cannot contain a literal `"`, so the wrapping is unambiguous.
         let mut command = Command::new("cmd");
-        command.args(["/C", "start", "", &path.to_string_lossy()]);
+        command.raw_arg(format!("/C start \"\" \"{}\"", path.display()));
         apply_windows_silent_spawn(&mut command);
         let status = command
             .status()
@@ -6441,7 +6492,76 @@ fn quote_arg(arg: &str) -> String {
     format!("\"{escaped}\"")
 }
 
+/// Map the raw OS error behind a failed `Command::spawn` to a human-readable
+/// (Chinese) explanation of the most common causes. Returns `None` when the code
+/// is not one we have specific guidance for. Codes are OS-specific, so this is
+/// gated per platform: e.g. 193 (`ERROR_BAD_EXE_FORMAT`) only exists on Windows,
+/// while `ENOEXEC`(8)/`ENOENT`(2)/`EACCES`(13) are the unix equivalents.
+fn spawn_failure_hint(err: &std::io::Error) -> Option<&'static str> {
+    let code = err.raw_os_error()?;
+    #[cfg(windows)]
+    let hint = match code {
+        193 => Some(
+            "该文件不是有效的 Win32 程序:通常是二进制架构不符(例如把 arm64/其它平台的构建装到了 x64 机器上)、\
+下载被截断或文件损坏。请删除对应的运行时/安装目录后重新下载;若设置了自定义 Java 路径,请改回内置运行时。",
+        ),
+        2 => Some("系统找不到指定文件:安装可能不完整,或可执行文件已被移动/删除。"),
+        5 => Some("拒绝访问:可能被杀毒软件/SmartScreen 隔离或锁定,或当前账户权限不足。"),
+        _ => None,
+    };
+    #[cfg(not(windows))]
+    let hint = match code {
+        8 => Some("Exec format error:二进制的架构或格式与当前系统不符,或文件已损坏。"),
+        2 => Some("No such file or directory:安装不完整,或可执行文件路径已失效。"),
+        13 => Some("Permission denied:该文件缺少可执行(x)权限。"),
+        _ => None,
+    };
+    hint
+}
+
+/// Build a full diagnostic for a failed process spawn: the raw error, whether the
+/// target exists (and its size — a 0/partial byte count usually means a truncated
+/// download), the working directory state, and the launcher's own OS/arch so an
+/// architecture mismatch is obvious in the log. This is what turns an opaque
+/// "os error 193" into something actionable.
+fn describe_spawn_failure(
+    executable: &str,
+    args: &[String],
+    game_dir: &Path,
+    err: &std::io::Error,
+) -> String {
+    use std::fmt::Write as _;
+    let mut detail = format!("启动进程失败: {err}");
+    match fs::metadata(Path::new(executable)) {
+        Ok(meta) => {
+            let kind = if meta.is_dir() { "目录" } else { "文件" };
+            let _ = write!(
+                detail,
+                "\n  目标程序: {executable}  (存在, {kind}, {} 字节)",
+                meta.len()
+            );
+        }
+        Err(meta_err) => {
+            let _ = write!(detail, "\n  目标程序: {executable}  (无法访问: {meta_err})");
+        }
+    }
+    let dir_state = if game_dir.is_dir() { "存在" } else { "缺失" };
+    let _ = write!(detail, "\n  工作目录: {}  ({dir_state})", game_dir.display());
+    let _ = write!(detail, "\n  参数个数: {}", args.len());
+    let _ = write!(
+        detail,
+        "\n  启动器架构: {}-{}",
+        std::env::consts::OS,
+        std::env::consts::ARCH
+    );
+    if let Some(hint) = spawn_failure_hint(err) {
+        let _ = write!(detail, "\n  可能原因: {hint}");
+    }
+    detail
+}
+
 fn spawn_game_process(
+    window: Option<&tauri::Window>,
     game_dir: &Path,
     executable: &str,
     args: &[String],
@@ -6455,9 +6575,13 @@ fn spawn_game_process(
         .stderr(Stdio::piped());
     apply_windows_silent_spawn(&mut command);
 
-    command
-        .spawn()
-        .map_err(|e| format!("Failed to launch game process: {e}"))
+    command.spawn().map_err(|e| {
+        // Echo the full diagnostic to the log so the failure leaves a complete
+        // trail in the monitor, then return it so the dialog is actionable too.
+        let diagnostic = describe_spawn_failure(executable, args, game_dir, &e);
+        emit_log(window, "error", &diagnostic);
+        diagnostic
+    })
 }
 
 fn resolve_game_dir_path(game_dir: &str) -> Result<PathBuf, String> {
@@ -6717,7 +6841,9 @@ async fn list_fabric_loaders(
         )
     })
     .await
-    .map_err(|e| format!("Failed to join fabric loader listing task: {e}"))?
+    .map_err(|e| format!("Failed to join fabric loader listing task: {e}"))
+    .and_then(std::convert::identity)
+    .inspect_err(|e| log_command_error("list_fabric_loaders", e))
 }
 
 fn list_fabric_loaders_blocking_core(
@@ -6759,7 +6885,9 @@ async fn install_fabric(
         result
     })
     .await
-    .map_err(|e| format!("Failed to join fabric install task: {e}"))?
+    .map_err(|e| format!("Failed to join fabric install task: {e}"))
+    .and_then(std::convert::identity)
+    .inspect_err(|e| log_command_error("install_fabric", e))
 }
 
 fn install_fabric_blocking_core(
@@ -6804,7 +6932,9 @@ async fn list_forge_versions(
         )
     })
     .await
-    .map_err(|e| format!("Failed to join forge version listing task: {e}"))?
+    .map_err(|e| format!("Failed to join forge version listing task: {e}"))
+    .and_then(std::convert::identity)
+    .inspect_err(|e| log_command_error("list_forge_versions", e))
 }
 
 fn list_forge_versions_blocking_core(
@@ -6842,7 +6972,9 @@ async fn list_optifine_versions(
         )
     })
     .await
-    .map_err(|e| format!("Failed to join OptiFine version listing task: {e}"))?
+    .map_err(|e| format!("Failed to join OptiFine version listing task: {e}"))
+    .and_then(std::convert::identity)
+    .inspect_err(|e| log_command_error("list_optifine_versions", e))
 }
 
 #[tauri::command]
@@ -6876,7 +7008,9 @@ async fn install_optifine(
         result
     })
     .await
-    .map_err(|e| format!("Failed to join OptiFine install task: {e}"))?
+    .map_err(|e| format!("Failed to join OptiFine install task: {e}"))
+    .and_then(std::convert::identity)
+    .inspect_err(|e| log_command_error("install_optifine", e))
 }
 
 #[tauri::command]
@@ -6921,7 +7055,9 @@ async fn install_forge(
         result
     })
     .await
-    .map_err(|e| format!("Failed to join forge install task: {e}"))?
+    .map_err(|e| format!("Failed to join forge install task: {e}"))
+    .and_then(std::convert::identity)
+    .inspect_err(|e| log_command_error("install_forge", e))
 }
 
 fn install_forge_blocking_core(
@@ -6964,6 +7100,14 @@ fn emit_log(window: Option<&tauri::Window>, level: &str, message: &str) {
             },
         );
     }
+}
+
+/// Echo a command's failure into the monitor log before it is handed back to the
+/// frontend. Without this the terse error only appears in the failure dialog and
+/// never in the log the user can inspect/copy. Used from each command's tail via
+/// `.inspect_err(|e| log_command_error("launch_vanilla", e))`.
+fn log_command_error(command: &str, err: &str) {
+    emit_log(None, "error", &format!("命令 {command} 执行失败: {err}"));
 }
 
 pub(crate) fn emit_launch_prepare_ipc(
