@@ -1,9 +1,11 @@
-import { Boxes, CloudCog, LogIn, ShieldCheck, Zap } from "lucide-react";
+import { invoke } from "@tauri-apps/api/core";
+import { ArrowUpRight, Boxes, CloudCog, Eye, EyeOff, KeyRound, LogIn, ShieldCheck, User, Zap } from "lucide-react";
 import { memo, FormEvent, useEffect, useState } from "react";
 import AppLogo from "../components/AppLogo";
 import Button from "../components/Button";
 import Card from "../components/Card";
 import { Checkbox } from "../components/Checkbox";
+import { REGISTER_URL } from "../constants";
 import { useI18n, type TranslationKey } from "../i18n";
 import type { LauncherLoginPrefs } from "../types";
 
@@ -33,6 +35,7 @@ function LoginPage({ loading, initialPrefs, statusText, onSubmit }: LoginPagePro
   const [rememberPassword, setRememberPassword] = useState(initialPrefs.rememberPassword);
   const [autoLogin, setAutoLogin] = useState(initialPrefs.autoLogin && initialPrefs.rememberPassword);
   const [errorText, setErrorText] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
   const [slide, setSlide] = useState(0);
 
   useEffect(() => {
@@ -61,6 +64,13 @@ function LoginPage({ loading, initialPrefs, statusText, onSubmit }: LoginPagePro
     }
   }
 
+  function openRegister() {
+    // Dev/web fallback: outside Tauri the invoke bridge is unavailable.
+    void invoke("open_external_link", { url: REGISTER_URL }).catch(() => {
+      window.open(REGISTER_URL, "_blank", "noopener,noreferrer");
+    });
+  }
+
   return (
     <div className="login-shell relative flex w-full items-center justify-center px-4 py-8">
       {/* Ambient glow lives behind the card (not inside it) so it never gets clipped. */}
@@ -78,12 +88,12 @@ function LoginPage({ loading, initialPrefs, statusText, onSubmit }: LoginPagePro
           <div className="relative flex items-center gap-3">
             <AppLogo size={40} className="rounded-[8px] border border-white/10 shadow-[0_8px_24px_rgba(37,184,122,0.28)]" />
             <div className="leading-tight">
-              <p className="text-sm font-semibold tracking-wide text-white">FPSMaster</p>
-              <p className="text-xs text-white/55">{t("login.brand.tagline")}</p>
+              <p className="text-sm font-semibold tracking-wide text-[var(--text-primary)]">FPSMaster</p>
+              <p className="text-xs text-[var(--text-muted)]">{t("login.brand.tagline")}</p>
             </div>
           </div>
 
-          <div className="relative mt-8">
+          <div className="relative flex flex-1 flex-col justify-center py-10">
             <div className="login-slides">
               {CAROUSEL_SLIDES.map((item, index) => {
                 const Icon = item.icon;
@@ -117,6 +127,11 @@ function LoginPage({ loading, initialPrefs, statusText, onSubmit }: LoginPagePro
               ))}
             </div>
           </div>
+
+          <p className="login-aside-footnote relative">
+            <ShieldCheck size={14} />
+            {t("login.tip.authRequired")}
+          </p>
         </aside>
 
         {/* Right: login form */}
@@ -133,25 +148,49 @@ function LoginPage({ loading, initialPrefs, statusText, onSubmit }: LoginPagePro
 
           <form className="field-stack relative" onSubmit={(event) => void submit(event)}>
             <div>
-              <label className="field-label">{t("login.account")}</label>
-              <input
-                type="text"
-                value={identity}
-                onChange={(event) => setIdentity(event.target.value)}
-                className="ui-input"
-                autoComplete="username"
-              />
+              <label className="field-label" htmlFor="login-identity">
+                {t("login.account")}
+              </label>
+              <div className="login-input-wrap">
+                <User size={16} className="login-input-icon" aria-hidden />
+                <input
+                  id="login-identity"
+                  type="text"
+                  value={identity}
+                  onChange={(event) => setIdentity(event.target.value)}
+                  className="ui-input"
+                  placeholder={t("login.accountPlaceholder")}
+                  autoComplete="username"
+                  spellCheck={false}
+                />
+              </div>
             </div>
 
             <div>
-              <label className="field-label">{t("login.password")}</label>
-              <input
-                type="password"
-                value={password}
-                onChange={(event) => setPassword(event.target.value)}
-                className="ui-input"
-                autoComplete="current-password"
-              />
+              <label className="field-label" htmlFor="login-password">
+                {t("login.password")}
+              </label>
+              <div className="login-input-wrap has-trailing">
+                <KeyRound size={16} className="login-input-icon" aria-hidden />
+                <input
+                  id="login-password"
+                  type={showPassword ? "text" : "password"}
+                  value={password}
+                  onChange={(event) => setPassword(event.target.value)}
+                  className="ui-input"
+                  placeholder={t("login.passwordPlaceholder")}
+                  autoComplete="current-password"
+                />
+                <button
+                  type="button"
+                  className="login-input-trailing"
+                  aria-label={showPassword ? t("login.hidePassword") : t("login.showPassword")}
+                  onClick={() => setShowPassword((current) => !current)}
+                  tabIndex={-1}
+                >
+                  {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
+                </button>
+              </div>
             </div>
 
             <div className="login-options">
@@ -211,10 +250,15 @@ function LoginPage({ loading, initialPrefs, statusText, onSubmit }: LoginPagePro
               {loading ? t("login.loggingIn") : t("login.login")}
             </Button>
 
-            <div className="flex items-center justify-center gap-2 pt-1 text-xs text-[var(--text-muted)]">
-              <ShieldCheck size={14} className="text-[var(--mc-grass)]" />
-              {t("login.tip.signInToContinue")}
-            </div>
+            <div className="login-divider" aria-hidden />
+
+            <p className="login-register">
+              {t("login.noAccount")}
+              <button type="button" className="login-register-link" onClick={openRegister}>
+                {t("login.register")}
+                <ArrowUpRight size={13} />
+              </button>
+            </p>
           </form>
         </div>
       </Card>

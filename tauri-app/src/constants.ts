@@ -22,6 +22,9 @@ export const STORAGE_KEYS = {
 // Vite proxy only works for direct fetch() calls from frontend
 export const LAUNCHER_API_BASE_URL = "https://api.fpsmaster.top";
 
+// Account registration happens on the website, not in the launcher.
+export const REGISTER_URL = "https://fpsmaster.top/register";
+
 export const NEWS_ITEMS: readonly NewsItem[] = [
   {
     title: "欢迎使用 FPSMaster",
