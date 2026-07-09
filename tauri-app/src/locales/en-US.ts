@@ -638,4 +638,4 @@ const enUS = {
 } as const;
 
 export default enUS;
-export type EnUSTranslations = typeof enUS;
+export type EnUSTranslations = Record<keyof typeof enUS, string>;
