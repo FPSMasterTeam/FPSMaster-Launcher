@@ -4207,7 +4207,7 @@ button:disabled {
   width: 540px;
   height: 540px;
   transform: translateX(-72%);
-  background: none;
+  background: radial-gradient(closest-side, rgba(var(--accent-rgb), 0.14), transparent 70%);
 }
 
 .login-glow-b {
@@ -4216,7 +4216,7 @@ button:disabled {
   width: 460px;
   height: 460px;
   transform: translateX(64%);
-  background: none;
+  background: radial-gradient(closest-side, rgba(var(--accent-rgb), 0.08), transparent 70%);
 }
 
 .login-card {
@@ -4228,6 +4228,32 @@ button:disabled {
 .login-aside {
   border-right: 1px solid var(--border-subtle);
   background: var(--linear-card-bg-soft);
+}
+
+/* Soft accent wash so the panel doesn't read as a flat slab. */
+.login-aside::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(120% 85% at 8% -10%, rgba(var(--accent-rgb), 0.14), transparent 58%),
+    radial-gradient(95% 70% at 110% 112%, rgba(var(--accent-rgb), 0.09), transparent 62%);
+}
+
+.login-aside-footnote {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-muted);
+}
+
+.login-aside-footnote svg {
+  flex-shrink: 0;
+  color: var(--mc-grass);
 }
 
 .login-slides {
@@ -4308,6 +4334,14 @@ button:disabled {
   background: var(--mc-grass);
 }
 
+:root[data-theme="light"] .login-dot {
+  background: rgba(15, 23, 32, 0.16);
+}
+
+:root[data-theme="light"] .login-dot.is-active {
+  background: var(--mc-grass);
+}
+
 /* Remember-password / auto-login options (plain, no panel) */
 .login-options {
   display: flex;
@@ -4341,4 +4375,94 @@ button:disabled {
 
 .login-option.is-disabled:hover {
   color: var(--text-secondary);
+}
+
+/* Inputs with a leading icon (and optional trailing action) */
+.login-input-wrap {
+  position: relative;
+}
+
+.login-input-icon {
+  position: absolute;
+  left: 14px;
+  top: 50%;
+  transform: translateY(-50%);
+  pointer-events: none;
+  color: var(--text-muted);
+  transition: color var(--duration-fast) var(--ease-standard);
+}
+
+.login-input-wrap .ui-input {
+  padding-left: 42px;
+}
+
+.login-input-wrap.has-trailing .ui-input {
+  padding-right: 46px;
+}
+
+.login-input-wrap:focus-within .login-input-icon {
+  color: var(--mc-grass);
+}
+
+.login-input-trailing {
+  position: absolute;
+  right: 6px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition:
+    color var(--duration-fast) var(--ease-standard),
+    background-color var(--duration-fast) var(--ease-standard);
+}
+
+.login-input-trailing:hover {
+  color: var(--text-primary);
+  background: var(--surface-soft);
+}
+
+/* Register entry under the sign-in button */
+.login-divider {
+  height: 1px;
+  margin-top: 2px;
+  background: var(--border-subtle);
+}
+
+.login-register {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  margin: 0;
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
+.login-register-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--mc-grass);
+  cursor: pointer;
+  transition: color var(--duration-fast) var(--ease-standard);
+}
+
+.login-register-link:hover {
+  color: var(--mc-grass-dark);
+  text-decoration: underline;
+  text-underline-offset: 3px;
 }
