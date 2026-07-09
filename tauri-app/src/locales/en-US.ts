@@ -189,10 +189,16 @@ const enUS = {
   "launch.error.title": "Launch Failed",
   "launch.error.subtitle": "The game could not be started. Details:",
   "launch.error.confirm": "Got it",
-  "login.title": "Launcher Login",
-  "login.subtitle": "Sign in to unlock all launcher features.",
+  "login.title": "Welcome back",
+  "login.subtitle": "Sign in to your FPSMaster account to sync presets and unlock every launcher feature.",
   "login.account": "Username or Email",
+  "login.accountPlaceholder": "Enter username or email",
   "login.password": "Password",
+  "login.passwordPlaceholder": "Enter password",
+  "login.showPassword": "Show password",
+  "login.hidePassword": "Hide password",
+  "login.noAccount": "Don't have an account?",
+  "login.register": "Create one",
   "login.rememberPassword": "Remember password",
   "login.autoLogin": "Auto login",
   "login.autoLoginRequiresRemember": "Enable password remembering before turning on auto login.",
@@ -632,4 +638,4 @@ const enUS = {
 } as const;
 
 export default enUS;
-export type EnUSTranslations = typeof enUS;
+export type EnUSTranslations = Record<keyof typeof enUS, string>;
