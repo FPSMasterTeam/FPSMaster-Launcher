@@ -7,10 +7,10 @@ edition = "2021"
 tauri-build = { version = "2.4", features = [] }
 
 [dependencies]
+aes-gcm = "0.11.0"
 base64 = "0.22"
 flate2 = "1.1"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "gif", "bmp", "webp"] }
-keyring = { version = "3", features = ["windows-native", "apple-native", "linux-native-sync-persistent", "crypto-rust"] }
 rand = "0.8"
 reqwest = { version = "0.12.28", default-features = false, features = ["blocking", "json", "rustls-tls"] }
 serde = { version = "1.0", features = ["derive"] }
@@ -36,6 +36,9 @@ windows = { version = "0.58", features = [
 
 [features]
 default = []
+
+[dev-dependencies]
+tempfile = "3.27.0"
 
 [package.metadata]
 tauri = {}
