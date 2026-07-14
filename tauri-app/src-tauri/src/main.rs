@@ -6,7 +6,7 @@ mod minecraft_core;
 mod secure_storage;
 
 use launcher_api::{
-    download_launcher_app_update, infer_download_file_name, launcher_get_app_update,
+    download_launcher_app_update, launcher_get_app_update,
     launcher_get_dashboard, launcher_get_home, launcher_list_app_update_channels,
     launcher_list_available_versions, launcher_list_news, launcher_login, normalize_api_base_url,
     open_downloaded_file, parse_api_envelope,
@@ -213,6 +213,13 @@ struct LauncherPackageState {
     installed: bool,
     #[serde(rename = "upToDate")]
     up_to_date: bool,
+    // Local integrity/compatibility is an axis orthogonal to "is there a newer
+    // version": the package is installed and on the latest version, but the mods
+    // dir contains an unsupported runtime mod (or was tampered with) and needs a
+    // repair reinstall. Kept separate so the UI can say "needs repair" instead of
+    // falsely nagging "update available".
+    #[serde(rename = "needsRepair")]
+    needs_repair: bool,
     #[serde(rename = "versionTag")]
     version_tag: Option<String>,
     checksum: Option<String>,
@@ -2874,6 +2881,32 @@ async fn get_launcher_package_state(
     .inspect_err(|e| log_command_error("get_launcher_package_state", e))
 }
 
+// Derive a human-readable file name for a single-file mod package, e.g.
+// "FPSMaster-Nova-nightly-46.jar", instead of the opaque upload hash that the
+// download URL ends with (".../1783864173-0e0f....jar"). The extension is taken
+// from the URL when it looks like a real archive extension so that non-jar
+// packages (e.g. .zip) still route through the archive-extraction path.
+fn launcher_mod_package_file_name(download_url: &str, version_id: &str, version_tag: &str) -> String {
+    let ext = reqwest::Url::parse(download_url)
+        .ok()
+        .and_then(|url| {
+            url.path_segments()
+                .and_then(|segments| segments.last().map(str::to_string))
+        })
+        .and_then(|last| {
+            last.rsplit_once('.').map(|(_, ext)| ext.to_ascii_lowercase())
+        })
+        .filter(|ext| {
+            !ext.is_empty() && ext.len() <= 5 && ext.chars().all(|ch| ch.is_ascii_alphanumeric())
+        })
+        .unwrap_or_else(|| "jar".to_string());
+    let base_source = format!("{}-{}", version_id.trim(), version_tag.trim());
+    let base = sanitize_file_name(&base_source);
+    let base = base.trim().trim_end_matches('.').trim();
+    let base = if base.is_empty() { "fpsmaster-mod" } else { base };
+    format!("{base}.{ext}")
+}
+
 fn install_launcher_version_mods_blocking(
     window: Option<&tauri::Window>,
     ipc_session: Option<&str>,
@@ -2947,7 +2980,8 @@ fn install_launcher_version_mods_blocking(
             clean_existing,
         )?
     } else {
-        let download_file_name = infer_download_file_name(&normalized_url, &normalized_tag);
+        let download_file_name =
+            launcher_mod_package_file_name(&normalized_url, &version_id, &normalized_tag);
         let temp_download_path = env::temp_dir().join(format!(
             "fpsmaster-launcher-mods-{}-{}-{}",
             std::process::id(),
@@ -3119,9 +3153,22 @@ fn get_launcher_package_state_blocking(
         Some(_) => false,
         None => false,
     };
+    // "Up to date" is purely about content identity: same version, and — when both
+    // sides carry a content hash — the same bytes. The download/manifest URL is a
+    // transport detail (http vs https, CDN swap, domain migration) that does NOT
+    // change what's installed, so it is deliberately excluded here. Local
+    // integrity/support is reported separately via `needs_repair`.
+    //
+    // `expected_manifest_url` / `expected_download_url` are still accepted for API
+    // compatibility but no longer participate in the freshness decision.
+    let _ = (&expected_manifest_url, &expected_download_url);
     let up_to_date = match (marker.as_ref(), expected_version_tag.as_ref()) {
         (Some(installed_marker), Some(expected_tag)) => {
             let version_matches = installed_marker.version_tag.trim() == expected_tag.trim();
+            // Only let the checksum veto a match when BOTH sides actually have one
+            // and they differ. A missing checksum on either side (older markers, or
+            // catalog entries without one) falls back to the version-tag check
+            // rather than forcing a spurious "update available".
             let checksum_matches = match (
                 installed_marker.checksum.as_deref(),
                 expected_checksum.as_deref(),
@@ -3129,35 +3176,18 @@ fn get_launcher_package_state_blocking(
                 (Some(installed_checksum), Some(expected_checksum_value)) => {
                     installed_checksum.trim() == expected_checksum_value.trim()
                 }
-                (_, None) => true,
-                _ => false,
+                _ => true,
             };
-            let manifest_matches = match (
-                installed_marker.manifest_url.as_deref(),
-                expected_manifest_url.as_deref(),
-            ) {
-                (Some(installed_manifest), Some(expected_manifest)) => {
-                    installed_manifest.trim() == expected_manifest.trim()
-                }
-                (_, None) => true,
-                _ => false,
-            };
-            let url_matches = match expected_download_url.as_deref() {
-                Some(expected_url) => installed_marker.download_url.trim() == expected_url.trim(),
-                None => true,
-            };
-            package_is_supported
-                && version_matches
-                && checksum_matches
-                && manifest_matches
-                && url_matches
+            version_matches && checksum_matches
         }
-        (Some(_), None) => package_is_supported,
+        // No expected version to compare against: treat the install as current.
+        (Some(_), None) => true,
         _ => false,
     };
     Ok(LauncherPackageState {
         installed,
         up_to_date: installed && up_to_date,
+        needs_repair: installed && !package_is_supported,
         version_tag,
         checksum,
         manifest_url,
@@ -8172,26 +8202,19 @@ fn is_mods_marker_up_to_date(
     if marker.version_tag.trim() != version_tag.trim() {
         return Ok(false);
     }
-    if let Some(expected_checksum_value) = expected_checksum {
-        let installed_checksum = marker.checksum.as_deref().unwrap_or("").trim();
-        if installed_checksum != expected_checksum_value.trim() {
+    // Only veto on a checksum mismatch when both sides have one (see the matching
+    // rationale in get_launcher_package_state_blocking).
+    if let (Some(installed_checksum), Some(expected_checksum_value)) =
+        (marker.checksum.as_deref(), expected_checksum)
+    {
+        if installed_checksum.trim() != expected_checksum_value.trim() {
             return Ok(false);
         }
     }
-    match (marker.manifest_url.as_deref(), expected_manifest_url) {
-        (Some(installed_manifest_url), Some(expected_manifest_url_value)) => {
-            if installed_manifest_url.trim() != expected_manifest_url_value.trim() {
-                return Ok(false);
-            }
-        }
-        (None, Some(_)) => return Ok(false),
-        _ => {}
-    }
-    if let Some(expected_url) = expected_download_url {
-        if marker.download_url.trim() != expected_url.trim() {
-            return Ok(false);
-        }
-    }
+    // Download/manifest URLs are transport details, not content identity, so an
+    // http→https or CDN change alone must not force a re-download. Params retained
+    // for signature compatibility with callers.
+    let _ = (expected_manifest_url, expected_download_url);
     Ok(true)
 }
 
