@@ -457,13 +457,16 @@ export type LauncherModsInstallResult = {
 export type LauncherPackageState = {
   installed: boolean;
   upToDate: boolean;
+  // Installed and on the latest version, but the mods dir has an unsupported/
+  // tampered mod and needs a repair reinstall. Orthogonal to upToDate.
+  needsRepair?: boolean;
   versionTag: string | null;
   checksum?: string | null;
   manifestUrl?: string | null;
 };
 
 export type PresetPackageStatus = {
-  state: "checking" | "missing" | "ready" | "update-available" | "syncing" | "error" | "beta" | "pending-release";
+  state: "checking" | "missing" | "ready" | "update-available" | "needs-repair" | "syncing" | "error" | "beta" | "pending-release";
   versionTag: string | null;
   installedVersionTag?: string | null;
   targetVersionTag?: string | null;
