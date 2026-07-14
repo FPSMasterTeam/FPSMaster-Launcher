@@ -99,6 +99,11 @@ function InstancesPage({
                   {t("instances.status.updateAvailable")}
                 </span>
               )}
+              {instance.preset && presetStatus && presetStatus.state === "needs-repair" && canAccess && (
+                <span className="badge shrink-0 rounded-[5px] border-[#ff6b8f]/25 bg-[#ff6b8f]/10 px-2 py-1 text-[10px] text-[#ff6b8f]">
+                  {t("instances.status.needsRepair")}
+                </span>
+              )}
             </div>
             <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-[var(--text-secondary)]">
               <span className="badge badge-muted text-data rounded-[5px] px-2 py-1 text-[10px]">
@@ -259,6 +264,9 @@ function describePresetPackageStatus(
   if (status.state === "update-available") {
     return t("instances.packageUpdateAvailable", { version: status.targetVersionTag ?? status.versionTag ?? "-" });
   }
+  if (status.state === "needs-repair") {
+    return t("instances.packageNeedsRepair", { version: status.installedVersionTag ?? status.versionTag ?? "-" });
+  }
   if (status.state === "syncing") {
     return t("instances.packageSyncing", { version: status.targetVersionTag ?? status.versionTag ?? "-" });
   }
@@ -292,6 +300,7 @@ function presetStatusLabel(
 ): string {
   if (state === "ready") return t("instances.status.ready");
   if (state === "update-available") return t("instances.status.updateAvailable");
+  if (state === "needs-repair") return t("instances.status.needsRepair");
   if (state === "syncing") return t("instances.status.syncing");
   if (state === "checking") return t("instances.status.checking");
   if (state === "error") return t("instances.status.error");
@@ -306,6 +315,9 @@ function resolvePresetStatusTone(state: PresetPackageStatus["state"]): string {
   }
   if (state === "update-available") {
     return "border-amber-500/35 bg-amber-500/10 text-amber-300";
+  }
+  if (state === "needs-repair") {
+    return "border-[#ff6b8f]/25 bg-[#ff6b8f]/10 text-[#ff6b8f]";
   }
   if (state === "syncing" || state === "checking") {
     return "border-cyan-500/35 bg-cyan-500/10 text-cyan-300";

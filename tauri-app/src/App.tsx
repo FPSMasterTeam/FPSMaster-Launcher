@@ -816,19 +816,26 @@ function Launcher() {
                   targetVersionTag: expected.versionName,
                   changelog: expected.changelog
                 })
-              : state.upToDate
-                ? createPresetPackageStatus("ready", {
+              : state.needsRepair
+                ? createPresetPackageStatus("needs-repair", {
                     versionTag: state.versionTag ?? expected.versionName,
                     installedVersionTag: state.versionTag ?? expected.versionName,
                     targetVersionTag: expected.versionName,
                     changelog: expected.changelog
                   })
-                : createPresetPackageStatus("update-available", {
-                    versionTag: expected.versionName,
-                    installedVersionTag: state.versionTag ?? null,
-                    targetVersionTag: expected.versionName,
-                    changelog: expected.changelog
-                  });
+                : state.upToDate
+                  ? createPresetPackageStatus("ready", {
+                      versionTag: state.versionTag ?? expected.versionName,
+                      installedVersionTag: state.versionTag ?? expected.versionName,
+                      targetVersionTag: expected.versionName,
+                      changelog: expected.changelog
+                    })
+                  : createPresetPackageStatus("update-available", {
+                      versionTag: expected.versionName,
+                      installedVersionTag: state.versionTag ?? null,
+                      targetVersionTag: expected.versionName,
+                      changelog: expected.changelog
+                    });
             return [instance.id, mapped] as const;
           } catch (error) {
             return [
