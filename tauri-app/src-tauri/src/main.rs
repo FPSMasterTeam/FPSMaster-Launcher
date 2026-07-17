@@ -1827,8 +1827,13 @@ fn ensure_jdk_blocking(
     // under an x64 (Rosetta) JVM — a native arm64 JVM can't load x64 .dylibs.
     let needs_x64 = minecraft_core::macos_requires_x64_runtime(&game_dir_path, &version_id);
     let runtime_root = managed_jdk_runtime_root(&game_dir_path, major, needs_x64);
-    let java_path =
-        ensure_managed_jdk_runtime(Some(&window), &runtime_root, major, download_threads, needs_x64)?;
+    let java_path = ensure_managed_jdk_runtime(
+        Some(&window),
+        &runtime_root,
+        major,
+        download_threads,
+        needs_x64,
+    )?;
 
     emit_log(
         Some(&window),
@@ -5830,9 +5835,7 @@ fn install_native_app_blocking(
     if binary_path.exists() {
         if let Ok(bytes) = fs::read(&marker_path) {
             if let Ok(marker) = serde_json::from_slice::<NativeAppInstallMarker>(&bytes) {
-                if marker.version_tag == normalized_tag
-                    && marker.checksum == normalized_checksum
-                {
+                if marker.version_tag == normalized_tag && marker.checksum == normalized_checksum {
                     return Ok(NativeAppInstallResult {
                         install_dir: install_dir.to_string_lossy().to_string(),
                         version_tag: normalized_tag,
@@ -5916,23 +5919,20 @@ fn install_native_app_blocking(
 /// how Extreme gets textures/sounds legally without bundling Mojang assets — see
 /// LAUNCHER_INTEGRATION.md §5.
 #[tauri::command]
-async fn prepare_extreme_assets(
-    game_dir: String,
-    version_id: String,
-) -> Result<String, String> {
-    tauri::async_runtime::spawn_blocking(move || prepare_extreme_assets_blocking(game_dir, version_id))
-        .await
-        .map_err(|e| format!("Failed to join asset-prep task: {e}"))
-        .and_then(std::convert::identity)
-        .inspect_err(|e| log_command_error("prepare_extreme_assets", e))
+async fn prepare_extreme_assets(game_dir: String, version_id: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        prepare_extreme_assets_blocking(game_dir, version_id)
+    })
+    .await
+    .map_err(|e| format!("Failed to join asset-prep task: {e}"))
+    .and_then(std::convert::identity)
+    .inspect_err(|e| log_command_error("prepare_extreme_assets", e))
 }
 
 fn prepare_extreme_assets_blocking(game_dir: String, version_id: String) -> Result<String, String> {
     let game_dir_path = resolve_game_dir_path(&game_dir)?;
     let install_dir = native_app_install_dir(&game_dir_path, &version_id);
-    let assets_root = install_dir
-        .join("local_assets")
-        .join("minecraft-1.8.9");
+    let assets_root = install_dir.join("local_assets").join("minecraft-1.8.9");
     let assets_minecraft = assets_root.join("assets").join("minecraft");
     if assets_minecraft.is_dir() {
         return Ok(assets_minecraft.to_string_lossy().to_string());
@@ -6066,7 +6066,10 @@ fn launch_native_app_blocking(
     emit_log(
         Some(&window),
         "info",
-        &format!("launch native app: {}", format_quoted_command(&executable, &args)),
+        &format!(
+            "launch native app: {}",
+            format_quoted_command(&executable, &args)
+        ),
     );
 
     let mut child = spawn_game_process(Some(&window), &install_dir, &executable, &args)?;
@@ -6097,7 +6100,11 @@ fn launch_native_app_blocking(
         let _ = stderr_handle.join();
         let exit_code = status.code().unwrap_or(-1);
         let _ = window.emit("game-exit", GameExitEvent { pid, exit_code });
-        push_ui_log("game", "exit", &format!("process exited pid={pid} code={exit_code}"));
+        push_ui_log(
+            "game",
+            "exit",
+            &format!("process exited pid={pid} code={exit_code}"),
+        );
         clear_runtime_pid(pid);
         return Ok(LaunchExecutionResult {
             version_id,
@@ -6120,7 +6127,11 @@ fn launch_native_app_blocking(
         let _ = stdout_handle.join();
         let _ = stderr_handle.join();
         let _ = wait_window.emit("game-exit", GameExitEvent { pid, exit_code });
-        push_ui_log("game", "exit", &format!("process exited pid={pid} code={exit_code}"));
+        push_ui_log(
+            "game",
+            "exit",
+            &format!("process exited pid={pid} code={exit_code}"),
+        );
         clear_runtime_pid(pid);
     });
 
@@ -6575,8 +6586,16 @@ fn describe_spawn_failure(
             let _ = write!(detail, "\n  目标程序: {executable}  (无法访问: {meta_err})");
         }
     }
-    let dir_state = if game_dir.is_dir() { "存在" } else { "缺失" };
-    let _ = write!(detail, "\n  工作目录: {}  ({dir_state})", game_dir.display());
+    let dir_state = if game_dir.is_dir() {
+        "存在"
+    } else {
+        "缺失"
+    };
+    let _ = write!(
+        detail,
+        "\n  工作目录: {}  ({dir_state})",
+        game_dir.display()
+    );
     let _ = write!(detail, "\n  参数个数: {}", args.len());
     let _ = write!(
         detail,
@@ -6663,7 +6682,9 @@ fn query_process_memory_kb(pid: i64) -> Result<Option<u64>, String> {
         return Ok(None);
     }
     // memory() is in bytes.
-    Ok(system.process(sys_pid).map(|process| process.memory() / 1024))
+    Ok(system
+        .process(sys_pid)
+        .map(|process| process.memory() / 1024))
 }
 
 fn process_memory_sampler() -> &'static Mutex<sysinfo::System> {
@@ -6722,8 +6743,12 @@ fn ensure_managed_jdk_runtime(
                 "warn",
                 "Replacing Mojang jre-legacy x64 runtime: its AWT crashes on macOS 14.4+",
             );
-            fs::remove_dir_all(runtime_root)
-                .map_err(|e| format!("Failed removing outdated runtime {}: {e}", runtime_root.display()))?;
+            fs::remove_dir_all(runtime_root).map_err(|e| {
+                format!(
+                    "Failed removing outdated runtime {}: {e}",
+                    runtime_root.display()
+                )
+            })?;
             fs::create_dir_all(runtime_root).map_err(|e| {
                 format!(
                     "Failed creating runtime dir {}: {e}",
@@ -6751,15 +6776,17 @@ fn ensure_managed_jdk_runtime(
     emit_log(
         window,
         "info",
-        &format!("Resolving Mojang runtime component={component} major={major} force_x64={force_x64}"),
+        &format!(
+            "Resolving Mojang runtime component={component} major={major} force_x64={force_x64}"
+        ),
     );
 
     if force_x64 {
         // The game ships only x64 native libs (old LWJGL); the JVM must be x64 too, so
         // it runs under Rosetta 2 / Windows-on-ARM emulation. A native-arch JVM here
         // would fail to load the natives (UnsatisfiedLinkError).
-        let key = x64_key
-            .ok_or_else(|| format!("No x64 Mojang runtime platform for major={major}"))?;
+        let key =
+            x64_key.ok_or_else(|| format!("No x64 Mojang runtime platform for major={major}"))?;
         // Mojang's only x64 Java 8 for macOS is jre-legacy (8u74, from 2016). AWT in
         // builds that old crashes on macOS >= 14.4 the moment LWJGL 2 creates the game
         // window: an AppKit CADisplayLink change makes the flush observer throw, and
@@ -6768,17 +6795,32 @@ fn ensure_managed_jdk_runtime(
         // the Mojang runtime only as a fallback when Azul is unreachable.
         let mut installed = false;
         if prefers_zulu_over_mojang_x64(major, force_x64) {
-            match install_zulu_jre_archive(window, runtime_root, major, normalized_download_threads, "x64") {
+            match install_zulu_jre_archive(
+                window,
+                runtime_root,
+                major,
+                normalized_download_threads,
+                "x64",
+            ) {
                 Ok(()) => installed = true,
                 Err(zulu_err) => emit_log(
                     window,
                     "warn",
-                    &format!("Zulu x64 JRE unavailable ({zulu_err}); falling back to Mojang x64 runtime"),
+                    &format!(
+                        "Zulu x64 JRE unavailable ({zulu_err}); falling back to Mojang x64 runtime"
+                    ),
                 ),
             }
         }
         if !installed
-            && !install_mojang_java_runtime(window, runtime_root, component, major, normalized_download_threads, &[key])?
+            && !install_mojang_java_runtime(
+                window,
+                runtime_root,
+                component,
+                major,
+                normalized_download_threads,
+                &[key],
+            )?
         {
             return Err(format!("No x64 Mojang runtime available for {component}"));
         }
@@ -6786,8 +6828,14 @@ fn ensure_managed_jdk_runtime(
         // 1) Mojang's runtime for the native CPU arch (no emulation).
         let native = native_key
             .ok_or_else(|| format!("Unsupported platform for Mojang runtime, major={major}"))?;
-        let installed =
-            install_mojang_java_runtime(window, runtime_root, component, major, normalized_download_threads, &[native])?;
+        let installed = install_mojang_java_runtime(
+            window,
+            runtime_root,
+            component,
+            major,
+            normalized_download_threads,
+            &[native],
+        )?;
         if !installed {
             // 2) Mojang has no native build (e.g. macOS arm64 + Java 8/16). Try a native
             //    third-party JRE before considering emulation.
@@ -6796,7 +6844,12 @@ fn ensure_managed_jdk_runtime(
                 "info",
                 &format!("No native Mojang runtime for {component}; fetching native JRE for major={major}"),
             );
-            match install_native_jre_archive(window, runtime_root, major, normalized_download_threads) {
+            match install_native_jre_archive(
+                window,
+                runtime_root,
+                major,
+                normalized_download_threads,
+            ) {
                 Ok(()) => {}
                 Err(native_err) => {
                     // 3) Last resort: Mojang's x64 build via emulation.
@@ -6807,7 +6860,14 @@ fn ensure_managed_jdk_runtime(
                     );
                     let key = x64_key
                         .ok_or_else(|| format!("No Java runtime available for major={major}"))?;
-                    if !install_mojang_java_runtime(window, runtime_root, component, major, normalized_download_threads, &[key])? {
+                    if !install_mojang_java_runtime(
+                        window,
+                        runtime_root,
+                        component,
+                        major,
+                        normalized_download_threads,
+                        &[key],
+                    )? {
                         return Err(format!("No Java runtime available for major={major}"));
                     }
                 }
@@ -7320,7 +7380,9 @@ fn install_mojang_java_runtime(
     platform_keys: &[&str],
 ) -> Result<bool, String> {
     if platform_keys.is_empty() {
-        return Err(format!("Unsupported platform for Mojang runtime, major={major}"));
+        return Err(format!(
+            "Unsupported platform for Mojang runtime, major={major}"
+        ));
     }
     let all_downloads: MojangJavaAllDownloads =
         fetch_json(window, "Mojang Java all.json", MOJANG_JAVA_ALL_JSON_URL)?;
@@ -7416,9 +7478,10 @@ fn install_zulu_jre_archive(
 &release_status=ga&page_size=1&include_fields=sha256_hash,download_url"
     );
     let packages: Vec<AzulPackage> = fetch_json(window, "Azul Zulu metadata", &api_url)?;
-    let package = packages.into_iter().next().ok_or_else(|| {
-        format!("No native Zulu JRE available for Java {major} on {os}/{arch}")
-    })?;
+    let package = packages
+        .into_iter()
+        .next()
+        .ok_or_else(|| format!("No native Zulu JRE available for Java {major} on {os}/{arch}"))?;
 
     emit_log(
         window,
@@ -7426,7 +7489,14 @@ fn install_zulu_jre_archive(
         &format!("Downloading JDK {} ({os}/{arch})", package.name),
     );
     let archive_path = runtime_root.join(format!(".zulu-download.{archive_type}"));
-    download_file_blocking(window, "native-jre", &package.download_url, &archive_path, download_threads, None)?;
+    download_file_blocking(
+        window,
+        "native-jre",
+        &package.download_url,
+        &archive_path,
+        download_threads,
+        None,
+    )?;
     verify_file_sha256(&archive_path, &package.sha256_hash)
         .map_err(|e| format!("Native JRE checksum failed: {e}"))?;
 
@@ -7610,7 +7680,9 @@ fn process_mojang_runtime_entry(
         .replace('\\', "/")
         .split('/')
         .filter(|component| !component.is_empty() && *component != ".." && *component != ".")
-        .fold(runtime_root.to_path_buf(), |acc, component| acc.join(component));
+        .fold(runtime_root.to_path_buf(), |acc, component| {
+            acc.join(component)
+        });
     match entry.entry_type.as_str() {
         "directory" => {
             fs::create_dir_all(&target).map_err(|e| e.to_string())?;
@@ -8579,7 +8651,10 @@ fn remove_unsupported_launcher_runtime_mods(
 }
 
 fn is_nested_launcher_mod_jar_path(path: &Path) -> bool {
-    let normalized = path.to_string_lossy().replace('\\', "/").to_ascii_lowercase();
+    let normalized = path
+        .to_string_lossy()
+        .replace('\\', "/")
+        .to_ascii_lowercase();
     normalized.starts_with("meta-inf/jars/") && normalized.ends_with(".jar")
 }
 
@@ -8627,7 +8702,8 @@ fn mods_dir_has_unsupported_runtime_mods(mods_dir: &Path) -> Result<bool, String
         if !is_jar_file_name(&name) {
             continue;
         }
-        if is_unsupported_launcher_runtime_mod_name(&name) || fabric_mod_uses_named_namespace(&path)?
+        if is_unsupported_launcher_runtime_mod_name(&name)
+            || fabric_mod_uses_named_namespace(&path)?
         {
             return Ok(true);
         }
@@ -8727,9 +8803,8 @@ mod tests {
     use super::{
         cleanup_launch_natives_dir, fabric_mod_uses_named_namespace,
         is_nested_launcher_mod_jar_path, is_unsupported_launcher_runtime_mod_name,
-        launcher_package_has_unsupported_runtime_mods,
-        FabricInstallResult, ForgeInstallResult, LauncherInstalledFileRecord,
-        LauncherModsInstallMarker,
+        launcher_package_has_unsupported_runtime_mods, FabricInstallResult, ForgeInstallResult,
+        LauncherInstalledFileRecord, LauncherModsInstallMarker,
     };
     use std::fs;
     use std::io::Write;
@@ -8827,8 +8902,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("fpsmaster-fabric-api-test-{unique}"));
         fs::create_dir_all(&dir).expect("test directory should be created");
         let named_module = dir.join("fabric-biome-api-v1-48d44a6c-17.1.1+4fc5413f3e.jar");
-        let intermediary_module =
-            dir.join("fabric-block-view-api-v2-1.0.39+4ebb5c083e.jar");
+        let intermediary_module = dir.join("fabric-block-view-api-v2-1.0.39+4ebb5c083e.jar");
         write_accesswidener_jar(&named_module, "accessWidener v1 named");
         write_accesswidener_jar(&intermediary_module, "accessWidener v1 intermediary");
 
@@ -8853,11 +8927,15 @@ mod tests {
             .expect("named package should be checked"));
 
         let intermediary_marker = LauncherModsInstallMarker {
-            files: vec![installed_file("fabric-block-view-api-v2-1.0.39+4ebb5c083e.jar")],
+            files: vec![installed_file(
+                "fabric-block-view-api-v2-1.0.39+4ebb5c083e.jar",
+            )],
             ..marker
         };
-        assert!(!launcher_package_has_unsupported_runtime_mods(&dir, &intermediary_marker)
-            .expect("intermediary package should be checked"));
+        assert!(
+            !launcher_package_has_unsupported_runtime_mods(&dir, &intermediary_marker)
+                .expect("intermediary package should be checked")
+        );
         assert!(is_unsupported_launcher_runtime_mod_name(
             "mcef-48d44a6c-3.3.0-1.21.11.jar"
         ));

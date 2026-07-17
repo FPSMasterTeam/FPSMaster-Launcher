@@ -220,6 +220,8 @@ const enUS = {
   "home.instancePickerTitle": "Choose Instance",
   "home.instancePickerSubtitle": "Select an instance card to launch quickly.",
   "home.instancePickerClose": "Close",
+  "home.novaSelectVersion": "Pick a game version",
+  "home.novaVersionRecommended": "Recommended",
   "home.news.tag": "Update",
   "home.news.pinnedTag": "Pinned",
   "home.news.source": "FPSMaster News",

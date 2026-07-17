@@ -1,5 +1,5 @@
 // Preset-package status helpers. Pure functions extracted from App.tsx.
-import type { Instance, LauncherVersionMap, PresetPackageStatus } from "../types";
+import type { Instance, LauncherVersion, LauncherVersionMap, PresetPackageStatus } from "../types";
 
 export function createPresetPackageStatus(
   state: PresetPackageStatus["state"],
@@ -18,7 +18,9 @@ export function createPresetPackageStatus(
 
 export function resolvePresetAccessState(
   instance: Instance,
-  versionMap: LauncherVersionMap
+  versionMap: LauncherVersionMap,
+  // For NOVA, the entry for the picked game version (Nova has several); ignored for other products.
+  novaVersion?: LauncherVersion | null
 ): { state: "ok" | "pending-release"; versionTag?: string | null; changelog?: string | null; lastError?: string | null } {
   if (!instance.preset || !instance.launcherVersionType) {
     return { state: "ok" };
@@ -27,8 +29,10 @@ export function resolvePresetAccessState(
     return { state: "ok" };
   }
   // NOVA and EXTREME are gated: each resolves against its own catalog entry, which is only
-  // present once released (and, for premium channels, once the account is entitled).
-  const version = versionMap[instance.launcherVersionType];
+  // present once released (and, for premium channels, once the account is entitled). NOVA resolves
+  // against the picked game version's entry; EXTREME against its single product entry.
+  const version =
+    instance.launcherVersionType === "NOVA" ? (novaVersion ?? null) : versionMap[instance.launcherVersionType];
   if (!version) {
     const label = instance.launcherVersionType === "EXTREME" ? "Extreme" : "Nova";
     return {

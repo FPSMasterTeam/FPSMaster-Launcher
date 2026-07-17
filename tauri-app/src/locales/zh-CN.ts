@@ -222,6 +222,8 @@ const zhCN: EnUSTranslations = {
   "home.instancePickerTitle": "选择实例",
   "home.instancePickerSubtitle": "点击卡片即可选择并快速启动。",
   "home.instancePickerClose": "关闭",
+  "home.novaSelectVersion": "选择游戏版本",
+  "home.novaVersionRecommended": "推荐",
   "home.news.tag": "更新",
   "home.news.pinnedTag": "置顶",
   "home.news.source": "FPSMaster 资讯",

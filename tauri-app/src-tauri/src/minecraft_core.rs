@@ -75,13 +75,34 @@ impl DownloadSource {
             ("https://piston-meta.mojang.com", Self::BMCLAPI_ROOT),
             ("https://piston-data.mojang.com", Self::BMCLAPI_ROOT),
             ("https://launcher.mojang.com", Self::BMCLAPI_ROOT),
-            ("https://libraries.minecraft.net", "https://bmclapi2.bangbang93.com/libraries"),
-            ("https://resources.download.minecraft.net", "https://bmclapi2.bangbang93.com/assets"),
-            ("http://files.minecraftforge.net/maven", "https://bmclapi2.bangbang93.com/maven"),
-            ("https://files.minecraftforge.net/maven", "https://bmclapi2.bangbang93.com/maven"),
-            ("https://maven.minecraftforge.net", "https://bmclapi2.bangbang93.com/maven"),
-            ("https://meta.fabricmc.net", "https://bmclapi2.bangbang93.com/fabric-meta"),
-            ("https://maven.fabricmc.net", "https://bmclapi2.bangbang93.com/maven"),
+            (
+                "https://libraries.minecraft.net",
+                "https://bmclapi2.bangbang93.com/libraries",
+            ),
+            (
+                "https://resources.download.minecraft.net",
+                "https://bmclapi2.bangbang93.com/assets",
+            ),
+            (
+                "http://files.minecraftforge.net/maven",
+                "https://bmclapi2.bangbang93.com/maven",
+            ),
+            (
+                "https://files.minecraftforge.net/maven",
+                "https://bmclapi2.bangbang93.com/maven",
+            ),
+            (
+                "https://maven.minecraftforge.net",
+                "https://bmclapi2.bangbang93.com/maven",
+            ),
+            (
+                "https://meta.fabricmc.net",
+                "https://bmclapi2.bangbang93.com/fabric-meta",
+            ),
+            (
+                "https://maven.fabricmc.net",
+                "https://bmclapi2.bangbang93.com/maven",
+            ),
         ];
 
         let mut rewritten = url.to_string();
@@ -131,7 +152,9 @@ impl DownloadSource {
     fn fabric_loader_list_urls(self, game_version: &str) -> Vec<String> {
         self.pair_candidates(
             format!("https://meta.fabricmc.net/v2/versions/loader/{game_version}"),
-            format!("https://bmclapi2.bangbang93.com/fabric-meta/v2/versions/loader/{game_version}"),
+            format!(
+                "https://bmclapi2.bangbang93.com/fabric-meta/v2/versions/loader/{game_version}"
+            ),
         )
     }
 
@@ -416,8 +439,12 @@ pub(crate) fn install_vanilla(
         "Version metadata ready",
     );
     let version_dir = normalized_game_dir.join("versions").join(version_id);
-    fs::create_dir_all(&version_dir)
-        .map_err(|e| format!("Failed to create version dir {}: {e}", version_dir.display()))?;
+    fs::create_dir_all(&version_dir).map_err(|e| {
+        format!(
+            "Failed to create version dir {}: {e}",
+            version_dir.display()
+        )
+    })?;
 
     let version_json_path = version_dir.join(format!("{version_id}.json"));
     fs::write(
@@ -425,11 +452,23 @@ pub(crate) fn install_vanilla(
         serde_json::to_string(&version_json)
             .map_err(|e| format!("Failed to serialize version json for {version_id}: {e}"))?,
     )
-    .map_err(|e| format!("Failed to write version json {}: {e}", version_json_path.display()))?;
+    .map_err(|e| {
+        format!(
+            "Failed to write version json {}: {e}",
+            version_json_path.display()
+        )
+    })?;
 
     emit_install_phase_start(window, ipc_session, phase, "client", "Download client jar");
-    let client_downloaded =
-        download_client(window, &version_json, &version_dir, version_id, phase, ipc_session, source)?;
+    let client_downloaded = download_client(
+        window,
+        &version_json,
+        &version_dir,
+        version_id,
+        phase,
+        ipc_session,
+        source,
+    )?;
     emit_install_progress(
         window,
         ipc_session,
@@ -446,7 +485,13 @@ pub(crate) fn install_vanilla(
         },
     );
 
-    emit_install_phase_start(window, ipc_session, phase, "libraries", "Download libraries");
+    emit_install_phase_start(
+        window,
+        ipc_session,
+        phase,
+        "libraries",
+        "Download libraries",
+    );
     let libraries_downloaded = download_libraries(
         window,
         &version_json,
@@ -715,9 +760,15 @@ pub(crate) fn install_fabric(
 
     let mut version_json = serde_json::Map::new();
     version_json.insert("id".to_string(), Value::String(profile_id.clone()));
-    version_json.insert("inheritsFrom".to_string(), Value::String(game_version.to_string()));
+    version_json.insert(
+        "inheritsFrom".to_string(),
+        Value::String(game_version.to_string()),
+    );
     version_json.insert("time".to_string(), Value::String(created.to_string()));
-    version_json.insert("releaseTime".to_string(), Value::String(created.to_string()));
+    version_json.insert(
+        "releaseTime".to_string(),
+        Value::String(created.to_string()),
+    );
     version_json.insert("mainClass".to_string(), Value::String(main_class));
     if let Some(arguments) = launcher_meta.get("arguments") {
         version_json.insert("arguments".to_string(), arguments.clone());
@@ -749,17 +800,32 @@ pub(crate) fn install_fabric(
     version_json.insert("libraries".to_string(), Value::Array(libraries));
 
     let profile_dir = game_dir.join("versions").join(&profile_id);
-    fs::create_dir_all(&profile_dir)
-        .map_err(|e| format!("Failed to create fabric profile dir {}: {e}", profile_dir.display()))?;
+    fs::create_dir_all(&profile_dir).map_err(|e| {
+        format!(
+            "Failed to create fabric profile dir {}: {e}",
+            profile_dir.display()
+        )
+    })?;
     let profile_json_path = profile_dir.join(format!("{profile_id}.json"));
     fs::write(
         &profile_json_path,
         serde_json::to_string(&Value::Object(version_json))
             .map_err(|e| format!("Failed to serialize fabric profile {profile_id}: {e}"))?,
     )
-    .map_err(|e| format!("Failed to write fabric profile {}: {e}", profile_json_path.display()))?;
+    .map_err(|e| {
+        format!(
+            "Failed to write fabric profile {}: {e}",
+            profile_json_path.display()
+        )
+    })?;
 
-    emit_install_phase_start(window, ipc_session, "fabric", "libraries", "Download fabric libraries");
+    emit_install_phase_start(
+        window,
+        ipc_session,
+        "fabric",
+        "libraries",
+        "Download fabric libraries",
+    );
     let libraries_downloaded = download_libraries(
         window,
         &read_json_file(&profile_json_path)?,
@@ -792,7 +858,8 @@ pub(crate) fn list_forge_versions(
 ) -> Result<Vec<String>, String> {
     let source = DownloadSource::from_id(download_source_id)?;
     let mirror_url = format!("https://bmclapi2.bangbang93.com/forge/minecraft/{game_version}");
-    let official_url = "https://maven.minecraftforge.net/net/minecraftforge/forge/maven-metadata.xml";
+    let official_url =
+        "https://maven.minecraftforge.net/net/minecraftforge/forge/maven-metadata.xml";
     for endpoint in source.endpoints() {
         match endpoint {
             DownloadEndpoint::Mirror => {
@@ -816,9 +883,9 @@ pub(crate) fn list_forge_versions(
                     }
                     Err(error) => return Err(error),
                 };
-                let rows = payload
-                    .as_array()
-                    .ok_or_else(|| format!("Forge version list is not an array for {game_version}"))?;
+                let rows = payload.as_array().ok_or_else(|| {
+                    format!("Forge version list is not an array for {game_version}")
+                })?;
                 let mut versions = Vec::new();
                 for row in rows {
                     let Some(version) = row.get("version").and_then(Value::as_str) else {
@@ -891,7 +958,9 @@ pub(crate) fn list_forge_versions(
             }
         }
     }
-    Err(format!("No forge version source succeeded for {game_version}"))
+    Err(format!(
+        "No forge version source succeeded for {game_version}"
+    ))
 }
 
 pub(crate) fn list_optifine_versions(
@@ -1004,7 +1073,10 @@ fn resolve_optifine_compatibility(
         return ("unknown", None);
     }
 
-    let Some(requirement) = forge_requirement.map(str::trim).filter(|value| !value.is_empty()) else {
+    let Some(requirement) = forge_requirement
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
         return ("compatible", None);
     };
     if requirement.eq_ignore_ascii_case("Forge N/A") {
@@ -1177,8 +1249,13 @@ pub(crate) fn install_forge(
         1,
         "Downloading forge installer",
     );
-    let installer_artifact =
-        DownloadArtifact::new("forge-installer", "forge", "download-installer", &installer_path, "installer");
+    let installer_artifact = DownloadArtifact::new(
+        "forge-installer",
+        "forge",
+        "download-installer",
+        &installer_path,
+        "installer",
+    );
     let downloaded_installer = download_file_with_ipc(
         window,
         ipc_session,
@@ -1210,12 +1287,23 @@ pub(crate) fn install_forge(
             "legacy-profile",
             "Detected legacy forge installer profile",
         );
-        let profile_id = install_forge_old_profile(game_dir, forge_version, &installer_path, &install_profile.payload)?;
+        let profile_id = install_forge_old_profile(
+            game_dir,
+            forge_version,
+            &installer_path,
+            &install_profile.payload,
+        )?;
         let profile_json_path = game_dir
             .join("versions")
             .join(&profile_id)
             .join(format!("{profile_id}.json"));
-        emit_install_phase_complete(window, ipc_session, "forge", "complete", &format!("Forge install completed profile={profile_id}"));
+        emit_install_phase_complete(
+            window,
+            ipc_session,
+            "forge",
+            "complete",
+            &format!("Forge install completed profile={profile_id}"),
+        );
         return Ok(crate::ForgeInstallResult {
             profile_id,
             forge_version: forge_version.to_string(),
@@ -1235,10 +1323,19 @@ pub(crate) fn install_forge(
         game_dir,
         java_executable,
         &installer_path,
-        &["--installClient", "--installDir", &game_dir.to_string_lossy()],
+        &[
+            "--installClient",
+            "--installDir",
+            &game_dir.to_string_lossy(),
+        ],
     )?;
     let profile_id = if first.exit_code == 0 {
-        select_forge_profile_id_after_install(game_dir, game_version, forge_version, &install_profile.payload)?
+        select_forge_profile_id_after_install(
+            game_dir,
+            game_version,
+            forge_version,
+            &install_profile.payload,
+        )?
     } else {
         emit_install_phase_start(
             window,
@@ -1247,14 +1344,24 @@ pub(crate) fn install_forge(
             "fallback-installer",
             "Retry forge installer with fallback args",
         );
-        let fallback = run_forge_installer(game_dir, java_executable, &installer_path, &["--installClient"])?;
+        let fallback = run_forge_installer(
+            game_dir,
+            java_executable,
+            &installer_path,
+            &["--installClient"],
+        )?;
         if fallback.exit_code != 0 {
             return Err(format!(
                 "Forge installer failed. first={} fallback={}",
                 first.output, fallback.output
             ));
         }
-        select_forge_profile_id_after_install(game_dir, game_version, forge_version, &install_profile.payload)?
+        select_forge_profile_id_after_install(
+            game_dir,
+            game_version,
+            forge_version,
+            &install_profile.payload,
+        )?
     };
 
     let profile_json_path = game_dir
@@ -1267,7 +1374,13 @@ pub(crate) fn install_forge(
             profile_json_path.display()
         ));
     }
-    emit_install_phase_complete(window, ipc_session, "forge", "complete", &format!("Forge install completed profile={profile_id}"));
+    emit_install_phase_complete(
+        window,
+        ipc_session,
+        "forge",
+        "complete",
+        &format!("Forge install completed profile={profile_id}"),
+    );
     Ok(crate::ForgeInstallResult {
         profile_id,
         forge_version: forge_version.to_string(),
@@ -1292,7 +1405,10 @@ pub(crate) fn install_optifine(
     let normalized_game_version = game_version.trim();
     let normalized_loader = loader.trim().to_ascii_lowercase();
     let normalized_optifine_version = requested_optifine_version.trim();
-    if normalized_version_id.is_empty() || normalized_game_version.is_empty() || normalized_optifine_version.is_empty() {
+    if normalized_version_id.is_empty()
+        || normalized_game_version.is_empty()
+        || normalized_optifine_version.is_empty()
+    {
         return Err("OptiFine install arguments cannot be empty".to_string());
     }
     if normalized_loader == "fabric" {
@@ -1311,11 +1427,9 @@ pub(crate) fn install_optifine(
         .find(|item| item.version == normalized_optifine_version)
         .ok_or_else(|| format!("OptiFine version not found: {normalized_optifine_version}"))?;
     if selected.compatibility == "incompatible" {
-        return Err(
-            selected
-                .incompatibility_reason
-                .unwrap_or_else(|| "Selected OptiFine version is incompatible".to_string()),
-        );
+        return Err(selected
+            .incompatibility_reason
+            .unwrap_or_else(|| "Selected OptiFine version is incompatible".to_string()));
     }
 
     emit_install_phase_start(
@@ -1327,17 +1441,15 @@ pub(crate) fn install_optifine(
     );
 
     let mods_dir = resolve_version_runtime_dir(game_dir, normalized_version_id)?.join("mods");
-    fs::create_dir_all(&mods_dir)
-        .map_err(|e| format!("Failed to create OptiFine mods dir {}: {e}", mods_dir.display()))?;
+    fs::create_dir_all(&mods_dir).map_err(|e| {
+        format!(
+            "Failed to create OptiFine mods dir {}: {e}",
+            mods_dir.display()
+        )
+    })?;
 
     let target_path = mods_dir.join(&selected.file_name);
-    let artifact = DownloadArtifact::new(
-        "optifine",
-        "optifine",
-        "download",
-        &target_path,
-        "mod",
-    );
+    let artifact = DownloadArtifact::new("optifine", "optifine", "download", &target_path, "mod");
     remove_existing_optifine_jars(&mods_dir, &target_path)?;
 
     if target_path.is_file() {
@@ -1357,7 +1469,11 @@ pub(crate) fn install_optifine(
         });
     }
 
-    let download_url = build_optifine_download_url(normalized_game_version, &selected.optifine_type, &selected.patch);
+    let download_url = build_optifine_download_url(
+        normalized_game_version,
+        &selected.optifine_type,
+        &selected.patch,
+    );
     let source = DownloadSource::from_id(download_source_id)?;
     let urls = source.pair_candidates(download_url.clone(), download_url);
     let fetched = download_file_with_ipc(
@@ -1413,10 +1529,17 @@ fn remove_existing_optifine_jars(mods_dir: &Path, keep_path: &Path) -> Result<()
         if path == keep_path || !path.is_file() {
             continue;
         }
-        let name = path.file_name().and_then(|value| value.to_str()).unwrap_or("");
+        let name = path
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or("");
         if name.to_ascii_lowercase().contains("optifine") {
-            fs::remove_file(&path)
-                .map_err(|e| format!("Failed to remove existing OptiFine jar {}: {e}", path.display()))?;
+            fs::remove_file(&path).map_err(|e| {
+                format!(
+                    "Failed to remove existing OptiFine jar {}: {e}",
+                    path.display()
+                )
+            })?;
         }
     }
     Ok(())
@@ -1432,7 +1555,10 @@ pub(crate) fn build_vanilla_launch_plan(
     let version_json = descriptor.merged;
     let rule_features = build_rule_features();
 
-    let version_dir = request.game_dir.join("versions").join(request.version_id.trim());
+    let version_dir = request
+        .game_dir
+        .join("versions")
+        .join(request.version_id.trim());
     let natives_base_dir = version_dir.join("natives");
     fs::create_dir_all(&natives_base_dir).map_err(|e| {
         format!(
@@ -1489,7 +1615,10 @@ pub(crate) fn build_vanilla_launch_plan(
         .and_then(Value::as_array)
     {
         resolve_argument_array(args, &variables, &rule_features)
-    } else if let Some(raw) = version_json.get("minecraftArguments").and_then(Value::as_str) {
+    } else if let Some(raw) = version_json
+        .get("minecraftArguments")
+        .and_then(Value::as_str)
+    {
         raw.split(' ')
             .filter_map(|token| {
                 let replaced = replace_variables(token, &variables).trim().to_string();
@@ -1592,8 +1721,12 @@ fn resolve_version_descriptor(
             version_json_path.display()
         )
     })?;
-    let raw: Value = serde_json::from_str(&text)
-        .map_err(|e| format!("Invalid version metadata {}: {e}", version_json_path.display()))?;
+    let raw: Value = serde_json::from_str(&text).map_err(|e| {
+        format!(
+            "Invalid version metadata {}: {e}",
+            version_json_path.display()
+        )
+    })?;
     let Some(object) = raw.as_object() else {
         return Err(format!(
             "Version metadata is not an object: {}",
@@ -1691,8 +1824,14 @@ fn merge_arguments(
     merged
 }
 
-fn ensure_default_resolution_args(game_args: &mut Vec<String>, variables: &HashMap<String, String>) {
-    if game_args.iter().any(|arg| arg == "--width" || arg == "--height") {
+fn ensure_default_resolution_args(
+    game_args: &mut Vec<String>,
+    variables: &HashMap<String, String>,
+) {
+    if game_args
+        .iter()
+        .any(|arg| arg == "--width" || arg == "--height")
+    {
         return;
     }
     let width = variables
@@ -1703,12 +1842,7 @@ fn ensure_default_resolution_args(game_args: &mut Vec<String>, variables: &HashM
         .get("${resolution_height}")
         .cloned()
         .unwrap_or_else(|| "700".to_string());
-    game_args.extend([
-        "--width".to_string(),
-        width,
-        "--height".to_string(),
-        height,
-    ]);
+    game_args.extend(["--width".to_string(), width, "--height".to_string(), height]);
 }
 
 fn build_rule_features() -> HashMap<String, bool> {
@@ -1736,7 +1870,10 @@ fn resolve_libraries(
     let mut resolved = Vec::new();
 
     for library in libraries {
-        if !rules_match(library.get("rules").and_then(Value::as_array), rule_features) {
+        if !rules_match(
+            library.get("rules").and_then(Value::as_array),
+            rule_features,
+        ) {
             continue;
         }
 
@@ -1753,9 +1890,10 @@ fn resolve_libraries(
         let classifiers = downloads.and_then(|value| value.get("classifiers"));
         let native_key = resolve_native_classifier_key(&library, classifiers);
 
-        if let (Some(native_key), Some(classifiers)) =
-            (native_key.as_deref(), classifiers.and_then(Value::as_object))
-        {
+        if let (Some(native_key), Some(classifiers)) = (
+            native_key.as_deref(),
+            classifiers.and_then(Value::as_object),
+        ) {
             if let Some(classifier) = classifiers.get(native_key).and_then(Value::as_object) {
                 let path = classifier
                     .get("path")
@@ -1767,7 +1905,11 @@ fn resolve_libraries(
                     .and_then(Value::as_str)
                     .map(|url| source.candidate_urls(url))
                     .unwrap_or_else(|| {
-                        source.candidate_urls(&format!("{}{}", normalize_base_url(library_repo), path))
+                        source.candidate_urls(&format!(
+                            "{}{}",
+                            normalize_base_url(library_repo),
+                            path
+                        ))
                     });
                 let sha1 = classifier
                     .get("sha1")
@@ -1819,7 +1961,11 @@ fn resolve_libraries(
             let target = game_dir.join("libraries").join(&path);
             resolved.push(ResolvedLibrary {
                 path: target,
-                download_urls: source.candidate_urls(&format!("{}{}", normalize_base_url(library_repo), path)),
+                download_urls: source.candidate_urls(&format!(
+                    "{}{}",
+                    normalize_base_url(library_repo),
+                    path
+                )),
                 sha1: None,
                 classpath_entry: true,
                 native_entry: false,
@@ -1922,14 +2068,36 @@ fn build_variables(
         .ok_or_else(|| format!("Version {} missing assetIndex.id", request.version_id))?;
 
     let mut variables = HashMap::new();
-    variables.insert("${auth_player_name}".to_string(), request.player_name.clone());
+    variables.insert(
+        "${auth_player_name}".to_string(),
+        request.player_name.clone(),
+    );
     variables.insert("${auth_uuid}".to_string(), request.uuid.clone());
-    variables.insert("${auth_access_token}".to_string(), request.access_token.clone());
+    variables.insert(
+        "${auth_access_token}".to_string(),
+        request.access_token.clone(),
+    );
     variables.insert("${version_name}".to_string(), request.version_id.clone());
-    variables.insert("${game_directory}".to_string(), request.game_dir.to_string_lossy().to_string());
-    variables.insert("${assets_root}".to_string(), request.game_dir.join("assets").to_string_lossy().to_string());
-    variables.insert("${assets_index_name}".to_string(), asset_index_name.to_string());
-    variables.insert("${natives_directory}".to_string(), natives_dir.to_string_lossy().to_string());
+    variables.insert(
+        "${game_directory}".to_string(),
+        request.game_dir.to_string_lossy().to_string(),
+    );
+    variables.insert(
+        "${assets_root}".to_string(),
+        request
+            .game_dir
+            .join("assets")
+            .to_string_lossy()
+            .to_string(),
+    );
+    variables.insert(
+        "${assets_index_name}".to_string(),
+        asset_index_name.to_string(),
+    );
+    variables.insert(
+        "${natives_directory}".to_string(),
+        natives_dir.to_string_lossy().to_string(),
+    );
     variables.insert("${classpath}".to_string(), classpath.to_string());
     variables.insert(
         "${version_type}".to_string(),
@@ -1939,11 +2107,17 @@ fn build_variables(
             .unwrap_or("release")
             .to_string(),
     );
-    variables.insert("${launcher_name}".to_string(), "FPSMasterLauncher".to_string());
+    variables.insert(
+        "${launcher_name}".to_string(),
+        "FPSMasterLauncher".to_string(),
+    );
     variables.insert("${launcher_version}".to_string(), "0.1.0".to_string());
     variables.insert("${user_type}".to_string(), "msa".to_string());
     variables.insert("${auth_xuid}".to_string(), "0".to_string());
-    variables.insert("${clientid}".to_string(), "057064c6-d180-43df-b010-834b4571532f".to_string());
+    variables.insert(
+        "${clientid}".to_string(),
+        "057064c6-d180-43df-b010-834b4571532f".to_string(),
+    );
     variables.insert("${user_properties}".to_string(), "{}".to_string());
     variables.insert("${profile_properties}".to_string(), "{}".to_string());
     variables.insert("${auth_session}".to_string(), request.access_token.clone());
@@ -1957,10 +2131,20 @@ fn build_variables(
             .to_string_lossy()
             .to_string(),
     );
-    variables.insert("${library_directory}".to_string(), request.game_dir.join("libraries").to_string_lossy().to_string());
+    variables.insert(
+        "${library_directory}".to_string(),
+        request
+            .game_dir
+            .join("libraries")
+            .to_string_lossy()
+            .to_string(),
+    );
     variables.insert("${resolution_width}".to_string(), "1200".to_string());
     variables.insert("${resolution_height}".to_string(), "700".to_string());
-    variables.insert("${classpath_separator}".to_string(), classpath_separator().to_string());
+    variables.insert(
+        "${classpath_separator}".to_string(),
+        classpath_separator().to_string(),
+    );
     variables.insert(
         "${primary_jar}".to_string(),
         request
@@ -2021,7 +2205,10 @@ fn append_resolved_arguments(
         let current = replace_variables(&raw_tokens[index], variables)
             .trim()
             .to_string();
-        if current.starts_with("--") && index + 1 < raw_tokens.len() && !raw_tokens[index + 1].starts_with("--") {
+        if current.starts_with("--")
+            && index + 1 < raw_tokens.len()
+            && !raw_tokens[index + 1].starts_with("--")
+        {
             let next = replace_variables(&raw_tokens[index + 1], variables)
                 .trim()
                 .to_string();
@@ -2121,7 +2308,10 @@ fn build_classpath(entries: &[PathBuf]) -> String {
     values.join(&classpath_separator().to_string())
 }
 
-fn ensure_library_downloaded(window: Option<&tauri::Window>, library: &ResolvedLibrary) -> Result<(), String> {
+fn ensure_library_downloaded(
+    window: Option<&tauri::Window>,
+    library: &ResolvedLibrary,
+) -> Result<(), String> {
     if library.path.is_file() {
         return Ok(());
     }
@@ -2131,7 +2321,13 @@ fn ensure_library_downloaded(window: Option<&tauri::Window>, library: &ResolvedL
             library.path.display()
         ));
     }
-    download_file(window, &library.download_urls, &library.path, library.sha1.as_deref(), "library")
+    download_file(
+        window,
+        &library.download_urls,
+        &library.path,
+        library.sha1.as_deref(),
+        "library",
+    )
 }
 
 fn ensure_client_jar_downloaded(
@@ -2147,13 +2343,24 @@ fn ensure_client_jar_downloaded(
         .get("downloads")
         .and_then(|value| value.get("client"))
         .and_then(Value::as_object)
-        .ok_or_else(|| format!("Client download info missing and jar not found: {}", client_jar.display()))?;
+        .ok_or_else(|| {
+            format!(
+                "Client download info missing and jar not found: {}",
+                client_jar.display()
+            )
+        })?;
     let url = client
         .get("url")
         .and_then(Value::as_str)
         .ok_or_else(|| "Client download entry missing url".to_string())?;
     let sha1 = client.get("sha1").and_then(Value::as_str);
-    download_file(window, &source.candidate_urls(url), client_jar, sha1, "client")
+    download_file(
+        window,
+        &source.candidate_urls(url),
+        client_jar,
+        sha1,
+        "client",
+    )
 }
 
 fn download_file(
@@ -2203,12 +2410,17 @@ fn download_file(
         let bytes = match response.bytes() {
             Ok(bytes) => bytes,
             Err(error) => {
-                last_error = Some(format!("Failed reading {label} response from {url}: {error}"));
+                last_error = Some(format!(
+                    "Failed reading {label} response from {url}: {error}"
+                ));
                 continue;
             }
         };
         if let Err(error) = fs::write(&tmp, &bytes) {
-            last_error = Some(format!("Failed writing temp file {}: {error}", tmp.display()));
+            last_error = Some(format!(
+                "Failed writing temp file {}: {error}",
+                tmp.display()
+            ));
             continue;
         }
 
@@ -2238,7 +2450,11 @@ fn download_file(
             })
             .map_err(|e| format!("Failed to move temp file to {}: {e}", target.display()))?;
 
-        emit_log(window, "info", &format!("Downloaded {label}: {}", target.display()));
+        emit_log(
+            window,
+            "info",
+            &format!("Downloaded {label}: {}", target.display()),
+        );
         return Ok(());
     }
 
@@ -2261,13 +2477,29 @@ fn download_file_with_ipc(
             if let Ok(actual) = compute_sha1_hex(target) {
                 if actual.eq_ignore_ascii_case(expected_sha1) {
                     let total = fs::metadata(target).ok().map(|meta| meta.len());
-                    emit_download_item_complete(window, session, artifact, Some(0), total, true, "Already cached");
+                    emit_download_item_complete(
+                        window,
+                        session,
+                        artifact,
+                        Some(0),
+                        total,
+                        true,
+                        "Already cached",
+                    );
                     return Ok(false);
                 }
             }
         } else {
             let total = fs::metadata(target).ok().map(|meta| meta.len());
-            emit_download_item_complete(window, session, artifact, Some(0), total, true, "Already cached");
+            emit_download_item_complete(
+                window,
+                session,
+                artifact,
+                Some(0),
+                total,
+                true,
+                "Already cached",
+            );
             return Ok(false);
         }
     }
@@ -2326,7 +2558,10 @@ fn download_file_with_ipc(
             let mut output = match fs::File::create(&tmp) {
                 Ok(file) => file,
                 Err(error) => {
-                    last_error = Some(format!("Failed writing temp file {}: {error}", tmp.display()));
+                    last_error = Some(format!(
+                        "Failed writing temp file {}: {error}",
+                        tmp.display()
+                    ));
                     if attempt < DOWNLOAD_RETRY_ATTEMPTS {
                         emit_download_item_start(
                             window,
@@ -2350,7 +2585,10 @@ fn download_file_with_ipc(
                     Ok(0) => break,
                     Ok(read_bytes) => {
                         if let Err(error) = output.write_all(&buffer[..read_bytes]) {
-                            stream_failed = Some(format!("Failed writing temp file {}: {error}", tmp.display()));
+                            stream_failed = Some(format!(
+                                "Failed writing temp file {}: {error}",
+                                tmp.display()
+                            ));
                             break;
                         }
                         downloaded_bytes += read_bytes as u64;
@@ -2367,7 +2605,9 @@ fn download_file_with_ipc(
                         }
                     }
                     Err(error) => {
-                        stream_failed = Some(format!("Failed reading {label} response from {url}: {error}"));
+                        stream_failed = Some(format!(
+                            "Failed reading {label} response from {url}: {error}"
+                        ));
                         break;
                     }
                 }
@@ -2389,7 +2629,10 @@ fn download_file_with_ipc(
             }
             if let Err(error) = output.flush() {
                 let _ = fs::remove_file(&tmp);
-                last_error = Some(format!("Failed flushing temp file {}: {error}", tmp.display()));
+                last_error = Some(format!(
+                    "Failed flushing temp file {}: {error}",
+                    tmp.display()
+                ));
                 if attempt < DOWNLOAD_RETRY_ATTEMPTS {
                     emit_download_item_start(
                         window,
@@ -2460,7 +2703,11 @@ fn download_file_with_ipc(
                 })
                 .map_err(|e| format!("Failed to move temp file to {}: {e}", target.display()))?;
 
-            emit_log(window, "info", &format!("Downloaded {label}: {}", target.display()));
+            emit_log(
+                window,
+                "info",
+                &format!("Downloaded {label}: {}", target.display()),
+            );
             emit_download_item_complete(
                 window,
                 session,
@@ -2474,7 +2721,8 @@ fn download_file_with_ipc(
         }
     }
 
-    let error = last_error.unwrap_or_else(|| format!("Failed downloading {label} to {}", target.display()));
+    let error =
+        last_error.unwrap_or_else(|| format!("Failed downloading {label} to {}", target.display()));
     emit_download_item_error(window, session, artifact, &error);
     Err(error)
 }
@@ -2507,8 +2755,12 @@ fn extract_native_jar(native_jar: &Path, natives_dir: &Path) -> Result<(), Strin
                 )
             })?;
         }
-        let mut output = fs::File::create(&target)
-            .map_err(|e| format!("Failed to create extracted native {}: {e}", target.display()))?;
+        let mut output = fs::File::create(&target).map_err(|e| {
+            format!(
+                "Failed to create extracted native {}: {e}",
+                target.display()
+            )
+        })?;
         io::copy(&mut entry, &mut output)
             .map_err(|e| format!("Failed to extract native {}: {e}", target.display()))?;
     }
@@ -2588,8 +2840,7 @@ fn build_http_client_with_optional_timeout(
 fn read_json_file(path: &Path) -> Result<Value, String> {
     let text = fs::read_to_string(path)
         .map_err(|e| format!("Failed to read JSON file {}: {e}", path.display()))?;
-    serde_json::from_str(&text)
-        .map_err(|e| format!("Invalid JSON file {}: {e}", path.display()))
+    serde_json::from_str(&text).map_err(|e| format!("Invalid JSON file {}: {e}", path.display()))
 }
 
 fn find_version_from_manifest(
@@ -2733,12 +2984,21 @@ fn ensure_launcher_profiles(game_dir: &Path) -> Result<(), String> {
   "version": 3
 }"#,
     )
-    .map_err(|e| format!("Failed to write launcher profiles {}: {e}", launcher_profiles.display()))
+    .map_err(|e| {
+        format!(
+            "Failed to write launcher profiles {}: {e}",
+            launcher_profiles.display()
+        )
+    })
 }
 
 fn inspect_forge_installer(installer_path: &Path) -> Result<ForgeInstallerProfile, String> {
-    let file = fs::File::open(installer_path)
-        .map_err(|e| format!("Failed to open forge installer {}: {e}", installer_path.display()))?;
+    let file = fs::File::open(installer_path).map_err(|e| {
+        format!(
+            "Failed to open forge installer {}: {e}",
+            installer_path.display()
+        )
+    })?;
     let mut archive = zip::ZipArchive::new(file)
         .map_err(|e| format!("Invalid forge installer {}: {e}", installer_path.display()))?;
     let mut entry = archive
@@ -2749,8 +3009,8 @@ fn inspect_forge_installer(installer_path: &Path) -> Result<ForgeInstallerProfil
     entry
         .read_to_string(&mut text)
         .map_err(|e| format!("Failed reading install_profile.json: {e}"))?;
-    let payload: Value =
-        serde_json::from_str(&text).map_err(|e| format!("Invalid forge install_profile.json: {e}"))?;
+    let payload: Value = serde_json::from_str(&text)
+        .map_err(|e| format!("Invalid forge install_profile.json: {e}"))?;
     Ok(ForgeInstallerProfile {
         new_style: payload.get("spec").is_some(),
         payload,
@@ -2782,12 +3042,20 @@ fn install_forge_old_profile(
     let artifact = MavenCoordinates::parse(path_descriptor)?;
     let target_library = game_dir.join("libraries").join(artifact.to_jar_path());
     if let Some(parent) = target_library.parent() {
-        fs::create_dir_all(parent)
-            .map_err(|e| format!("Failed to create forge library dir {}: {e}", parent.display()))?;
+        fs::create_dir_all(parent).map_err(|e| {
+            format!(
+                "Failed to create forge library dir {}: {e}",
+                parent.display()
+            )
+        })?;
     }
 
-    let file = fs::File::open(installer_path)
-        .map_err(|e| format!("Failed to open forge installer {}: {e}", installer_path.display()))?;
+    let file = fs::File::open(installer_path).map_err(|e| {
+        format!(
+            "Failed to open forge installer {}: {e}",
+            installer_path.display()
+        )
+    })?;
     let mut archive = zip::ZipArchive::new(file)
         .map_err(|e| format!("Invalid forge installer {}: {e}", installer_path.display()))?;
     let mut entry = archive.by_name(file_path).map_err(|e| {
@@ -2797,10 +3065,18 @@ fn install_forge_old_profile(
             installer_path.display()
         )
     })?;
-    let mut output = fs::File::create(&target_library)
-        .map_err(|e| format!("Failed to create forge universal jar {}: {e}", target_library.display()))?;
-    io::copy(&mut entry, &mut output)
-        .map_err(|e| format!("Failed to extract forge universal jar {}: {e}", target_library.display()))?;
+    let mut output = fs::File::create(&target_library).map_err(|e| {
+        format!(
+            "Failed to create forge universal jar {}: {e}",
+            target_library.display()
+        )
+    })?;
+    io::copy(&mut entry, &mut output).map_err(|e| {
+        format!(
+            "Failed to extract forge universal jar {}: {e}",
+            target_library.display()
+        )
+    })?;
 
     let version_id = version_info
         .get("id")
@@ -2808,15 +3084,24 @@ fn install_forge_old_profile(
         .ok_or_else(|| format!("Forge legacy profile missing id for {forge_version}"))?
         .to_string();
     let version_dir = game_dir.join("versions").join(&version_id);
-    fs::create_dir_all(&version_dir)
-        .map_err(|e| format!("Failed to create forge version dir {}: {e}", version_dir.display()))?;
+    fs::create_dir_all(&version_dir).map_err(|e| {
+        format!(
+            "Failed to create forge version dir {}: {e}",
+            version_dir.display()
+        )
+    })?;
     let version_json_path = version_dir.join(format!("{version_id}.json"));
     fs::write(
         &version_json_path,
         serde_json::to_string(version_info)
             .map_err(|e| format!("Failed to serialize forge legacy profile {version_id}: {e}"))?,
     )
-    .map_err(|e| format!("Failed to write forge legacy profile {}: {e}", version_json_path.display()))?;
+    .map_err(|e| {
+        format!(
+            "Failed to write forge legacy profile {}: {e}",
+            version_json_path.display()
+        )
+    })?;
     Ok(version_id)
 }
 
@@ -2837,9 +3122,12 @@ fn run_forge_installer(
         use std::os::windows::process::CommandExt;
         command.creation_flags(0x0800_0000);
     }
-    let output = command
-        .output()
-        .map_err(|e| format!("Failed to run forge installer {}: {e}", installer_path.display()))?;
+    let output = command.output().map_err(|e| {
+        format!(
+            "Failed to run forge installer {}: {e}",
+            installer_path.display()
+        )
+    })?;
     let mut text = String::new();
     text.push_str(&String::from_utf8_lossy(&output.stdout));
     text.push_str(&String::from_utf8_lossy(&output.stderr));
@@ -2921,8 +3209,12 @@ fn push_forge_profile_id_candidate(candidates: &mut Vec<String>, value: Option<&
 
 fn first_profile_id_after_install(game_dir: &Path, game_version: &str) -> Result<String, String> {
     let versions_dir = game_dir.join("versions");
-    let read_dir = fs::read_dir(&versions_dir)
-        .map_err(|e| format!("Failed to read forge versions dir {}: {e}", versions_dir.display()))?;
+    let read_dir = fs::read_dir(&versions_dir).map_err(|e| {
+        format!(
+            "Failed to read forge versions dir {}: {e}",
+            versions_dir.display()
+        )
+    })?;
     let mut candidates = Vec::new();
     for entry in read_dir {
         let entry = entry.map_err(|e| format!("Failed reading forge versions dir entry: {e}"))?;
@@ -2930,7 +3222,10 @@ fn first_profile_id_after_install(game_dir: &Path, game_version: &str) -> Result
         if !path.is_dir() {
             continue;
         }
-        let Some(name) = path.file_name().map(|value| value.to_string_lossy().to_string()) else {
+        let Some(name) = path
+            .file_name()
+            .map(|value| value.to_string_lossy().to_string())
+        else {
             continue;
         };
         if name.contains("forge") && name.contains(game_version) {
@@ -2998,7 +3293,17 @@ fn download_libraries(
     }
 
     let total = unique.len();
-    emit_install_progress(window, ipc_session, phase, "libraries", 0, total as i32, 0, total as i32, "Start downloading libraries");
+    emit_install_progress(
+        window,
+        ipc_session,
+        phase,
+        "libraries",
+        0,
+        total as i32,
+        0,
+        total as i32,
+        "Start downloading libraries",
+    );
     let jobs = unique
         .into_iter()
         .map(|library| {
@@ -3009,16 +3314,31 @@ fn download_libraries(
                 expected_sha1: library.sha1,
                 label: "library".to_string(),
                 artifact: DownloadArtifact::new(
-                    if library.native_entry { "native" } else { "library" },
+                    if library.native_entry {
+                        "native"
+                    } else {
+                        "library"
+                    },
                     phase,
                     "libraries",
                     &library.path,
-                    if library.native_entry { "native" } else { "library" },
+                    if library.native_entry {
+                        "native"
+                    } else {
+                        "library"
+                    },
                 ),
             }
         })
         .collect::<Vec<_>>();
-    download_jobs_in_parallel(window, ipc_session, phase, "libraries", jobs, download_threads)
+    download_jobs_in_parallel(
+        window,
+        ipc_session,
+        phase,
+        "libraries",
+        jobs,
+        download_threads,
+    )
 }
 
 fn download_assets(
@@ -3044,8 +3364,17 @@ fn download_assets(
         .and_then(Value::as_str)
         .ok_or_else(|| "assetIndex missing url".to_string())?;
     let asset_index_sha1 = asset_index.get("sha1").and_then(Value::as_str);
-    let asset_index_path = game_dir.join("assets").join("indexes").join(format!("{asset_index_id}.json"));
-    let asset_index_artifact = DownloadArtifact::new("asset-index", phase, "assets", &asset_index_path, "asset-index");
+    let asset_index_path = game_dir
+        .join("assets")
+        .join("indexes")
+        .join(format!("{asset_index_id}.json"));
+    let asset_index_artifact = DownloadArtifact::new(
+        "asset-index",
+        phase,
+        "assets",
+        &asset_index_path,
+        "asset-index",
+    );
     let _ = download_file_with_ipc(
         window,
         ipc_session,
@@ -3057,8 +3386,12 @@ fn download_assets(
     )?;
     install_cancel_error(ipc_session)?;
 
-    let index_text = fs::read_to_string(&asset_index_path)
-        .map_err(|e| format!("Failed to read asset index {}: {e}", asset_index_path.display()))?;
+    let index_text = fs::read_to_string(&asset_index_path).map_err(|e| {
+        format!(
+            "Failed to read asset index {}: {e}",
+            asset_index_path.display()
+        )
+    })?;
     let index_json: Value = serde_json::from_str(&index_text)
         .map_err(|e| format!("Invalid asset index {}: {e}", asset_index_path.display()))?;
     let objects = index_json
@@ -3066,7 +3399,17 @@ fn download_assets(
         .and_then(Value::as_object)
         .ok_or_else(|| "Asset index missing objects".to_string())?;
 
-    emit_install_progress(window, ipc_session, phase, "assets", 0, objects.len() as i32, 0, objects.len() as i32, "Start downloading assets");
+    emit_install_progress(
+        window,
+        ipc_session,
+        phase,
+        "assets",
+        0,
+        objects.len() as i32,
+        0,
+        objects.len() as i32,
+        "Start downloading assets",
+    );
 
     let mut unique_assets: Vec<(String, PathBuf, String)> = Vec::new();
     let mut seen = std::collections::HashSet::new();
@@ -3076,7 +3419,11 @@ fn download_assets(
             .and_then(Value::as_str)
             .ok_or_else(|| "Asset object missing hash".to_string())?;
         let prefix = &hash[0..2];
-        let target = game_dir.join("assets").join("objects").join(prefix).join(hash);
+        let target = game_dir
+            .join("assets")
+            .join("objects")
+            .join(prefix)
+            .join(hash);
         if seen.insert(target.clone()) {
             unique_assets.push((hash.to_string(), target, hash.to_string()));
         }
@@ -3085,18 +3432,28 @@ fn download_assets(
     let jobs = unique_assets
         .iter()
         .map(|(_, target, hash)| DownloadJob {
-            urls: source.candidate_urls(&format!("{}{}/{}", source.default_asset_repo(), &hash[0..2], hash)),
+            urls: source.candidate_urls(&format!(
+                "{}{}/{}",
+                source.default_asset_repo(),
+                &hash[0..2],
+                hash
+            )),
             target: target.clone(),
             expected_sha1: Some(hash.clone()),
             label: "asset".to_string(),
             artifact: DownloadArtifact::new("asset", phase, "assets", target, "asset"),
         })
         .collect::<Vec<_>>();
-    let _downloaded = download_jobs_in_parallel(window, ipc_session, phase, "assets", jobs, download_threads)?;
+    let _downloaded =
+        download_jobs_in_parallel(window, ipc_session, phase, "assets", jobs, download_threads)?;
 
     let legacy_dir = game_dir.join("assets").join("virtual").join("legacy");
-    fs::create_dir_all(&legacy_dir)
-        .map_err(|e| format!("Failed to create legacy assets dir {}: {e}", legacy_dir.display()))?;
+    fs::create_dir_all(&legacy_dir).map_err(|e| {
+        format!(
+            "Failed to create legacy assets dir {}: {e}",
+            legacy_dir.display()
+        )
+    })?;
     for (path, object) in objects {
         let hash = object
             .get("hash")
@@ -3168,14 +3525,7 @@ fn download_jobs_in_parallel(
     let total = jobs.len();
     let worker_count = download_threads.max(1).min(total);
     for job in &jobs {
-        emit_download_item_start(
-            window,
-            ipc_session,
-            &job.artifact,
-            Some(0),
-            None,
-            "Queued",
-        );
+        emit_download_item_start(window, ipc_session, &job.artifact, Some(0), None, "Queued");
     }
     let queue = Arc::new(Mutex::new(std::collections::VecDeque::from(jobs)));
     let completed = Arc::new(AtomicUsize::new(0));
@@ -3277,9 +3627,8 @@ impl DownloadArtifact {
         Self {
             id: format!(
                 "{prefix}:{}",
-                base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(
-                    path.to_string_lossy().as_bytes()
-                )
+                base64::engine::general_purpose::URL_SAFE_NO_PAD
+                    .encode(path.to_string_lossy().as_bytes())
             ),
             name: path
                 .file_name()
@@ -3299,7 +3648,19 @@ fn emit_install_phase_start(
     stage: &str,
     message: &str,
 ) {
-    emit_install_ipc(window, session, "phase-start", phase, stage, None, None, None, None, Some(message), None);
+    emit_install_ipc(
+        window,
+        session,
+        "phase-start",
+        phase,
+        stage,
+        None,
+        None,
+        None,
+        None,
+        Some(message),
+        None,
+    );
 }
 
 fn emit_install_phase_complete(
@@ -3309,7 +3670,19 @@ fn emit_install_phase_complete(
     stage: &str,
     message: &str,
 ) {
-    emit_install_ipc(window, session, "phase-complete", phase, stage, None, None, None, None, Some(message), None);
+    emit_install_ipc(
+        window,
+        session,
+        "phase-complete",
+        phase,
+        stage,
+        None,
+        None,
+        None,
+        None,
+        Some(message),
+        None,
+    );
 }
 
 fn emit_install_progress(
@@ -3346,7 +3719,17 @@ fn emit_download_item_start(
     total_bytes: Option<u64>,
     message: &str,
 ) {
-    emit_install_item_ipc(window, session, "item-start", artifact, current_bytes, total_bytes, Some(message), None, None);
+    emit_install_item_ipc(
+        window,
+        session,
+        "item-start",
+        artifact,
+        current_bytes,
+        total_bytes,
+        Some(message),
+        None,
+        None,
+    );
 }
 
 fn emit_download_item_progress(
@@ -3357,7 +3740,17 @@ fn emit_download_item_progress(
     total_bytes: Option<u64>,
     message: &str,
 ) {
-    emit_install_item_ipc(window, session, "item-progress", artifact, current_bytes, total_bytes, Some(message), None, None);
+    emit_install_item_ipc(
+        window,
+        session,
+        "item-progress",
+        artifact,
+        current_bytes,
+        total_bytes,
+        Some(message),
+        None,
+        None,
+    );
 }
 
 fn emit_download_item_complete(
@@ -3388,7 +3781,17 @@ fn emit_download_item_error(
     artifact: &DownloadArtifact,
     error: &str,
 ) {
-    emit_install_item_ipc(window, session, "item-error", artifact, None, None, Some(error), Some(error), None);
+    emit_install_item_ipc(
+        window,
+        session,
+        "item-error",
+        artifact,
+        None,
+        None,
+        Some(error),
+        Some(error),
+        None,
+    );
 }
 
 fn emit_install_ipc(
@@ -3410,7 +3813,10 @@ fn emit_install_ipc(
     payload.insert("phase".to_string(), Value::String(phase.to_string()));
     payload.insert("stage".to_string(), Value::String(stage.to_string()));
     if let Some(session) = session.filter(|value| !value.trim().is_empty()) {
-        payload.insert("session".to_string(), Value::String(session.trim().to_string()));
+        payload.insert(
+            "session".to_string(),
+            Value::String(session.trim().to_string()),
+        );
     }
     if let Some(current) = current {
         payload.insert("current".to_string(), Value::Number(current.into()));
@@ -3455,16 +3861,25 @@ fn emit_install_item_ipc(
     payload.insert("phase".to_string(), Value::String(artifact.phase.clone()));
     payload.insert("stage".to_string(), Value::String(artifact.stage.clone()));
     if let Some(session) = session.filter(|value| !value.trim().is_empty()) {
-        payload.insert("session".to_string(), Value::String(session.trim().to_string()));
+        payload.insert(
+            "session".to_string(),
+            Value::String(session.trim().to_string()),
+        );
     }
     payload.insert("itemId".to_string(), Value::String(artifact.id.clone()));
     payload.insert("itemName".to_string(), Value::String(artifact.name.clone()));
     payload.insert("itemKind".to_string(), Value::String(artifact.kind.clone()));
     if let Some(current_bytes) = current_bytes {
-        payload.insert("itemCurrentBytes".to_string(), Value::Number(current_bytes.into()));
+        payload.insert(
+            "itemCurrentBytes".to_string(),
+            Value::Number(current_bytes.into()),
+        );
     }
     if let Some(total_bytes) = total_bytes {
-        payload.insert("itemTotalBytes".to_string(), Value::Number(total_bytes.into()));
+        payload.insert(
+            "itemTotalBytes".to_string(),
+            Value::Number(total_bytes.into()),
+        );
     }
     if let Some(message) = message.filter(|value| !value.trim().is_empty()) {
         payload.insert("message".to_string(), Value::String(message.to_string()));
@@ -3623,14 +4038,22 @@ mod tests {
             max_memory_mb: 1024,
             server_address: None,
         };
-        let plan = build_vanilla_launch_plan(None, &request, None)
-            .expect("launch plan should be built");
+        let plan =
+            build_vanilla_launch_plan(None, &request, None).expect("launch plan should be built");
 
         assert!(!plan.plan.command.contains(&"--demo".to_string()));
         assert!(plan.plan.command.contains(&"--username".to_string()));
         assert!(plan.plan.command.contains(&"Player".to_string()));
-        assert!(plan.plan.command.windows(2).any(|args| args == ["--width", "1200"]));
-        assert!(plan.plan.command.windows(2).any(|args| args == ["--height", "700"]));
+        assert!(plan
+            .plan
+            .command
+            .windows(2)
+            .any(|args| args == ["--width", "1200"]));
+        assert!(plan
+            .plan
+            .command
+            .windows(2)
+            .any(|args| args == ["--height", "700"]));
         assert!(plan.natives_dir.starts_with(version_dir.join("natives")));
     }
 
@@ -3748,6 +4171,8 @@ mod tests {
         assert!(!should_omit_resolved_arg(
             r"C:\Users\张三\AppData\Roaming\FPSMaster"
         ));
-        assert!(!should_omit_resolved_arg(r"C:\Program Files\Eclipse Adoptium"));
+        assert!(!should_omit_resolved_arg(
+            r"C:\Program Files\Eclipse Adoptium"
+        ));
     }
 }

@@ -40,6 +40,10 @@ pub struct LauncherVersion {
     pub version_type: String,
     #[serde(rename = "versionName")]
     pub version_name: String,
+    // Minecraft game version this release targets (e.g. "1.21.11"). Present on nova entries so the
+    // launcher can offer multiple game versions under a single Nova product; null for edge/extreme.
+    #[serde(rename = "gameVersion", default)]
+    pub game_version: Option<String>,
     #[serde(rename = "artifactSourceType", default)]
     pub artifact_source_type: Option<String>,
     #[serde(rename = "downloadUrl")]
@@ -759,8 +763,7 @@ fn parse_launcher_versions_response(
         }
     };
 
-    if let Ok(envelope) =
-        serde_json::from_value::<ApiEnvelope<Vec<LauncherVersion>>>(value.clone())
+    if let Ok(envelope) = serde_json::from_value::<ApiEnvelope<Vec<LauncherVersion>>>(value.clone())
     {
         if !status.is_success() || !envelope.success {
             let is_auth_error = status.as_u16() == 401 || status.as_u16() == 403;
@@ -788,9 +791,7 @@ fn parse_launcher_versions_response(
                         msg
                     }
                 })
-                .unwrap_or_else(|| {
-                    format!("versions list failed with HTTP {}", status.as_u16())
-                });
+                .unwrap_or_else(|| format!("versions list failed with HTTP {}", status.as_u16()));
             return Err(message);
         }
         if let Some(data) = envelope.data {

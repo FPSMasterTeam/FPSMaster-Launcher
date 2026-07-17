@@ -15,6 +15,7 @@ import {
   DEFAULT_SETTINGS,
   LAUNCHER_API_BASE_URL,
   NEWS_ITEMS,
+  NOVA_DEFAULT_GAME_VERSION,
   PRESET_INSTANCES,
   STORAGE_KEYS,
   resolvePresetVersionId
@@ -144,6 +145,28 @@ const EMPTY_LAUNCHER_VERSIONS: LauncherVersionMap = {
   EXTREME: null
 };
 
+// Nova exposes several Minecraft game versions under one product. We keep the catalog's latest
+// entry per game version keyed by the MC version string (e.g. "1.21.11" -> LauncherVersion).
+type NovaVersionMap = Record<string, LauncherVersion>;
+
+// Nova installs each game version into its own profile/mods dir so they don't collide, while the
+// user still sees a single "Nova" region. The on-disk versionId is `<prefix>-<gameVersion>`.
+const NOVA_VERSION_ID_PREFIX = "FPSMaster-Nova";
+
+function novaVersionIdFor(gameVersion: string): string {
+  return `${NOVA_VERSION_ID_PREFIX}-${gameVersion}`;
+}
+
+// Prefer the recommended game version, else the default (1.21.11) if present, else the newest key.
+function preferredNovaGameVersion(novaMap: NovaVersionMap): string | null {
+  const keys = Object.keys(novaMap);
+  if (keys.length === 0) return null;
+  const recommended = keys.find((gv) => novaMap[gv]?.recommended);
+  if (recommended) return recommended;
+  if (novaMap[NOVA_DEFAULT_GAME_VERSION]) return NOVA_DEFAULT_GAME_VERSION;
+  return keys[0];
+}
+
 // Returns a referentially-stable function that always calls the latest `fn`.
 // Lets us hand stable callback props to React.memo children without worrying
 // about dependency arrays or stale closures.
@@ -186,6 +209,10 @@ function Launcher() {
   const [launcherLoginPrefs, setLauncherLoginPrefs] = useState<LauncherLoginPrefs>(DEFAULT_LOGIN_PREFS);
   const [secureStorageReady, setSecureStorageReady] = useState(false);
   const [launcherVersions, setLauncherVersions] = useState<LauncherVersionMap>(EMPTY_LAUNCHER_VERSIONS);
+  const [novaGameVersions, setNovaGameVersions] = useState<NovaVersionMap>({});
+  const [selectedNovaGameVersion, setSelectedNovaGameVersion] = useState<string>(
+    () => localStorage.getItem(STORAGE_KEYS.selectedNovaGameVersion) ?? NOVA_DEFAULT_GAME_VERSION
+  );
   const [currentLauncherVersion, setCurrentLauncherVersion] = useState(FALLBACK_LAUNCHER_VERSION);
   const [presetPackageStatuses, setPresetPackageStatuses] = useState<Record<string, PresetPackageStatus>>({});
   const [launcherAuthLoading, setLauncherAuthLoading] = useState(false);
@@ -347,6 +374,7 @@ function Launcher() {
   useEffect(() => {
     if (!launcherAuth?.token) {
       setLauncherVersions(EMPTY_LAUNCHER_VERSIONS);
+      setNovaGameVersions({});
       launcherData.clearDashboard();
       telemetry.setOnlineSummary(null);
       setPresetPackageStatuses({});
@@ -439,6 +467,10 @@ function Launcher() {
   useEffect(() => {
     if (current) localStorage.setItem(STORAGE_KEYS.selected, current.id);
   }, [current]);
+
+  useEffect(() => {
+    localStorage.setItem(STORAGE_KEYS.selectedNovaGameVersion, selectedNovaGameVersion);
+  }, [selectedNovaGameVersion]);
 
   useEffect(() => {
     launchingInstanceRef.current = launchingInstanceId;
@@ -720,14 +752,60 @@ function Launcher() {
     return out;
   }
 
+  // Latest catalog entry per Nova game version (keyed by MC version). Mirrors the recommended/
+  // newest tie-break used by pickLatestLauncherVersions, but bucketed by gameVersion.
+  function pickNovaGameVersions(entries: LauncherVersion[]): NovaVersionMap {
+    const out: NovaVersionMap = {};
+    const scoreOf = (item: LauncherVersion): number => {
+      const parsed = Date.parse(item.createdAt ?? "");
+      return Number.isFinite(parsed) ? parsed : Number.NEGATIVE_INFINITY;
+    };
+    for (const item of entries) {
+      if (item.versionType !== "NOVA") continue;
+      // Backward compatible: entries from an older backend (or any Nova release published before the
+      // multi-version rollout) carry no gameVersion — treat those as the default game version so Nova
+      // keeps working. Once the new backend + CI publish per-version entries, each gets its own bucket.
+      const gameVersion = (item.gameVersion ?? "").trim() || NOVA_DEFAULT_GAME_VERSION;
+      if (!isLauncherVersionCompatible(currentLauncherVersion, item.minLauncherVersion)) continue;
+      const current = out[gameVersion];
+      const shouldReplace =
+        !current ||
+        (item.recommended && !current.recommended) ||
+        (item.recommended === current.recommended && scoreOf(item) > scoreOf(current));
+      if (shouldReplace) {
+        out[gameVersion] = item;
+      }
+    }
+    return out;
+  }
+
+  // The catalog entry for a given Nova game version, preferring a freshly-fetched map (React state
+  // may lag within a single login/refresh flow) over component state.
+  function resolveNovaEntry(gameVersion: string, override?: NovaVersionMap | null): LauncherVersion | null {
+    return override?.[gameVersion] ?? novaGameVersions[gameVersion] ?? null;
+  }
+
+  // Nova stays a single preset "region"; at launch time we specialise it to the picked game version
+  // (own baseVersion + own on-disk versionId) so each version installs/updates independently.
+  function resolveNovaEffectiveInstance(instance: Instance): Instance {
+    if (!instance.preset || instance.launcherVersionType !== "NOVA") return instance;
+    const gameVersion = selectedNovaGameVersion || instance.baseVersion;
+    return {
+      ...instance,
+      baseVersion: gameVersion,
+      versionId: novaVersionIdFor(gameVersion)
+    };
+  }
+
   async function refreshLauncherVersions(
     silent = false,
     tokenOverride?: string
-  ): Promise<{ map: LauncherVersionMap | null; error: string | null }> {
+  ): Promise<{ map: LauncherVersionMap | null; novaMap: NovaVersionMap | null; error: string | null }> {
     const token = (tokenOverride ?? launcherAuth?.token ?? "").trim();
     if (!token) {
       setLauncherVersions(EMPTY_LAUNCHER_VERSIONS);
-      return { map: null, error: t("app.status.authRequiredForPreset") };
+      setNovaGameVersions({});
+      return { map: null, novaMap: null, error: t("app.status.authRequiredForPreset") };
     }
 
     const baseUrl = LAUNCHER_API_BASE_URL;
@@ -741,40 +819,55 @@ function Launcher() {
         token
       });
       const map = pickLatestLauncherVersions(entries);
+      const novaMap = pickNovaGameVersions(entries);
       setLauncherVersions(map);
-      void refreshPresetPackageStatuses(map);
+      setNovaGameVersions(novaMap);
+      // Keep the picked Nova game version valid: fall back to recommended/newest if the previous
+      // choice is no longer offered (e.g. pulled from a channel the user lost access to).
+      setSelectedNovaGameVersion((prev) =>
+        novaMap[prev] ? prev : preferredNovaGameVersion(novaMap) ?? prev
+      );
+      void refreshPresetPackageStatuses(map, novaMap);
       if (!silent) {
         const count = entries.length;
         setStatus(t("app.status.loadedLauncherVersions", { count }));
       }
-      return { map, error: null };
+      return { map, novaMap, error: null };
     } catch (error) {
       const errorText = formatLaunchError(error);
       if (token && isAuthExpiredError(error)) {
         handleAuthExpired(t("login.sessionExpired"));
-        return { map: null, error: t("login.sessionExpired") };
+        return { map: null, novaMap: null, error: t("login.sessionExpired") };
       }
       if (!silent) {
         setStatus(t("app.status.failed", { error: errorText }));
       }
-      return { map: null, error: errorText };
+      return { map: null, novaMap: null, error: errorText };
     } finally {
       setLauncherVersionLoading(false);
     }
   }
 
-  async function syncPresetLauncherPackages(versionMap?: LauncherVersionMap | null): Promise<void> {
+  async function syncPresetLauncherPackages(
+    versionMap?: LauncherVersionMap | null,
+    novaMap?: NovaVersionMap | null
+  ): Promise<void> {
     const targetMap = versionMap ?? launcherVersions;
-    const presetInstances = instances.filter(
-      (item) => item.preset && item.launcherVersionType && targetMap[item.launcherVersionType]
-    );
+    const targetNovaMap = novaMap ?? novaGameVersions;
+    const presetInstances = instances.filter((item) => {
+      if (!item.preset || !item.launcherVersionType) return false;
+      if (item.launcherVersionType === "NOVA") {
+        return Boolean(resolveNovaEntry(selectedNovaGameVersion, targetNovaMap));
+      }
+      return Boolean(targetMap[item.launcherVersionType]);
+    });
     if (presetInstances.length === 0) {
       return;
     }
 
     for (const instance of presetInstances) {
       try {
-        await ensurePresetModsReady(instance, targetMap);
+        await ensurePresetModsReady(resolveNovaEffectiveInstance(instance), targetMap, undefined, targetNovaMap);
       } catch {
         // Keep sync best-effort to avoid blocking login flow.
       }
@@ -782,14 +875,23 @@ function Launcher() {
   }
 
   async function refreshPresetPackageStatuses(
-    versionMapOverride?: LauncherVersionMap | null
+    versionMapOverride?: LauncherVersionMap | null,
+    novaMapOverride?: NovaVersionMap | null
   ): Promise<void> {
     const targetMap = versionMapOverride ?? launcherVersions;
+    const targetNovaMap = novaMapOverride ?? novaGameVersions;
     const nextEntries = await Promise.all(
       instances
         .filter((item) => item.preset && item.launcherVersionType)
         .map(async (instance) => {
-          const presetAccess = resolvePresetAccessState(instance, targetMap);
+          // Nova is specialised to the picked game version so its status reflects that version's
+          // own install dir + catalog entry (edge/extreme are unchanged, one entry per product).
+          const effective = resolveNovaEffectiveInstance(instance);
+          const novaEntry =
+            instance.launcherVersionType === "NOVA"
+              ? resolveNovaEntry(effective.baseVersion, targetNovaMap)
+              : null;
+          const presetAccess = resolvePresetAccessState(instance, targetMap, novaEntry);
           if (presetAccess.state === "pending-release") {
             return [instance.id, createPresetPackageStatus(presetAccess.state, {
               versionTag: presetAccess.versionTag ?? null,
@@ -798,14 +900,15 @@ function Launcher() {
               lastError: presetAccess.lastError ?? null
             })] as const;
           }
-          const expected = targetMap[instance.launcherVersionType!];
+          const expected =
+            instance.launcherVersionType === "NOVA" ? novaEntry : targetMap[instance.launcherVersionType!];
           if (!expected) {
             return [instance.id, createPresetPackageStatus("missing")] as const;
           }
           try {
             const state = await invoke<LauncherPackageState>("get_launcher_package_state", {
               gameDir: settings.gameDir,
-              versionId: instance.versionId,
+              versionId: effective.versionId,
               expectedVersionTag: expected.versionName,
               expectedChecksum: expected.checksum,
               expectedManifestUrl: expected.manifestUrl,
@@ -881,7 +984,7 @@ function Launcher() {
       markLaunchPreparePhase("check-instance", "running", "prepare", t("launch.progress.checkInstance"));
       setLaunchProgressPercent(Math.round((1 / LAUNCH_PREPARE_STEPS) * 100));
       setLaunchProgressText(t("launch.progress.checkInstance"));
-      const prepared = await ensureInstanceReadyForLaunch(current, sessionId);
+      const prepared = await ensureInstanceReadyForLaunch(resolveNovaEffectiveInstance(current), sessionId);
       markLaunchPreparePhase("check-instance", "done", "complete", t("launch.progress.checkInstance"));
 
       markLaunchPreparePhase("runtime", "running", "prepare", t("launch.progress.prepareRuntime"));
@@ -973,6 +1076,7 @@ function Launcher() {
     void telemetry.flushSession();
     setLauncherAuth(null);
     setLauncherVersions(EMPTY_LAUNCHER_VERSIONS);
+    setNovaGameVersions({});
     launcherData.clearDashboard();
     setPresetPackageStatuses({});
     setPage("home");
@@ -1019,7 +1123,7 @@ function Launcher() {
       void launcherData.refreshHome(true, normalizedToken);
       const refresh = await refreshLauncherVersions(false, normalizedToken);
       if (!refresh.error && refresh.map) {
-        void syncPresetLauncherPackages(refresh.map);
+        void syncPresetLauncherPackages(refresh.map, refresh.novaMap);
       }
       setPage("home");
       return refresh.error;
@@ -1043,6 +1147,7 @@ function Launcher() {
     persistLauncherLoginPrefs({ ...launcherLoginPrefs, autoLogin: false });
     setLauncherAuth(null);
     setLauncherVersions(EMPTY_LAUNCHER_VERSIONS);
+    setNovaGameVersions({});
     launcherData.clearDashboard();
     setPresetPackageStatuses({});
     setPage("home");
@@ -1053,11 +1158,17 @@ function Launcher() {
   async function ensurePresetModsReady(
     instance: Instance,
     versionMapOverride?: LauncherVersionMap | null,
-    launchSessionId?: string
+    launchSessionId?: string,
+    novaMapOverride?: NovaVersionMap | null
   ) {
     if (!instance.preset || !instance.launcherVersionType) return;
 
-    const presetAccess = resolvePresetAccessState(instance, versionMapOverride ?? launcherVersions);
+    // For Nova, `instance` is the game-version-specialised copy (baseVersion = picked MC version,
+    // versionId = FPSMaster-Nova-<gameVersion>). Resolve everything against that game version.
+    const isNova = instance.launcherVersionType === "NOVA";
+    const novaEntry = isNova ? resolveNovaEntry(instance.baseVersion, novaMapOverride) : null;
+
+    const presetAccess = resolvePresetAccessState(instance, versionMapOverride ?? launcherVersions, novaEntry);
     if (presetAccess.state === "pending-release") {
       setPresetPackageStatuses((prev) => ({
         ...prev,
@@ -1078,9 +1189,10 @@ function Launcher() {
       return;
     }
 
-    let targetVersion =
-      versionMapOverride?.[instance.launcherVersionType] ??
-      launcherVersions[instance.launcherVersionType];
+    let targetVersion = isNova
+      ? novaEntry
+      : versionMapOverride?.[instance.launcherVersionType] ??
+        launcherVersions[instance.launcherVersionType];
     if (!targetVersion) {
       const refresh = await refreshLauncherVersions(true, token);
       if (refresh.error) {
@@ -1117,7 +1229,9 @@ function Launcher() {
         }
         throw new Error(refresh.error);
       }
-      targetVersion = refresh.map?.[instance.launcherVersionType] ?? null;
+      targetVersion = isNova
+        ? refresh.novaMap?.[instance.baseVersion] ?? null
+        : refresh.map?.[instance.launcherVersionType] ?? null;
     }
 
     if (!targetVersion) {
@@ -1276,7 +1390,13 @@ function Launcher() {
 
   async function ensureInstanceReadyForLaunch(instance: Instance, launchSessionId?: string): Promise<Instance> {
     let workingInstance = instance;
-    const presetVersionId = instance.preset ? resolvePresetVersionId(instance.id) : null;
+    // Nova's on-disk versionId is game-version-specific (the caller already specialised the
+    // instance), so use its versionId directly instead of the single fixed preset id.
+    const presetVersionId = instance.preset
+      ? instance.launcherVersionType === "NOVA"
+        ? instance.versionId
+        : resolvePresetVersionId(instance.id)
+      : null;
     if (presetVersionId && workingInstance.versionId !== presetVersionId) {
       try {
         const renamedVersionId = await invoke<string>("rename_version_profile", {
@@ -1565,7 +1685,11 @@ function Launcher() {
     if (ensureMandatoryLauncherUpdate()) {
       return;
     }
-    const presetAccess = resolvePresetAccessState(target, launcherVersions);
+    const presetAccess = resolvePresetAccessState(
+      target,
+      launcherVersions,
+      target.launcherVersionType === "NOVA" ? resolveNovaEntry(selectedNovaGameVersion) : null
+    );
     if (presetAccess.state === "pending-release") {
       const errorText = presetAccess.lastError ?? t("app.status.authRequiredForPreset");
       setLaunchError(errorText);
@@ -1610,7 +1734,7 @@ function Launcher() {
       markLaunchPreparePhase("check-instance", "running", "prepare", t("launch.progress.checkInstance"));
       setLaunchProgressPercent(Math.round((1 / LAUNCH_PREPARE_STEPS) * 100));
       setLaunchProgressText(t("launch.progress.checkInstance"));
-      const prepared = await ensureInstanceReadyForLaunch(target, sessionId);
+      const prepared = await ensureInstanceReadyForLaunch(resolveNovaEffectiveInstance(target), sessionId);
       markLaunchPreparePhase("check-instance", "done", "complete", t("launch.progress.checkInstance"));
 
       markLaunchPreparePhase("runtime", "running", "prepare", t("launch.progress.prepareRuntime"));
@@ -2071,8 +2195,10 @@ function Launcher() {
     if (ensureMandatoryLauncherUpdate()) {
       return;
     }
-    const source = instances.find((entry) => entry.id === id);
-    if (!source) return;
+    const rawSource = instances.find((entry) => entry.id === id);
+    if (!rawSource) return;
+    // Nova repairs the currently-picked game version's install dir, not the fixed default.
+    const source = resolveNovaEffectiveInstance(rawSource);
 
     setBusy(true);
     setStatus(t("app.status.instanceRepairing", { name: source.name }));
@@ -2092,8 +2218,12 @@ function Launcher() {
         loaderVersion: result.loaderVersion,
         optiFineVersion: result.optiFineVersion
       };
+      // Keep the Nova preset generic in state (its versionId/baseVersion are picked at launch);
+      // custom/other-preset instances persist the repaired runtime ids as before.
+      const isNovaPreset = rawSource.preset && rawSource.launcherVersionType === "NOVA";
+      const persistedInstance = isNovaPreset ? rawSource : repaired;
       setInstances((prev) =>
-        prev.map((item) => (item.id === repaired.id ? repaired : item))
+        prev.map((item) => (item.id === persistedInstance.id ? persistedInstance : item))
       );
       installCtl.setInstalledVersions((prev) =>
         prev.includes(result.versionId) ? prev : [result.versionId, ...prev]
@@ -2342,6 +2472,9 @@ function Launcher() {
     installCtl.setOptiFineEnabled((value) => !value);
   });
   const onRefreshServers = useStableCallback(() => launcherData.refreshServers(false));
+  const onSelectNovaGameVersion = useStableCallback((gameVersion: string) => {
+    setSelectedNovaGameVersion(gameVersion);
+  });
   const onRefreshLauncherUpdate = useStableCallback(() => void launcherUpdate.refresh(false));
   const onInstallLauncherUpdate = useStableCallback(() => void launcherUpdate.install());
   const onSettingsReset = useStableCallback(() =>
@@ -2363,6 +2496,9 @@ function Launcher() {
     user: launcherAuth?.user ?? null,
     settings,
     launcherVersions,
+    novaGameVersions,
+    selectedNovaGameVersion,
+    onSelectNovaGameVersion,
     presetPackageStatuses,
     onSelect: setSelected,
     onRemoveInstance: stableRemoveInstance,

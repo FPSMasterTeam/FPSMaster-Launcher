@@ -284,12 +284,8 @@ fn start_minecraft_browser_login_blocking(
     let code_challenge = create_pkce_code_challenge(&code_verifier);
 
     let listener = bind_minecraft_redirect_listener(&redirect_url)?;
-    let authorize_url = build_minecraft_authorize_url(
-        &client_id,
-        &redirect_url,
-        &state,
-        &code_challenge,
-    )?;
+    let authorize_url =
+        build_minecraft_authorize_url(&client_id, &redirect_url, &state, &code_challenge)?;
 
     let auth_window_label = format!("minecraft-auth-{}", create_oauth_random_token(8));
     let auth_window_data_dir =
@@ -337,8 +333,12 @@ fn start_minecraft_browser_login_blocking(
     }
     let token: MicrosoftTokenSuccessResponse = serde_json::from_str(&text)
         .map_err(|e| format!("Failed to decode Microsoft authorization response: {e}"))?;
-    let result =
-        complete_minecraft_microsoft_account(&client, token.access_token, token.refresh_token, None);
+    let result = complete_minecraft_microsoft_account(
+        &client,
+        token.access_token,
+        token.refresh_token,
+        None,
+    );
     close_auth_window(&app, &auth_window_label, Some(&auth_window_data_dir));
     result
 }
@@ -535,11 +535,15 @@ fn complete_minecraft_microsoft_account(
         .users
         .into_iter()
         .next()
-        .ok_or_else(|| "Xbox Live authentication response did not include a user hash".to_string())?;
+        .ok_or_else(|| {
+            "Xbox Live authentication response did not include a user hash".to_string()
+        })?;
     let user_hash = xbox_user
         .uhs
         .filter(|value| !value.trim().is_empty())
-        .ok_or_else(|| "Xbox Live authentication response did not include a user hash".to_string())?;
+        .ok_or_else(|| {
+            "Xbox Live authentication response did not include a user hash".to_string()
+        })?;
 
     emit_launch_prepare_ipc(
         ipc_session,
@@ -644,7 +648,8 @@ fn complete_minecraft_microsoft_account(
             .map_err(|e| format!("Failed to decode Minecraft entitlements response: {e}"))?;
     let has_minecraft_license = entitlements_payload.items.iter().any(|item| {
         let name = item.name.trim();
-        name.eq_ignore_ascii_case("product_minecraft") || name.eq_ignore_ascii_case("game_minecraft")
+        name.eq_ignore_ascii_case("product_minecraft")
+            || name.eq_ignore_ascii_case("game_minecraft")
     });
     if !has_minecraft_license {
         return Err(
@@ -680,15 +685,20 @@ fn complete_minecraft_microsoft_account(
             404 => "This Microsoft account does not have a Minecraft Java Edition profile yet.",
             _ => "Failed to fetch Minecraft profile",
         };
-        return Err(parse_microsoft_error_response(profile_status, &profile_text, fallback));
+        return Err(parse_microsoft_error_response(
+            profile_status,
+            &profile_text,
+            fallback,
+        ));
     }
     let profile_payload: MinecraftProfileResponse = serde_json::from_str(&profile_text)
         .map_err(|e| format!("Failed to decode Minecraft profile response: {e}"))?;
-    let skin_url = fetch_minecraft_skin_url(client, &profile_payload.id).ok().flatten();
+    let skin_url = fetch_minecraft_skin_url(client, &profile_payload.id)
+        .ok()
+        .flatten();
     let now = unix_timestamp_millis();
     let expires_at = now.saturating_add(
-        i64::try_from(minecraft_login_payload.expires_in.saturating_mul(1000))
-            .unwrap_or(i64::MAX),
+        i64::try_from(minecraft_login_payload.expires_in.saturating_mul(1000)).unwrap_or(i64::MAX),
     );
     Ok(MinecraftAccountPayload {
         id: create_microsoft_account_id(&profile_payload.id),
@@ -724,7 +734,9 @@ fn fetch_minecraft_skin_url(
         .text()
         .map_err(|e| format!("Failed to read Minecraft session profile response: {e}"))?;
     if !status.is_success() {
-        return Err(format!("Failed to fetch Minecraft session profile: HTTP {status}"));
+        return Err(format!(
+            "Failed to fetch Minecraft session profile: HTTP {status}"
+        ));
     }
 
     let profile: MinecraftSessionProfileResponse = serde_json::from_str(&text)
@@ -823,8 +835,9 @@ fn build_minecraft_authorize_url(
     state: &str,
     code_challenge: &str,
 ) -> Result<reqwest::Url, String> {
-    let mut url = reqwest::Url::parse("https://login.microsoftonline.com/consumers/oauth2/v2.0/authorize")
-        .map_err(|e| format!("Failed to prepare Microsoft authorize URL: {e}"))?;
+    let mut url =
+        reqwest::Url::parse("https://login.microsoftonline.com/consumers/oauth2/v2.0/authorize")
+            .map_err(|e| format!("Failed to prepare Microsoft authorize URL: {e}"))?;
     url.query_pairs_mut()
         .append_pair("client_id", client_id)
         .append_pair("response_type", "code")
@@ -861,14 +874,13 @@ fn wait_for_minecraft_oauth_callback(
                 let mut request_line = String::new();
                 {
                     let mut reader = BufReader::new(&mut stream);
-                    reader
-                        .read_line(&mut request_line)
-                        .map_err(|e| format!("Failed to read Microsoft OAuth callback request: {e}"))?;
+                    reader.read_line(&mut request_line).map_err(|e| {
+                        format!("Failed to read Microsoft OAuth callback request: {e}")
+                    })?;
                 }
-                let path = request_line
-                    .split_whitespace()
-                    .nth(1)
-                    .ok_or_else(|| "Microsoft OAuth callback request line is invalid".to_string())?;
+                let path = request_line.split_whitespace().nth(1).ok_or_else(|| {
+                    "Microsoft OAuth callback request line is invalid".to_string()
+                })?;
                 let callback_url = reqwest::Url::parse(&format!(
                     "{}://{}{}",
                     redirect_base.scheme(),

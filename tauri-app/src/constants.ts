@@ -15,8 +15,14 @@ export const STORAGE_KEYS = {
   launcherLoginPrefs: "fpsmaster.launcherLoginPrefs",
   launcherSessionId: "fpsmaster.launcherSessionId",
   minecraftAccounts: "fpsmaster.minecraftAccounts",
-  selectedMinecraftAccount: "fpsmaster.selectedMinecraftAccount"
+  selectedMinecraftAccount: "fpsmaster.selectedMinecraftAccount",
+  // Which Minecraft game version the user picked inside the Nova region (Nova stays one preset,
+  // this sub-selection drives the launched MC version + matching mod jar).
+  selectedNovaGameVersion: "fpsmaster.selectedNovaGameVersion"
 } as const;
+
+// Default/fallback Nova game version highlighted in the picker when the catalog hasn't loaded yet.
+export const NOVA_DEFAULT_GAME_VERSION = "1.21.11";
 
 // Rust backend needs the full API URL for invoke() calls
 // Vite proxy only works for direct fetch() calls from frontend
@@ -66,10 +72,13 @@ export const PRESET_INSTANCES: readonly Instance[] = [
     preset: true
   },
   {
+    // Nova is a single "region" preset; the actual Minecraft version is chosen inside the Nova
+    // picker (see selectedNovaGameVersion) and applied at launch time, so the name/baseVersion here
+    // are only defaults/fallbacks. baseVersion stays 1.21.11 for offline/catalog-less fallback.
     id: "preset-1.20.1-fabric",
-    name: "FPSMaster Nova (1.21.11)",
+    name: "FPSMaster Nova",
     versionId: "FPSMaster-Nova",
-    baseVersion: "1.21.11",
+    baseVersion: NOVA_DEFAULT_GAME_VERSION,
     loader: "fabric",
     launcherVersionType: "NOVA",
     iconPath: "/instance-icons/nova.png",
