@@ -101,7 +101,7 @@ export type PageRouterContext = {
   optiFineLoading: boolean;
   optiFineOptions: OptiFineVersion[];
   optiFineVersion: string;
-  optiFineDisabledReason: string | null;
+  optiFineDisabledReason: string;
   installedVersions: string[];
   installDisabled: boolean;
   installButtonText: string;

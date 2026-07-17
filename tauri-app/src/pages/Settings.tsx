@@ -299,7 +299,7 @@ function SettingsPage({
       ...settings,
       backgroundSource: "web-random",
       backgroundWebUrl: trimmedUrl
-    };
+    } satisfies Settings;
     onChange(nextSettings);
     if (nextSettings.themeAccent === "background") {
       void requestBackgroundAccent(nextSettings, false);

@@ -42,7 +42,7 @@ export const DEFAULT_SETTINGS: Settings = {
   gameDir: "",
   playerName: "",
   downloadSource: "mirror-first",
-  downloadThreads: 8,
+  downloadThreads: 16,
   launcherUpdateChannel: "beta",
   maxMemoryMb: 4096,
   hideMainOnLaunch: true,

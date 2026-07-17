@@ -688,7 +688,6 @@ function Launcher() {
         next = {
           ...next,
           canClose: true,
-          cancelling: false,
           errorText: ipc.error ?? ipc.message ?? t("dialog.installationFailed")
         };
       }
@@ -1006,7 +1005,8 @@ function Launcher() {
         javaPath: jdk.javaPath,
         downloadSource: settings.downloadSource,
         waitForExit: false,
-        serverAddress: serverAddress
+        serverAddress: serverAddress,
+        fpsmasterToken: launcherAuth?.token ?? null
       });
       setLaunchProgressPercent(100);
       setLaunchProgressText(t("launch.progress.startingGame"));
@@ -1172,7 +1172,7 @@ function Launcher() {
     if (presetAccess.state === "pending-release") {
       setPresetPackageStatuses((prev) => ({
         ...prev,
-        [instance.id]: createPresetPackageStatus(presetAccess.state, {
+        [instance.id]: createPresetPackageStatus("pending-release", {
           versionTag: presetAccess.versionTag ?? null,
           targetVersionTag: presetAccess.versionTag ?? null,
           changelog: presetAccess.changelog ?? null,
@@ -1755,7 +1755,8 @@ function Launcher() {
         maxMemoryMb: settings.maxMemoryMb,
         javaPath: jdk.javaPath,
         downloadSource: settings.downloadSource,
-        waitForExit: false
+        waitForExit: false,
+        fpsmasterToken: launcherAuth?.token ?? null
       });
       setLaunchProgressPercent(100);
       setLaunchProgressText(t("launch.progress.startingGame"));
