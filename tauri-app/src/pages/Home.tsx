@@ -19,6 +19,7 @@ import { createPortal } from "react-dom";
 import { memo, useMemo, useState } from "react";
 import Button from "../components/Button";
 import Card from "../components/Card";
+import { NOVA_DEFAULT_GAME_VERSION } from "../constants";
 import MinecraftProfileCard from "../components/MinecraftProfileCard";
 import ServerDialog from "../components/ServerDialog";
 import { useI18n } from "../i18n";
@@ -185,6 +186,9 @@ function HomePage({
       ? selectedNovaGameVersion
       : selectedInstance.baseVersion
     : null;
+  // Only the default game version (1.21.11) is full-featured; every other Nova version is testing.
+  const novaSelectedIsTesting =
+    selectedInstance?.launcherVersionType === "NOVA" && selectedNovaGameVersion !== NOVA_DEFAULT_GAME_VERSION;
   const activeNewsContent = (activeNews?.content ?? activeNews?.summary ?? "").trim();
 
   const instanceLaunchable = Boolean(selectedInstance) && canAccessInstance(selectedInstance as Instance, user);
@@ -356,6 +360,12 @@ function HomePage({
                     <span className="inline-flex items-center gap-1.5 text-xs font-medium text-[#f4c15b]">
                       <AlertTriangle size={12} className="shrink-0" />
                       {t("home.loadout.offlineNote")}
+                    </span>
+                  )}
+                  {novaSelectedIsTesting && (
+                    <span className="inline-flex items-center gap-1.5 text-xs font-medium text-[#f4c15b]">
+                      <AlertTriangle size={12} className="shrink-0" />
+                      {t("home.novaTestingWarning", { version: selectedNovaGameVersion })}
                     </span>
                   )}
                 </div>
@@ -622,6 +632,12 @@ function HomePage({
                         <span className="badge badge-accent normal-case tracking-normal">{novaRows.length}</span>
                         <span className="text-xs text-[var(--text-muted)]">{t("home.novaSelectVersion")}</span>
                       </div>
+                      <div className="mb-3 flex items-start gap-2 rounded-[8px] border border-amber-500/25 bg-amber-500/10 px-3 py-2">
+                        <AlertTriangle size={14} className="mt-0.5 shrink-0 text-amber-300" />
+                        <p className="text-xs leading-relaxed text-[var(--text-secondary)]">
+                          {t("home.novaFullFeatureNote")}
+                        </p>
+                      </div>
                       <div className="surface-list">
                         {novaRows.map(({ gameVersion, version }) => (
                           <NovaVersionRow
@@ -630,6 +646,7 @@ function HomePage({
                             version={version}
                             active={selectedInstance?.id === novaPreset.id && selectedNovaGameVersion === gameVersion}
                             selectable={canAccessInstance(novaPreset, user)}
+                            testing={gameVersion !== NOVA_DEFAULT_GAME_VERSION}
                             t={t}
                             onSelect={() => {
                               onSelect(novaPreset.id);
@@ -830,6 +847,7 @@ function NovaVersionRow({
   version,
   active,
   selectable,
+  testing,
   t,
   onSelect
 }: {
@@ -837,6 +855,7 @@ function NovaVersionRow({
   version: LauncherVersion | null;
   active: boolean;
   selectable: boolean;
+  testing: boolean;
   t: ReturnType<typeof useI18n>["t"];
   onSelect: () => void;
 }) {
@@ -865,6 +884,9 @@ function NovaVersionRow({
           <span className="badge badge-accent normal-case tracking-normal">{gameVersion}</span>
           {version?.recommended && (
             <span className="badge badge-accent normal-case tracking-normal">{t("home.novaVersionRecommended")}</span>
+          )}
+          {testing && (
+            <span className="badge badge-warning normal-case tracking-normal">{t("home.novaTestingBadge")}</span>
           )}
           {version?.channel && version.channel !== "RELEASE" && (
             <span className="badge badge-muted normal-case tracking-normal">{version.channel}</span>
