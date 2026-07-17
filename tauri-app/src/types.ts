@@ -424,6 +424,8 @@ export type LauncherVersion = {
   channel: string;
   versionType: LauncherVersionType;
   versionName: string;
+  // Minecraft game version (e.g. "1.21.11") for multi-version products like Nova; null otherwise.
+  gameVersion?: string | null;
   artifactSourceType?: string | null;
   downloadUrl: string;
   fileBucket?: string | null;

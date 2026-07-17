@@ -7,6 +7,7 @@ import type {
   LauncherAppUpdateInfo,
   LauncherDashboard,
   LauncherUser,
+  LauncherVersion,
   LauncherVersionMap,
   Loader,
   MinecraftAccount,
@@ -39,6 +40,10 @@ export type PageRouterContext = {
   user: LauncherUser | null;
   settings: Settings;
   launcherVersions: LauncherVersionMap;
+  // Nova's selectable Minecraft game versions (keyed by MC version) and the current pick.
+  novaGameVersions: Record<string, LauncherVersion>;
+  selectedNovaGameVersion: string;
+  onSelectNovaGameVersion: (gameVersion: string) => void;
   presetPackageStatuses: Record<string, PresetPackageStatus>;
   onSelect: (id: string) => void;
   onRemoveInstance: (id: string) => void;
@@ -142,6 +147,9 @@ export default function PageRouter({ ctx }: { ctx: PageRouterContext }) {
           launchProgressPercent={ctx.launchProgressPercent}
           launchProgressText={ctx.launchProgressText}
           user={ctx.user}
+          novaGameVersions={ctx.novaGameVersions}
+          selectedNovaGameVersion={ctx.selectedNovaGameVersion}
+          onSelectNovaGameVersion={ctx.onSelectNovaGameVersion}
           minecraftAccounts={ctx.minecraftAccounts}
           currentMinecraftAccount={ctx.currentMinecraftAccount}
           onSelect={ctx.onSelect}

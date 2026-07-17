@@ -27,6 +27,7 @@ import type {
   Instance,
   LauncherAppUpdateInfo,
   LauncherDashboard,
+  LauncherVersion,
   MinecraftAccount,
   LauncherUser,
   NewsItem,
@@ -51,6 +52,9 @@ type HomePageProps = {
   launchProgressPercent: number | null;
   launchProgressText: string;
   user: LauncherUser | null;
+  novaGameVersions: Record<string, LauncherVersion>;
+  selectedNovaGameVersion: string;
+  onSelectNovaGameVersion: (gameVersion: string) => void;
   minecraftAccounts: MinecraftAccount[];
   currentMinecraftAccount: MinecraftAccount | null;
   onSelect: (id: string) => void;
@@ -86,6 +90,9 @@ function HomePage({
   launching,
   launchProgressPercent,
   user,
+  novaGameVersions,
+  selectedNovaGameVersion,
+  onSelectNovaGameVersion,
   minecraftAccounts,
   currentMinecraftAccount,
   onSelect,
@@ -130,6 +137,40 @@ function HomePage({
     () => filteredInstances.filter((instance) => !instance.preset),
     [filteredInstances]
   );
+  // Nova is a single "region" preset that fans out into multiple selectable game versions.
+  const novaPreset = useMemo(
+    () => availableInstances.find((instance) => instance.preset && instance.launcherVersionType === "NOVA") ?? null,
+    [availableInstances]
+  );
+  const presetRegions = useMemo(
+    () => presetInstances.filter((instance) => instance.launcherVersionType !== "NOVA"),
+    [presetInstances]
+  );
+  const novaVersionList = useMemo(() => {
+    return Object.entries(novaGameVersions)
+      .map(([gameVersion, version]) => ({ gameVersion, version }))
+      .sort((a, b) => {
+        if (Boolean(a.version.recommended) !== Boolean(b.version.recommended)) {
+          return a.version.recommended ? -1 : 1;
+        }
+        return compareGameVersions(b.gameVersion, a.gameVersion);
+      });
+  }, [novaGameVersions]);
+  const filteredNovaVersions = useMemo(() => {
+    const keyword = pickerQuery.trim().toLowerCase();
+    if (keyword === "") return novaVersionList;
+    if ("nova".includes(keyword)) return novaVersionList;
+    return novaVersionList.filter(({ gameVersion }) => gameVersion.toLowerCase().includes(keyword));
+  }, [novaVersionList, pickerQuery]);
+  // When the catalog hasn't loaded yet (or nothing matches an empty query), still offer the current
+  // pick so Nova stays launchable — the launch flow refreshes the catalog on demand.
+  const novaRows = useMemo(() => {
+    if (filteredNovaVersions.length > 0) return filteredNovaVersions;
+    if (pickerQuery.trim() === "" && novaPreset) {
+      return [{ gameVersion: selectedNovaGameVersion, version: null as LauncherVersion | null }];
+    }
+    return [];
+  }, [filteredNovaVersions, pickerQuery, novaPreset, selectedNovaGameVersion]);
   const launcherUpdateDate = useMemo(
     () =>
       launcherUpdate?.publishedAt
@@ -138,6 +179,12 @@ function HomePage({
     [launcherUpdate?.publishedAt]
   );
   const selectedLoaderLabel = selectedInstance ? loaderLabel(selectedInstance.loader, t) : null;
+  // Nova shows the picked game version rather than the preset's fixed default baseVersion.
+  const selectedBaseVersion = selectedInstance
+    ? selectedInstance.launcherVersionType === "NOVA"
+      ? selectedNovaGameVersion
+      : selectedInstance.baseVersion
+    : null;
   const activeNewsContent = (activeNews?.content ?? activeNews?.summary ?? "").trim();
 
   const instanceLaunchable = Boolean(selectedInstance) && canAccessInstance(selectedInstance as Instance, user);
@@ -296,7 +343,7 @@ function HomePage({
                 </p>
                 {selectedInstance && (
                   <p className="text-data mt-1.5 truncate text-sm text-[var(--text-secondary)]">
-                    {[selectedInstance.baseVersion, selectedLoaderLabel, selectedInstance.launcherVersionType]
+                    {[selectedBaseVersion, selectedLoaderLabel, selectedInstance.launcherVersionType]
                       .filter(Boolean)
                       .join("   ·   ")}
                   </p>
@@ -475,7 +522,7 @@ function HomePage({
               </p>
               {selectedInstance && (
                 <p className="text-data truncate text-[10px] leading-tight text-[var(--text-muted)]">
-                  {[selectedInstance.baseVersion, selectedLoaderLabel, selectedInstance.launcherVersionType]
+                  {[selectedBaseVersion, selectedLoaderLabel, selectedInstance.launcherVersionType]
                     .filter(Boolean)
                     .join(" · ")}
                 </p>
@@ -541,24 +588,52 @@ function HomePage({
 
               <div className="modal-body pr-1">
                 <div className="page-stack">
-                  {presetInstances.length > 0 && (
+                  {/* Edge / Extreme — single-version product regions */}
+                  {presetRegions.map((instance) => (
+                    <div key={instance.id}>
+                      <div className="mb-3 flex items-center gap-2 px-1">
+                        <Swords size={16} className="text-[var(--mc-grass)]" />
+                        <h4 className="text-sm font-semibold uppercase tracking-[0.16em] text-[var(--mc-grass)]">
+                          {regionLabel(instance)}
+                        </h4>
+                      </div>
+                      <div className="surface-list">
+                        <InstanceSelectRow
+                          instance={instance}
+                          active={selectedInstance?.id === instance.id}
+                          selectable={canAccessInstance(instance, user)}
+                          user={user}
+                          t={t}
+                          onSelect={() => {
+                            onSelect(instance.id);
+                            setPickerOpen(false);
+                          }}
+                        />
+                      </div>
+                    </div>
+                  ))}
+
+                  {/* Nova — multi game-version region */}
+                  {novaPreset && novaRows.length > 0 && (
                     <div>
                       <div className="mb-3 flex items-center gap-2 px-1">
                         <Swords size={16} className="text-[var(--mc-grass)]" />
-                        <h4 className="text-sm font-semibold uppercase tracking-[0.16em] text-[var(--mc-grass)]">FPSMaster</h4>
-                        <span className="badge badge-accent normal-case tracking-normal">{presetInstances.length}</span>
+                        <h4 className="text-sm font-semibold uppercase tracking-[0.16em] text-[var(--mc-grass)]">Nova</h4>
+                        <span className="badge badge-accent normal-case tracking-normal">{novaRows.length}</span>
+                        <span className="text-xs text-[var(--text-muted)]">{t("home.novaSelectVersion")}</span>
                       </div>
                       <div className="surface-list">
-                        {presetInstances.map((instance) => (
-                          <InstanceSelectRow
-                            key={instance.id}
-                            instance={instance}
-                            active={selectedInstance?.id === instance.id}
-                            selectable={canAccessInstance(instance, user)}
-                            user={user}
+                        {novaRows.map(({ gameVersion, version }) => (
+                          <NovaVersionRow
+                            key={gameVersion}
+                            gameVersion={gameVersion}
+                            version={version}
+                            active={selectedInstance?.id === novaPreset.id && selectedNovaGameVersion === gameVersion}
+                            selectable={canAccessInstance(novaPreset, user)}
                             t={t}
                             onSelect={() => {
-                              onSelect(instance.id);
+                              onSelect(novaPreset.id);
+                              onSelectNovaGameVersion(gameVersion);
                               setPickerOpen(false);
                             }}
                           />
@@ -597,7 +672,7 @@ function HomePage({
                   )}
                 </div>
 
-                {filteredInstances.length === 0 && (
+                {filteredInstances.length === 0 && novaRows.length === 0 && (
                   <div className="empty-state mt-2 min-h-[180px]">
                     <Search size={38} className="empty-state-icon" />
                     <p className="empty-state-title">{t("home.noInstance")}</p>
@@ -748,6 +823,80 @@ function InstanceSelectRow({
       {!selectable && <Lock size={compact ? 12 : 14} className="shrink-0 text-[var(--text-muted)]" />}
     </button>
   );
+}
+
+function NovaVersionRow({
+  gameVersion,
+  version,
+  active,
+  selectable,
+  t,
+  onSelect
+}: {
+  gameVersion: string;
+  version: LauncherVersion | null;
+  active: boolean;
+  selectable: boolean;
+  t: ReturnType<typeof useI18n>["t"];
+  onSelect: () => void;
+}) {
+  return (
+    <button
+      onClick={() => {
+        if (selectable) onSelect();
+      }}
+      type="button"
+      disabled={!selectable}
+      className={`surface-list-item w-full text-left ${active ? "is-active" : ""} ${!selectable ? "cursor-not-allowed opacity-50" : ""}`}
+    >
+      <div className="icon-tile relative h-10 w-10 rounded-[8px]">
+        <img src="/instance-icons/nova.png" alt={`Nova ${gameVersion}`} className="h-full w-full object-cover" />
+        {!selectable && (
+          <div className="absolute inset-0 flex items-center justify-center bg-black/50">
+            <Lock size={12} className="text-white/70" />
+          </div>
+        )}
+      </div>
+      <div className="min-w-0 flex-1">
+        <p className={`truncate text-sm font-semibold ${!selectable ? "text-[var(--text-muted)]" : "text-[var(--text-primary)]"}`}>
+          {`Nova ${gameVersion}`}
+        </p>
+        <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-[var(--text-muted)]">
+          <span className="badge badge-accent normal-case tracking-normal">{gameVersion}</span>
+          {version?.recommended && (
+            <span className="badge badge-accent normal-case tracking-normal">{t("home.novaVersionRecommended")}</span>
+          )}
+          {version?.channel && version.channel !== "RELEASE" && (
+            <span className="badge badge-muted normal-case tracking-normal">{version.channel}</span>
+          )}
+        </div>
+      </div>
+      {active && selectable && <Check size={14} className="shrink-0 text-[var(--mc-grass)]" />}
+      {!selectable && <Lock size={12} className="shrink-0 text-[var(--text-muted)]" />}
+    </button>
+  );
+}
+
+// Region heading for the single-version products in the launch picker.
+function regionLabel(instance: Instance): string {
+  if (instance.launcherVersionType === "EDGE") return "Edge";
+  if (instance.launcherVersionType === "EXTREME") return "Extreme";
+  if (instance.launcherVersionType === "NOVA") return "Nova";
+  return instance.name;
+}
+
+// Numeric dotted-version comparison. Works across schemes (e.g. "26.2" > "1.21.11") since it
+// compares the leading numeric segments left to right. Returns >0 when a is newer than b.
+function compareGameVersions(a: string, b: string): number {
+  const pa = a.split(".").map((p) => Number.parseInt(p, 10) || 0);
+  const pb = b.split(".").map((p) => Number.parseInt(p, 10) || 0);
+  const len = Math.max(pa.length, pb.length);
+  for (let i = 0; i < len; i += 1) {
+    const left = pa[i] ?? 0;
+    const right = pb[i] ?? 0;
+    if (left !== right) return left - right;
+  }
+  return 0;
 }
 
 function resolveHomeLevel(user: LauncherUser | null): string {

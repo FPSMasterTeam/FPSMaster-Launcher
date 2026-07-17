@@ -1,0 +1,14 @@
+---
+description: Preserve stage-specific diagnostics for preset and catalog launch failures
+alwaysApply: false
+---
+
+# 预设启动与目录失败
+
+将启动链路拆为目录/元数据、资源下载与校验、本地进程启动三个阶段。
+
+- 远端目录缺失或返回 404 时，报告目录/清单错误，不伪装成 Java 或 spawn 失败。
+- 下载失败保留资源类别、脱敏路径和校验结果。
+- 本地启动错误进入统一进程诊断管线。
+- 不在日志或弹窗中泄露完整内部端点、签名 URL 或凭据。
+- 对可重试远端错误和不可重试配置错误给出不同操作建议。
