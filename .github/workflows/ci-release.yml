@@ -154,6 +154,10 @@ jobs:
         working-directory: tauri-app
         run: npm ci
 
+      - name: Typecheck frontend
+        working-directory: tauri-app
+        run: npm run typecheck
+
       - name: Build installer
         working-directory: tauri-app
         run: npm run ${{ matrix.build_script }}

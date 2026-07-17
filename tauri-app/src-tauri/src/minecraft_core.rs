@@ -213,6 +213,7 @@ pub(crate) struct VanillaLaunchRequest {
     pub(crate) java_path: PathBuf,
     pub(crate) max_memory_mb: i32,
     pub(crate) server_address: Option<String>,
+    pub(crate) fpsmaster_token: Option<String>,
 }
 
 #[derive(Debug)]
@@ -1604,6 +1605,19 @@ pub(crate) fn build_vanilla_launch_plan(
     }
     jvm_args = normalize_jvm_arguments(jvm_args);
 
+    // Inject the FPSMaster platform auth token only for preset Edge/Nova instances so the
+    // client inherits the launcher login. Edge/Nova read -Dfpsmaster.auth.token at startup.
+    if matches!(request.version_id.trim(), "FPSMaster-Edge" | "FPSMaster-Nova") {
+        if let Some(token) = request
+            .fpsmaster_token
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            jvm_args.push(format!("-Dfpsmaster.auth.token={token}"));
+        }
+    }
+
     let main_class = version_json
         .get("mainClass")
         .and_then(Value::as_str)
@@ -2389,6 +2403,10 @@ fn download_file(
         .map_err(|e| format!("Failed to create directory {}: {e}", parent.display()))?;
 
     let tmp = target.with_extension("download");
+    // Not the shared download client: this path buffers the whole body via `.bytes()`,
+    // where reqwest applies the client timeout as a single whole-body deadline. The client
+    // jar (tens of MB) legitimately needs longer than the streaming client's short per-read
+    // timeout, so keep the generous general-purpose client here.
     let client = build_blocking_http_client()?;
     let mut last_error = None;
     for url in urls {
@@ -2535,10 +2553,16 @@ fn download_file_with_ipc(
                 }
             };
             if !response.status().is_success() {
+                let status = response.status();
                 last_error = Some(format!(
-                    "Failed to download {label} from {url}: HTTP {}",
-                    response.status()
+                    "Failed to download {label} from {url}: HTTP {status}"
                 ));
+                // A 4xx means this URL will never serve the file (e.g. the mirror
+                // simply doesn't have it) — retrying it is pointless, so fail over to
+                // the next candidate immediately instead of burning all attempts here.
+                if status.is_client_error() {
+                    break;
+                }
                 if attempt < DOWNLOAD_RETRY_ATTEMPTS {
                     emit_download_item_start(
                         window,
@@ -3501,12 +3525,29 @@ const DOWNLOAD_PROGRESS_EMIT_INTERVAL: Duration = Duration::from_millis(200);
 // per client, so building a client per file (the previous behavior) forced a fresh
 // DNS + TCP + TLS handshake for every one of the thousands of small asset/library
 // files — the dominant cost of an install, far ahead of actual transfer time.
+//
+// This is deliberately separate from the general API/metadata client so its aggressive
+// stall detection stays on the download hot path — it is used only by the streaming
+// `download_file_with_ipc`. The timeout is the important part: for reqwest's blocking
+// client, `Response`'s `Read` impl wraps *each* `read()` call in `wait::timeout(_, timeout)`
+// (see reqwest blocking/response.rs), so on a streamed body this acts as a per-read idle
+// timeout, not a whole-request deadline — a healthy transfer resets it on every chunk.
+// Without it a peer that accepts the connection then stalls mid-body — extremely common
+// for the Mojang CDN from mainland China — blocks until the total timeout before the next
+// mirror candidate is tried, so fallback never appears to happen. 20s of complete silence
+// on the socket is a genuine stall and triggers a fast failover to the next candidate.
 fn download_http_client() -> Result<&'static reqwest::blocking::Client, String> {
     static CLIENT: OnceLock<reqwest::blocking::Client> = OnceLock::new();
     if let Some(client) = CLIENT.get() {
         return Ok(client);
     }
-    let client = build_blocking_http_client()?;
+    let client = reqwest::blocking::Client::builder()
+        .user_agent(crate::LAUNCHER_HTTP_USER_AGENT)
+        .connect_timeout(Duration::from_secs(15))
+        .timeout(Duration::from_secs(20))
+        .redirect(reqwest::redirect::Policy::limited(10))
+        .build()
+        .map_err(|e| e.to_string())?;
     Ok(CLIENT.get_or_init(|| client))
 }
 
@@ -4037,6 +4078,7 @@ mod tests {
             java_path: PathBuf::from("java"),
             max_memory_mb: 1024,
             server_address: None,
+            fpsmaster_token: None,
         };
         let plan =
             build_vanilla_launch_plan(None, &request, None).expect("launch plan should be built");
@@ -4088,6 +4130,7 @@ mod tests {
             java_path: PathBuf::from("java"),
             max_memory_mb: 512,
             server_address: None,
+            fpsmaster_token: None,
         };
 
         let first = build_vanilla_launch_plan(None, &request, None)

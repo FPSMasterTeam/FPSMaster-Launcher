@@ -1,12 +1,13 @@
 {
   "name": "fpsmaster-launcher-ui",
   "private": true,
-  "version": "0.3.9",
+  "version": "0.3.10",
   "type": "module",
   "scripts": {
     "version:sync": "node scripts/sync-version.mjs",
     "predev": "npm run version:sync",
     "dev": "vite",
+    "typecheck": "tsc --noEmit",
     "prebuild": "npm run version:sync",
     "build": "vite build",
     "prebuild:installer": "npm run version:sync",

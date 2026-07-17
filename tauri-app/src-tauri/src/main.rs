@@ -56,7 +56,7 @@ use windows::Win32::UI::Shell::{DesktopWallpaper, IDesktopWallpaper};
 use xz2::bufread::XzDecoder;
 use xz2::stream::Stream;
 
-const DEFAULT_DOWNLOAD_THREADS: i32 = 8;
+const DEFAULT_DOWNLOAD_THREADS: i32 = 16;
 const JDK_DOWNLOAD_USER_AGENT: &str =
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) FPSMasterLauncher/0.1 (+https://github.com/fpsmaster)";
 const MOJANG_JAVA_ALL_JSON_URL: &str =
@@ -3569,10 +3569,10 @@ fn fetch_launcher_package_manifest(manifest_url: &str) -> Result<LauncherPackage
     .map_err(|err| format!("Invalid launcher manifest JSON: {err}"))
 }
 
-pub(crate) fn build_blocking_http_client() -> Result<reqwest::blocking::Client, String> {
-    const LAUNCHER_HTTP_USER_AGENT: &str =
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) FPSMasterLauncher (+https://github.com/fpsmasterteam)";
+pub(crate) const LAUNCHER_HTTP_USER_AGENT: &str =
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) FPSMasterLauncher (+https://github.com/fpsmasterteam)";
 
+pub(crate) fn build_blocking_http_client() -> Result<reqwest::blocking::Client, String> {
     reqwest::blocking::Client::builder()
         .user_agent(LAUNCHER_HTTP_USER_AGENT)
         .connect_timeout(std::time::Duration::from_secs(30))
@@ -5516,6 +5516,7 @@ async fn build_vanilla_launch_plan(
             java_path: java_executable,
             max_memory_mb,
             server_address: None,
+            fpsmaster_token: None,
         };
         minecraft_core::build_vanilla_launch_plan(
             Some(&window),
@@ -5543,6 +5544,7 @@ async fn launch_vanilla(
     download_source: Option<String>,
     wait_for_exit: Option<bool>,
     server_address: Option<String>,
+    fpsmaster_token: Option<String>,
 ) -> Result<LaunchExecutionResult, String> {
     tauri::async_runtime::spawn_blocking(move || {
         launch_vanilla_blocking(
@@ -5557,6 +5559,7 @@ async fn launch_vanilla(
             download_source,
             wait_for_exit,
             server_address,
+            fpsmaster_token,
         )
     })
     .await
@@ -5577,6 +5580,7 @@ fn launch_vanilla_blocking(
     download_source: Option<String>,
     wait_for_exit: Option<bool>,
     server_address: Option<String>,
+    fpsmaster_token: Option<String>,
 ) -> Result<LaunchExecutionResult, String> {
     if let Some(pid) = detect_active_game_pid() {
         return Err(format!(
@@ -5601,6 +5605,7 @@ fn launch_vanilla_blocking(
             }),
             max_memory_mb,
             server_address: server_address.clone(),
+            fpsmaster_token: fpsmaster_token.clone(),
         },
         download_source.as_deref(),
     )?;

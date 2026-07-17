@@ -90,7 +90,7 @@ const SelectItem = forwardRef<HTMLDivElement, React.ComponentProps<typeof Select
 );
 SelectItem.displayName = SelectPrimitive.Item.displayName;
 
-const SelectLabel = forwardRef<HTMLLabelElement, React.ComponentProps<typeof SelectPrimitive.Label>>(
+const SelectLabel = forwardRef<HTMLDivElement, React.ComponentProps<typeof SelectPrimitive.Label>>(
   ({ className = "", ...props }, ref) => (
     <SelectPrimitive.Label
       ref={ref}
