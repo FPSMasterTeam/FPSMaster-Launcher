@@ -1,6 +1,6 @@
 [package]
 name = "fpsmaster-launcher"
-version = "0.3.10"
+version = "0.3.11"
 edition = "2021"
 
 [build-dependencies]
@@ -23,7 +23,10 @@ tauri = { version = "2.10", features = ["tray-icon", "image-png"] }
 tauri-plugin-autostart = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-single-instance = "2"
-xz2 = "0.1"
+# static: 强制编译内置 liblzma。否则 lzma-sys 的 build.rs 会 pkg-config 探测到
+# 构建机上 Homebrew 的 xz，把 /opt/homebrew/opt/xz/lib/liblzma.5.dylib 这个绝对
+# 路径写死进 Mach-O，用户机器上没有该文件 → dyld 启动即 SIGABRT。
+xz2 = { version = "0.1", features = ["static"] }
 zip = { version = "2.4", default-features = false, features = ["deflate"] }
 
 [target.'cfg(windows)'.dependencies]
