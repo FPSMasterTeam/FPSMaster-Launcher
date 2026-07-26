@@ -166,10 +166,20 @@ jobs:
         if: matrix.target == 'macos-aarch64'
         shell: bash
         run: |
-          binary="$(ls tauri-app/src-tauri/target/aarch64-apple-darwin/release/bundle/macos/*.app/Contents/MacOS/* | head -n 1)"
+          dmg="$(ls tauri-app/src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg | head -n 1)"
+          mount_point="$(mktemp -d)"
+          hdiutil attach "$dmg" -nobrowse -readonly -mountpoint "$mount_point" > /dev/null
+          binary="$(ls "$mount_point"/*.app/Contents/MacOS/* | head -n 1)"
           echo "Checking $binary"
-          otool -L "$binary"
-          if otool -L "$binary" | grep -E '/opt/homebrew|/usr/local/(opt|lib)/'; then
+          deps="$(otool -L "$binary")"
+          hdiutil detach "$mount_point" > /dev/null
+          printf '%s\n' "$deps"
+          # Without this the check silently "passes" whenever otool produced nothing.
+          if ! printf '%s\n' "$deps" | grep -q '/usr/lib/libSystem'; then
+            echo "::error::otool produced no usable output; the dylib check did not actually run."
+            exit 1
+          fi
+          if printf '%s\n' "$deps" | grep -E '/opt/homebrew|/usr/local/(opt|lib)/'; then
             echo "::error::Binary links against a build-machine library. Users without it crash at launch with dyld 'Library missing'."
             exit 1
           fi
