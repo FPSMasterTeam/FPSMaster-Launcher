@@ -162,6 +162,18 @@ jobs:
         working-directory: tauri-app
         run: npm run ${{ matrix.build_script }}
 
+      - name: Verify macOS binary has no build-machine dylib references
+        if: matrix.target == 'macos-aarch64'
+        shell: bash
+        run: |
+          binary="$(ls tauri-app/src-tauri/target/aarch64-apple-darwin/release/bundle/macos/*.app/Contents/MacOS/* | head -n 1)"
+          echo "Checking $binary"
+          otool -L "$binary"
+          if otool -L "$binary" | grep -E '/opt/homebrew|/usr/local/(opt|lib)/'; then
+            echo "::error::Binary links against a build-machine library. Users without it crash at launch with dyld 'Library missing'."
+            exit 1
+          fi
+
       - name: Capture artifact metadata
         shell: bash
         env:
