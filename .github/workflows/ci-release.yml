@@ -168,11 +168,11 @@ jobs:
         working-directory: tauri-app/src-tauri
         shell: pwsh
         run: |
-          # Last WebView2 runtime supporting Windows 7 SP1 (109.0.1518.140).
-          Invoke-WebRequest -Uri "https://msedgewebview2storage.blob.core.windows.net/wv2release/WebView2FixedRuntime/109.0.1518.140/x64/Microsoft.WebView2.FixedVersionRuntime.109.0.1518.140.x64.cab" -OutFile "wv2.cab"
+          # Last WebView2 runtime supporting Windows 7 SP1 (109.0.1518.78), mirrored on GitHub.
+          Invoke-WebRequest -Uri "https://github.com/westinyang/WebView2RuntimeArchive/releases/download/109.0.1518.78/Microsoft.WebView2.FixedVersionRuntime.109.0.1518.78.x64.cab" -OutFile "wv2.cab"
           expand "wv2.cab" -F:* "."
           Remove-Item "wv2.cab"
-          if (-not (Test-Path ".\Microsoft.WebView2.FixedVersionRuntime.109.0.1518.140.x64\EBWebView\x64\EmbeddedBrowserWebView.dll")) {
+          if (-not (Test-Path ".\Microsoft.WebView2.FixedVersionRuntime.109.0.1518.78.x64\EBWebView\x64\EmbeddedBrowserWebView.dll")) {
             throw "Fixed WebView2 runtime was not extracted correctly"
           }
 
