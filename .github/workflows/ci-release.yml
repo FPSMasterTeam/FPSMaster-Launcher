@@ -319,13 +319,14 @@ jobs:
             export FILE_SIZE="$file_size"
             if [ "$target" = "windows-x86_64-win7" ]; then
               # The Win7 package (~160MB) exceeds the request body limit of the
-              # reverse proxy, so it is uploaded in chunks of 50MB.
+              # reverse proxy, so it is uploaded in chunks of 5MB.
               upload_id="$(python -c 'import uuid; print(uuid.uuid4().hex)')"
               chunk_dir="$(mktemp -d)"
-              split -b 50M "$artifact_path" "$chunk_dir/chunk-"
+              split -b 5M "$artifact_path" "$chunk_dir/chunk-"
               total_chunks="$(find "$chunk_dir" -name 'chunk-*' | wc -l)"
               index=0
               for chunk in "$chunk_dir"/chunk-*; do
+                echo "Uploading Win7 chunk $((index + 1))/$total_chunks"
                 curl --fail-with-body --show-error --silent \
                   -X POST \
                   -H "X-CI-Token: ${FPSMASTER_CI_UPLOAD_TOKEN}" \
