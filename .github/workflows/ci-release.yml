@@ -290,7 +290,6 @@ jobs:
           VERSION_NAME: ${{ needs.resolve.outputs.version_name }}
           COMMIT_HASH: ${{ needs.resolve.outputs.commit_hash }}
           CHANGELOG: ${{ needs.resolve.outputs.changelog }}
-          RELEASE_TAG: ${{ needs.resolve.outputs.release_tag }}
         run: |
           if [ -z "$FPSMASTER_CI_API_BASE_URL" ] || [ -z "$FPSMASTER_CI_UPLOAD_TOKEN" ]; then
             echo "Release API secrets are not configured" >&2
@@ -319,13 +318,37 @@ jobs:
             export CHECKSUM="$checksum"
             export FILE_SIZE="$file_size"
             if [ "$target" = "windows-x86_64-win7" ]; then
-              # The Win7 package (~160MB) exceeds the artifact upload size limit, so it
-              # is published as an external GitHub Release asset instead of being uploaded.
-              # GitHub sanitizes asset names (spaces/parens -> dots), so the URL must use
-              # the sanitized name or the download 404s.
-              export ASSET_NAME="$asset_name"
-              export GITHUB_REPOSITORY="${GITHUB_REPOSITORY}"
-              python -c 'import json, os, re; asset = re.sub(r"[^A-Za-z0-9._-]+", ".", os.environ["ASSET_NAME"]); payload = dict(productCode=os.environ["PRODUCT_CODE"], channelCode=os.environ["CHANNEL"], versionName=os.environ["VERSION_NAME"], commitHash=os.environ["COMMIT_HASH"], artifactSourceType="EXTERNAL_URL", downloadUrl="https://github.com/" + os.environ["GITHUB_REPOSITORY"] + "/releases/download/" + os.environ["RELEASE_TAG"] + "/" + asset, fileSize=int(os.environ["FILE_SIZE"]), checksum=os.environ["CHECKSUM"], recommended=True, mandatory=True, target=os.environ["TARGET"], changelog=os.environ["CHANGELOG"]); open("payload.json", "w", encoding="utf-8").write(json.dumps(payload, ensure_ascii=False))'
+              # The Win7 package (~160MB) exceeds the request body limit of the
+              # reverse proxy, so it is uploaded in chunks of 50MB.
+              upload_id="$(python -c 'import uuid; print(uuid.uuid4().hex)')"
+              chunk_dir="$(mktemp -d)"
+              split -b 50M "$artifact_path" "$chunk_dir/chunk-"
+              total_chunks="$(find "$chunk_dir" -name 'chunk-*' | wc -l)"
+              index=0
+              for chunk in "$chunk_dir"/chunk-*; do
+                curl --fail-with-body --show-error --silent \
+                  -X POST \
+                  -H "X-CI-Token: ${FPSMASTER_CI_UPLOAD_TOKEN}" \
+                  -F "file=@${chunk}" \
+                  -F "uploadId=${upload_id}" \
+                  -F "chunkIndex=${index}" \
+                  "${FPSMASTER_CI_API_BASE_URL%/}/api/v1/launcher/releases/upload-chunk" > /dev/null
+                index=$((index + 1))
+              done
+              rm -rf "$chunk_dir"
+
+              export UPLOAD_ID="$upload_id" ASSET_NAME="$asset_name" TOTAL_CHUNKS="$total_chunks"
+              python -c 'import json, os; complete = dict(uploadId=os.environ["UPLOAD_ID"], fileName=os.environ["ASSET_NAME"], totalChunks=int(os.environ["TOTAL_CHUNKS"])); open("complete.json", "w", encoding="utf-8").write(json.dumps(complete))'
+
+              upload_response="$(curl --fail-with-body --show-error --silent \
+                -X POST \
+                -H "Content-Type: application/json" \
+                -H "X-CI-Token: ${FPSMASTER_CI_UPLOAD_TOKEN}" \
+                --data @complete.json \
+                "${FPSMASTER_CI_API_BASE_URL%/}/api/v1/launcher/releases/upload-complete")"
+
+              export UPLOAD_RESPONSE="$upload_response"
+              python -c 'import json, os; upload = json.loads(os.environ["UPLOAD_RESPONSE"])["data"]; payload = dict(productCode=os.environ["PRODUCT_CODE"], channelCode=os.environ["CHANNEL"], versionName=os.environ["VERSION_NAME"], commitHash=os.environ["COMMIT_HASH"], artifactSourceType="UPLOADED_FILE", downloadUrl=upload["url"], fileBucket=upload.get("bucket") or "", fileKey=upload.get("key") or "", fileSize=int(os.environ["FILE_SIZE"]), checksum=os.environ["CHECKSUM"], recommended=True, mandatory=True, target=os.environ["TARGET"], changelog=os.environ["CHANGELOG"]); open("payload.json", "w", encoding="utf-8").write(json.dumps(payload, ensure_ascii=False))'
             else
               upload_response="$(curl --fail-with-body --show-error --silent \
                 -X POST \
