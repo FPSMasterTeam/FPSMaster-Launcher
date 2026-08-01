@@ -95,6 +95,11 @@ jobs:
             os: windows-latest
             build_script: build:installer:windows
             artifact_glob: tauri-app/src-tauri/target/release/bundle/nsis/*.exe
+          - target: windows-x86_64-win7
+            os: windows-latest
+            build_script: build:installer:windows:win7
+            artifact_glob: tauri-app/src-tauri/target/release/bundle/nsis/*.exe
+            needs_fixed_runtime: true
           - target: linux-x86_64
             os: ubuntu-latest
             build_script: build:installer:linux
@@ -157,6 +162,19 @@ jobs:
       - name: Typecheck frontend
         working-directory: tauri-app
         run: npm run typecheck
+
+      - name: Download WebView2 fixed runtime (Windows 7 build)
+        if: matrix.needs_fixed_runtime
+        working-directory: tauri-app/src-tauri
+        shell: pwsh
+        run: |
+          # Last WebView2 runtime supporting Windows 7 SP1 (109.0.1518.140).
+          Invoke-WebRequest -Uri "https://msedgewebview2storage.blob.core.windows.net/wv2release/WebView2FixedRuntime/109.0.1518.140/x64/Microsoft.WebView2.FixedVersionRuntime.109.0.1518.140.x64.cab" -OutFile "wv2.cab"
+          expand "wv2.cab" -F:* "."
+          Remove-Item "wv2.cab"
+          if (-not (Test-Path ".\Microsoft.WebView2.FixedVersionRuntime.109.0.1518.140.x64\EBWebView\x64\EmbeddedBrowserWebView.dll")) {
+            throw "Fixed WebView2 runtime was not extracted correctly"
+          }
 
       - name: Build installer
         working-directory: tauri-app
