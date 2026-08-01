@@ -290,6 +290,7 @@ jobs:
           VERSION_NAME: ${{ needs.resolve.outputs.version_name }}
           COMMIT_HASH: ${{ needs.resolve.outputs.commit_hash }}
           CHANGELOG: ${{ needs.resolve.outputs.changelog }}
+          RELEASE_TAG: ${{ needs.resolve.outputs.release_tag }}
         run: |
           if [ -z "$FPSMASTER_CI_API_BASE_URL" ] || [ -z "$FPSMASTER_CI_UPLOAD_TOKEN" ]; then
             echo "Release API secrets are not configured" >&2
@@ -314,17 +315,24 @@ jobs:
               exit 1
             fi
 
-            upload_response="$(curl --fail-with-body --show-error --silent \
-              -X POST \
-              -H "X-CI-Token: ${FPSMASTER_CI_UPLOAD_TOKEN}" \
-              -F "file=@${artifact_path}" \
-              "${FPSMASTER_CI_API_BASE_URL%/}/api/v1/launcher/releases/upload")"
-
-            export UPLOAD_RESPONSE="$upload_response"
             export TARGET="$target"
             export CHECKSUM="$checksum"
             export FILE_SIZE="$file_size"
-            python -c 'import json, os; upload = json.loads(os.environ["UPLOAD_RESPONSE"])["data"]; payload = dict(productCode=os.environ["PRODUCT_CODE"], channelCode=os.environ["CHANNEL"], versionName=os.environ["VERSION_NAME"], commitHash=os.environ["COMMIT_HASH"], artifactSourceType="UPLOADED_FILE", downloadUrl=upload["url"], fileBucket=upload.get("bucket") or "", fileKey=upload.get("key") or "", fileSize=int(os.environ["FILE_SIZE"]), checksum=os.environ["CHECKSUM"], recommended=True, mandatory=True, target=os.environ["TARGET"], changelog=os.environ["CHANGELOG"]); open("payload.json", "w", encoding="utf-8").write(json.dumps(payload, ensure_ascii=False))'
+            if [ "$target" = "windows-x86_64-win7" ]; then
+              # The Win7 package (~160MB) exceeds the artifact upload size limit, so it
+              # is published as an external GitHub Release asset instead of being uploaded.
+              export DOWNLOAD_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${RELEASE_TAG}/${asset_name}"
+              python -c 'import json, os; payload = dict(productCode=os.environ["PRODUCT_CODE"], channelCode=os.environ["CHANNEL"], versionName=os.environ["VERSION_NAME"], commitHash=os.environ["COMMIT_HASH"], artifactSourceType="EXTERNAL_URL", downloadUrl=os.environ["DOWNLOAD_URL"], fileSize=int(os.environ["FILE_SIZE"]), checksum=os.environ["CHECKSUM"], recommended=True, mandatory=True, target=os.environ["TARGET"], changelog=os.environ["CHANGELOG"]); open("payload.json", "w", encoding="utf-8").write(json.dumps(payload, ensure_ascii=False))'
+            else
+              upload_response="$(curl --fail-with-body --show-error --silent \
+                -X POST \
+                -H "X-CI-Token: ${FPSMASTER_CI_UPLOAD_TOKEN}" \
+                -F "file=@${artifact_path}" \
+                "${FPSMASTER_CI_API_BASE_URL%/}/api/v1/launcher/releases/upload")"
+
+              export UPLOAD_RESPONSE="$upload_response"
+              python -c 'import json, os; upload = json.loads(os.environ["UPLOAD_RESPONSE"])["data"]; payload = dict(productCode=os.environ["PRODUCT_CODE"], channelCode=os.environ["CHANNEL"], versionName=os.environ["VERSION_NAME"], commitHash=os.environ["COMMIT_HASH"], artifactSourceType="UPLOADED_FILE", downloadUrl=upload["url"], fileBucket=upload.get("bucket") or "", fileKey=upload.get("key") or "", fileSize=int(os.environ["FILE_SIZE"]), checksum=os.environ["CHECKSUM"], recommended=True, mandatory=True, target=os.environ["TARGET"], changelog=os.environ["CHANGELOG"]); open("payload.json", "w", encoding="utf-8").write(json.dumps(payload, ensure_ascii=False))'
+            fi
 
             curl --fail-with-body --show-error --silent \
               -X POST \
