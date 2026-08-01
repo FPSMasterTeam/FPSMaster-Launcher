@@ -321,8 +321,11 @@ jobs:
             if [ "$target" = "windows-x86_64-win7" ]; then
               # The Win7 package (~160MB) exceeds the artifact upload size limit, so it
               # is published as an external GitHub Release asset instead of being uploaded.
-              export DOWNLOAD_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${RELEASE_TAG}/${asset_name}"
-              python -c 'import json, os; payload = dict(productCode=os.environ["PRODUCT_CODE"], channelCode=os.environ["CHANNEL"], versionName=os.environ["VERSION_NAME"], commitHash=os.environ["COMMIT_HASH"], artifactSourceType="EXTERNAL_URL", downloadUrl=os.environ["DOWNLOAD_URL"], fileSize=int(os.environ["FILE_SIZE"]), checksum=os.environ["CHECKSUM"], recommended=True, mandatory=True, target=os.environ["TARGET"], changelog=os.environ["CHANGELOG"]); open("payload.json", "w", encoding="utf-8").write(json.dumps(payload, ensure_ascii=False))'
+              # GitHub sanitizes asset names (spaces/parens -> dots), so the URL must use
+              # the sanitized name or the download 404s.
+              export ASSET_NAME="$asset_name"
+              export GITHUB_REPOSITORY="${GITHUB_REPOSITORY}"
+              python -c 'import json, os, re; asset = re.sub(r"[^A-Za-z0-9._-]+", ".", os.environ["ASSET_NAME"]); payload = dict(productCode=os.environ["PRODUCT_CODE"], channelCode=os.environ["CHANNEL"], versionName=os.environ["VERSION_NAME"], commitHash=os.environ["COMMIT_HASH"], artifactSourceType="EXTERNAL_URL", downloadUrl="https://github.com/" + os.environ["GITHUB_REPOSITORY"] + "/releases/download/" + os.environ["RELEASE_TAG"] + "/" + asset, fileSize=int(os.environ["FILE_SIZE"]), checksum=os.environ["CHECKSUM"], recommended=True, mandatory=True, target=os.environ["TARGET"], changelog=os.environ["CHANGELOG"]); open("payload.json", "w", encoding="utf-8").write(json.dumps(payload, ensure_ascii=False))'
             else
               upload_response="$(curl --fail-with-body --show-error --silent \
                 -X POST \
