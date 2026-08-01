@@ -468,7 +468,7 @@ fn launcher_get_app_update_blocking(
         .map_err(|e| format!("Invalid launcher app update endpoint URL: {e}"))?;
     {
         let mut query = url.query_pairs_mut();
-        query.append_pair("target", &current_launcher_update_target());
+        query.append_pair("target", &current_launcher_app_update_target());
         query.append_pair("installId", &install_id);
         if let Some(normalized_channel) = channel
             .map(|item| item.trim().to_lowercase())
@@ -637,6 +637,42 @@ fn current_launcher_update_target() -> String {
         "unknown"
     };
     format!("{os}-{arch}")
+}
+
+/// Self-update target. Windows 7 (and earlier) must install the WebView2
+/// fixed-runtime build (`-win7` suffix) because current evergreen WebView2
+/// runtime versions are Windows 10+ only.
+#[cfg(target_os = "windows")]
+fn current_launcher_app_update_target() -> String {
+    let mut target = current_launcher_update_target();
+    target.push_str(win7_target_suffix());
+    target
+}
+
+#[cfg(not(target_os = "windows"))]
+fn current_launcher_app_update_target() -> String {
+    current_launcher_update_target()
+}
+
+#[cfg(target_os = "windows")]
+fn win7_target_suffix() -> &'static str {
+    use windows::Wdk::System::SystemServices::RtlGetVersion;
+    use windows::Win32::System::SystemInformation::OSVERSIONINFOW;
+
+    let mut info = OSVERSIONINFOW {
+        dwOSVersionInfoSize: std::mem::size_of::<OSVERSIONINFOW>() as u32,
+        dwMajorVersion: 0,
+        dwMinorVersion: 0,
+        dwBuildNumber: 0,
+        dwPlatformId: 0,
+        szCSDVersion: [0u16; 128],
+    };
+    unsafe { RtlGetVersion(&mut info) };
+    if info.dwMajorVersion < 6 || (info.dwMajorVersion == 6 && info.dwMinorVersion <= 1) {
+        "-win7"
+    } else {
+        ""
+    }
 }
 
 fn get_or_create_launcher_install_id(app: &tauri::AppHandle) -> Result<String, String> {
