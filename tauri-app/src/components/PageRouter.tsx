@@ -70,6 +70,7 @@ export type PageRouterContext = {
   // minecraft accounts
   minecraftAccounts: MinecraftAccount[];
   currentMinecraftAccount: MinecraftAccount | null;
+  minecraftAccountRequired: boolean;
   onSelectMinecraftAccount: (id: string | null) => void;
   onAddOfflineMinecraftAccount: (username: string) => void;
   onSaveMinecraftAccount: (account: MinecraftAccount) => void;
@@ -152,6 +153,7 @@ export default function PageRouter({ ctx }: { ctx: PageRouterContext }) {
           onSelectNovaGameVersion={ctx.onSelectNovaGameVersion}
           minecraftAccounts={ctx.minecraftAccounts}
           currentMinecraftAccount={ctx.currentMinecraftAccount}
+          minecraftAccountRequired={ctx.minecraftAccountRequired}
           onSelect={ctx.onSelect}
           onLaunch={ctx.onLaunch}
           onLaunchToServer={ctx.onLaunchToServer}

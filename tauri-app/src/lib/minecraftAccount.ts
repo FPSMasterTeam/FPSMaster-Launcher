@@ -73,10 +73,14 @@ export function loadSelectedMinecraftAccountId(): string | null {
 }
 
 export function createOfflineMinecraftAccount(username: string): MinecraftAccount {
+  const normalizedName = username.trim();
+  if (!normalizedName) {
+    throw new Error("Offline Minecraft username is required");
+  }
   return {
     id: createSessionId(),
     type: "offline",
-    username: username.trim() || "Player",
+    username: normalizedName,
     uuid: "00000000-0000-0000-0000-000000000000",
     accessToken: "offline",
     refreshToken: null,
@@ -88,17 +92,8 @@ export function createOfflineMinecraftAccount(username: string): MinecraftAccoun
 }
 
 export function resolveMinecraftLaunchIdentity(
-  account: MinecraftAccount | null,
-  fallbackPlayerName: string
+  account: MinecraftAccount
 ): { playerName: string; uuid: string; accessToken: string } {
-  const fallbackName = fallbackPlayerName.trim() || "Player";
-  if (!account) {
-    return {
-      playerName: fallbackName,
-      uuid: "00000000-0000-0000-0000-000000000000",
-      accessToken: "offline"
-    };
-  }
   if (account.type === "microsoft") {
     if (!account.uuid.trim() || !account.accessToken.trim()) {
       throw new Error("Minecraft premium account is not logged in yet");
