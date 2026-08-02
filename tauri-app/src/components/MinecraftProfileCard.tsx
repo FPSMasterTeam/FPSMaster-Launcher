@@ -8,6 +8,7 @@ import type { MinecraftAccount, MinecraftAuthConfig } from "../types";
 type MinecraftProfileCardProps = {
   accounts: MinecraftAccount[];
   currentAccount: MinecraftAccount | null;
+  required: boolean;
   onSelectAccount: (accountId: string) => void;
   onAddOfflineAccount: (username: string) => void;
   onSaveMicrosoftAccount: (account: MinecraftAccount) => void;
@@ -19,6 +20,7 @@ type AccountDialogMode = "offline" | "microsoft";
 function MinecraftProfileCard({
   accounts,
   currentAccount,
+  required,
   onSelectAccount,
   onAddOfflineAccount,
   onSaveMicrosoftAccount,
@@ -36,6 +38,8 @@ function MinecraftProfileCard({
   const [microsoftError, setMicrosoftError] = useState("");
   const containerRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
+  const requiredDialogOpen = required && accounts.length === 0;
+  const dialogVisible = dialogOpen || requiredDialogOpen;
 
   useEffect(() => {
     if (!open) {
@@ -52,17 +56,17 @@ function MinecraftProfileCard({
   }, [open]);
 
   useEffect(() => {
-    if (!dialogOpen || mode !== "offline") {
+    if (!dialogVisible || mode !== "offline") {
       return;
     }
     window.setTimeout(() => {
       inputRef.current?.focus();
       inputRef.current?.select();
     }, 0);
-  }, [dialogOpen, mode]);
+  }, [dialogVisible, mode]);
 
   useEffect(() => {
-    if (!dialogOpen) {
+    if (!dialogVisible) {
       return;
     }
     let disposed = false;
@@ -83,7 +87,7 @@ function MinecraftProfileCard({
     return () => {
       disposed = true;
     };
-  }, [dialogOpen]);
+  }, [dialogVisible]);
 
   const displayAccount = currentAccount ?? accounts[0] ?? null;
   const profileTitle = displayAccount?.username?.trim() || t("minecraftAccount.emptyTitle");
@@ -105,7 +109,10 @@ function MinecraftProfileCard({
     resetDialogState("offline");
   }
 
-  function closeAddDialog() {
+  function closeAddDialog(force = false) {
+    if (required && !force) {
+      return;
+    }
     setDialogOpen(false);
     resetDialogState("offline");
   }
@@ -117,7 +124,7 @@ function MinecraftProfileCard({
       return;
     }
     onAddOfflineAccount(username);
-    closeAddDialog();
+    closeAddDialog(true);
   }
 
   async function beginMicrosoftLogin() {
@@ -127,7 +134,7 @@ function MinecraftProfileCard({
     try {
       const account = await startMinecraftBrowserLogin();
       onSaveMicrosoftAccount(account);
-      closeAddDialog();
+      closeAddDialog(true);
     } catch (error) {
       setMicrosoftError(String(error));
     } finally {
@@ -214,19 +221,33 @@ function MinecraftProfileCard({
         ) : null}
       </div>
 
-      {dialogOpen && typeof document !== "undefined"
+      {dialogVisible && typeof document !== "undefined"
         ? createPortal(
-            <div className="minecraft-account-modal-backdrop" role="presentation" onClick={closeAddDialog}>
+            <div
+              className="minecraft-account-modal-backdrop"
+              role="presentation"
+              onClick={required ? undefined : () => closeAddDialog()}
+            >
               <div className="minecraft-account-modal" role="dialog" aria-modal="true" onClick={(event) => event.stopPropagation()}>
                 <div className="minecraft-account-modal-header">
                   <div>
                     <p className="page-eyebrow">{t("minecraftAccount.title")}</p>
-                    <h3 className="minecraft-account-modal-title">{t("minecraftAccount.add")}</h3>
+                    <h3 className="minecraft-account-modal-title">
+                      {required ? t("minecraftAccount.requiredTitle") : t("minecraftAccount.add")}
+                    </h3>
                   </div>
-                  <button type="button" className="minecraft-account-modal-close" onClick={closeAddDialog}>
-                    <X size={15} />
-                  </button>
+                  {!required && (
+                    <button type="button" className="minecraft-account-modal-close" onClick={() => closeAddDialog()}>
+                      <X size={15} />
+                    </button>
+                  )}
                 </div>
+
+                {required ? (
+                  <div className="minecraft-auth-notice is-warning mt-4">
+                    <p>{t("minecraftAccount.requiredHint")}</p>
+                  </div>
+                ) : null}
 
                 <div className="minecraft-account-mode-grid">
                   <button
@@ -298,9 +319,11 @@ function MinecraftProfileCard({
                 )}
 
                 <div className="minecraft-account-modal-actions">
-                  <button type="button" className="segment-chip px-4" onClick={closeAddDialog}>
-                    {t("monitor.cancel")}
-                  </button>
+                  {!required && (
+                    <button type="button" className="segment-chip px-4" onClick={() => closeAddDialog()}>
+                      {t("monitor.cancel")}
+                    </button>
+                  )}
                   {mode === "offline" ? (
                     <button type="button" className="segment-chip is-active px-4" onClick={submitOfflineAccount}>
                       {t("minecraftAccount.confirmAddOffline")}

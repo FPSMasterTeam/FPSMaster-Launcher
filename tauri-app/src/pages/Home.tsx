@@ -58,6 +58,7 @@ type HomePageProps = {
   onSelectNovaGameVersion: (gameVersion: string) => void;
   minecraftAccounts: MinecraftAccount[];
   currentMinecraftAccount: MinecraftAccount | null;
+  minecraftAccountRequired: boolean;
   onSelect: (id: string) => void;
   onLaunch: () => void;
   onLaunchToServer: (serverAddress: string) => void;
@@ -96,6 +97,7 @@ function HomePage({
   onSelectNovaGameVersion,
   minecraftAccounts,
   currentMinecraftAccount,
+  minecraftAccountRequired,
   onSelect,
   onLaunch,
   onLaunchToServer,
@@ -257,6 +259,7 @@ function HomePage({
             <MinecraftProfileCard
               accounts={minecraftAccounts}
               currentAccount={currentMinecraftAccount}
+              required={minecraftAccountRequired}
               onSelectAccount={onSelectMinecraftAccount}
               onAddOfflineAccount={onAddOfflineMinecraftAccount}
               onSaveMicrosoftAccount={onSaveMicrosoftMinecraftAccount}

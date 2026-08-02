@@ -11,7 +11,6 @@ import type { MinecraftAccount } from "../types";
 type UseMinecraftAccountsDeps = {
   secureStorageReady: boolean;
   playerName: string;
-  authUserName: string | null | undefined;
   setPlayerName: (name: string) => void;
 };
 
@@ -26,9 +25,9 @@ export type MinecraftAccountsController = {
   remove: (accountId: string) => void;
 };
 
-// Owns the local Minecraft account list: selection, persistence, the
-// always-have-one fallback, and keeping the player name in sync with the
-// active account. (Launch-time token refresh stays in the launch flow.)
+// Owns the local Minecraft account list, selection, persistence, and keeping
+// the player name in sync with the active account. (Launch-time token refresh
+// stays in the launch flow.)
 export function useMinecraftAccounts(deps: UseMinecraftAccountsDeps): MinecraftAccountsController {
   const depsRef = useRef(deps);
   depsRef.current = deps;
@@ -93,10 +92,9 @@ export function useMinecraftAccounts(deps: UseMinecraftAccountsDeps): MinecraftA
         }
         return next;
       }
-      const fallback = createOfflineMinecraftAccount(depsRef.current.playerName.trim() || "Player");
-      setSelectedId(fallback.id);
-      depsRef.current.setPlayerName(fallback.username);
-      return [fallback];
+      setSelectedId(null);
+      depsRef.current.setPlayerName("");
+      return next;
     });
   }, []);
 
@@ -120,20 +118,19 @@ export function useMinecraftAccounts(deps: UseMinecraftAccountsDeps): MinecraftA
     localStorage.removeItem(STORAGE_KEYS.selectedMinecraftAccount);
   }, [selectedId]);
 
-  // Always keep at least one account and a valid selection.
+  // Keep the selection valid, but leave an empty list intact so the UI can require
+  // the user to create the first Minecraft profile instead of inventing one.
   useEffect(() => {
     if (accounts.length === 0) {
-      const fallback = createOfflineMinecraftAccount(
-        depsRef.current.playerName.trim() || depsRef.current.authUserName?.trim() || "Player"
-      );
-      setAccounts([fallback]);
-      setSelectedId(fallback.id);
+      if (selectedId !== null) {
+        setSelectedId(null);
+      }
       return;
     }
     if (!selectedId || !accounts.some((item) => item.id === selectedId)) {
       setSelectedId(accounts[0].id);
     }
-  }, [accounts, selectedId, deps.authUserName, deps.playerName]);
+  }, [accounts, selectedId]);
 
   // Mirror the active account's name into the player name setting.
   useEffect(() => {

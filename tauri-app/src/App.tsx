@@ -40,7 +40,6 @@ import {
   normalizeLoginError
 } from "./lib/launcherError";
 import {
-  createOfflineMinecraftAccount,
   parseMinecraftAccounts,
   refreshMinecraftAccount,
   resolveMinecraftLaunchIdentity
@@ -235,6 +234,7 @@ function Launcher() {
   const [launchPrepareDialog, setLaunchPrepareDialog] = useState<LaunchPrepareDialogState | null>(null);
   const [windowVisible, setWindowVisible] = useState(false);
   const autoLoginAttemptedRef = useRef(false);
+  const [minecraftAccountPromptOpen, setMinecraftAccountPromptOpen] = useState(false);
 
   const logCursorRef = useRef<number | null>(null);
   const pollingRef = useRef(false);
@@ -273,7 +273,6 @@ function Launcher() {
   const mcAccounts = useMinecraftAccounts({
     secureStorageReady,
     playerName: settings.playerName,
-    authUserName: launcherAuth?.user?.username,
     setPlayerName: (name) => setSettings((prev) => ({ ...prev, playerName: name }))
   });
 
@@ -338,11 +337,8 @@ function Launcher() {
       if (cancelled) return;
       setLauncherAuth(authRaw === null ? null : parseLauncherAuthState(authRaw));
       setLauncherLoginPrefs(prefsRaw === null ? DEFAULT_LOGIN_PREFS : parseLauncherLoginPrefs(prefsRaw));
-      const fallbackPlayerName = settings.playerName.trim() || "Player";
       const accounts = accountsRaw === null ? [] : parseMinecraftAccounts(accountsRaw);
-      mcAccounts.setAccounts(
-        accounts.length > 0 ? accounts : [createOfflineMinecraftAccount(fallbackPlayerName)]
-      );
+      mcAccounts.setAccounts(accounts);
       setSecureStorageReady(true);
     })();
     return () => {
@@ -955,12 +951,25 @@ function Launcher() {
     setPresetPackageStatuses(Object.fromEntries(nextEntries));
   }
 
+  function requireMinecraftAccountForLaunch(): boolean {
+    if (mcAccounts.currentAccount) {
+      return true;
+    }
+    setPage("home");
+    setMinecraftAccountPromptOpen(true);
+    setStatus(t("minecraftAccount.requiredError"));
+    return false;
+  }
+
   async function launchToServer(serverAddress: string): Promise<void> {
     if (!current) {
       setStatus(t("servers.noInstance"));
       return;
     }
     if (ensureMandatoryLauncherUpdate()) {
+      return;
+    }
+    if (!requireMinecraftAccountForLaunch()) {
       return;
     }
 
@@ -979,7 +988,7 @@ function Launcher() {
       setLaunchProgressText(t("launch.progress.login"));
       const readyAccount = await ensureMinecraftAccountReadyForLaunch(mcAccounts.currentAccount, sessionId);
       markLaunchPreparePhase("login", "done", "complete", t("launch.progress.loginCompleted"));
-      const launchIdentity = resolveMinecraftLaunchIdentity(readyAccount, settings.playerName);
+      const launchIdentity = resolveMinecraftLaunchIdentity(readyAccount);
       markLaunchPreparePhase("check-instance", "running", "prepare", t("launch.progress.checkInstance"));
       setLaunchProgressPercent(Math.round((1 / LAUNCH_PREPARE_STEPS) * 100));
       setLaunchProgressText(t("launch.progress.checkInstance"));
@@ -1074,6 +1083,7 @@ function Launcher() {
 
   function handleAuthExpired(message: string) {
     void telemetry.flushSession();
+    setMinecraftAccountPromptOpen(false);
     setLauncherAuth(null);
     setLauncherVersions(EMPTY_LAUNCHER_VERSIONS);
     setNovaGameVersions({});
@@ -1144,6 +1154,7 @@ function Launcher() {
     // Block the once-per-session guard immediately and disable the
     // auto-login preference so it stays off on the next launch too.
     autoLoginAttemptedRef.current = true;
+    setMinecraftAccountPromptOpen(false);
     persistLauncherLoginPrefs({ ...launcherLoginPrefs, autoLogin: false });
     setLauncherAuth(null);
     setLauncherVersions(EMPTY_LAUNCHER_VERSIONS);
@@ -1685,6 +1696,9 @@ function Launcher() {
     if (ensureMandatoryLauncherUpdate()) {
       return;
     }
+    if (!requireMinecraftAccountForLaunch()) {
+      return;
+    }
     const presetAccess = resolvePresetAccessState(
       target,
       launcherVersions,
@@ -1730,7 +1744,7 @@ function Launcher() {
       setLaunchProgressText(t("launch.progress.login"));
       const readyAccount = await ensureMinecraftAccountReadyForLaunch(mcAccounts.currentAccount, sessionId);
       markLaunchPreparePhase("login", "done", "complete", t("launch.progress.loginCompleted"));
-      const launchIdentity = resolveMinecraftLaunchIdentity(readyAccount, settings.playerName);
+      const launchIdentity = resolveMinecraftLaunchIdentity(readyAccount);
       markLaunchPreparePhase("check-instance", "running", "prepare", t("launch.progress.checkInstance"));
       setLaunchProgressPercent(Math.round((1 / LAUNCH_PREPARE_STEPS) * 100));
       setLaunchProgressText(t("launch.progress.checkInstance"));
@@ -1802,6 +1816,11 @@ function Launcher() {
 
     let launchResult: LaunchExecutionResult | null = null;
     try {
+      markLaunchPreparePhase("login", "running", "prepare", t("launch.progress.login"));
+      setLaunchProgressText(t("launch.progress.login"));
+      const readyAccount = await ensureMinecraftAccountReadyForLaunch(mcAccounts.currentAccount, sessionId);
+      markLaunchPreparePhase("login", "done", "complete", t("launch.progress.loginCompleted"));
+
       // 1. Resolve the EXTREME distributable from the backend registry.
       const token = launcherAuth?.token?.trim() ?? "";
       let targetVersion = launcherVersions.EXTREME;
@@ -1853,7 +1872,7 @@ function Launcher() {
       markLaunchPreparePhase("launch", "running", "prepare", t("launch.progress.buildCommand"));
       setLaunchProgressPercent(85);
       setLaunchProgressText(t("launch.progress.buildCommand"));
-      const playerName = settings.playerName?.trim() || "FPSMaster";
+      const playerName = readyAccount.username;
       launchResult = await invoke<LaunchExecutionResult>("launch_native_app", {
         gameDir: settings.gameDir,
         versionId: target.versionId,
@@ -2381,8 +2400,11 @@ function Launcher() {
   async function ensureMinecraftAccountReadyForLaunch(
     account: MinecraftAccount | null,
     ipcSession?: string
-  ): Promise<MinecraftAccount | null> {
-    if (!account || account.type !== "microsoft") {
+  ): Promise<MinecraftAccount> {
+    if (!account) {
+      throw new Error(t("minecraftAccount.requiredError"));
+    }
+    if (account.type !== "microsoft") {
       markLaunchPreparePhase("login", "done", "complete", t("launch.progress.loginOffline"));
       return account;
     }
@@ -2422,8 +2444,14 @@ function Launcher() {
   const stableLaunch = useStableCallback(launch);
   const stableLaunchToServer = useStableCallback(launchToServer);
   const stableRemoveInstance = useStableCallback(removeInstance);
-  const stableAddOfflineAccount = useStableCallback(mcAccounts.addOffline);
-  const stableSaveMinecraftAccount = useStableCallback(mcAccounts.save);
+  const stableAddOfflineAccount = useStableCallback((username: string) => {
+    mcAccounts.addOffline(username);
+    setMinecraftAccountPromptOpen(false);
+  });
+  const stableSaveMinecraftAccount = useStableCallback((account: MinecraftAccount) => {
+    mcAccounts.save(account);
+    setMinecraftAccountPromptOpen(false);
+  });
   const stableDeleteMinecraftAccount = useStableCallback(mcAccounts.remove);
   const stableInstall = useStableCallback(install);
   const stableUpdateSettings = useStableCallback(updateSettings);
@@ -2523,6 +2551,7 @@ function Launcher() {
     onLaunchToServer: stableLaunchToServer,
     minecraftAccounts: mcAccounts.accounts,
     currentMinecraftAccount: mcAccounts.currentAccount,
+    minecraftAccountRequired: minecraftAccountPromptOpen,
     onSelectMinecraftAccount: mcAccounts.setSelectedId,
     onAddOfflineMinecraftAccount: stableAddOfflineAccount,
     onSaveMinecraftAccount: stableSaveMinecraftAccount,
@@ -2647,5 +2676,4 @@ function PageFallback() {
 function selectDefaultEdgeOptiFineVersion(versions: OptiFineVersion[]): OptiFineVersion | undefined {
   return versions.find((item) => item.compatibility !== "incompatible");
 }
-
 
