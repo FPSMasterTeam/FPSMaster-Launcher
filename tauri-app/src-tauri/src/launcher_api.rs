@@ -1,14 +1,13 @@
 use std::fs;
 use std::path::PathBuf;
-use std::time::Duration;
 
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use tauri::Manager;
 
 use crate::{
-    build_blocking_http_client, download_file_quiet_blocking, open_file_with_system,
-    sanitize_file_name, verify_file_sha256,
+    build_api_http_client, build_blocking_http_client, describe_http_error,
+    download_file_quiet_blocking, open_file_with_system, sanitize_file_name, verify_file_sha256,
 };
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -260,10 +259,7 @@ fn launcher_login_blocking(
         "{}/api/v1/auth/launcher/login",
         normalize_api_base_url(&base_url)?
     );
-    let client = reqwest::blocking::Client::builder()
-        .timeout(Duration::from_secs(20))
-        .build()
-        .map_err(|e| format!("Failed to build HTTP client: {e}"))?;
+    let client = build_api_http_client()?;
     let payload = LauncherLoginRequest {
         username_or_email: username_or_email.trim().to_string(),
         password,
@@ -272,7 +268,7 @@ fn launcher_login_blocking(
         .post(endpoint)
         .json(&payload)
         .send()
-        .map_err(|e| format!("Login request failed: {e}"))?;
+        .map_err(|e| format!("Login request failed: {}", describe_http_error(&e)))?;
     let status = response.status();
     let text = response
         .text()
@@ -376,10 +372,7 @@ fn launcher_list_news_blocking(
     limit: Option<u32>,
 ) -> Result<Vec<LauncherNewsItem>, String> {
     let normalized_base = normalize_api_base_url(&base_url)?;
-    let client = reqwest::blocking::Client::builder()
-        .timeout(Duration::from_secs(20))
-        .build()
-        .map_err(|e| format!("Failed to build HTTP client: {e}"))?;
+    let client = build_api_http_client()?;
 
     let mut url = reqwest::Url::parse(&format!("{normalized_base}/api/v1/launcher/news"))
         .map_err(|e| format!("Invalid launcher news endpoint URL: {e}"))?;
@@ -390,7 +383,7 @@ fn launcher_list_news_blocking(
     let response = client
         .get(url)
         .send()
-        .map_err(|e| format!("Launcher news request failed: {e}"))?;
+        .map_err(|e| format!("Launcher news request failed: {}", describe_http_error(&e)))?;
     let status = response.status();
     let text = response
         .text()
@@ -408,10 +401,7 @@ fn launcher_get_dashboard_blocking(
         return Err("Token is required".to_string());
     }
 
-    let client = reqwest::blocking::Client::builder()
-        .timeout(Duration::from_secs(20))
-        .build()
-        .map_err(|e| format!("Failed to build HTTP client: {e}"))?;
+    let client = build_api_http_client()?;
 
     let url = reqwest::Url::parse(&format!("{normalized_base}/api/v1/launcher/dashboard"))
         .map_err(|e| format!("Invalid launcher dashboard endpoint URL: {e}"))?;
@@ -419,7 +409,7 @@ fn launcher_get_dashboard_blocking(
         .get(url)
         .bearer_auth(&normalized_token)
         .send()
-        .map_err(|e| format!("Launcher dashboard request failed: {e}"))?;
+        .map_err(|e| format!("Launcher dashboard request failed: {}", describe_http_error(&e)))?;
     let status = response.status();
     let text = response
         .text()
@@ -432,10 +422,7 @@ fn launcher_get_home_blocking(
     token: Option<String>,
 ) -> Result<LauncherHomePayload, String> {
     let normalized_base = normalize_api_base_url(&base_url)?;
-    let client = reqwest::blocking::Client::builder()
-        .timeout(Duration::from_secs(20))
-        .build()
-        .map_err(|e| format!("Failed to build HTTP client: {e}"))?;
+    let client = build_api_http_client()?;
 
     let url = reqwest::Url::parse(&format!("{normalized_base}/api/v1/launcher/home"))
         .map_err(|e| format!("Invalid launcher home endpoint URL: {e}"))?;
@@ -448,7 +435,7 @@ fn launcher_get_home_blocking(
     }
     let response = request
         .send()
-        .map_err(|e| format!("Launcher home request failed: {e}"))?;
+        .map_err(|e| format!("Launcher home request failed: {}", describe_http_error(&e)))?;
     let status = response.status();
     let text = response
         .text()
@@ -481,7 +468,7 @@ fn launcher_get_app_update_blocking(
     let response = client
         .get(url)
         .send()
-        .map_err(|e| format!("Launcher app update request failed: {e}"))?;
+        .map_err(|e| format!("Launcher app update request failed: {}", describe_http_error(&e)))?;
     let status = response.status();
     let text = response
         .text()
@@ -510,7 +497,7 @@ fn launcher_list_app_update_channels_blocking(
 
     let response = request
         .send()
-        .map_err(|e| format!("Launcher app update channels request failed: {e}"))?;
+        .map_err(|e| format!("Launcher app update channels request failed: {}", describe_http_error(&e)))?;
     let status = response.status();
     let text = response
         .text()
@@ -581,10 +568,7 @@ fn launcher_list_available_versions_blocking(
         .map(|item| item.trim().to_uppercase())
         .filter(|item| !item.is_empty());
 
-    let client = reqwest::blocking::Client::builder()
-        .timeout(Duration::from_secs(20))
-        .build()
-        .map_err(|e| format!("Failed to build HTTP client: {e}"))?;
+    let client = build_api_http_client()?;
 
     // New release system: one authenticated per-platform catalog call replaces the legacy
     // per-versionType /versions/available fan-out. `target` scopes native products (extreme)
@@ -599,7 +583,7 @@ fn launcher_list_available_versions_blocking(
         .get(url)
         .bearer_auth(&normalized_token)
         .send()
-        .map_err(|e| format!("Releases request failed: {e}"))?;
+        .map_err(|e| format!("Releases request failed: {}", describe_http_error(&e)))?;
     let status = response.status();
     let text = response
         .text()

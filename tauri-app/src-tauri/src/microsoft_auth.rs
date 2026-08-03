@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder};
 
-use crate::emit_launch_prepare_ipc;
+use crate::{describe_http_error, emit_launch_prepare_ipc};
 
 const DEFAULT_MINECRAFT_MICROSOFT_CLIENT_ID: &str = "057064c6-d180-43df-b010-834b4571532f";
 const DEFAULT_MINECRAFT_MICROSOFT_REDIRECT_URL: &str = "http://localhost:3389/oauth";
@@ -244,7 +244,7 @@ fn start_minecraft_device_login_blocking() -> Result<MinecraftDeviceLoginStart, 
             ("scope", MINECRAFT_MICROSOFT_SCOPE),
         ])
         .send()
-        .map_err(|e| format!("Failed to start Microsoft device login: {e}"))?;
+        .map_err(|e| format!("Failed to start Microsoft device login: {}", describe_http_error(&e)))?;
     let status = response.status();
     let text = response
         .text()
@@ -318,7 +318,7 @@ fn start_minecraft_browser_login_blocking(
             ("scope", MINECRAFT_MICROSOFT_SCOPE),
         ])
         .send()
-        .map_err(|e| format!("Failed to exchange Microsoft authorization code: {e}"))?;
+        .map_err(|e| format!("Failed to exchange Microsoft authorization code: {}", describe_http_error(&e)))?;
     let status = response.status();
     let text = response
         .text()
@@ -360,7 +360,7 @@ fn poll_minecraft_device_login_blocking(
             ("device_code", trimmed_device_code.as_str()),
         ])
         .send()
-        .map_err(|e| format!("Failed to poll Microsoft device login: {e}"))?;
+        .map_err(|e| format!("Failed to poll Microsoft device login: {}", describe_http_error(&e)))?;
     let status = response.status();
     let text = response
         .text()
@@ -463,7 +463,7 @@ fn refresh_minecraft_account_blocking(
             ("scope", MINECRAFT_MICROSOFT_SCOPE),
         ])
         .send()
-        .map_err(|e| format!("Failed to refresh Microsoft login: {e}"))?;
+        .map_err(|e| format!("Failed to refresh Microsoft login: {}", describe_http_error(&e)))?;
     let status = response.status();
     let text = response
         .text()
@@ -516,7 +516,7 @@ fn complete_minecraft_microsoft_account(
             "TokenType": "JWT",
         }))
         .send()
-        .map_err(|e| format!("Failed to authenticate with Xbox Live: {e}"))?;
+        .map_err(|e| format!("Failed to authenticate with Xbox Live: {}", describe_http_error(&e)))?;
     let xbox_status = xbox_response.status();
     let xbox_text = xbox_response
         .text()
@@ -566,7 +566,7 @@ fn complete_minecraft_microsoft_account(
             "TokenType": "JWT",
         }))
         .send()
-        .map_err(|e| format!("Failed to authorize XSTS token: {e}"))?;
+        .map_err(|e| format!("Failed to authorize XSTS token: {}", describe_http_error(&e)))?;
     let xsts_status = xsts_response.status();
     let xsts_text = xsts_response
         .text()
@@ -606,7 +606,7 @@ fn complete_minecraft_microsoft_account(
             "identityToken": format!("XBL3.0 x={};{}", user_hash, xsts_payload.token),
         }))
         .send()
-        .map_err(|e| format!("Failed to sign in to Minecraft Services: {e}"))?;
+        .map_err(|e| format!("Failed to sign in to Minecraft Services: {}", describe_http_error(&e)))?;
     let minecraft_login_status = minecraft_login_response.status();
     let minecraft_login_text = minecraft_login_response
         .text()
@@ -626,7 +626,7 @@ fn complete_minecraft_microsoft_account(
         .get("https://api.minecraftservices.com/entitlements/mcstore")
         .bearer_auth(&minecraft_login_payload.access_token)
         .send()
-        .map_err(|e| format!("Failed to fetch Minecraft entitlements: {e}"))?;
+        .map_err(|e| format!("Failed to fetch Minecraft entitlements: {}", describe_http_error(&e)))?;
     let entitlements_status = entitlements_response.status();
     let entitlements_text = entitlements_response
         .text()
@@ -672,7 +672,7 @@ fn complete_minecraft_microsoft_account(
         .get("https://api.minecraftservices.com/minecraft/profile")
         .bearer_auth(&minecraft_login_payload.access_token)
         .send()
-        .map_err(|e| format!("Failed to fetch Minecraft profile: {e}"))?;
+        .map_err(|e| format!("Failed to fetch Minecraft profile: {}", describe_http_error(&e)))?;
     let profile_status = profile_response.status();
     let profile_text = profile_response
         .text()
@@ -728,7 +728,7 @@ fn fetch_minecraft_skin_url(
             "https://sessionserver.mojang.com/session/minecraft/profile/{normalized_uuid}"
         ))
         .send()
-        .map_err(|e| format!("Failed to fetch Minecraft session profile: {e}"))?;
+        .map_err(|e| format!("Failed to fetch Minecraft session profile: {}", describe_http_error(&e)))?;
     let status = response.status();
     let text = response
         .text()

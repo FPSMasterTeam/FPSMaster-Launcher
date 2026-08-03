@@ -904,7 +904,7 @@ fn post_launcher_telemetry_offline(session: &LauncherTelemetrySession) -> Result
         .post(url)
         .json(&payload)
         .send()
-        .map_err(|e| format!("Failed to submit launcher telemetry offline request: {e}"))?;
+        .map_err(|e| format!("Failed to submit launcher telemetry offline request: {}", describe_http_error(&e)))?;
     if response.status().is_success() {
         Ok(())
     } else {
@@ -1911,7 +1911,7 @@ fn post_launcher_heartbeat(session: &LauncherTelemetrySession) -> Result<(), Str
         .post(url)
         .json(&payload)
         .send()
-        .map_err(|e| format!("Failed to send heartbeat request: {e}"))?;
+        .map_err(|e| format!("Failed to send heartbeat request: {}", describe_http_error(&e)))?;
     if response.status().is_success() {
         Ok(())
     } else {
@@ -2201,7 +2201,7 @@ fn modrinth_search_projects_blocking(
     let response = client
         .get(url)
         .send()
-        .map_err(|e| format!("Modrinth search request failed: {e}"))?;
+        .map_err(|e| format!("Modrinth search request failed: {}", describe_http_error(&e)))?;
     let status = response.status();
     let text = response
         .text()
@@ -2440,7 +2440,7 @@ fn curseforge_search_projects_blocking(
         .get(url)
         .header("x-api-key", normalized_api_key)
         .send()
-        .map_err(|e| format!("CurseForge search request failed: {e}"))?;
+        .map_err(|e| format!("CurseForge search request failed: {}", describe_http_error(&e)))?;
     let status = response.status();
     let text = response
         .text()
@@ -3582,6 +3582,38 @@ pub(crate) fn build_blocking_http_client() -> Result<reqwest::blocking::Client, 
         .map_err(|e| e.to_string())
 }
 
+/// 面向 api.fpsmaster.top 的短超时客户端。和 `build_blocking_http_client` 的区别
+/// 只在超时预算：那个是给大文件下载用的(30 分钟)，API 调用必须快速失败。
+pub(crate) fn build_api_http_client() -> Result<reqwest::blocking::Client, String> {
+    reqwest::blocking::Client::builder()
+        .user_agent(LAUNCHER_HTTP_USER_AGENT)
+        .connect_timeout(std::time::Duration::from_secs(10))
+        .timeout(std::time::Duration::from_secs(20))
+        .redirect(reqwest::redirect::Policy::limited(10))
+        .build()
+        .map_err(|e| format!("Failed to build HTTP client: {e}"))
+}
+
+/// reqwest 的 Display 只输出最外层("error sending request for url (...)")，把真正
+/// 的原因藏在 source() 链里。DNS 失败、证书不受信、连接超时、代理拒绝在用户截图
+/// 里长得一模一样，没法定位。这里把整条链拼出来。
+pub(crate) fn describe_http_error(err: &(dyn std::error::Error + 'static)) -> String {
+    let mut text = err.to_string();
+    let mut current = err.source();
+    // 底层链通常 2-4 层(reqwest → hyper → rustls/io)，给个上限防御自引用的实现。
+    for _ in 0..8 {
+        let Some(cause) = current else { break };
+        let cause_text = cause.to_string();
+        // hyper 等库常把下层信息原样重复到上层，重复段落只会让用户更困惑。
+        if !text.contains(&cause_text) {
+            text.push_str(": ");
+            text.push_str(&cause_text);
+        }
+        current = cause.source();
+    }
+    text
+}
+
 fn http_get_text_quiet_blocking(
     client: &reqwest::blocking::Client,
     url: &str,
@@ -3597,7 +3629,8 @@ fn http_get_text_quiet_blocking(
         let response = match response {
             Ok(value) => value,
             Err(err) => {
-                last_error = format!("request failed on attempt {attempt}/3: {err}");
+                last_error =
+                    format!("request failed on attempt {attempt}/3: {}", describe_http_error(&err));
                 continue;
             }
         };
@@ -3800,7 +3833,7 @@ fn fetch_curseforge_project_files(
         .get(url)
         .header("x-api-key", api_key)
         .send()
-        .map_err(|e| format!("CurseForge files request failed: {e}"))?;
+        .map_err(|e| format!("CurseForge files request failed: {}", describe_http_error(&e)))?;
     let status = response.status();
     let text = response
         .text()
@@ -3833,7 +3866,7 @@ fn fetch_curseforge_file_download_url(
         .get(url)
         .header("x-api-key", api_key)
         .send()
-        .map_err(|e| format!("CurseForge download URL request failed: {e}"))?;
+        .map_err(|e| format!("CurseForge download URL request failed: {}", describe_http_error(&e)))?;
     let status = response.status();
     let text = response
         .text()
@@ -3926,7 +3959,7 @@ fn fetch_modrinth_project_versions(
     let response = client
         .get(url)
         .send()
-        .map_err(|e| format!("Modrinth versions request failed: {e}"))?;
+        .map_err(|e| format!("Modrinth versions request failed: {}", describe_http_error(&e)))?;
     let status = response.status();
     let text = response
         .text()
@@ -5056,7 +5089,8 @@ fn download_file_quiet_with_progress_blocking(
         let mut response = match response {
             Ok(value) => value,
             Err(err) => {
-                last_error = format!("request failed on attempt {attempt}/3: {err}");
+                last_error =
+                    format!("request failed on attempt {attempt}/3: {}", describe_http_error(&err));
                 continue;
             }
         };
@@ -7557,7 +7591,7 @@ fn fetch_json<T: for<'de> Deserialize<'de>>(
         .get(url)
         .header(reqwest::header::ACCEPT, "application/json")
         .send()
-        .map_err(|e| format!("Failed requesting {label}: {e}"))?;
+        .map_err(|e| format!("Failed requesting {label}: {}", describe_http_error(&e)))?;
     let status = response.status();
     if !status.is_success() {
         return Err(format!("Failed requesting {label}: HTTP {status}"));
@@ -7983,7 +8017,7 @@ fn download_file_blocking_single(
         {
             Ok(resp) => resp,
             Err(err) => {
-                last_error = err.to_string();
+                last_error = describe_http_error(&err);
                 emit_log(
                     window,
                     "stderr",
@@ -8118,7 +8152,7 @@ fn download_file_blocking_parallel(
                 .header(reqwest::header::ACCEPT, "*/*")
                 .header(reqwest::header::RANGE, format!("bytes={start}-{end}"))
                 .send()
-                .map_err(|e| format!("part {part_index} request failed: {e}"))?;
+                .map_err(|e| format!("part {part_index} request failed: {}", describe_http_error(&e)))?;
             if response.status() != reqwest::StatusCode::PARTIAL_CONTENT {
                 return Err(format!(
                     "part {part_index} expected HTTP 206 but got {}",
@@ -9212,7 +9246,7 @@ fn load_remote_image_bytes(url: &str) -> Result<Vec<u8>, String> {
         .get(url)
         .header(reqwest::header::ACCEPT, "image/*,*/*;q=0.8")
         .send()
-        .map_err(|e| format!("Failed to fetch background image: {e}"))?;
+        .map_err(|e| format!("Failed to fetch background image: {}", describe_http_error(&e)))?;
     if !response.status().is_success() {
         return Err(format!(
             "Failed to fetch background image: HTTP {}",

@@ -12,7 +12,12 @@ base64 = "0.22"
 flate2 = "1.1"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "gif", "bmp", "webp"] }
 rand = "0.8"
-reqwest = { version = "0.12.28", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+# rustls-tls (= webpki-roots) 单独用会只信任编译进二进制的 Mozilla 根列表，完全
+# 不读 Windows 系统证书存储。装了 HTTPS 扫描类杀软(360/火绒/卡巴)或走企业代理
+# (Zscaler/深信服)的用户，其自签根只在系统存储里 → 浏览器能开官网，启动器握手
+# 直接失败。两个 feature 同时开，reqwest 会把 webpki 和系统根合并进同一个
+# RootCertStore，系统存储读不出来时仍有 webpki 兜底。
+reqwest = { version = "0.12.28", default-features = false, features = ["blocking", "json", "rustls-tls", "rustls-tls-native-roots"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 sha1 = "0.10"
