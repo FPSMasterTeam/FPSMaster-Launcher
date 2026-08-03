@@ -1,6 +1,6 @@
 use crate::{
-    build_blocking_http_client, compute_sha1_hex, emit_log, InstallResult, JavaRuntimeRequirement,
-    LaunchPlan,
+    build_blocking_http_client, compute_sha1_hex, describe_http_error, emit_log, InstallResult,
+    JavaRuntimeRequirement, LaunchPlan,
 };
 use base64::Engine;
 use serde_json::{json, Map, Value};
@@ -2796,7 +2796,7 @@ fn get_json_with_timeout(url: &str, timeout: Option<Duration>) -> Result<Value, 
     let response = client
         .get(url)
         .send()
-        .map_err(|e| format!("Request failed url={url}: {e}"))?;
+        .map_err(|e| format!("Request failed url={url}: {}", describe_http_error(&e)))?;
     if !response.status().is_success() {
         return Err(format!(
             "Request failed url={url} status={}",
@@ -2836,7 +2836,7 @@ fn get_text_with_timeout(url: &str, timeout: Option<Duration>) -> Result<String,
     let response = client
         .get(url)
         .send()
-        .map_err(|e| format!("Request failed url={url}: {e}"))?;
+        .map_err(|e| format!("Request failed url={url}: {}", describe_http_error(&e)))?;
     if !response.status().is_success() {
         return Err(format!(
             "Request failed url={url} status={}",
