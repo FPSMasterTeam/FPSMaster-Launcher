@@ -2886,6 +2886,276 @@ async fn get_launcher_package_state(
     .inspect_err(|e| log_command_error("get_launcher_package_state", e))
 }
 
+// Modrinth slug for Fabric API. Nova is a Fabric mod set whose release package intentionally does
+// not bundle Fabric API; the launcher pulls the matching production build in on the side.
+const FABRIC_API_PROJECT_ID: &str = "fabric-api";
+// Sidecar marker inside the mods dir tracking the Fabric API build we installed, so re-syncs are
+// idempotent and an old jar can be pruned when a newer build is promoted. The leading dot keeps it
+// out of the jar-scanning paths, and it is not part of any launcher package marker, so Nova's
+// (now non-clean) package sync leaves it untouched.
+const FABRIC_API_MARKER_FILE: &str = ".fpsmaster-fabric-api.json";
+
+#[derive(Debug, Clone, Serialize)]
+struct FabricApiInstallResult {
+    #[serde(rename = "targetDir")]
+    target_dir: String,
+    #[serde(rename = "fileName")]
+    file_name: String,
+    #[serde(rename = "versionNumber")]
+    version_number: String,
+    skipped: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct FabricApiInstallMarker {
+    #[serde(rename = "gameVersion")]
+    game_version: String,
+    #[serde(rename = "versionNumber")]
+    version_number: String,
+    #[serde(rename = "fileName")]
+    file_name: String,
+    #[serde(default)]
+    sha512: Option<String>,
+    #[serde(rename = "installedAtEpochSec")]
+    installed_at_epoch_sec: u64,
+}
+
+#[tauri::command]
+async fn install_fabric_api(
+    window: tauri::Window,
+    game_dir: String,
+    version_id: String,
+    game_version: String,
+    ipc_session: Option<String>,
+) -> Result<FabricApiInstallResult, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        install_fabric_api_blocking(
+            Some(&window),
+            ipc_session.as_deref(),
+            game_dir,
+            version_id,
+            game_version,
+        )
+    })
+    .await
+    .map_err(|e| format!("Failed to join Fabric API install task: {e}"))
+    .and_then(std::convert::identity)
+    .inspect_err(|e| log_command_error("install_fabric_api", e))
+}
+
+fn read_fabric_api_marker(marker_path: &Path) -> Result<Option<FabricApiInstallMarker>, String> {
+    if !marker_path.exists() {
+        return Ok(None);
+    }
+    let content = fs::read_to_string(marker_path).map_err(|e| {
+        format!(
+            "Failed to read Fabric API marker {}: {e}",
+            marker_path.display()
+        )
+    })?;
+    if content.trim().is_empty() {
+        return Ok(None);
+    }
+    // A corrupt marker just means "resolve and reinstall", not a hard failure.
+    Ok(serde_json::from_str::<FabricApiInstallMarker>(&content).ok())
+}
+
+fn install_fabric_api_blocking(
+    window: Option<&tauri::Window>,
+    ipc_session: Option<&str>,
+    game_dir: String,
+    version_id: String,
+    game_version: String,
+) -> Result<FabricApiInstallResult, String> {
+    let normalized_game_version = game_version.trim().to_string();
+    if normalized_game_version.is_empty() {
+        return Err("gameVersion is empty".to_string());
+    }
+
+    let game_dir_path = resolve_game_dir_path(&game_dir)?;
+    let mods_dir = resolve_version_runtime_dir(&game_dir_path, &version_id)?.join("mods");
+    fs::create_dir_all(&mods_dir).map_err(|e| {
+        format!(
+            "Failed to create mods directory {}: {e}",
+            mods_dir.display()
+        )
+    })?;
+    let marker_path = mods_dir.join(FABRIC_API_MARKER_FILE);
+
+    emit_launch_prepare_ipc(
+        ipc_session,
+        "progress",
+        "mods",
+        "resolve",
+        Some(0),
+        Some(100),
+        &format!("Resolving Fabric API for {normalized_game_version}"),
+        None,
+    );
+
+    // Resolve the best production Fabric API build for this Minecraft version via Modrinth,
+    // reusing the same version-ranking the content installer uses. Modrinth publishes the
+    // intermediary-mapped (production) jar, so it passes the launcher's unsupported-runtime-mod
+    // guard (a `named`/dev build would be rejected).
+    let client = build_blocking_http_client()?;
+    let versions = fetch_modrinth_project_versions(
+        &client,
+        FABRIC_API_PROJECT_ID,
+        "mod",
+        &normalized_game_version,
+        Some("fabric"),
+    )?;
+    let version = choose_best_modrinth_version(versions)?;
+    let file = choose_modrinth_version_file(&version)?;
+    let resolved_version_number = if version.version_number.trim().is_empty() {
+        version.name.clone()
+    } else {
+        version.version_number.clone()
+    };
+    let expected_sha512 = file.hashes.get("sha512").cloned();
+    let target_file_name = sanitize_file_name(&file.filename);
+    let target_path = mods_dir.join(&target_file_name);
+
+    let previous_marker = read_fabric_api_marker(&marker_path)?;
+    if let Some(marker) = previous_marker.as_ref() {
+        let up_to_date = marker.game_version.trim() == normalized_game_version
+            && marker.version_number.trim() == resolved_version_number.trim()
+            && marker.file_name == target_file_name
+            && target_path.exists();
+        if up_to_date {
+            emit_launch_prepare_ipc(
+                ipc_session,
+                "progress",
+                "mods",
+                "resolve",
+                Some(100),
+                Some(100),
+                "Fabric API up to date",
+                None,
+            );
+            return Ok(FabricApiInstallResult {
+                target_dir: mods_dir.to_string_lossy().to_string(),
+                file_name: target_file_name,
+                version_number: resolved_version_number,
+                skipped: true,
+            });
+        }
+    }
+
+    let download_path = env::temp_dir().join(format!(
+        "fpsmaster-fabric-api-{}-{}-{}",
+        std::process::id(),
+        now_epoch_millis(),
+        target_file_name
+    ));
+    emit_launch_prepare_item(
+        ipc_session,
+        "item-start",
+        "mods",
+        &file.url,
+        &target_file_name,
+        "fabric-api",
+        Some(0),
+        file.size.map(|value| value as i64),
+        None,
+        "Downloading",
+    );
+    if let Err(err) = download_file_quiet_with_progress_blocking(
+        &client,
+        &file.url,
+        &download_path,
+        window,
+        Some("fabric-api"),
+    ) {
+        let _ = fs::remove_file(&download_path);
+        return Err(format!(
+            "Failed to download Fabric API {}: {err}",
+            file.filename
+        ));
+    }
+    if let Some(expected_size) = file.size {
+        match fs::metadata(&download_path) {
+            Ok(meta) if meta.len() == expected_size => {}
+            Ok(meta) => {
+                let _ = fs::remove_file(&download_path);
+                return Err(format!(
+                    "Fabric API size mismatch: expected {expected_size}, got {}",
+                    meta.len()
+                ));
+            }
+            Err(e) => {
+                let _ = fs::remove_file(&download_path);
+                return Err(format!("Failed to inspect downloaded Fabric API: {e}"));
+            }
+        }
+    }
+    if let Some(expected) = expected_sha512.as_deref() {
+        if let Err(err) = verify_file_sha512(&download_path, expected) {
+            let _ = fs::remove_file(&download_path);
+            return Err(format!("Fabric API checksum mismatch: {err}"));
+        }
+    }
+
+    // Drop a previously-installed, differently-named Fabric API jar before promoting the new one so
+    // the mods dir never ends up with two Fabric API builds side by side.
+    if let Some(previous) = previous_marker.as_ref() {
+        if previous.file_name != target_file_name {
+            let previous_path = mods_dir.join(&previous.file_name);
+            if previous_path.exists() {
+                let _ = fs::remove_file(&previous_path);
+            }
+        }
+    }
+
+    if let Err(rename_err) = fs::rename(&download_path, &target_path) {
+        // Cross-device (temp dir on another mount) fallback: copy, then drop the temp file.
+        fs::copy(&download_path, &target_path).map_err(|copy_err| {
+            let _ = fs::remove_file(&download_path);
+            format!(
+                "Failed to install Fabric API to {} (rename: {rename_err}, copy: {copy_err})",
+                target_path.display()
+            )
+        })?;
+        let _ = fs::remove_file(&download_path);
+    }
+
+    let marker = FabricApiInstallMarker {
+        game_version: normalized_game_version,
+        version_number: resolved_version_number.clone(),
+        file_name: target_file_name.clone(),
+        sha512: expected_sha512,
+        installed_at_epoch_sec: now_epoch_seconds(),
+    };
+    let marker_content = serde_json::to_string_pretty(&marker)
+        .map_err(|e| format!("Failed to serialize Fabric API marker: {e}"))?;
+    fs::write(&marker_path, format!("{marker_content}\n")).map_err(|e| {
+        format!(
+            "Failed to write Fabric API marker {}: {e}",
+            marker_path.display()
+        )
+    })?;
+
+    emit_launch_prepare_item(
+        ipc_session,
+        "item-complete",
+        "mods",
+        &file.url,
+        &target_file_name,
+        "fabric-api",
+        None,
+        None,
+        Some(false),
+        "Downloaded",
+    );
+
+    Ok(FabricApiInstallResult {
+        target_dir: mods_dir.to_string_lossy().to_string(),
+        file_name: target_file_name,
+        version_number: resolved_version_number,
+        skipped: false,
+    })
+}
+
 // Derive a human-readable file name for a single-file mod package, e.g.
 // "FPSMaster-Nova-nightly-46.jar", instead of the opaque upload hash that the
 // download URL ends with (".../1783864173-0e0f....jar"). The extension is taken
@@ -9507,6 +9777,7 @@ fn main() {
             import_world_archive,
             get_launcher_package_state,
             install_launcher_version_mods,
+            install_fabric_api,
             install_native_app,
             prepare_extreme_assets,
             launch_native_app,
