@@ -1138,7 +1138,7 @@ dependencies = [
 
 [[package]]
 name = "fpsmaster-launcher"
-version = "0.3.11"
+version = "0.3.12"
 dependencies = [
  "aes-gcm",
  "base64 0.22.1",
