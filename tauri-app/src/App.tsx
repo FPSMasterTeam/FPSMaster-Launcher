@@ -1291,9 +1291,29 @@ function Launcher() {
         checksum: targetVersion.checksum,
         manifestUrl: targetVersion.manifestUrl,
         versionTag: targetVersion.versionName,
-        cleanExisting: instance.launcherVersionType === "NOVA",
+        // Nova used to clean the whole mods dir on every sync (cleanExisting=true), which wiped
+        // any manually-added mods (e.g. a hand-installed Fabric API). It now syncs like EDGE:
+        // only the launcher-managed package files are reconciled, user mods are left in place.
+        // Fabric API is provided automatically below via install_fabric_api instead.
+        cleanExisting: false,
         ipcSession: launchSessionId
       });
+      // Nova ships as a Fabric mod set but its release package does not bundle Fabric API, so
+      // pull the matching Fabric API build into the same mods dir (idempotent — skips when already
+      // current). Best-effort: a Modrinth hiccup, or a brand-new Nova game version without a
+      // published Fabric API yet, must not block the launch, so failures only warn.
+      if (isNova) {
+        try {
+          await invoke("install_fabric_api", {
+            gameDir: settings.gameDir,
+            versionId: instance.versionId,
+            gameVersion: instance.baseVersion,
+            ipcSession: launchSessionId
+          });
+        } catch (fabricApiError) {
+          console.warn("[preset-mods] Fabric API auto-install failed:", fabricApiError);
+        }
+      }
       setPresetPackageStatuses((prev) => ({
         ...prev,
         [instance.id]: createPresetPackageStatus("ready", {
