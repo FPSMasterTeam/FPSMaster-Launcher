@@ -274,7 +274,20 @@ function parseLauncherUpdateChannel(input: unknown): string {
     return DEFAULT_SETTINGS.launcherUpdateChannel;
   }
   const normalized = input.trim().toLowerCase();
-  return normalized || DEFAULT_SETTINGS.launcherUpdateChannel;
+  // Only beta/release remain. Legacy cannary/canary/nightly/alpha installs map to beta.
+  if (normalized === "release") {
+    return "release";
+  }
+  if (
+    normalized === "beta" ||
+    normalized === "cannary" ||
+    normalized === "canary" ||
+    normalized === "nightly" ||
+    normalized === "alpha"
+  ) {
+    return "beta";
+  }
+  return DEFAULT_SETTINGS.launcherUpdateChannel;
 }
 
 function parseThemeMode(input: unknown): ThemeMode {
