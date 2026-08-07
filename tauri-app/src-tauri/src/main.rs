@@ -208,6 +208,37 @@ struct LauncherModsInstallMarker {
     installed_at_epoch_sec: u64,
 }
 
+// Edge's Forge-free "AOT" distribution: `client-named.jar` + `fpsmaster-runtime.jar` +
+// `mappings.tiny` + `manifest.json` + `launch-profiles.json`, downloaded as a single zip and
+// extracted under `versions/<id>/aot/`. Deliberately separate from the mods installer/marker
+// above — the AOT package never touches `mods/`.
+#[derive(Debug, Clone, Serialize)]
+struct EdgeAotInstallResult {
+    #[serde(rename = "targetDir")]
+    target_dir: String,
+    installed: bool,
+    skipped: bool,
+    #[serde(rename = "versionTag")]
+    version_tag: String,
+    checksum: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct EdgeAotInstallMarker {
+    #[serde(rename = "versionTag")]
+    version_tag: String,
+    #[serde(default)]
+    checksum: Option<String>,
+    #[serde(rename = "downloadUrl")]
+    download_url: String,
+    #[serde(rename = "installedAtEpochSec")]
+    installed_at_epoch_sec: u64,
+}
+
+const EDGE_AOT_MARKER_FILE: &str = ".fpsmaster-edge-aot.json";
+const EDGE_AOT_REQUIRED_FILES: [&str; 3] =
+    ["client-named.jar", "fpsmaster-runtime.jar", "mappings.tiny"];
+
 #[derive(Debug, Clone, Serialize)]
 struct LauncherPackageState {
     installed: bool,
@@ -2862,6 +2893,283 @@ async fn install_launcher_version_mods(
 }
 
 #[tauri::command]
+async fn install_edge_aot_package(
+    window: tauri::Window,
+    game_dir: String,
+    version_id: String,
+    download_url: String,
+    version_tag: Option<String>,
+    checksum: Option<String>,
+    ipc_session: Option<String>,
+) -> Result<EdgeAotInstallResult, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        install_edge_aot_package_blocking(
+            Some(&window),
+            ipc_session.as_deref(),
+            game_dir,
+            version_id,
+            download_url,
+            version_tag,
+            checksum,
+        )
+    })
+    .await
+    .map_err(|e| format!("Failed to join Edge AOT install task: {e}"))
+    .and_then(std::convert::identity)
+    .inspect_err(|e| log_command_error("install_edge_aot_package", e))
+}
+
+fn read_edge_aot_marker(marker_path: &Path) -> Result<Option<EdgeAotInstallMarker>, String> {
+    if !marker_path.exists() {
+        return Ok(None);
+    }
+    let content = fs::read_to_string(marker_path).map_err(|e| {
+        format!(
+            "Failed to read Edge AOT marker {}: {e}",
+            marker_path.display()
+        )
+    })?;
+    if content.trim().is_empty() {
+        return Ok(None);
+    }
+    // A corrupt marker just means "reinstall", not a hard failure.
+    Ok(serde_json::from_str::<EdgeAotInstallMarker>(&content).ok())
+}
+
+fn edge_aot_package_files_present(aot_dir: &Path) -> bool {
+    EDGE_AOT_REQUIRED_FILES
+        .iter()
+        .all(|name| aot_dir.join(name).is_file())
+}
+
+// A packaging tool may wrap the zip's contents in a single top-level directory instead of
+// placing client-named.jar/etc. at the archive root; unwrap that so the AOT files always end
+// up directly under `versions/<id>/aot/`.
+fn unwrap_single_nested_aot_directory(dir: &Path) -> Result<PathBuf, String> {
+    let entries: Vec<_> = fs::read_dir(dir)
+        .map_err(|e| format!("Failed to inspect staged AOT directory {}: {e}", dir.display()))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("Failed to inspect staged AOT directory {}: {e}", dir.display()))?;
+    if entries.len() == 1 && entries[0].path().is_dir() {
+        return Ok(entries[0].path());
+    }
+    Ok(dir.to_path_buf())
+}
+
+fn install_edge_aot_package_blocking(
+    window: Option<&tauri::Window>,
+    ipc_session: Option<&str>,
+    game_dir: String,
+    version_id: String,
+    download_url: String,
+    version_tag: Option<String>,
+    checksum: Option<String>,
+) -> Result<EdgeAotInstallResult, String> {
+    let game_dir_path = resolve_game_dir_path(&game_dir)?;
+    let aot_dir = resolve_version_runtime_dir(&game_dir_path, &version_id)?.join("aot");
+    fs::create_dir_all(&aot_dir).map_err(|e| {
+        format!(
+            "Failed to create Edge AOT directory {}: {e}",
+            aot_dir.display()
+        )
+    })?;
+
+    let normalized_url = download_url.trim().to_string();
+    if normalized_url.is_empty() {
+        return Err("downloadUrl is empty".to_string());
+    }
+    let normalized_tag = version_tag
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| normalized_url.clone());
+    let normalized_checksum = checksum
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+
+    let marker_path = aot_dir.join(EDGE_AOT_MARKER_FILE);
+    let previous_marker = read_edge_aot_marker(&marker_path)?;
+    let up_to_date = previous_marker
+        .as_ref()
+        .map(|marker| {
+            marker.version_tag.trim() == normalized_tag.trim()
+                && match (marker.checksum.as_deref(), normalized_checksum.as_deref()) {
+                    (Some(installed), Some(expected)) => installed.trim() == expected.trim(),
+                    _ => true,
+                }
+        })
+        .unwrap_or(false)
+        && edge_aot_package_files_present(&aot_dir);
+    if up_to_date {
+        return Ok(EdgeAotInstallResult {
+            target_dir: aot_dir.to_string_lossy().to_string(),
+            installed: true,
+            skipped: true,
+            version_tag: normalized_tag,
+            checksum: normalized_checksum,
+        });
+    }
+
+    let download_file_name = format!(
+        "{}.zip",
+        sanitize_file_name(&format!("fpsmaster-edge-aot-{}", normalized_tag))
+    );
+    let temp_download_path = env::temp_dir().join(format!(
+        "fpsmaster-edge-aot-{}-{}-{}",
+        std::process::id(),
+        now_epoch_millis(),
+        download_file_name
+    ));
+
+    // Reuses the "mods" phase key: from the launch-prepare dialog's point of view this
+    // replaces the mod-sync step for no-Forge Edge instances.
+    emit_launch_prepare_ipc(
+        ipc_session,
+        "progress",
+        "mods",
+        "download",
+        Some(0),
+        Some(100),
+        &format!("Downloading Edge AOT package {download_file_name}"),
+        None,
+    );
+    emit_launch_prepare_item(
+        ipc_session,
+        "item-start",
+        "mods",
+        &normalized_url,
+        &download_file_name,
+        "aot-package",
+        Some(0),
+        None,
+        None,
+        "Downloading",
+    );
+
+    let progress_session = ipc_session.map(str::to_string);
+    let progress_item_id = normalized_url.clone();
+    let progress_item_name = download_file_name.clone();
+    let progress_callback: DownloadProgressCallback =
+        Arc::new(move |downloaded: u64, total: Option<u64>| {
+            emit_launch_prepare_item(
+                progress_session.as_deref(),
+                "item-progress",
+                "mods",
+                &progress_item_id,
+                &progress_item_name,
+                "aot-package",
+                Some(downloaded as i64),
+                total.map(|value| value as i64),
+                None,
+                "Downloading",
+            );
+            if let Some(total) = total.filter(|value| *value > 0) {
+                let percent = (downloaded.saturating_mul(100) / total).min(100) as i32;
+                emit_launch_prepare_ipc(
+                    progress_session.as_deref(),
+                    "progress",
+                    "mods",
+                    "download",
+                    Some(percent),
+                    Some(100),
+                    &format!("Downloading {progress_item_name} ({percent}%)"),
+                    None,
+                );
+            }
+        });
+
+    let download_result = download_file_blocking(
+        window,
+        "edge-aot",
+        &normalized_url,
+        &temp_download_path,
+        normalize_download_threads(Some(DEFAULT_DOWNLOAD_THREADS)),
+        Some(progress_callback),
+    );
+    emit_launch_prepare_item(
+        ipc_session,
+        "item-complete",
+        "mods",
+        &normalized_url,
+        &download_file_name,
+        "aot-package",
+        None,
+        None,
+        Some(false),
+        "Downloaded",
+    );
+    if let Err(err) = download_result {
+        let _ = fs::remove_file(&temp_download_path);
+        return Err(format!("Failed to download Edge AOT package: {err}"));
+    }
+
+    if let Some(expected_checksum) = normalized_checksum.as_deref() {
+        if let Err(err) = verify_file_sha256(&temp_download_path, expected_checksum) {
+            let _ = fs::remove_file(&temp_download_path);
+            return Err(format!("Edge AOT package checksum mismatch: {err}"));
+        }
+    }
+
+    let stage_dir = aot_dir.with_file_name(format!(
+        ".fpsmaster-edge-aot-stage-{}-{}",
+        std::process::id(),
+        now_epoch_millis()
+    ));
+    if stage_dir.exists() {
+        let _ = fs::remove_dir_all(&stage_dir);
+    }
+    if let Err(err) = extract_zip_into(&temp_download_path, &stage_dir) {
+        let _ = fs::remove_file(&temp_download_path);
+        let _ = fs::remove_dir_all(&stage_dir);
+        return Err(format!("Failed to extract Edge AOT package: {err}"));
+    }
+    let _ = fs::remove_file(&temp_download_path);
+
+    let effective_stage_dir = match unwrap_single_nested_aot_directory(&stage_dir) {
+        Ok(dir) => dir,
+        Err(err) => {
+            let _ = fs::remove_dir_all(&stage_dir);
+            return Err(err);
+        }
+    };
+    if !edge_aot_package_files_present(&effective_stage_dir) {
+        let _ = fs::remove_dir_all(&stage_dir);
+        return Err(
+            "Edge AOT package is missing required files (client-named.jar / fpsmaster-runtime.jar / mappings.tiny)"
+                .to_string(),
+        );
+    }
+
+    if let Err(err) = replace_directory_with_stage(&aot_dir, &effective_stage_dir) {
+        let _ = fs::remove_dir_all(&stage_dir);
+        return Err(err);
+    }
+    let _ = fs::remove_dir_all(&stage_dir);
+
+    let marker = EdgeAotInstallMarker {
+        version_tag: normalized_tag.clone(),
+        checksum: normalized_checksum.clone(),
+        download_url: normalized_url,
+        installed_at_epoch_sec: now_epoch_seconds(),
+    };
+    let marker_content = serde_json::to_string_pretty(&marker)
+        .map_err(|e| format!("Failed to serialize Edge AOT marker: {e}"))?;
+    fs::write(&marker_path, format!("{marker_content}\n")).map_err(|e| {
+        format!(
+            "Failed to write Edge AOT marker {}: {e}",
+            marker_path.display()
+        )
+    })?;
+
+    Ok(EdgeAotInstallResult {
+        target_dir: aot_dir.to_string_lossy().to_string(),
+        installed: true,
+        skipped: false,
+        version_tag: normalized_tag,
+        checksum: normalized_checksum,
+    })
+}
+
+#[tauri::command]
 async fn get_launcher_package_state(
     game_dir: String,
     version_id: String,
@@ -2884,6 +3192,29 @@ async fn get_launcher_package_state(
     .map_err(|e| format!("Failed to join launcher package state task: {e}"))
     .and_then(std::convert::identity)
     .inspect_err(|e| log_command_error("get_launcher_package_state", e))
+}
+
+#[tauri::command]
+async fn get_edge_aot_package_state(
+    game_dir: String,
+    version_id: String,
+    expected_version_tag: Option<String>,
+    expected_checksum: Option<String>,
+    expected_download_url: Option<String>,
+) -> Result<LauncherPackageState, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        get_edge_aot_package_state_blocking(
+            game_dir,
+            version_id,
+            expected_version_tag,
+            expected_checksum,
+            expected_download_url,
+        )
+    })
+    .await
+    .map_err(|e| format!("Failed to join Edge AOT package state task: {e}"))
+    .and_then(std::convert::identity)
+    .inspect_err(|e| log_command_error("get_edge_aot_package_state", e))
 }
 
 // Modrinth slug for Fabric API. Nova is a Fabric mod set whose release package intentionally does
@@ -3466,6 +3797,48 @@ fn get_launcher_package_state_blocking(
         version_tag,
         checksum,
         manifest_url,
+    })
+}
+
+fn get_edge_aot_package_state_blocking(
+    game_dir: String,
+    version_id: String,
+    expected_version_tag: Option<String>,
+    expected_checksum: Option<String>,
+    expected_download_url: Option<String>,
+) -> Result<LauncherPackageState, String> {
+    let _ = expected_download_url;
+    let game_dir_path = resolve_game_dir_path(&game_dir)?;
+    let aot_dir = resolve_version_runtime_dir(&game_dir_path, &version_id)?.join("aot");
+    let marker_path = aot_dir.join(EDGE_AOT_MARKER_FILE);
+    let marker = read_edge_aot_marker(&marker_path)?;
+    let version_tag = marker.as_ref().map(|value| value.version_tag.clone());
+    let checksum = marker.as_ref().and_then(|value| value.checksum.clone());
+    let installed = version_tag.is_some() && edge_aot_package_files_present(&aot_dir);
+    let up_to_date = match (marker.as_ref(), expected_version_tag.as_ref()) {
+        (Some(installed_marker), Some(expected_tag)) => {
+            let version_matches = installed_marker.version_tag.trim() == expected_tag.trim();
+            let checksum_matches = match (
+                installed_marker.checksum.as_deref(),
+                expected_checksum.as_deref(),
+            ) {
+                (Some(installed_checksum), Some(expected_checksum_value)) => {
+                    installed_checksum.trim() == expected_checksum_value.trim()
+                }
+                _ => true,
+            };
+            version_matches && checksum_matches
+        }
+        (Some(_), None) => true,
+        _ => false,
+    };
+    Ok(LauncherPackageState {
+        installed,
+        up_to_date: installed && up_to_date,
+        needs_repair: false,
+        version_tag,
+        checksum,
+        manifest_url: None,
     })
 }
 
@@ -5849,6 +6222,8 @@ async fn launch_vanilla(
     wait_for_exit: Option<bool>,
     server_address: Option<String>,
     fpsmaster_token: Option<String>,
+    use_forge: Option<bool>,
+    use_optifine: Option<bool>,
 ) -> Result<LaunchExecutionResult, String> {
     tauri::async_runtime::spawn_blocking(move || {
         launch_vanilla_blocking(
@@ -5864,6 +6239,8 @@ async fn launch_vanilla(
             wait_for_exit,
             server_address,
             fpsmaster_token,
+            use_forge,
+            use_optifine,
         )
     })
     .await
@@ -5885,6 +6262,8 @@ fn launch_vanilla_blocking(
     wait_for_exit: Option<bool>,
     server_address: Option<String>,
     fpsmaster_token: Option<String>,
+    use_forge: Option<bool>,
+    use_optifine: Option<bool>,
 ) -> Result<LaunchExecutionResult, String> {
     if let Some(pid) = detect_active_game_pid() {
         return Err(format!(
@@ -5893,26 +6272,40 @@ fn launch_vanilla_blocking(
     }
 
     let game_dir_path = resolve_game_dir_path(&game_dir)?;
-    let resolved_plan = minecraft_core::build_vanilla_launch_plan(
-        Some(&window),
-        &VanillaLaunchRequest {
-            game_dir: game_dir_path.clone(),
-            version_id: version_id.clone(),
-            player_name: player_name.clone(),
-            uuid: uuid.clone(),
-            access_token: access_token.clone(),
-            java_path: java_path.as_deref().map(PathBuf::from).unwrap_or_else(|| {
-                game_dir_path
-                    .join("runtime")
-                    .join("bin")
-                    .join(if cfg!(windows) { "java.exe" } else { "java" })
-            }),
-            max_memory_mb,
-            server_address: server_address.clone(),
-            fpsmaster_token: fpsmaster_token.clone(),
-        },
-        download_source.as_deref(),
-    )?;
+    let vanilla_request = VanillaLaunchRequest {
+        game_dir: game_dir_path.clone(),
+        version_id: version_id.clone(),
+        player_name: player_name.clone(),
+        uuid: uuid.clone(),
+        access_token: access_token.clone(),
+        java_path: java_path.as_deref().map(PathBuf::from).unwrap_or_else(|| {
+            game_dir_path
+                .join("runtime")
+                .join("bin")
+                .join(if cfg!(windows) { "java.exe" } else { "java" })
+        }),
+        max_memory_mb,
+        server_address: server_address.clone(),
+        fpsmaster_token: fpsmaster_token.clone(),
+    };
+    // `use_forge == Some(false)` is the explicit "Edge, Forge disabled" AOT path (see
+    // FPSMaster-Edge/runtime/README.md); every other case (Nova/Extreme, or Edge with Forge
+    // enabled, or callers that don't pass the flag at all) keeps the existing Forge/vanilla
+    // pipeline unchanged.
+    let resolved_plan = if use_forge == Some(false) {
+        minecraft_core::build_edge_aot_launch_plan(
+            Some(&window),
+            &vanilla_request,
+            download_source.as_deref(),
+            use_optifine.unwrap_or(false),
+        )?
+    } else {
+        minecraft_core::build_vanilla_launch_plan(
+            Some(&window),
+            &vanilla_request,
+            download_source.as_deref(),
+        )?
+    };
     let plan = resolved_plan.plan;
     let natives_dir = resolved_plan.natives_dir;
 
@@ -9776,7 +10169,9 @@ fn main() {
             check_installed_content_updates,
             import_world_archive,
             get_launcher_package_state,
+            get_edge_aot_package_state,
             install_launcher_version_mods,
+            install_edge_aot_package,
             install_fabric_api,
             install_native_app,
             prepare_extreme_assets,

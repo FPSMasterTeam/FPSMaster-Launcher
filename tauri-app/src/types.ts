@@ -43,6 +43,11 @@ export type Instance = {
   launcherVersionType?: LauncherVersionType;
   iconPath?: string;
   preset: boolean;
+  // Edge-only Forge/OptiFine toggles. Both default to true (existing Edge behavior).
+  // `loader` is derived from `useForge` for Edge ("forge" when true, "vanilla" when
+  // false) rather than being an independent choice; see ensureInstanceReadyForLaunch.
+  useForge?: boolean;
+  useOptiFine?: boolean;
 };
 
 export type MinecraftAccount = {
@@ -428,6 +433,12 @@ export type LauncherVersion = {
   gameVersion?: string | null;
   artifactSourceType?: string | null;
   downloadUrl: string;
+  // Optional dedicated download for Edge's Forge-free AOT package (see
+  // `install_edge_aot_package`). Falls back to `downloadUrl` when absent so a single
+  // catalog entry keeps working until the backend publishes a separate AOT artifact.
+  aotDownloadUrl?: string | null;
+  aotChecksum?: string | null;
+  aotFileSize?: number | null;
   fileBucket?: string | null;
   fileKey?: string | null;
   fileSize?: number | null;
@@ -454,6 +465,14 @@ export type LauncherModsInstallResult = {
   skipped: boolean;
   versionTag: string;
   manifestUrl?: string | null;
+};
+
+export type EdgeAotInstallResult = {
+  targetDir: string;
+  installed: boolean;
+  skipped: boolean;
+  versionTag: string;
+  checksum?: string | null;
 };
 
 export type LauncherPackageState = {

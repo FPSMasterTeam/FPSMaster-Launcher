@@ -419,7 +419,14 @@ function withPresetInstances(instances: Instance[]): Instance[] {
       return { ...preset };
     }
     if (preset.launcherVersionType === "EDGE") {
-      return { ...preset };
+      // Edge re-resolves versionId/loaderVersion/optiFineVersion live on every launch, so
+      // those are safe to reset to the preset defaults — but useForge/useOptiFine are user
+      // preferences (Forge/OptiFine toggles) that must survive a reload.
+      return {
+        ...preset,
+        useForge: saved.useForge !== undefined ? saved.useForge : preset.useForge,
+        useOptiFine: saved.useOptiFine !== undefined ? saved.useOptiFine : preset.useOptiFine
+      };
     }
     const keepLoaderVersion = saved.baseVersion === preset.baseVersion;
     return {

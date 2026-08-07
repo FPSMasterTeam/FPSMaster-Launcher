@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import { Archive, ArrowLeft, Copy, File, Folder, FolderOpen, MoreHorizontal, RefreshCw, Trash2, Ban, Check } from "lucide-react";
+import { Archive, ArrowLeft, Copy, Eye, File, Folder, FolderOpen, Layers, MoreHorizontal, RefreshCw, Trash2, Ban, Check } from "lucide-react";
 import { memo, type ReactNode, useEffect, useState } from "react";
 import Button from "../components/Button";
 import Card from "../components/Card";
@@ -30,6 +30,7 @@ type InstanceSettingsPageProps = {
   onDelete: () => void;
   onDuplicate: () => void;
   onExport: () => void;
+  onUpdateInstance: (next: Instance) => void;
 };
 
 const SECTIONS: readonly { id: InstanceSection; icon: ReactNode }[] = [
@@ -60,7 +61,8 @@ function InstanceSettingsPage({
   onRepair,
   onDelete,
   onDuplicate,
-  onExport
+  onExport,
+  onUpdateInstance
 }: InstanceSettingsPageProps) {
   const { t } = useI18n();
   const [sections, setSections] = useState<Record<InstanceSection, SectionState>>(emptySectionState);
@@ -68,6 +70,8 @@ function InstanceSettingsPage({
   const effectiveVersionId = instance && instance.preset
     ? (resolvePresetVersionId(instance.id) ?? instance.versionId)
     : instance?.versionId ?? "";
+  const useForgeEnabled = instance?.useForge !== false;
+  const useOptiFineEnabled = instance?.useOptiFine !== false;
 
   function sectionLabel(section: InstanceSection): string {
     if (section === "saves") return t("instanceFiles.saves");
@@ -177,6 +181,18 @@ function InstanceSettingsPage({
     }
   }
 
+  function toggleUseForge() {
+    if (!instance) return;
+    const nextUseForge = instance.useForge === false;
+    onUpdateInstance({ ...instance, useForge: nextUseForge });
+  }
+
+  function toggleUseOptiFine() {
+    if (!instance) return;
+    const nextUseOptiFine = instance.useOptiFine === false;
+    onUpdateInstance({ ...instance, useOptiFine: nextUseOptiFine });
+  }
+
   useEffect(() => {
     if (!instance) {
       setSections(emptySectionState());
@@ -252,6 +268,62 @@ function InstanceSettingsPage({
           </Button>
         </div>
       </header>
+
+      {instance.launcherVersionType === "EDGE" && (
+        <Card variant="frost" className="page-card mb-6 rounded-[10px]" interactive={false}>
+          <div className="section-header !mb-3">
+            <div className="section-header-main">
+              <h2 className="section-title">{t("instanceFiles.edgeOptions")}</h2>
+              <p className="section-subtitle">{t("instanceFiles.edgeOptionsSubtitle")}</p>
+            </div>
+          </div>
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <button
+              type="button"
+              onClick={toggleUseForge}
+              disabled={busy}
+              className={`surface-panel flex w-full items-center justify-between gap-3 rounded-[10px] px-4 py-4 text-left transition-all duration-[var(--duration-normal)] ${
+                useForgeEnabled
+                  ? "border-[rgba(var(--accent-rgb),0.3)] bg-[rgba(var(--accent-rgb),0.1)]"
+                  : "hover:border-[var(--border-medium)] hover:bg-[rgba(255,255,255,0.05)]"
+              }`}
+            >
+              <span className="flex items-center gap-3">
+                <Layers size={22} className="text-amber-400" />
+                <span>
+                  <span className="block text-sm font-semibold text-[var(--text-primary)]">{t("loader.forge")}</span>
+                  <span className="block text-xs text-[var(--text-muted)]">{t("instanceFiles.useForgeHint")}</span>
+                </span>
+              </span>
+              <span className={`badge rounded-[5px] px-3 py-1 text-xs ${useForgeEnabled ? "badge-accent" : "badge-muted"}`}>
+                {useForgeEnabled ? t("install.enabled") : t("install.disabled")}
+              </span>
+            </button>
+            <button
+              type="button"
+              onClick={toggleUseOptiFine}
+              disabled={busy}
+              className={`surface-panel flex w-full items-center justify-between gap-3 rounded-[10px] px-4 py-4 text-left transition-all duration-[var(--duration-normal)] ${
+                useOptiFineEnabled
+                  ? "border-[rgba(var(--accent-rgb),0.3)] bg-[rgba(var(--accent-rgb),0.1)]"
+                  : "hover:border-[var(--border-medium)] hover:bg-[rgba(255,255,255,0.05)]"
+              }`}
+            >
+              <span className="flex items-center gap-3">
+                <Eye size={22} className="text-lime-300" />
+                <span>
+                  <span className="block text-sm font-semibold text-[var(--text-primary)]">{t("loader.optifine")}</span>
+                  <span className="block text-xs text-[var(--text-muted)]">{t("instanceFiles.useOptiFineHint")}</span>
+                </span>
+              </span>
+              <span className={`badge rounded-[5px] px-3 py-1 text-xs ${useOptiFineEnabled ? "badge-accent" : "badge-muted"}`}>
+                {useOptiFineEnabled ? t("install.enabled") : t("install.disabled")}
+              </span>
+            </button>
+          </div>
+          <p className="mt-3 text-xs text-[var(--text-muted)]">{t("instanceFiles.edgeOptionsNote")}</p>
+        </Card>
+      )}
 
       {/* Tab Navigation */}
       <div className="segment-control mb-6 flex items-center gap-2 overflow-x-auto rounded-[10px] pb-1">

@@ -1676,6 +1676,362 @@ pub(crate) fn build_vanilla_launch_plan(
     })
 }
 
+// FQCNs baked into the FPSMaster Edge AOT distribution (see
+// FPSMaster-Edge/build.gradle.kts `packageAotDistribution`). Read from the package's
+// own `launch-profiles.json` when present so a newer AOT build can override these
+// without a launcher release; fall back to the frozen contract values otherwise.
+const EDGE_AOT_DEFAULT_FULL_TWEAKER: &str = "top.fpsmaster.runtime.FpsMasterFullTweaker";
+const EDGE_AOT_DEFAULT_OPTIFINE_TWEAKER: &str = "optifine.OptiFineTweaker";
+const EDGE_AOT_DEFAULT_RUNTIME_JAR: &str = "fpsmaster-runtime.jar";
+const EDGE_AOT_DEFAULT_NAMED_CLIENT_JAR: &str = "client-named.jar";
+const EDGE_AOT_DEFAULT_MAPPINGS_FILE: &str = "mappings.tiny";
+// LaunchWrapper is normally supplied by Forge's own version profile; the no-Forge AOT
+// path launches `net.minecraft.launchwrapper.Launch` directly, so it must be resolved
+// as an extra library the vanilla version manifest does not declare.
+const EDGE_AOT_LAUNCHWRAPPER_MAVEN: &str = "net.minecraft:launchwrapper:1.12";
+
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+struct EdgeAotLaunchProfiles {
+    #[serde(rename = "fullTweaker", default)]
+    full_tweaker: Option<String>,
+    #[serde(rename = "optifineTweaker", default)]
+    optifine_tweaker: Option<String>,
+    #[serde(rename = "runtimeJar", default)]
+    runtime_jar: Option<String>,
+    #[serde(rename = "namedClientJar", default)]
+    named_client_jar: Option<String>,
+    #[serde(rename = "mappingsFile", default)]
+    mappings_file: Option<String>,
+}
+
+fn read_edge_aot_launch_profiles(aot_dir: &Path) -> EdgeAotLaunchProfiles {
+    let path = aot_dir.join("launch-profiles.json");
+    fs::read_to_string(&path)
+        .ok()
+        .and_then(|text| serde_json::from_str::<EdgeAotLaunchProfiles>(&text).ok())
+        .unwrap_or_default()
+}
+
+fn resolve_edge_aot_launchwrapper_library(
+    game_dir: &Path,
+    source: DownloadSource,
+) -> Result<ResolvedLibrary, String> {
+    let coords = MavenCoordinates::parse(EDGE_AOT_LAUNCHWRAPPER_MAVEN)?;
+    let relative_path = coords.to_jar_path();
+    let target = game_dir.join("libraries").join(&relative_path);
+    let urls = source.candidate_urls(&format!(
+        "{}{}",
+        normalize_base_url(source.default_library_repo()),
+        relative_path
+    ));
+    Ok(ResolvedLibrary {
+        path: target,
+        download_urls: urls,
+        sha1: None,
+        classpath_entry: true,
+        native_entry: false,
+    })
+}
+
+fn find_optifine_jar_in_dir(dir: &Path) -> Result<Option<PathBuf>, String> {
+    if !dir.is_dir() {
+        return Ok(None);
+    }
+    for entry in
+        fs::read_dir(dir).map_err(|e| format!("Failed to inspect {}: {e}", dir.display()))?
+    {
+        let entry = entry.map_err(|e| format!("Failed to inspect {}: {e}", dir.display()))?;
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let name = path
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        if name.contains("optifine") && name.ends_with(".jar") {
+            return Ok(Some(path));
+        }
+    }
+    Ok(None)
+}
+
+/// Resolves the OptiFine jar to place on the no-Forge AOT classpath. The launcher's
+/// generic OptiFine installer always drops the jar under `versions/<id>/mods/` (the
+/// Forge convention); the AOT contract requires it to live under `versions/<id>/aot/optifine/`
+/// instead, so mirror it there the first time it is needed.
+fn resolve_edge_aot_optifine_jar(
+    game_dir: &Path,
+    version_id: &str,
+    aot_dir: &Path,
+) -> Result<PathBuf, String> {
+    let optifine_dir = aot_dir.join("optifine");
+    if let Some(jar) = find_optifine_jar_in_dir(&optifine_dir)? {
+        return Ok(jar);
+    }
+
+    let mods_dir = game_dir.join("versions").join(version_id).join("mods");
+    let source_jar = find_optifine_jar_in_dir(&mods_dir)?.ok_or_else(|| {
+        "OptiFine is enabled but no OptiFine jar was found for this instance. Install OptiFine first.".to_string()
+    })?;
+    fs::create_dir_all(&optifine_dir).map_err(|e| {
+        format!(
+            "Failed to create AOT OptiFine directory {}: {e}",
+            optifine_dir.display()
+        )
+    })?;
+    let file_name = source_jar
+        .file_name()
+        .ok_or_else(|| "Invalid OptiFine jar path".to_string())?;
+    let target = optifine_dir.join(file_name);
+    fs::copy(&source_jar, &target).map_err(|e| {
+        format!(
+            "Failed to stage OptiFine jar {} onto the AOT classpath: {e}",
+            source_jar.display()
+        )
+    })?;
+    Ok(target)
+}
+
+/// Builds the launch plan for Edge's Forge-free "AOT" path (see
+/// `FPSMaster-Edge/runtime/README.md`): LaunchWrapper + FPSMaster's own tweaker chain,
+/// running against either the pre-remapped `client-named.jar` (no OptiFine) or the real
+/// notch client jar plus a runtime deobfuscation transformer (OptiFine enabled, since
+/// OptiFine patches obfuscated class names directly). Forge stays on the existing
+/// `build_vanilla_launch_plan` path; this is only used when the instance has Forge
+/// disabled.
+pub(crate) fn build_edge_aot_launch_plan(
+    window: Option<&tauri::Window>,
+    request: &VanillaLaunchRequest,
+    download_source_id: Option<&str>,
+    use_optifine: bool,
+) -> Result<VanillaResolvedLaunchPlan, String> {
+    let source = DownloadSource::from_id(download_source_id)?;
+    let descriptor = resolve_version_descriptor(&request.game_dir, &request.version_id, 0)?;
+    let version_json = descriptor.merged;
+    let rule_features = build_rule_features();
+
+    let version_dir = request
+        .game_dir
+        .join("versions")
+        .join(request.version_id.trim());
+    let aot_dir = version_dir.join("aot");
+    if !aot_dir.is_dir() {
+        return Err(format!(
+            "Edge AOT package not found for {} (expected {}). Install the Edge AOT package first.",
+            request.version_id,
+            aot_dir.display()
+        ));
+    }
+
+    let profiles = read_edge_aot_launch_profiles(&aot_dir);
+    let full_tweaker = profiles
+        .full_tweaker
+        .clone()
+        .unwrap_or_else(|| EDGE_AOT_DEFAULT_FULL_TWEAKER.to_string());
+    let optifine_tweaker = profiles
+        .optifine_tweaker
+        .clone()
+        .unwrap_or_else(|| EDGE_AOT_DEFAULT_OPTIFINE_TWEAKER.to_string());
+    let runtime_jar_name = profiles
+        .runtime_jar
+        .clone()
+        .unwrap_or_else(|| EDGE_AOT_DEFAULT_RUNTIME_JAR.to_string());
+    let named_client_jar_name = profiles
+        .named_client_jar
+        .clone()
+        .unwrap_or_else(|| EDGE_AOT_DEFAULT_NAMED_CLIENT_JAR.to_string());
+    let mappings_file_name = profiles
+        .mappings_file
+        .clone()
+        .unwrap_or_else(|| EDGE_AOT_DEFAULT_MAPPINGS_FILE.to_string());
+
+    let runtime_jar_path = aot_dir.join(&runtime_jar_name);
+    if !runtime_jar_path.is_file() {
+        return Err(format!(
+            "Edge AOT runtime jar missing: {}",
+            runtime_jar_path.display()
+        ));
+    }
+
+    let natives_base_dir = version_dir.join("natives");
+    fs::create_dir_all(&natives_base_dir).map_err(|e| {
+        format!(
+            "Failed to create natives directory {}: {e}",
+            natives_base_dir.display()
+        )
+    })?;
+    let natives_dir = create_temp_natives_dir(&natives_base_dir)?;
+
+    let mut classpath_entries = vec![runtime_jar_path];
+    for library in resolve_libraries(&version_json, &request.game_dir, &rule_features, source)? {
+        ensure_library_downloaded(window, &library)?;
+        if library.classpath_entry {
+            classpath_entries.push(library.path.clone());
+        }
+        if library.native_entry {
+            extract_native_jar(&library.path, &natives_dir)?;
+        }
+    }
+
+    let launchwrapper = resolve_edge_aot_launchwrapper_library(&request.game_dir, source)?;
+    ensure_library_downloaded(window, &launchwrapper)?;
+    classpath_entries.push(launchwrapper.path);
+
+    let mut tweak_classes = Vec::new();
+    let mut jvm_extra: Vec<String> = vec![
+        "-Dmixin.env.disableRefMap=true".to_string(),
+        "-Dfpsmaster.noforge=true".to_string(),
+        "-Dfpsmaster.aot=true".to_string(),
+    ];
+
+    if use_optifine {
+        // OptiFine patches obfuscated (notch) class names directly, so it must run against
+        // the real vanilla jar; FullTweaker's runtime deobf transformer then remaps
+        // FPSMaster's named-mapped mixins onto those notch classes on the fly.
+        let jar_version_id = descriptor.jar_version_id.clone();
+        let notch_jar = request
+            .game_dir
+            .join("versions")
+            .join(&jar_version_id)
+            .join(format!("{jar_version_id}.jar"));
+        ensure_client_jar_downloaded(window, &version_json, &notch_jar, source)?;
+        classpath_entries.push(notch_jar.clone());
+
+        let optifine_jar =
+            resolve_edge_aot_optifine_jar(&request.game_dir, &request.version_id, &aot_dir)?;
+        classpath_entries.push(optifine_jar);
+
+        let mappings_path = aot_dir.join(&mappings_file_name);
+        if !mappings_path.is_file() {
+            return Err(format!(
+                "Edge AOT mappings file missing: {}",
+                mappings_path.display()
+            ));
+        }
+
+        // OptiFine's tweaker patches the notch classes first; FullTweaker runs after so its
+        // runtime deobf + Mixin bootstrap see the OptiFine-patched bytecode.
+        tweak_classes.push(optifine_tweaker);
+        tweak_classes.push(full_tweaker);
+
+        jvm_extra.push("-Dfpsmaster.runtime.vanilla=true".to_string());
+        jvm_extra.push(format!(
+            "-Dfpsmaster.runtime.mappings={}",
+            mappings_path.to_string_lossy()
+        ));
+        jvm_extra.push(format!(
+            "-Dfpsmaster.runtime.vanillaJar={}",
+            notch_jar.to_string_lossy()
+        ));
+        jvm_extra.push("-Dfpsmaster.withOptifine=true".to_string());
+    } else {
+        let named_client_jar = aot_dir.join(&named_client_jar_name);
+        if !named_client_jar.is_file() {
+            return Err(format!(
+                "Edge AOT named client jar missing: {}",
+                named_client_jar.display()
+            ));
+        }
+        classpath_entries.push(named_client_jar);
+        tweak_classes.push(full_tweaker);
+    }
+
+    let classpath = build_classpath(&classpath_entries);
+    let variables = build_variables(request, &version_json, &natives_dir, &classpath)?;
+
+    let mut jvm_args = vec![
+        request.java_path.to_string_lossy().to_string(),
+        format!("-Xmx{}M", request.max_memory_mb),
+        format!("-Djava.library.path={}", natives_dir.to_string_lossy()),
+    ];
+    if let Some(args) = version_json
+        .get("arguments")
+        .and_then(|value| value.get("jvm"))
+        .and_then(Value::as_array)
+    {
+        jvm_args.extend(resolve_argument_array(args, &variables, &rule_features));
+    }
+    jvm_args = normalize_jvm_arguments(jvm_args);
+    jvm_args.extend(jvm_extra);
+
+    // Inject the FPSMaster platform auth token only for preset Edge instances, matching
+    // the Forge launch path.
+    if matches!(request.version_id.trim(), "FPSMaster-Edge" | "FPSMaster-Nova") {
+        if let Some(token) = request
+            .fpsmaster_token
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            jvm_args.push(format!("-Dfpsmaster.auth.token={token}"));
+        }
+    }
+
+    let main_class = "net.minecraft.launchwrapper.Launch".to_string();
+    let mut game_args = if let Some(args) = version_json
+        .get("arguments")
+        .and_then(|value| value.get("game"))
+        .and_then(Value::as_array)
+    {
+        resolve_argument_array(args, &variables, &rule_features)
+    } else if let Some(raw) = version_json
+        .get("minecraftArguments")
+        .and_then(Value::as_str)
+    {
+        raw.split(' ')
+            .filter_map(|token| {
+                let replaced = replace_variables(token, &variables).trim().to_string();
+                if replaced.is_empty() {
+                    None
+                } else {
+                    Some(replaced)
+                }
+            })
+            .collect::<Vec<_>>()
+    } else {
+        Vec::new()
+    };
+    ensure_default_resolution_args(&mut game_args, &variables);
+
+    if let Some(server) = request
+        .server_address
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        game_args.push("--server".to_string());
+        game_args.push(server.to_string());
+    }
+
+    // LaunchWrapper applies --tweakClass entries in the order given, so the chain built
+    // above (OptiFine before FullTweaker, when enabled) must come first.
+    let mut command_args = Vec::with_capacity(tweak_classes.len() * 2 + game_args.len());
+    for tweak_class in &tweak_classes {
+        command_args.push("--tweakClass".to_string());
+        command_args.push(tweak_class.clone());
+    }
+    command_args.extend(game_args);
+
+    let mut command = jvm_args.clone();
+    if !contains_classpath_arg(&jvm_args) {
+        command.push("-cp".to_string());
+        command.push(classpath.clone());
+    }
+    command.push(main_class.clone());
+    command.extend(command_args);
+
+    Ok(VanillaResolvedLaunchPlan {
+        plan: LaunchPlan {
+            command,
+            classpath,
+            main_class,
+        },
+        natives_dir,
+    })
+}
+
 fn create_temp_natives_dir(base: &Path) -> Result<PathBuf, String> {
     let timestamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

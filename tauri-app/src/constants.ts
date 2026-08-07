@@ -69,7 +69,9 @@ export const PRESET_INSTANCES: readonly Instance[] = [
     loader: "forge",
     launcherVersionType: "EDGE",
     iconPath: "/instance-icons/edge.png",
-    preset: true
+    preset: true,
+    useForge: true,
+    useOptiFine: true
   },
   {
     // Nova is a single "region" preset; the actual Minecraft version is chosen inside the Nova

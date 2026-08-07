@@ -47,6 +47,13 @@ pub struct LauncherVersion {
     pub artifact_source_type: Option<String>,
     #[serde(rename = "downloadUrl")]
     pub download_url: String,
+    // Optional Forge-free AOT zip for Edge (launcher installs under versions/<id>/aot/).
+    #[serde(rename = "aotDownloadUrl", default)]
+    pub aot_download_url: Option<String>,
+    #[serde(rename = "aotChecksum", default)]
+    pub aot_checksum: Option<String>,
+    #[serde(rename = "aotFileSize", default)]
+    pub aot_file_size: Option<i64>,
     #[serde(rename = "fileBucket", default)]
     pub file_bucket: Option<String>,
     #[serde(rename = "fileKey", default)]
