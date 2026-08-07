@@ -5,10 +5,6 @@ on:
   push:
     branches:
       - master
-      - nightly
-      - nightly/**
-      - cannary
-      - cannary/**
       - beta
       - beta/**
       - release
@@ -45,11 +41,18 @@ jobs:
           should_publish="false"
 
           case "$ref" in
-            master|release|release/*|beta|beta/*|nightly|nightly/*|cannary|cannary/*)
+            master|release|release/*)
               channel="release"
               should_publish="true"
               ;;
+            beta|beta/*)
+              channel="beta"
+              should_publish="true"
+              ;;
           esac
+          if [ "${GITHUB_EVENT_NAME}" = "pull_request" ]; then
+            should_publish="false"
+          fi
 
           echo "channel=$channel" >> "$GITHUB_OUTPUT"
           echo "should_publish=$should_publish" >> "$GITHUB_OUTPUT"
