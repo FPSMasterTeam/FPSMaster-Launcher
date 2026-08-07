@@ -3,12 +3,8 @@ name: Launcher CI Release
 on:
   pull_request:
   push:
-    branches:
-      - master
-      - beta
-      - beta/**
-      - release
-      - release/**
+    tags:
+      - 'v*'
   workflow_dispatch:
 
 permissions:
@@ -36,21 +32,27 @@ jobs:
         id: channel
         shell: bash
         run: |
-          ref="${GITHUB_REF_NAME}"
+          # Publish only from semver tags:
+          #   v0.3.14          -> release / 0.3.14
+          #   v0.3.14-beta.1   -> beta    / 0.3.14-beta.1
           channel=""
           should_publish="false"
 
-          case "$ref" in
-            master|release|release/*)
-              channel="release"
-              should_publish="true"
-              ;;
-            beta|beta/*)
+          if [ "${GITHUB_REF_TYPE}" = "tag" ] && [[ "${GITHUB_REF_NAME}" == v* ]]; then
+            version_name="${GITHUB_REF_NAME#v}"
+            if [[ ! "$version_name" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-].*)?$ ]]; then
+              echo "Invalid version tag: ${GITHUB_REF_NAME} (expected vMAJOR.MINOR.PATCH[-prerelease])" >&2
+              exit 1
+            fi
+            if [[ "$version_name" == *-* ]]; then
               channel="beta"
-              should_publish="true"
-              ;;
-          esac
-          if [ "${GITHUB_EVENT_NAME}" = "pull_request" ]; then
+            else
+              channel="release"
+            fi
+            should_publish="true"
+          fi
+
+          if [ "${GITHUB_EVENT_NAME}" = "pull_request" ] || [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
             should_publish="false"
           fi
 
@@ -61,21 +63,23 @@ jobs:
         id: meta
         shell: bash
         run: |
-          base_version="$(python - <<'PY'
+          commit_hash="$(printf '%s' "$GITHUB_SHA" | tr '[:upper:]' '[:lower:]')"
+          short_sha="${commit_hash:0:8}"
+          should_publish="${{ steps.channel.outputs.should_publish }}"
+
+          if [ "$should_publish" = "true" ]; then
+            version_name="${GITHUB_REF_NAME#v}"
+            release_tag="${GITHUB_REF_NAME}"
+          else
+            base_version="$(python - <<'PY'
           import json
           with open("tauri-app/package.json", "r", encoding="utf-8") as f:
               print(json.load(f)["version"].strip())
           PY
           )"
-          commit_hash="$(printf '%s' "$GITHUB_SHA" | tr '[:upper:]' '[:lower:]')"
-          short_sha="${commit_hash:0:8}"
-          channel="${{ steps.channel.outputs.channel }}"
-          if [ "$channel" = "release" ]; then
-            version_name="$base_version"
-          else
-            version_name="$base_version-$channel.$GITHUB_RUN_NUMBER+$short_sha"
+            version_name="${base_version}-ci.${GITHUB_RUN_NUMBER}+${short_sha}"
+            release_tag="launcher-${version_name}"
           fi
-          release_tag="launcher-$channel-$GITHUB_RUN_NUMBER-$short_sha"
 
           echo "commit_hash=$commit_hash" >> "$GITHUB_OUTPUT"
           echo "version_name=$version_name" >> "$GITHUB_OUTPUT"
@@ -87,6 +91,7 @@ jobs:
             printf '%s\n' "$changelog"
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
+          echo "Resolved Launcher version: $version_name (publish=$should_publish)"
 
   build:
     needs: resolve
