@@ -70,6 +70,7 @@ import PageRouter, { type PageRouterContext } from "./components/PageRouter";
 import LoginPage from "./pages/Login";
 const MonitorPage = lazy(() => import("./pages/Monitor"));
 import type {
+  EdgeAotInstallResult,
   FabricInstallResult,
   ForgeInstallResult,
   GameRuntimeStats,
@@ -901,14 +902,25 @@ function Launcher() {
             return [instance.id, createPresetPackageStatus("missing")] as const;
           }
           try {
-            const state = await invoke<LauncherPackageState>("get_launcher_package_state", {
-              gameDir: settings.gameDir,
-              versionId: effective.versionId,
-              expectedVersionTag: expected.versionName,
-              expectedChecksum: expected.checksum,
-              expectedManifestUrl: expected.manifestUrl,
-              expectedDownloadUrl: expected.downloadUrl
-            });
+            // Edge with Forge off installs under versions/<id>/aot/, not mods/.
+            const isEdgeNoForge =
+              instance.launcherVersionType === "EDGE" && instance.useForge === false;
+            const state = isEdgeNoForge
+              ? await invoke<LauncherPackageState>("get_edge_aot_package_state", {
+                  gameDir: settings.gameDir,
+                  versionId: effective.versionId,
+                  expectedVersionTag: expected.versionName,
+                  expectedChecksum: expected.aotChecksum,
+                  expectedDownloadUrl: expected.aotDownloadUrl
+                })
+              : await invoke<LauncherPackageState>("get_launcher_package_state", {
+                  gameDir: settings.gameDir,
+                  versionId: effective.versionId,
+                  expectedVersionTag: expected.versionName,
+                  expectedChecksum: expected.checksum,
+                  expectedManifestUrl: expected.manifestUrl,
+                  expectedDownloadUrl: expected.downloadUrl
+                });
             const mapped: PresetPackageStatus = !state.installed
               ? createPresetPackageStatus("missing", {
                   targetVersionTag: expected.versionName,
@@ -1015,7 +1027,9 @@ function Launcher() {
         downloadSource: settings.downloadSource,
         waitForExit: false,
         serverAddress: serverAddress,
-        fpsmasterToken: launcherAuth?.token ?? null
+        fpsmasterToken: launcherAuth?.token ?? null,
+        useForge: prepared.launcherVersionType === "EDGE" ? prepared.useForge !== false : undefined,
+        useOptiFine: prepared.launcherVersionType === "EDGE" ? prepared.useOptiFine !== false : undefined
       });
       setLaunchProgressPercent(100);
       setLaunchProgressText(t("launch.progress.startingGame"));
@@ -1283,7 +1297,45 @@ function Launcher() {
       })
     }));
     setStatus(t("app.status.autoInstallMods", { name: instance.name }));
+    // Edge with Forge disabled skips the mods/-jar install entirely and instead installs the
+    // Forge-free AOT package (client-named.jar + fpsmaster-runtime.jar + mappings.tiny) under
+    // versions/<id>/aot/ — never mods/. OptiFine (when enabled) is still installed the normal
+    // way via install_optifine elsewhere; the AOT launch plan picks it up from mods/.
+    const isEdgeNoForge = !isNova && instance.launcherVersionType === "EDGE" && instance.useForge === false;
     try {
+      if (isEdgeNoForge) {
+        const aotDownloadUrl = targetVersion.aotDownloadUrl?.trim();
+        if (!aotDownloadUrl) {
+          throw new Error(
+            "Edge AOT package URL is missing (aotDownloadUrl). This Edge release does not include a Forge-free package yet."
+          );
+        }
+        const aotResult = await invoke<EdgeAotInstallResult>("install_edge_aot_package", {
+          gameDir: settings.gameDir,
+          versionId: instance.versionId,
+          downloadUrl: aotDownloadUrl,
+          // Must use the AOT zip checksum — the Forge jar checksum will never match.
+          checksum: targetVersion.aotChecksum ?? undefined,
+          versionTag: targetVersion.versionName,
+          ipcSession: launchSessionId
+        });
+        setPresetPackageStatuses((prev) => ({
+          ...prev,
+          [instance.id]: createPresetPackageStatus("ready", {
+            versionTag: targetVersion.versionName,
+            installedVersionTag: targetVersion.versionName,
+            targetVersionTag: targetVersion.versionName,
+            changelog: targetVersion.changelog
+          })
+        }));
+        setStatus(
+          aotResult.skipped
+            ? t("app.status.autoInstallModsUpToDate")
+            : t("app.status.autoInstallModsDone", { count: 1 })
+        );
+        return;
+      }
+
       const result = await invoke<LauncherModsInstallResult>("install_launcher_version_mods", {
         gameDir: settings.gameDir,
         versionId: instance.versionId,
@@ -1446,6 +1498,17 @@ function Launcher() {
       }
     }
 
+    // Edge's `loader` is derived from the `useForge` toggle rather than being an
+    // independent choice: Forge on -> "forge" (existing mod-jar path), Forge off ->
+    // "vanilla" (Forge-free AOT path). Both fields default to true/on when unset, so
+    // existing saved instances keep today's Forge behavior unchanged.
+    if (workingInstance.launcherVersionType === "EDGE") {
+      const derivedLoader: Loader = workingInstance.useForge === false ? "vanilla" : "forge";
+      if (workingInstance.loader !== derivedLoader) {
+        workingInstance = { ...workingInstance, loader: derivedLoader };
+      }
+    }
+
     const needsLoaderProfile =
       workingInstance.loader !== "vanilla" && workingInstance.versionId === workingInstance.baseVersion;
 
@@ -1467,24 +1530,44 @@ function Launcher() {
             optiFineVersion: undefined
           };
         }
+      } else if (installed && presetVersionId && workingInstance.loader === "vanilla") {
+        // Edge with Forge just toggled off: the on-disk profile at this versionId may still be
+        // a leftover Forge child profile (inheritsFrom baseVersion) from before the toggle. The
+        // AOT launch plan needs a plain vanilla profile, so force a reinstall in that case.
+        const profileBaseVersion = await invoke<string | null>("get_version_profile_base_version", {
+          gameDir: settings.gameDir,
+          versionId: workingInstance.versionId
+        });
+        if (profileBaseVersion === workingInstance.baseVersion && profileBaseVersion !== workingInstance.versionId) {
+          installed = false;
+          workingInstance = {
+            ...workingInstance,
+            loaderVersion: undefined,
+            optiFineVersion: undefined
+          };
+        }
       }
       if (installed) {
         if (workingInstance.launcherVersionType === "EDGE") {
           markLaunchPreparePhase("check-instance", "running", "resolve", t("launch.progress.resolveLoader"));
-          const optiFineVersions = await cachedLoaderLookup(
-            `optifine|${workingInstance.baseVersion}|${workingInstance.loader}|${settings.downloadSource}`,
-            () =>
-              invoke<OptiFineVersion[]>("list_optifine_versions", {
-                gameVersion: workingInstance.baseVersion,
-                loader: workingInstance.loader,
-                loaderVersion: null,
-                downloadSource: settings.downloadSource
-              })
-          );
-          const selectedOptiFine = selectDefaultEdgeOptiFineVersion(optiFineVersions);
-          const latestOptiFine = selectedOptiFine?.version ?? "";
+          const useForge = workingInstance.useForge !== false;
+          const useOptiFine = workingInstance.useOptiFine !== false;
           let edgeInstanceChanged = false;
-          if (workingInstance.loader === "forge") {
+          if (useForge) {
+            const optiFineVersions = useOptiFine
+              ? await cachedLoaderLookup(
+                  `optifine|${workingInstance.baseVersion}|${workingInstance.loader}|${settings.downloadSource}`,
+                  () =>
+                    invoke<OptiFineVersion[]>("list_optifine_versions", {
+                      gameVersion: workingInstance.baseVersion,
+                      loader: workingInstance.loader,
+                      loaderVersion: null,
+                      downloadSource: settings.downloadSource
+                    })
+                )
+              : [];
+            const selectedOptiFine = selectDefaultEdgeOptiFineVersion(optiFineVersions);
+            const latestOptiFine = selectedOptiFine?.version ?? "";
             const forgeVersions = await cachedLoaderLookup(
               `forge|${workingInstance.baseVersion}|${settings.downloadSource}`,
               () =>
@@ -1527,25 +1610,72 @@ function Launcher() {
               }
               markLaunchPreparePhase("forge", "done", "complete", t("install.phase.loaderCompleted"));
             }
-          }
-          if (latestOptiFine && (workingInstance.optiFineVersion !== latestOptiFine || edgeInstanceChanged)) {
-            markLaunchPreparePhase("optifine", "running", "prepare", t("install.phase.installingOptiFine", { version: latestOptiFine }));
-            const optiFine = await invoke<OptiFineInstallResult>("install_optifine", {
-              gameDir: settings.gameDir,
-              versionId: workingInstance.versionId,
-              gameVersion: workingInstance.baseVersion,
-              loader: workingInstance.loader,
-              loaderVersion: workingInstance.loaderVersion,
-              optifineVersion: latestOptiFine,
-              downloadSource: settings.downloadSource,
-              ipcSession: launchSessionId
-            });
-            workingInstance = {
-              ...workingInstance,
-              optiFineVersion: optiFine.optiFineVersion
-            };
-            edgeInstanceChanged = true;
-            markLaunchPreparePhase("optifine", "done", "complete", t("install.phase.optiFineCompleted"));
+            if (useOptiFine && latestOptiFine && (workingInstance.optiFineVersion !== latestOptiFine || edgeInstanceChanged)) {
+              markLaunchPreparePhase("optifine", "running", "prepare", t("install.phase.installingOptiFine", { version: latestOptiFine }));
+              const optiFine = await invoke<OptiFineInstallResult>("install_optifine", {
+                gameDir: settings.gameDir,
+                versionId: workingInstance.versionId,
+                gameVersion: workingInstance.baseVersion,
+                loader: workingInstance.loader,
+                loaderVersion: workingInstance.loaderVersion,
+                optifineVersion: latestOptiFine,
+                downloadSource: settings.downloadSource,
+                ipcSession: launchSessionId
+              });
+              workingInstance = {
+                ...workingInstance,
+                optiFineVersion: optiFine.optiFineVersion
+              };
+              edgeInstanceChanged = true;
+              markLaunchPreparePhase("optifine", "done", "complete", t("install.phase.optiFineCompleted"));
+            } else if (!useOptiFine && workingInstance.optiFineVersion) {
+              workingInstance = { ...workingInstance, optiFineVersion: undefined };
+              edgeInstanceChanged = true;
+            }
+          } else {
+            // Forge disabled: no loader jar to resolve. OptiFine (when enabled) is
+            // installed the same way as the Forge path — the AOT launch plan mirrors
+            // the resulting jar from mods/ onto its own classpath at launch time.
+            if (workingInstance.loaderVersion) {
+              workingInstance = { ...workingInstance, loaderVersion: undefined };
+              edgeInstanceChanged = true;
+            }
+            if (useOptiFine) {
+              const optiFineVersions = await cachedLoaderLookup(
+                `optifine|${workingInstance.baseVersion}|${workingInstance.loader}|${settings.downloadSource}`,
+                () =>
+                  invoke<OptiFineVersion[]>("list_optifine_versions", {
+                    gameVersion: workingInstance.baseVersion,
+                    loader: workingInstance.loader,
+                    loaderVersion: null,
+                    downloadSource: settings.downloadSource
+                  })
+              );
+              const selectedOptiFine = selectDefaultEdgeOptiFineVersion(optiFineVersions);
+              const latestOptiFine = selectedOptiFine?.version ?? "";
+              if (latestOptiFine && workingInstance.optiFineVersion !== latestOptiFine) {
+                markLaunchPreparePhase("optifine", "running", "prepare", t("install.phase.installingOptiFine", { version: latestOptiFine }));
+                const optiFine = await invoke<OptiFineInstallResult>("install_optifine", {
+                  gameDir: settings.gameDir,
+                  versionId: workingInstance.versionId,
+                  gameVersion: workingInstance.baseVersion,
+                  loader: workingInstance.loader,
+                  loaderVersion: workingInstance.loaderVersion,
+                  optifineVersion: latestOptiFine,
+                  downloadSource: settings.downloadSource,
+                  ipcSession: launchSessionId
+                });
+                workingInstance = {
+                  ...workingInstance,
+                  optiFineVersion: optiFine.optiFineVersion
+                };
+                edgeInstanceChanged = true;
+                markLaunchPreparePhase("optifine", "done", "complete", t("install.phase.optiFineCompleted"));
+              }
+            } else if (workingInstance.optiFineVersion) {
+              workingInstance = { ...workingInstance, optiFineVersion: undefined };
+              edgeInstanceChanged = true;
+            }
           }
           if (edgeInstanceChanged) {
             setInstances((prev) =>
@@ -1621,14 +1751,16 @@ function Launcher() {
       markLaunchPreparePhase("fabric", "done", "complete", t("install.phase.loaderCompleted"));
     } else if (workingInstance.loader === "forge") {
       if (workingInstance.launcherVersionType === "EDGE") {
-        const optiFineVersions = await invoke<OptiFineVersion[]>("list_optifine_versions", {
-          gameVersion: workingInstance.baseVersion,
-          loader: workingInstance.loader,
-          loaderVersion: null,
-          downloadSource: settings.downloadSource
-        });
-        const selectedOptiFine = selectDefaultEdgeOptiFineVersion(optiFineVersions);
-        nextOptiFineVersion = selectedOptiFine?.version ?? "";
+        if (workingInstance.useOptiFine !== false) {
+          const optiFineVersions = await invoke<OptiFineVersion[]>("list_optifine_versions", {
+            gameVersion: workingInstance.baseVersion,
+            loader: workingInstance.loader,
+            loaderVersion: null,
+            downloadSource: settings.downloadSource
+          });
+          const selectedOptiFine = selectDefaultEdgeOptiFineVersion(optiFineVersions);
+          nextOptiFineVersion = selectedOptiFine?.version ?? "";
+        }
         const forgeVersions = await invoke<string[]>("list_forge_versions", {
           gameVersion: workingInstance.baseVersion,
           downloadSource: settings.downloadSource
@@ -1659,7 +1791,11 @@ function Launcher() {
       markLaunchPreparePhase("forge", "done", "complete", t("install.phase.loaderCompleted"));
     }
 
-    if (workingInstance.launcherVersionType === "EDGE" && !nextOptiFineVersion) {
+    if (
+      workingInstance.launcherVersionType === "EDGE" &&
+      workingInstance.useOptiFine !== false &&
+      !nextOptiFineVersion
+    ) {
       const optiFineVersions = await invoke<OptiFineVersion[]>("list_optifine_versions", {
         gameVersion: workingInstance.baseVersion,
         loader: workingInstance.loader,
@@ -1668,6 +1804,9 @@ function Launcher() {
       });
       nextOptiFineVersion =
         optiFineVersions.find((item) => item.compatibility === "compatible")?.version ?? "";
+    }
+    if (workingInstance.launcherVersionType === "EDGE" && workingInstance.useOptiFine === false) {
+      nextOptiFineVersion = undefined;
     }
 
     if (nextOptiFineVersion) {
@@ -1790,7 +1929,9 @@ function Launcher() {
         javaPath: jdk.javaPath,
         downloadSource: settings.downloadSource,
         waitForExit: false,
-        fpsmasterToken: launcherAuth?.token ?? null
+        fpsmasterToken: launcherAuth?.token ?? null,
+        useForge: prepared.launcherVersionType === "EDGE" ? prepared.useForge !== false : undefined,
+        useOptiFine: prepared.launcherVersionType === "EDGE" ? prepared.useOptiFine !== false : undefined
       });
       setLaunchProgressPercent(100);
       setLaunchProgressText(t("launch.progress.startingGame"));
@@ -2508,6 +2649,9 @@ function Launcher() {
   const onInstanceExport = useStableCallback(() => {
     if (current) void exportInstance(current.id);
   });
+  const onUpdateInstance = useStableCallback((next: Instance) => {
+    setInstances((prev) => prev.map((item) => (item.id === next.id ? next : item)));
+  });
   const onSelectMajor = useStableCallback((nextMajor: string) => {
     installCtl.setShowSnapshots(false);
     installCtl.setMajor(nextMajor);
@@ -2557,6 +2701,7 @@ function Launcher() {
     onInstanceDelete,
     onInstanceDuplicate,
     onInstanceExport,
+    onUpdateInstance,
     launcherNews: launcherData.news,
     launcherServers: launcherData.servers,
     launcherOnlineSummary: telemetry.onlineSummary,

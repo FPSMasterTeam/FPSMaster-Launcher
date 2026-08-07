@@ -53,6 +53,7 @@ export type PageRouterContext = {
   onInstanceDelete: () => void;
   onInstanceDuplicate: () => void;
   onInstanceExport: () => void;
+  onUpdateInstance: (next: Instance) => void;
   // launcher data
   launcherNews: NewsItem[];
   launcherServers: ServerItem[];
@@ -209,6 +210,7 @@ export default function PageRouter({ ctx }: { ctx: PageRouterContext }) {
           onDelete={ctx.onInstanceDelete}
           onDuplicate={ctx.onInstanceDuplicate}
           onExport={ctx.onInstanceExport}
+          onUpdateInstance={ctx.onUpdateInstance}
         />
       );
     case "install":
