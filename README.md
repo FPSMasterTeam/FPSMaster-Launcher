@@ -33,15 +33,10 @@ Launcher 已接入 GitHub Actions 自动打包和发版流程。
 - 所有 `pull_request` 和命中的 `push` 都会执行 Windows 打包校验。
 - 命中发布分支时，会自动构建 NSIS 安装包、创建 GitHub Release，并调用后端发布接口登记桌面端更新。
 
-分支到更新通道的映射：
+分支到更新通道的映射（仅保留 beta / release）：
 
-- `master` -> `beta`
-- `nightly`、`nightly/*` -> `nightly`
-- `cannary`、`cannary/*` -> `cannary`
+- `master`、`release`、`release/*` -> `release`
 - `beta`、`beta/*` -> `beta`
-- `release`、`release/*` -> `release`
-
-保留 `master -> beta` 的原因是当前桌面端默认更新通道为 `beta`，内测阶段需要让主分支推送的版本能被现有用户接收到。
 
 GitHub 仓库需要配置以下 Secrets：
 
