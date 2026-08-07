@@ -29,7 +29,7 @@ export function resolvePresetAccessState(
     return { state: "ok" };
   }
   // NOVA and EXTREME are gated: each resolves against its own catalog entry, which is only
-  // present once released (and, for premium channels, once the account is entitled). NOVA resolves
+  // present once released. NOVA resolves
   // against the picked game version's entry; EXTREME against its single product entry.
   const version =
     instance.launcherVersionType === "NOVA" ? (novaVersion ?? null) : versionMap[instance.launcherVersionType];

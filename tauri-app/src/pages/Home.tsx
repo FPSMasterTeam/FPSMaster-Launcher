@@ -72,7 +72,8 @@ type HomePageProps = {
 
 function canAccessInstance(_instance: Instance, _user: LauncherUser | null): boolean {
   // All client instances (Edge/Nova/Extreme) are open to every user. Channel-level entitlements
-  // (e.g. nova/extreme beta requires sponsor) are enforced by the backend, which only
+  // Catalog entitlement is enforced by the backend (product groups / rollout). Beta and
+  // release client channels are open to every authenticated account.
   // returns the versions a user may access from /launcher/versions/available.
   return true;
 }
