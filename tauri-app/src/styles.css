@@ -1044,6 +1044,89 @@ select:focus-visible {
   padding: 24px;
 }
 
+/* Release notes: clipped to a preview, expanding into a bounded scroll area.
+   Declared after .ui-card so the card's own `overflow: hidden` cannot win. */
+.changelog {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+}
+
+.changelog-body {
+  width: 100%;
+  margin: 0;
+  max-height: var(--changelog-collapsed-height, 8.25rem);
+  overflow: hidden;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.changelog-body.is-clipped {
+  -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 34px), transparent);
+  mask-image: linear-gradient(to bottom, #000 calc(100% - 34px), transparent);
+}
+
+.changelog-body.is-expanded {
+  max-height: var(--changelog-expanded-height, 38vh);
+  overflow-y: auto;
+  padding-right: 8px;
+}
+
+.changelog-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--accent);
+  font-size: 12px;
+  cursor: pointer;
+  transition: opacity var(--duration-fast) var(--ease-standard);
+}
+
+.changelog-toggle:hover {
+  opacity: 0.8;
+}
+
+.changelog-chevron {
+  transition: transform var(--duration-fast) var(--ease-standard);
+}
+
+.changelog-chevron.is-open {
+  transform: rotate(180deg);
+}
+
+/* Mandatory update is a blocking, single-screen page: the card never grows past
+   the viewport, and long content scrolls inside it instead of stretching it. */
+.mandatory-update-card {
+  display: flex;
+  width: 100%;
+  min-height: 0;
+  flex-direction: column;
+  overflow-y: auto;
+}
+
+/* Never let the flex column squeeze the cards: .ui-card clips its overflow, so a
+   shrunk row would hide the changelog and its toggle. The card scrolls instead. */
+.mandatory-update-grid {
+  display: grid;
+  flex-shrink: 0;
+  gap: 16px;
+  margin-top: 24px;
+}
+
+@media (min-width: 768px) {
+  .mandatory-update-grid {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    align-items: start;
+  }
+}
+
 .section-header {
   display: flex;
   align-items: flex-start;

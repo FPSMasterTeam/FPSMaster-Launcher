@@ -30,13 +30,15 @@ Minecraft launcher architecture with:
 
 Launcher 已接入 GitHub Actions 自动打包和发版流程。
 
-- 所有 `pull_request` 和命中的 `push` 都会执行 Windows 打包校验。
-- 命中发布分支时，会自动构建 NSIS 安装包、创建 GitHub Release，并调用后端发布接口登记桌面端更新。
+- 所有 `pull_request` 和 `master` 的 `push` 都只执行打包校验，不发版。
+- 只有推送 `v*` 语义化版本 tag 才会真正发版：构建安装包、创建 GitHub Release，并调用后端发布接口登记桌面端更新。
 
-分支到更新通道的映射（仅保留 beta / release）：
+tag 到更新通道的映射（仅保留 beta / release）：
 
-- `master`、`release`、`release/*` -> `release`
-- `beta`、`beta/*` -> `beta`
+- `v0.3.15` -> `release` / 版本号 `0.3.15`
+- `v0.3.15-beta.1` -> `beta` / 版本号 `0.3.15-beta.1`
+
+更新日志取自被打 tag 的那个 commit 的提交信息，会直接展示给玩家。写法要求见 [docs/release-notes.md](docs/release-notes.md)。
 
 GitHub 仓库需要配置以下 Secrets：
 

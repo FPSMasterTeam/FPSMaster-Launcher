@@ -26,6 +26,7 @@ import {
   useState
 } from "react";
 import Button from "../components/Button";
+import ChangelogNotes from "../components/ChangelogNotes";
 import Select from "../components/Select";
 import { LOCALE_OPTIONS, useI18n } from "../i18n";
 import type {
@@ -966,11 +967,10 @@ function SettingsPage({
                         </span>
                       ) : null}
                     </div>
-                    {launcherUpdate.notes && (
-                      <p className="whitespace-pre-wrap text-xs leading-6 text-[var(--text-secondary)]">
-                        {launcherUpdate.notes.trim()}
-                      </p>
-                    )}
+                    <ChangelogNotes
+                      notes={launcherUpdate.notes}
+                      className="text-xs leading-6 text-[var(--text-secondary)]"
+                    />
                     {launcherUpdate.checksum && (
                       <p className="text-data break-all text-[11px] text-[var(--text-muted)]">
                         SHA-256: {launcherUpdate.checksum}
@@ -990,9 +990,11 @@ function SettingsPage({
               {!launcherUpdateAvailable && hasLauncherUpdateNotes && showLauncherUpdateNotes && (
                 <div className="settings-group">
                   <div className="settings-row">
-                    <p className="whitespace-pre-wrap text-xs leading-6 text-[var(--text-secondary)]">
-                      {launcherUpdate?.notes?.trim()}
-                    </p>
+                    <ChangelogNotes
+                      notes={launcherUpdate?.notes}
+                      defaultExpanded
+                      className="text-xs leading-6 text-[var(--text-secondary)]"
+                    />
                   </div>
                 </div>
               )}
