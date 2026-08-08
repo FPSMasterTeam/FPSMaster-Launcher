@@ -1298,9 +1298,9 @@ function Launcher() {
     }));
     setStatus(t("app.status.autoInstallMods", { name: instance.name }));
     // Edge with Forge disabled skips the mods/-jar install entirely and instead installs the
-    // Forge-free AOT package (client-named.jar + fpsmaster-runtime.jar + mappings.tiny) under
-    // versions/<id>/aot/ — never mods/. OptiFine (when enabled) is still installed the normal
-    // way via install_optifine elsewhere; the AOT launch plan picks it up from mods/.
+    // Forge-free AOT package (fpsmaster-runtime.jar + mappings.tiny only — never Mojang jars)
+    // under versions/<id>/aot/. The notch client comes from the normal version download.
+    // OptiFine (when enabled) is still installed via install_optifine; AOT launch picks it up.
     const isEdgeNoForge = !isNova && instance.launcherVersionType === "EDGE" && instance.useForge === false;
     try {
       if (isEdgeNoForge) {

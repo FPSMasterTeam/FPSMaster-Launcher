@@ -1683,7 +1683,6 @@ pub(crate) fn build_vanilla_launch_plan(
 const EDGE_AOT_DEFAULT_FULL_TWEAKER: &str = "top.fpsmaster.runtime.FpsMasterFullTweaker";
 const EDGE_AOT_DEFAULT_OPTIFINE_TWEAKER: &str = "optifine.OptiFineTweaker";
 const EDGE_AOT_DEFAULT_RUNTIME_JAR: &str = "fpsmaster-runtime.jar";
-const EDGE_AOT_DEFAULT_NAMED_CLIENT_JAR: &str = "client-named.jar";
 const EDGE_AOT_DEFAULT_MAPPINGS_FILE: &str = "mappings.tiny";
 // LaunchWrapper is normally supplied by Forge's own version profile; the no-Forge AOT
 // path launches `net.minecraft.launchwrapper.Launch` directly, so it must be resolved
@@ -1698,8 +1697,6 @@ struct EdgeAotLaunchProfiles {
     optifine_tweaker: Option<String>,
     #[serde(rename = "runtimeJar", default)]
     runtime_jar: Option<String>,
-    #[serde(rename = "namedClientJar", default)]
-    named_client_jar: Option<String>,
     #[serde(rename = "mappingsFile", default)]
     mappings_file: Option<String>,
 }
@@ -1712,11 +1709,12 @@ fn read_edge_aot_launch_profiles(aot_dir: &Path) -> EdgeAotLaunchProfiles {
         .unwrap_or_default()
 }
 
-fn resolve_edge_aot_launchwrapper_library(
+fn resolve_edge_aot_maven_library(
     game_dir: &Path,
     source: DownloadSource,
+    maven: &str,
 ) -> Result<ResolvedLibrary, String> {
-    let coords = MavenCoordinates::parse(EDGE_AOT_LAUNCHWRAPPER_MAVEN)?;
+    let coords = MavenCoordinates::parse(maven)?;
     let relative_path = coords.to_jar_path();
     let target = game_dir.join("libraries").join(&relative_path);
     let urls = source.candidate_urls(&format!(
@@ -1731,6 +1729,13 @@ fn resolve_edge_aot_launchwrapper_library(
         classpath_entry: true,
         native_entry: false,
     })
+}
+
+fn resolve_edge_aot_launchwrapper_library(
+    game_dir: &Path,
+    source: DownloadSource,
+) -> Result<ResolvedLibrary, String> {
+    resolve_edge_aot_maven_library(game_dir, source, EDGE_AOT_LAUNCHWRAPPER_MAVEN)
 }
 
 fn find_optifine_jar_in_dir(dir: &Path) -> Result<Option<PathBuf>, String> {
@@ -1760,47 +1765,50 @@ fn find_optifine_jar_in_dir(dir: &Path) -> Result<Option<PathBuf>, String> {
 /// Resolves the OptiFine jar to place on the no-Forge AOT classpath. The launcher's
 /// generic OptiFine installer always drops the jar under `versions/<id>/mods/` (the
 /// Forge convention); the AOT contract requires it to live under `versions/<id>/aot/optifine/`
-/// instead, so mirror it there the first time it is needed.
+/// instead, so mirror the currently selected mods jar there (replacing any stale copy).
 fn resolve_edge_aot_optifine_jar(
     game_dir: &Path,
     version_id: &str,
     aot_dir: &Path,
 ) -> Result<PathBuf, String> {
-    let optifine_dir = aot_dir.join("optifine");
-    if let Some(jar) = find_optifine_jar_in_dir(&optifine_dir)? {
-        return Ok(jar);
-    }
-
     let mods_dir = game_dir.join("versions").join(version_id).join("mods");
     let source_jar = find_optifine_jar_in_dir(&mods_dir)?.ok_or_else(|| {
         "OptiFine is enabled but no OptiFine jar was found for this instance. Install OptiFine first.".to_string()
     })?;
+    let file_name = source_jar
+        .file_name()
+        .ok_or_else(|| "Invalid OptiFine jar path".to_string())?;
+    let optifine_dir = aot_dir.join("optifine");
     fs::create_dir_all(&optifine_dir).map_err(|e| {
         format!(
             "Failed to create AOT OptiFine directory {}: {e}",
             optifine_dir.display()
         )
     })?;
-    let file_name = source_jar
-        .file_name()
-        .ok_or_else(|| "Invalid OptiFine jar path".to_string())?;
     let target = optifine_dir.join(file_name);
-    fs::copy(&source_jar, &target).map_err(|e| {
-        format!(
-            "Failed to stage OptiFine jar {} onto the AOT classpath: {e}",
-            source_jar.display()
-        )
-    })?;
+    // Drop previously staged OptiFine jars so a version switch cannot leave a stale M5/M6
+    // jar ahead of the one currently installed under mods/.
+    remove_existing_optifine_jars(&optifine_dir, &target)?;
+    let needs_copy = match (fs::metadata(&source_jar), fs::metadata(&target)) {
+        (Ok(source_meta), Ok(target_meta)) => source_meta.len() != target_meta.len(),
+        _ => true,
+    };
+    if needs_copy {
+        fs::copy(&source_jar, &target).map_err(|e| {
+            format!(
+                "Failed to stage OptiFine jar {} onto the AOT classpath: {e}",
+                source_jar.display()
+            )
+        })?;
+    }
     Ok(target)
 }
 
 /// Builds the launch plan for Edge's Forge-free "AOT" path (see
-/// `FPSMaster-Edge/runtime/README.md`): LaunchWrapper + FPSMaster's own tweaker chain,
-/// running against either the pre-remapped `client-named.jar` (no OptiFine) or the real
-/// notch client jar plus a runtime deobfuscation transformer (OptiFine enabled, since
-/// OptiFine patches obfuscated class names directly). Forge stays on the existing
-/// `build_vanilla_launch_plan` path; this is only used when the instance has Forge
-/// disabled.
+/// `FPSMaster-Edge/runtime/README.md`): LaunchWrapper + FPSMaster tweaker chain against the
+/// launcher-downloaded official **notch** client jar, with runtime official→named deobf.
+/// The AOT zip must never ship Mojang Minecraft jars (EULA). OptiFine only adds its jar +
+/// tweaker ahead of FullTweaker. Forge stays on `build_vanilla_launch_plan`.
 pub(crate) fn build_edge_aot_launch_plan(
     window: Option<&tauri::Window>,
     request: &VanillaLaunchRequest,
@@ -1838,10 +1846,6 @@ pub(crate) fn build_edge_aot_launch_plan(
         .runtime_jar
         .clone()
         .unwrap_or_else(|| EDGE_AOT_DEFAULT_RUNTIME_JAR.to_string());
-    let named_client_jar_name = profiles
-        .named_client_jar
-        .clone()
-        .unwrap_or_else(|| EDGE_AOT_DEFAULT_NAMED_CLIENT_JAR.to_string());
     let mappings_file_name = profiles
         .mappings_file
         .clone()
@@ -1853,6 +1857,28 @@ pub(crate) fn build_edge_aot_launch_plan(
             "Edge AOT runtime jar missing: {}",
             runtime_jar_path.display()
         ));
+    }
+
+    let mappings_path = aot_dir.join(&mappings_file_name);
+    if !mappings_path.is_file() {
+        return Err(format!(
+            "Edge AOT mappings file missing: {}",
+            mappings_path.display()
+        ));
+    }
+
+    // Legacy AOT zips shipped a remapped Mojang client; drop it so it cannot be used.
+    for forbidden in [
+        "client-named.jar",
+        "minecraft-client.jar",
+        "minecraft-mapped.jar",
+        "minecraft-srg.jar",
+        "named-noforge.jar",
+    ] {
+        let path = aot_dir.join(forbidden);
+        if path.is_file() {
+            let _ = fs::remove_file(&path);
+        }
     }
 
     let natives_base_dir = version_dir.join("natives");
@@ -1879,64 +1905,42 @@ pub(crate) fn build_edge_aot_launch_plan(
     ensure_library_downloaded(window, &launchwrapper)?;
     classpath_entries.push(launchwrapper.path);
 
+    // Always the official notch client from the version install / Mojang download — never a
+    // redistributed named/remapped jar from the AOT package.
+    let jar_version_id = descriptor.jar_version_id.clone();
+    let notch_jar = request
+        .game_dir
+        .join("versions")
+        .join(&jar_version_id)
+        .join(format!("{jar_version_id}.jar"));
+    ensure_client_jar_downloaded(window, &version_json, &notch_jar, source)?;
+    classpath_entries.push(notch_jar.clone());
+
     let mut tweak_classes = Vec::new();
     let mut jvm_extra: Vec<String> = vec![
         "-Dmixin.env.disableRefMap=true".to_string(),
         "-Dfpsmaster.noforge=true".to_string(),
         "-Dfpsmaster.aot=true".to_string(),
+        "-Dfpsmaster.runtime.vanilla=true".to_string(),
+        format!(
+            "-Dfpsmaster.runtime.mappings={}",
+            mappings_path.to_string_lossy()
+        ),
+        format!(
+            "-Dfpsmaster.runtime.vanillaJar={}",
+            notch_jar.to_string_lossy()
+        ),
     ];
 
     if use_optifine {
-        // OptiFine patches obfuscated (notch) class names directly, so it must run against
-        // the real vanilla jar; FullTweaker's runtime deobf transformer then remaps
-        // FPSMaster's named-mapped mixins onto those notch classes on the fly.
-        let jar_version_id = descriptor.jar_version_id.clone();
-        let notch_jar = request
-            .game_dir
-            .join("versions")
-            .join(&jar_version_id)
-            .join(format!("{jar_version_id}.jar"));
-        ensure_client_jar_downloaded(window, &version_json, &notch_jar, source)?;
-        classpath_entries.push(notch_jar.clone());
-
+        // OptiFine patches notch names first; FullTweaker then runtime-deobfs + Mixin.
         let optifine_jar =
             resolve_edge_aot_optifine_jar(&request.game_dir, &request.version_id, &aot_dir)?;
         classpath_entries.push(optifine_jar);
-
-        let mappings_path = aot_dir.join(&mappings_file_name);
-        if !mappings_path.is_file() {
-            return Err(format!(
-                "Edge AOT mappings file missing: {}",
-                mappings_path.display()
-            ));
-        }
-
-        // OptiFine's tweaker patches the notch classes first; FullTweaker runs after so its
-        // runtime deobf + Mixin bootstrap see the OptiFine-patched bytecode.
         tweak_classes.push(optifine_tweaker);
-        tweak_classes.push(full_tweaker);
-
-        jvm_extra.push("-Dfpsmaster.runtime.vanilla=true".to_string());
-        jvm_extra.push(format!(
-            "-Dfpsmaster.runtime.mappings={}",
-            mappings_path.to_string_lossy()
-        ));
-        jvm_extra.push(format!(
-            "-Dfpsmaster.runtime.vanillaJar={}",
-            notch_jar.to_string_lossy()
-        ));
         jvm_extra.push("-Dfpsmaster.withOptifine=true".to_string());
-    } else {
-        let named_client_jar = aot_dir.join(&named_client_jar_name);
-        if !named_client_jar.is_file() {
-            return Err(format!(
-                "Edge AOT named client jar missing: {}",
-                named_client_jar.display()
-            ));
-        }
-        classpath_entries.push(named_client_jar);
-        tweak_classes.push(full_tweaker);
     }
+    tweak_classes.push(full_tweaker);
 
     let classpath = build_classpath(&classpath_entries);
     let variables = build_variables(request, &version_json, &natives_dir, &classpath)?;
@@ -2670,11 +2674,17 @@ fn contains_classpath_arg(args: &[String]) -> bool {
 }
 
 fn build_classpath(entries: &[PathBuf]) -> String {
-    let mut values = entries
-        .iter()
-        .map(|path| path.to_string_lossy().to_string())
-        .collect::<Vec<_>>();
-    values.sort();
+    // Preserve caller insertion order (runtime → libs → LaunchWrapper → client → OptiFine).
+    // Alphabetical sorting used to reshuffle that precedence versus the validated Gradle
+    // Forge-free OptiFine launch path.
+    let mut values = Vec::with_capacity(entries.len());
+    let mut seen = HashSet::new();
+    for path in entries {
+        let value = path.to_string_lossy().to_string();
+        if seen.insert(value.clone()) {
+            values.push(value);
+        }
+    }
     values.join(&classpath_separator().to_string())
 }
 
@@ -4298,9 +4308,10 @@ fn emit_install_item_ipc(
 #[cfg(test)]
 mod tests {
     use super::{
-        build_rule_features, build_vanilla_launch_plan, forge_profile_id_candidates,
-        resolve_java_runtime_requirement, resolve_optifine_compatibility, should_omit_resolved_arg,
-        DownloadSource, VanillaLaunchRequest,
+        build_classpath, build_rule_features, build_vanilla_launch_plan, classpath_separator,
+        forge_profile_id_candidates, resolve_java_runtime_requirement,
+        resolve_optifine_compatibility, should_omit_resolved_arg, DownloadSource,
+        VanillaLaunchRequest,
     };
     use serde_json::json;
     use std::fs;
@@ -4504,6 +4515,27 @@ mod tests {
         let features = build_rule_features();
         assert_eq!(features.get("is_demo_user"), Some(&false));
         assert_eq!(features.get("has_custom_resolution"), Some(&true));
+    }
+
+    #[test]
+    fn classpath_preserves_insertion_order_and_dedupes() {
+        let entries = [
+            PathBuf::from("/a/runtime.jar"),
+            PathBuf::from("/z/lib.jar"),
+            PathBuf::from("/a/runtime.jar"),
+            PathBuf::from("/m/client.jar"),
+        ];
+        let classpath = build_classpath(&entries);
+        let sep = classpath_separator().to_string();
+        assert_eq!(
+            classpath,
+            [
+                "/a/runtime.jar",
+                "/z/lib.jar",
+                "/m/client.jar"
+            ]
+            .join(&sep)
+        );
     }
 
     #[test]

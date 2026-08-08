@@ -208,10 +208,10 @@ struct LauncherModsInstallMarker {
     installed_at_epoch_sec: u64,
 }
 
-// Edge's Forge-free "AOT" distribution: `client-named.jar` + `fpsmaster-runtime.jar` +
-// `mappings.tiny` + `manifest.json` + `launch-profiles.json`, downloaded as a single zip and
-// extracted under `versions/<id>/aot/`. Deliberately separate from the mods installer/marker
-// above — the AOT package never touches `mods/`.
+// Edge's Forge-free "AOT" distribution: `fpsmaster-runtime.jar` + `mappings.tiny` (+
+// manifest/launch-profiles metadata). Never contains Mojang Minecraft jars — the launcher
+// supplies the official notch client at launch. Extracted under `versions/<id>/aot/`;
+// deliberately separate from the mods installer/marker — the AOT package never touches `mods/`.
 #[derive(Debug, Clone, Serialize)]
 struct EdgeAotInstallResult {
     #[serde(rename = "targetDir")]
@@ -236,8 +236,15 @@ struct EdgeAotInstallMarker {
 }
 
 const EDGE_AOT_MARKER_FILE: &str = ".fpsmaster-edge-aot.json";
-const EDGE_AOT_REQUIRED_FILES: [&str; 3] =
-    ["client-named.jar", "fpsmaster-runtime.jar", "mappings.tiny"];
+const EDGE_AOT_REQUIRED_FILES: [&str; 2] = ["fpsmaster-runtime.jar", "mappings.tiny"];
+// Reject / strip redistributed Mojang client jars (named or notch) from AOT installs.
+const EDGE_AOT_FORBIDDEN_FILES: [&str; 5] = [
+    "client-named.jar",
+    "minecraft-client.jar",
+    "minecraft-mapped.jar",
+    "minecraft-srg.jar",
+    "named-noforge.jar",
+];
 
 #[derive(Debug, Clone, Serialize)]
 struct LauncherPackageState {
@@ -2942,9 +2949,31 @@ fn edge_aot_package_files_present(aot_dir: &Path) -> bool {
         .all(|name| aot_dir.join(name).is_file())
 }
 
+fn edge_aot_strip_forbidden_files(aot_dir: &Path) -> Result<(), String> {
+    for name in EDGE_AOT_FORBIDDEN_FILES {
+        let path = aot_dir.join(name);
+        if path.is_file() {
+            fs::remove_file(&path).map_err(|e| {
+                format!(
+                    "Failed to remove forbidden AOT Minecraft artifact {}: {e}",
+                    path.display()
+                )
+            })?;
+            emit_log(
+                None,
+                "warn",
+                &format!(
+                    "Removed forbidden Mojang client artifact from Edge AOT package: {name}"
+                ),
+            );
+        }
+    }
+    Ok(())
+}
+
 // A packaging tool may wrap the zip's contents in a single top-level directory instead of
-// placing client-named.jar/etc. at the archive root; unwrap that so the AOT files always end
-// up directly under `versions/<id>/aot/`.
+// placing fpsmaster-runtime.jar/etc. at the archive root; unwrap that so the AOT files always
+// end up directly under `versions/<id>/aot/`.
 fn unwrap_single_nested_aot_directory(dir: &Path) -> Result<PathBuf, String> {
     let entries: Vec<_> = fs::read_dir(dir)
         .map_err(|e| format!("Failed to inspect staged AOT directory {}: {e}", dir.display()))?
@@ -3134,9 +3163,13 @@ fn install_edge_aot_package_blocking(
     if !edge_aot_package_files_present(&effective_stage_dir) {
         let _ = fs::remove_dir_all(&stage_dir);
         return Err(
-            "Edge AOT package is missing required files (client-named.jar / fpsmaster-runtime.jar / mappings.tiny)"
+            "Edge AOT package is missing required files (fpsmaster-runtime.jar / mappings.tiny)"
                 .to_string(),
         );
+    }
+    if let Err(err) = edge_aot_strip_forbidden_files(&effective_stage_dir) {
+        let _ = fs::remove_dir_all(&stage_dir);
+        return Err(err);
     }
 
     if let Err(err) = replace_directory_with_stage(&aot_dir, &effective_stage_dir) {
