@@ -1,6 +1,7 @@
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useEffect, useState } from "react";
 import { useI18n } from "../i18n";
+import { IS_MAC, MAC_TRAFFIC_LIGHT_INSET } from "../utils/platform";
 
 type TitleBarProps = {
   title: string;
@@ -60,7 +61,11 @@ export default function TitleBar({ title, subtitle, onClose }: TitleBarProps) {
   // attribute too — the header alone is almost fully covered by its children.
   return (
     <header className="customTitlebar" data-tauri-drag-region onDoubleClick={() => void toggleMaximize()}>
-      <div className="titleMain" data-tauri-drag-region>
+      <div
+        className="titleMain"
+        data-tauri-drag-region
+        style={IS_MAC ? { paddingLeft: MAC_TRAFFIC_LIGHT_INSET } : undefined}
+      >
         <div className="titleDragRegion" data-tauri-drag-region>
           <p className="titleText" data-tauri-drag-region>
             {title}
@@ -70,6 +75,7 @@ export default function TitleBar({ title, subtitle, onClose }: TitleBarProps) {
           </p>
         </div>
       </div>
+      {!IS_MAC && (
       <div className="titleControls window-no-drag">
         <button
           className="titleBtn"
@@ -96,6 +102,7 @@ export default function TitleBar({ title, subtitle, onClose }: TitleBarProps) {
           <WindowControlIcon kind="close" />
         </button>
       </div>
+      )}
     </header>
   );
 }

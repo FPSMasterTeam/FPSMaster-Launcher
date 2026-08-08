@@ -8,6 +8,7 @@ import Select from "../components/Select";
 import modrinthIcon from "../assets/icons/modrinth.ico";
 import curseforgeIcon from "../assets/icons/curseforge.ico";
 import { useI18n } from "../i18n";
+import { buildNovaEffectiveInstance, listNovaVersionTargets } from "../lib/novaTargets";
 import type {
   ContentInstallProgressEvent,
   ContentProjectType,
@@ -15,6 +16,7 @@ import type {
   InstalledContentItem,
   InstalledContentUpdate,
   Instance,
+  LauncherVersion,
   ModrinthInstallResult,
   ModrinthSearchResult,
   OnlineContentSource,
@@ -24,12 +26,23 @@ import { resolveInstanceIconPath } from "../utils/launcher";
 
 type RightTab = "search" | "installed";
 
+type ContentSelectOption = {
+  value: string;
+  instanceId: string;
+  gameVersion?: string;
+  label: string;
+  icon: string | null;
+};
+
 type ContentPageProps = {
   instances: Instance[];
   current: Instance | null;
   gameDir: string;
   curseforgeApiKey: string;
   busy: boolean;
+  novaGameVersions: Record<string, LauncherVersion>;
+  selectedNovaGameVersion: string;
+  onSelectNovaGameVersion: (gameVersion: string) => void;
   onSelectInstance: (id: string) => void;
   onStatusChange: (message: string) => void;
 };
@@ -60,6 +73,9 @@ function ContentPage({
   gameDir,
   curseforgeApiKey,
   busy,
+  novaGameVersions,
+  selectedNovaGameVersion,
+  onSelectNovaGameVersion,
   onSelectInstance,
   onStatusChange
 }: ContentPageProps) {
@@ -82,8 +98,74 @@ function ContentPage({
   const [contentInstallProgress, setContentInstallProgress] = useState<ContentInstallProgressEvent | null>(null);
   const worldFileInputRef = useRef<HTMLInputElement | null>(null);
 
-  const currentInstance = current ?? instances[0] ?? null;
+  const novaPreset = useMemo(
+    () => instances.find((item) => item.preset && item.launcherVersionType === "NOVA") ?? null,
+    [instances]
+  );
+
+  const selectOptions = useMemo(() => {
+    const options: ContentSelectOption[] = [];
+    for (const instance of instances) {
+      if (instance.preset && instance.launcherVersionType === "NOVA") {
+        continue;
+      }
+      options.push({
+        value: instance.id,
+        instanceId: instance.id,
+        label: instance.name,
+        icon: resolveInstanceIconPath(instance)
+      });
+    }
+    if (novaPreset) {
+      for (const { gameVersion } of listNovaVersionTargets(novaGameVersions, selectedNovaGameVersion)) {
+        options.push({
+          value: `nova:${gameVersion}`,
+          instanceId: novaPreset.id,
+          gameVersion,
+          label: `Nova ${gameVersion}`,
+          icon: resolveInstanceIconPath(novaPreset)
+        });
+      }
+    }
+    return options;
+  }, [instances, novaPreset, novaGameVersions, selectedNovaGameVersion]);
+
+  const currentInstance = useMemo(() => {
+    if (current?.launcherVersionType === "NOVA") {
+      return buildNovaEffectiveInstance(current, selectedNovaGameVersion || current.baseVersion);
+    }
+    if (current) return current;
+    const first = instances[0] ?? null;
+    if (!first) return null;
+    if (first.launcherVersionType === "NOVA") {
+      return buildNovaEffectiveInstance(first, selectedNovaGameVersion || first.baseVersion);
+    }
+    return first;
+  }, [current, instances, selectedNovaGameVersion]);
+
+  const selectedOptionValue =
+    currentInstance?.launcherVersionType === "NOVA"
+      ? `nova:${currentInstance.baseVersion}`
+      : currentInstance?.id ?? "";
+
+  const currentInstanceLabel =
+    currentInstance?.launcherVersionType === "NOVA"
+      ? `Nova ${currentInstance.baseVersion}`
+      : currentInstance?.name ?? "";
   const currentInstanceIcon = currentInstance ? resolveInstanceIconPath(currentInstance) : null;
+
+  function handleSelectInstance(value: string) {
+    if (value.startsWith("nova:")) {
+      const gameVersion = value.slice("nova:".length);
+      if (novaPreset) {
+        onSelectNovaGameVersion(gameVersion);
+        onSelectInstance(novaPreset.id);
+      }
+      return;
+    }
+    onSelectInstance(value);
+  }
+
   const availableSources =
     contentType === "world"
       ? (["modrinth", "curseforge", "local"] as const satisfies readonly ContentSource[])
@@ -530,33 +612,46 @@ function ContentPage({
           <Card variant="frost" className="page-card page-card-compact mb-4 rounded-[10px]" interactive={false}>
             <div className="content-topbar-card">
               <div className="content-topbar-instance">
-                <Select value={currentInstance?.id ?? ""} onValueChange={onSelectInstance}>
+                <Select value={selectedOptionValue} onValueChange={handleSelectInstance}>
                   <Select.Trigger unstyled className="content-topbar-select" aria-label={t("content.selectInstance")}>
                     {currentInstance ? (
                       <span className="content-topbar-select-value">
                         <span className="content-instance-icon">
-                          {currentInstanceIcon ? <img src={currentInstanceIcon} alt={currentInstance.name} className="h-full w-full object-contain p-[1px]" /> : <span>{currentInstance.name.slice(0, 1).toUpperCase()}</span>}
+                          {currentInstanceIcon ? (
+                            <img
+                              src={currentInstanceIcon}
+                              alt={currentInstanceLabel}
+                              className="h-full w-full object-contain p-[1px]"
+                            />
+                          ) : (
+                            <span>{currentInstanceLabel.slice(0, 1).toUpperCase()}</span>
+                          )}
                         </span>
-                        <span className="truncate">{currentInstance.name}</span>
+                        <span className="truncate">{currentInstanceLabel}</span>
                       </span>
                     ) : (
                       <Select.Value placeholder={t("content.selectInstance")} />
                     )}
                   </Select.Trigger>
                   <Select.Content>
-                    {instances.map((instance) => {
-                      const instanceIcon = resolveInstanceIconPath(instance);
-                      return (
-                        <Select.Item key={instance.id} value={instance.id}>
-                          <span className="flex min-w-0 items-center gap-3">
-                            <span className="content-instance-icon">
-                              {instanceIcon ? <img src={instanceIcon} alt={instance.name} className="h-full w-full object-contain p-[1px]" /> : <span>{instance.name.slice(0, 1).toUpperCase()}</span>}
-                            </span>
-                            <span className="truncate">{instance.name}</span>
+                    {selectOptions.map((option) => (
+                      <Select.Item key={option.value} value={option.value}>
+                        <span className="flex min-w-0 items-center gap-3">
+                          <span className="content-instance-icon">
+                            {option.icon ? (
+                              <img
+                                src={option.icon}
+                                alt={option.label}
+                                className="h-full w-full object-contain p-[1px]"
+                              />
+                            ) : (
+                              <span>{option.label.slice(0, 1).toUpperCase()}</span>
+                            )}
                           </span>
-                        </Select.Item>
-                      );
-                    })}
+                          <span className="truncate">{option.label}</span>
+                        </span>
+                      </Select.Item>
+                    ))}
                   </Select.Content>
                 </Select>
               </div>

@@ -58,6 +58,7 @@ import {
 } from "./lib/instance";
 import { ensureJdk, openMonitor, syncAutostart, syncTrayBehavior } from "./lib/system";
 import { createPresetPackageStatus, resolvePresetAccessState } from "./lib/presetPackage";
+import { buildNovaEffectiveInstance, NOVA_VERSION_ID_PREFIX } from "./lib/novaTargets";
 import { useLauncherUpdate } from "./hooks/useLauncherUpdate";
 import { useLauncherData } from "./hooks/useLauncherData";
 import { useLauncherTelemetry } from "./hooks/useLauncherTelemetry";
@@ -148,14 +149,6 @@ const EMPTY_LAUNCHER_VERSIONS: LauncherVersionMap = {
 // Nova exposes several Minecraft game versions under one product. We keep the catalog's latest
 // entry per game version keyed by the MC version string (e.g. "1.21.11" -> LauncherVersion).
 type NovaVersionMap = Record<string, LauncherVersion>;
-
-// Nova installs each game version into its own profile/mods dir so they don't collide, while the
-// user still sees a single "Nova" region. The on-disk versionId is `<prefix>-<gameVersion>`.
-const NOVA_VERSION_ID_PREFIX = "FPSMaster-Nova";
-
-function novaVersionIdFor(gameVersion: string): string {
-  return `${NOVA_VERSION_ID_PREFIX}-${gameVersion}`;
-}
 
 // Prefer the recommended game version, else the default (1.21.11) if present, else the newest key.
 function preferredNovaGameVersion(novaMap: NovaVersionMap): string | null {
@@ -277,10 +270,12 @@ function Launcher() {
     setPlayerName: (name) => setSettings((prev) => ({ ...prev, playerName: name }))
   });
 
-  const current = useMemo(
-    () => instances.find((item) => item.id === selected) ?? instances[0] ?? null,
-    [instances, selected]
-  );
+  // For Nova, expose the version-specialised profile so Settings/Content hit FPSMaster-Nova-<gv>.
+  const current = useMemo(() => {
+    const base = instances.find((item) => item.id === selected) ?? instances[0] ?? null;
+    if (!base) return null;
+    return buildNovaEffectiveInstance(base, selectedNovaGameVersion || base.baseVersion);
+  }, [instances, selected, selectedNovaGameVersion]);
   const activeBackgroundUrl =
     resolveBackgroundAssetUrl(settings);
   const authenticated = Boolean(launcherAuth?.token?.trim());
@@ -783,14 +778,16 @@ function Launcher() {
 
   // Nova stays a single preset "region"; at launch time we specialise it to the picked game version
   // (own baseVersion + own on-disk versionId) so each version installs/updates independently.
+  // Callers may already pass a specialised copy — keep it so launch isn't racing setState.
   function resolveNovaEffectiveInstance(instance: Instance): Instance {
-    if (!instance.preset || instance.launcherVersionType !== "NOVA") return instance;
-    const gameVersion = selectedNovaGameVersion || instance.baseVersion;
-    return {
-      ...instance,
-      baseVersion: gameVersion,
-      versionId: novaVersionIdFor(gameVersion)
-    };
+    if (
+      instance.preset &&
+      instance.launcherVersionType === "NOVA" &&
+      instance.versionId.startsWith(`${NOVA_VERSION_ID_PREFIX}-`)
+    ) {
+      return instance;
+    }
+    return buildNovaEffectiveInstance(instance, selectedNovaGameVersion || instance.baseVersion);
   }
 
   async function refreshLauncherVersions(
@@ -876,90 +873,116 @@ function Launcher() {
   ): Promise<void> {
     const targetMap = versionMapOverride ?? launcherVersions;
     const targetNovaMap = novaMapOverride ?? novaGameVersions;
-    const nextEntries = await Promise.all(
-      instances
-        .filter((item) => item.preset && item.launcherVersionType)
-        .map(async (instance) => {
-          // Nova is specialised to the picked game version so its status reflects that version's
-          // own install dir + catalog entry (edge/extreme are unchanged, one entry per product).
-          const effective = resolveNovaEffectiveInstance(instance);
-          const novaEntry =
-            instance.launcherVersionType === "NOVA"
-              ? resolveNovaEntry(effective.baseVersion, targetNovaMap)
-              : null;
-          const presetAccess = resolvePresetAccessState(instance, targetMap, novaEntry);
-          if (presetAccess.state === "pending-release") {
-            return [instance.id, createPresetPackageStatus(presetAccess.state, {
-              versionTag: presetAccess.versionTag ?? null,
-              targetVersionTag: presetAccess.versionTag ?? null,
-              changelog: presetAccess.changelog ?? null,
-              lastError: presetAccess.lastError ?? null
-            })] as const;
-          }
-          const expected =
-            instance.launcherVersionType === "NOVA" ? novaEntry : targetMap[instance.launcherVersionType!];
-          if (!expected) {
-            return [instance.id, createPresetPackageStatus("missing")] as const;
-          }
-          try {
-            // Edge with Forge off installs under versions/<id>/aot/, not mods/.
-            const isEdgeNoForge =
-              instance.launcherVersionType === "EDGE" && instance.useForge === false;
-            const state = isEdgeNoForge
-              ? await invoke<LauncherPackageState>("get_edge_aot_package_state", {
-                  gameDir: settings.gameDir,
-                  versionId: effective.versionId,
-                  expectedVersionTag: expected.versionName,
-                  expectedChecksum: expected.aotChecksum,
-                  expectedDownloadUrl: expected.aotDownloadUrl
-                })
-              : await invoke<LauncherPackageState>("get_launcher_package_state", {
-                  gameDir: settings.gameDir,
-                  versionId: effective.versionId,
-                  expectedVersionTag: expected.versionName,
-                  expectedChecksum: expected.checksum,
-                  expectedManifestUrl: expected.manifestUrl,
-                  expectedDownloadUrl: expected.downloadUrl
-                });
-            const mapped: PresetPackageStatus = !state.installed
-              ? createPresetPackageStatus("missing", {
+
+    async function computePresetStatus(
+      instance: Instance,
+      effective: Instance,
+      novaEntry: LauncherVersion | null
+    ): Promise<PresetPackageStatus> {
+      const presetAccess = resolvePresetAccessState(instance, targetMap, novaEntry);
+      if (presetAccess.state === "pending-release") {
+        return createPresetPackageStatus(presetAccess.state, {
+          versionTag: presetAccess.versionTag ?? null,
+          targetVersionTag: presetAccess.versionTag ?? null,
+          changelog: presetAccess.changelog ?? null,
+          lastError: presetAccess.lastError ?? null
+        });
+      }
+      const expected =
+        instance.launcherVersionType === "NOVA" ? novaEntry : targetMap[instance.launcherVersionType!];
+      if (!expected) {
+        return createPresetPackageStatus("missing");
+      }
+      try {
+        // Edge with Forge off installs under versions/<id>/aot/, not mods/.
+        const isEdgeNoForge =
+          instance.launcherVersionType === "EDGE" && instance.useForge === false;
+        const state = isEdgeNoForge
+          ? await invoke<LauncherPackageState>("get_edge_aot_package_state", {
+              gameDir: settings.gameDir,
+              versionId: effective.versionId,
+              expectedVersionTag: expected.versionName,
+              expectedChecksum: expected.aotChecksum,
+              expectedDownloadUrl: expected.aotDownloadUrl
+            })
+          : await invoke<LauncherPackageState>("get_launcher_package_state", {
+              gameDir: settings.gameDir,
+              versionId: effective.versionId,
+              expectedVersionTag: expected.versionName,
+              expectedChecksum: expected.checksum,
+              expectedManifestUrl: expected.manifestUrl,
+              expectedDownloadUrl: expected.downloadUrl
+            });
+        return !state.installed
+          ? createPresetPackageStatus("missing", {
+              targetVersionTag: expected.versionName,
+              changelog: expected.changelog
+            })
+          : state.needsRepair
+            ? createPresetPackageStatus("needs-repair", {
+                versionTag: state.versionTag ?? expected.versionName,
+                installedVersionTag: state.versionTag ?? expected.versionName,
+                targetVersionTag: expected.versionName,
+                changelog: expected.changelog
+              })
+            : state.upToDate
+              ? createPresetPackageStatus("ready", {
+                  versionTag: state.versionTag ?? expected.versionName,
+                  installedVersionTag: state.versionTag ?? expected.versionName,
                   targetVersionTag: expected.versionName,
                   changelog: expected.changelog
                 })
-              : state.needsRepair
-                ? createPresetPackageStatus("needs-repair", {
-                    versionTag: state.versionTag ?? expected.versionName,
-                    installedVersionTag: state.versionTag ?? expected.versionName,
-                    targetVersionTag: expected.versionName,
-                    changelog: expected.changelog
-                  })
-                : state.upToDate
-                  ? createPresetPackageStatus("ready", {
-                      versionTag: state.versionTag ?? expected.versionName,
-                      installedVersionTag: state.versionTag ?? expected.versionName,
-                      targetVersionTag: expected.versionName,
-                      changelog: expected.changelog
-                    })
-                  : createPresetPackageStatus("update-available", {
-                      versionTag: expected.versionName,
-                      installedVersionTag: state.versionTag ?? null,
-                      targetVersionTag: expected.versionName,
-                      changelog: expected.changelog
-                    });
-            return [instance.id, mapped] as const;
-          } catch (error) {
-            return [
-              instance.id,
-              createPresetPackageStatus("error", {
-                versionTag: expected.versionName,
-                targetVersionTag: expected.versionName,
-                changelog: expected.changelog,
-                lastError: formatLaunchError(error)
-              })
-            ] as const;
-          }
-        })
-    );
+              : createPresetPackageStatus("update-available", {
+                  versionTag: expected.versionName,
+                  installedVersionTag: state.versionTag ?? null,
+                  targetVersionTag: expected.versionName,
+                  changelog: expected.changelog
+                });
+      } catch (error) {
+        return createPresetPackageStatus("error", {
+          versionTag: expected.versionName,
+          targetVersionTag: expected.versionName,
+          changelog: expected.changelog,
+          lastError: formatLaunchError(error)
+        });
+      }
+    }
+
+    const nextEntries = (
+      await Promise.all(
+        instances
+          .filter((item) => item.preset && item.launcherVersionType)
+          .map(async (instance) => {
+            // Nova fans out into one status per game version (keyed `nova:<gv>` — the
+            // instances page's target key) so every version row reflects its own
+            // install dir. The selected version's status is mirrored under the
+            // instance id for the existing single-key consumers (home, launch flow).
+            if (instance.launcherVersionType === "NOVA") {
+              const selectedGv = selectedNovaGameVersion || instance.baseVersion;
+              const versions = Array.from(new Set([...Object.keys(targetNovaMap), selectedGv]));
+              const perVersion = await Promise.all(
+                versions.map(async (gameVersion) => {
+                  const effective = buildNovaEffectiveInstance(instance, gameVersion);
+                  const status = await computePresetStatus(
+                    instance,
+                    effective,
+                    resolveNovaEntry(gameVersion, targetNovaMap)
+                  );
+                  return [`nova:${gameVersion}`, status] as const;
+                })
+              );
+              const entries: Array<readonly [string, PresetPackageStatus]> = [...perVersion];
+              const selected = perVersion.find(([key]) => key === `nova:${selectedGv}`);
+              if (selected) {
+                entries.push([instance.id, selected[1]] as const);
+              }
+              return entries;
+            }
+            const status = await computePresetStatus(instance, instance, null);
+            return [[instance.id, status] as const];
+          })
+      )
+    ).flat();
     setPresetPackageStatuses(Object.fromEntries(nextEntries));
   }
 
@@ -2627,15 +2650,35 @@ function Launcher() {
   const goSettings = useStableCallback(() => navigatePage("settings"));
   const goServers = useStableCallback(() => navigatePage("servers"));
   const goInstances = useStableCallback(() => navigatePage("instances"));
-  const onLaunchInstance = useStableCallback(async (id: string) => {
+  const goContent = useStableCallback(() => navigatePage("content"));
+  const onLaunchInstance = useStableCallback(async (id: string, gameVersion?: string) => {
     const target = instances.find((item) => item.id === id);
     if (!target) return;
+    if (gameVersion && target.launcherVersionType === "NOVA") {
+      setSelectedNovaGameVersion(gameVersion);
+    }
     setSelected(id);
-    await launchTarget(target);
+    const effective =
+      target.launcherVersionType === "NOVA"
+        ? buildNovaEffectiveInstance(target, gameVersion || selectedNovaGameVersion || target.baseVersion)
+        : target;
+    await launchTarget(effective);
   });
-  const onOpenInstanceSettings = useStableCallback((id: string) => {
+  const onOpenInstanceSettings = useStableCallback((id: string, gameVersion?: string) => {
+    const target = instances.find((item) => item.id === id);
+    if (gameVersion && target?.launcherVersionType === "NOVA") {
+      setSelectedNovaGameVersion(gameVersion);
+    }
     setSelected(id);
     navigatePage("instance-settings");
+  });
+  const onOpenInstanceContent = useStableCallback((id: string, gameVersion?: string) => {
+    const target = instances.find((item) => item.id === id);
+    if (gameVersion && target?.launcherVersionType === "NOVA") {
+      setSelectedNovaGameVersion(gameVersion);
+    }
+    setSelected(id);
+    navigatePage("content");
   });
   const onInstanceRepair = useStableCallback(() => {
     if (current) void repairInstance(current.id);
@@ -2697,6 +2740,8 @@ function Launcher() {
     onRemoveInstance: stableRemoveInstance,
     onLaunchInstance,
     onOpenInstanceSettings,
+    onOpenInstanceContent,
+    onGoContent: goContent,
     onInstanceRepair,
     onInstanceDelete,
     onInstanceDuplicate,
@@ -2785,7 +2830,7 @@ function Launcher() {
           opacity={settings.backgroundOpacity}
           blur={settings.backgroundBlur}
         />
-        <WindowTitleBar authenticated={authenticated} onClose={stableCloseWindow} />
+        <WindowTitleBar version={currentLauncherVersion} onClose={stableCloseWindow} />
 
         {authenticated ? (
           <div className="relative z-10 flex h-full w-full flex-1 pt-10">

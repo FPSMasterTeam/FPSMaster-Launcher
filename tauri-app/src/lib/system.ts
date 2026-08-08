@@ -3,6 +3,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { getAllWebviewWindows, WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import type { JdkEnsureResult, Locale } from "../types";
+import { IS_MAC } from "../utils/platform";
 
 const MONITOR_LABEL_PREFIX = "runtime-monitor-";
 
@@ -69,7 +70,11 @@ export async function openMonitor(
     height: 720,
     minWidth: 760,
     minHeight: 520,
-    decorations: false,
+    // macOS keeps native decorations (rounded corners + traffic lights overlaying
+    // the custom title bar); other platforms draw fully custom chrome.
+    ...(IS_MAC
+      ? { decorations: true, titleBarStyle: "overlay" as const, hiddenTitle: true }
+      : { decorations: false }),
     url: `/?${params.toString()}`
   });
 
