@@ -26,7 +26,6 @@ import {
   useState
 } from "react";
 import Button from "../components/Button";
-import Card from "../components/Card";
 import Select from "../components/Select";
 import { LOCALE_OPTIONS, useI18n } from "../i18n";
 import type {
@@ -41,6 +40,14 @@ import type {
   ThemeMode
 } from "../types";
 import { resolveBackgroundAssetUrl } from "../utils/launcher";
+
+type SettingsTab =
+  | "account"
+  | "runtime"
+  | "general"
+  | "appearance"
+  | "background"
+  | "updates";
 
 type SettingsPageProps = {
   settings: Settings;
@@ -163,21 +170,10 @@ function SettingsPage({
       { id: "rose", swatch: "#e4578f" },
       { id: "amber", swatch: "#e2a62a" },
       { id: "sky", swatch: "#23a3d8" },
-      { id: "lime", swatch: "#77c043" },
-      { id: "custom", swatch: settings.customAccentHex }
+      { id: "lime", swatch: "#77c043" }
     ],
-    [settings.customAccentHex]
+    []
   );
-  const presetAccentOptions = useMemo(
-    () => accentOptions.filter((accent) => accent.id !== "custom"),
-    [accentOptions]
-  );
-  const activeAccentColor =
-    settings.themeAccent === "background"
-      ? settings.customAccentHex
-      : (accentOptions.find((accent) => accent.id === settings.themeAccent)?.swatch ?? "#25b87a");
-  const activeThemeLabel = t(`settings.theme.${settings.themeMode}` as const);
-  const activeAccentLabel = t(`settings.accent.${settings.themeAccent}` as const);
 
   const activeBackgroundUrl = resolveBackgroundAssetUrl(settings);
   const hasBackground = activeBackgroundUrl.trim() !== "";
@@ -368,72 +364,34 @@ function SettingsPage({
     return [{ code: normalizedCurrent, name: normalizedCurrent }, ...items];
   }, [settings.launcherUpdateChannel, launcherUpdateChannels]);
 
-  const settingsShellRef = useRef<HTMLDivElement>(null);
   const navSections = useMemo(() => {
-    const items: { id: string; label: string; icon: ReactNode }[] = [];
+    const items: { id: SettingsTab; label: string; icon: ReactNode }[] = [];
     if (launcherUser) {
       items.push({
-        id: "settings-account",
+        id: "account",
         label: t("settings.launcherAuth.title"),
         icon: <User size={15} />
       });
     }
-    items.push({
-      id: "settings-runtime",
-      label: t("settings.runtimeConfig"),
-      icon: <Cpu size={15} />
-    });
-    items.push({
-      id: "settings-general",
-      label: t("settings.general"),
-      icon: <Monitor size={15} />
-    });
-    items.push({
-      id: "settings-appearance",
-      label: t("settings.themeMode"),
-      icon: <Palette size={15} />
-    });
-    items.push({
-      id: "settings-background",
-      label: t("settings.background"),
-      icon: <ImagePlus size={15} />
-    });
-    items.push({
-      id: "settings-updates",
-      label: t("settings.launcherUpdates"),
-      icon: <Download size={15} />
-    });
+    items.push({ id: "runtime", label: t("settings.runtimeConfig"), icon: <Cpu size={15} /> });
+    items.push({ id: "general", label: t("settings.general"), icon: <Monitor size={15} /> });
+    items.push({ id: "appearance", label: t("settings.themeMode"), icon: <Palette size={15} /> });
+    items.push({ id: "background", label: t("settings.background"), icon: <ImagePlus size={15} /> });
+    items.push({ id: "updates", label: t("settings.launcherUpdates"), icon: <Download size={15} /> });
     return items;
   }, [launcherUser, t]);
-  const [activeSection, setActiveSection] = useState("settings-runtime");
 
-  useEffect(() => {
-    const root = settingsShellRef.current;
-    if (!root) return;
-    const els = navSections
-      .map((section) => document.getElementById(section.id))
-      .filter((el): el is HTMLElement => Boolean(el));
-    if (els.length === 0) return;
-    const observer = new IntersectionObserver(
-      (entries) => {
-        const visible = entries
-          .filter((entry) => entry.isIntersecting)
-          .sort((a, b) => a.boundingClientRect.top - b.boundingClientRect.top);
-        if (visible[0]) setActiveSection(visible[0].target.id);
-      },
-      { root, rootMargin: "-12% 0px -70% 0px", threshold: 0 }
-    );
-    els.forEach((el) => observer.observe(el));
-    return () => observer.disconnect();
-  }, [navSections]);
+  const [selectedTab, setSelectedTab] = useState<SettingsTab>("runtime");
+  // If the account tab disappears (logout) while selected, fall back to the first tab
+  // at render time — no effect needed.
+  const activeTab: SettingsTab = navSections.some((section) => section.id === selectedTab)
+    ? selectedTab
+    : (navSections[0]?.id ?? "runtime");
 
-  const scrollToSection = (id: string) => {
-    document.getElementById(id)?.scrollIntoView({ behavior: "smooth", block: "start" });
-    setActiveSection(id);
-  };
+  const activeLabel = navSections.find((section) => section.id === activeTab)?.label ?? "";
 
   return (
-    <div className="page-shell" ref={settingsShellRef}>
+    <div className="page-shell">
       <header className="page-header mb-6">
         <div className="page-header-main">
           <p className="page-eyebrow">{t("nav.settings")}</p>
@@ -448,8 +406,8 @@ function SettingsPage({
             <button
               key={section.id}
               type="button"
-              onClick={() => scrollToSection(section.id)}
-              className={`settings-nav-item ${activeSection === section.id ? "is-active" : ""}`}
+              onClick={() => setSelectedTab(section.id)}
+              className={`settings-nav-item ${activeTab === section.id ? "is-active" : ""}`}
             >
               {section.icon}
               <span>{section.label}</span>
@@ -457,83 +415,69 @@ function SettingsPage({
           ))}
         </nav>
 
-        <div className="settings-content">
-          {launcherUser ? (
-            <section id="settings-account" className="settings-section">
-              <Card
-                as="section"
-                variant="strong"
-                className="page-card rounded-[10px]"
-                interactive={false}
-              >
-                <SectionTitle
-                  icon={<User size={18} className="text-[var(--mc-grass)]" />}
-                  title={t("settings.launcherAuth.title")}
-                  subtitle={t("settings.launcherAuth.subtitle")}
-                />
-                <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
-                  <div>
-                    <p className="field-label !mb-1">{t("settings.launcherAuth.loggedInAs")}</p>
-                    <p className="mt-1 text-base font-semibold text-[var(--text-primary)]">
-                      {launcherUser.username || launcherUser.email || launcherUser.id || "-"}
-                    </p>
-                  </div>
+        <div className="settings-panel">
+          <div>
+            <h2 className="section-title">{activeLabel}</h2>
+          </div>
+
+          {activeTab === "account" && launcherUser && (
+            <div className="settings-group">
+              <div className="settings-row">
+                <div className="settings-row-main">
+                  <p className="settings-row-title">{t("settings.launcherAuth.loggedInAs")}</p>
+                  <p className="settings-row-hint">
+                    {t("settings.launcherAuth.subtitle")}
+                  </p>
+                  <p className="mt-2 text-base font-semibold text-[var(--text-primary)]">
+                    {launcherUser.username || launcherUser.email || launcherUser.id || "-"}
+                  </p>
+                </div>
+                <div className="settings-row-control">
                   <Button
                     variant="ghost"
                     size="sm"
-                    className="gap-2 self-start"
+                    className="gap-2"
                     onClick={onLogoutLauncherAccount}
                   >
                     <LogOut size={14} />
                     {t("settings.launcherAuth.logout")}
                   </Button>
                 </div>
-              </Card>
-            </section>
-          ) : null}
+              </div>
+            </div>
+          )}
 
-          <section id="settings-runtime" className="settings-section">
-            <Card
-              as="section"
-              variant="strong"
-              className="page-card page-card-roomy rounded-[10px]"
-              interactive={false}
-            >
-              <SectionTitle
-                icon={<Cpu size={18} className="text-[var(--mc-grass)]" />}
-                title={t("settings.runtimeConfig")}
-                subtitle={t("settings.runtimeConfigDesc")}
-              />
-              <div className="field-grid field-grid-two">
-                <div className="md:col-span-2">
-                  <FieldLabel>{t("settings.gameDirectory")}</FieldLabel>
-                  <div className="flex gap-2">
-                    <input
-                      type="text"
-                      value={settings.gameDir}
-                      onChange={(event) => handleGameDirChange(event.target.value)}
-                      className={`ui-input ${gameDirError ? "border-[var(--accent-danger)]" : ""}`}
-                    />
-                    <Button
-                      variant="secondary"
-                      size="sm"
-                      className="gap-2 shrink-0"
-                      onClick={handleSelectGameDir}
-                    >
-                      <FolderOpen size={14} />
-                      {t("settings.browse") || "Browse"}
-                    </Button>
-                  </div>
-                  {gameDirError && (
-                    <p className="mt-1 text-xs text-[var(--accent-danger)]">{gameDirError}</p>
-                  )}
+          {activeTab === "runtime" && (
+            <div className="settings-group">
+              <div className="settings-row is-stacked">
+                <div className="settings-row-main">
+                  <p className="settings-row-title">{t("settings.gameDirectory")}</p>
+                  <p className="settings-row-hint">{t("settings.runtimeConfigDesc")}</p>
                 </div>
+                <div className="settings-row-control">
+                  <input
+                    type="text"
+                    value={settings.gameDir}
+                    onChange={(event) => handleGameDirChange(event.target.value)}
+                    className={`ui-input ${gameDirError ? "border-[var(--accent-danger)]" : ""}`}
+                  />
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    className="shrink-0 gap-2"
+                    onClick={handleSelectGameDir}
+                  >
+                    <FolderOpen size={14} />
+                    {t("settings.browse") || "Browse"}
+                  </Button>
+                </div>
+                {gameDirError && <p className="settings-error">{gameDirError}</p>}
               </div>
 
-              <div className="surface-panel surface-panel-soft mt-6 rounded-[10px] p-4">
-                <div className="mb-2 flex items-center justify-between">
-                  <FieldLabel>{t("settings.heapAllocation")}</FieldLabel>
-                  <span className="font-mono text-sm font-semibold text-[var(--mc-grass)]">
+              <div className="settings-row is-stacked">
+                <div className="flex items-center justify-between gap-4">
+                  <p className="settings-row-title">{t("settings.heapAllocation")}</p>
+                  <span className="text-data text-sm font-semibold text-[var(--mc-grass)]">
                     {settings.maxMemoryMb} MB
                   </span>
                 </div>
@@ -546,461 +490,357 @@ function SettingsPage({
                   onChange={(event) => onClampMemory(event.target.value)}
                   className="h-2 w-full cursor-pointer appearance-none rounded-lg bg-[var(--bg-secondary)] accent-[var(--mc-grass)]"
                 />
-                <div className="mt-1 flex justify-between text-[10px] font-semibold uppercase text-[var(--text-muted)]">
+                <div className="flex justify-between text-[10px] font-semibold uppercase text-[var(--text-muted)]">
                   <span>1 GB</span>
                   <span>16 GB</span>
                 </div>
               </div>
-            </Card>
-          </section>
+            </div>
+          )}
 
-          <section id="settings-general" className="settings-section">
-            <Card
-              as="section"
-              variant="frost"
-              className="page-card page-card-roomy rounded-[10px]"
-              interactive={false}
-            >
-              <SectionTitle
-                icon={<Monitor size={18} className="text-[var(--mc-grass)]" />}
-                title={t("settings.general")}
-                subtitle={t("settings.behaviorAppearance")}
-              />
-              <div className="field-grid field-grid-two mb-5">
-                <div>
-                  <FieldLabel>{t("settings.language")}</FieldLabel>
-                  <Select
-                    value={locale}
-                    onValueChange={(value) => setLocale(value as "en-US" | "zh-CN")}
-                  >
-                    <Select.Trigger className="ui-select-trigger">
-                      <Select.Value />
-                    </Select.Trigger>
-                    <Select.Content>
-                      {LOCALE_OPTIONS.map((item) => (
-                        <Select.Item key={item} value={item}>
-                          {t(`language.${item}` as const)}
-                        </Select.Item>
-                      ))}
-                    </Select.Content>
-                  </Select>
+          {activeTab === "general" && (
+            <>
+              <div className="settings-group">
+                <div className="settings-row">
+                  <div className="settings-row-main">
+                    <p className="settings-row-title">{t("settings.language")}</p>
+                  </div>
+                  <div className="settings-row-control w-48">
+                    <Select
+                      value={locale}
+                      onValueChange={(value) => setLocale(value as "en-US" | "zh-CN")}
+                    >
+                      <Select.Trigger className="ui-select-trigger w-full">
+                        <Select.Value />
+                      </Select.Trigger>
+                      <Select.Content>
+                        {LOCALE_OPTIONS.map((item) => (
+                          <Select.Item key={item} value={item}>
+                            {t(`language.${item}` as const)}
+                          </Select.Item>
+                        ))}
+                      </Select.Content>
+                    </Select>
+                  </div>
                 </div>
 
-                <div>
-                  <FieldLabel>{t("settings.downloadSource")}</FieldLabel>
-                  <Select
-                    value={settings.downloadSource}
-                    onValueChange={(value) =>
-                      onChange({ ...settings, downloadSource: value as DownloadSource })
-                    }
-                  >
-                    <Select.Trigger className="ui-select-trigger">
-                      <Select.Value />
-                    </Select.Trigger>
-                    <Select.Content>
-                      {downloadSources.map((source) => (
-                        <Select.Item key={source} value={source}>
-                          {t(`settings.downloadSource.${source}` as const)}
-                        </Select.Item>
-                      ))}
-                    </Select.Content>
-                  </Select>
+                <div className="settings-row">
+                  <div className="settings-row-main">
+                    <p className="settings-row-title">{t("settings.downloadSource")}</p>
+                  </div>
+                  <div className="settings-row-control w-56">
+                    <Select
+                      value={settings.downloadSource}
+                      onValueChange={(value) =>
+                        onChange({ ...settings, downloadSource: value as DownloadSource })
+                      }
+                    >
+                      <Select.Trigger className="ui-select-trigger w-full">
+                        <Select.Value />
+                      </Select.Trigger>
+                      <Select.Content>
+                        {downloadSources.map((source) => (
+                          <Select.Item key={source} value={source}>
+                            {t(`settings.downloadSource.${source}` as const)}
+                          </Select.Item>
+                        ))}
+                      </Select.Content>
+                    </Select>
+                  </div>
                 </div>
 
-                <div>
-                  <FieldLabel>{t("settings.downloadThreads")}</FieldLabel>
-                  <input
-                    className="ui-input"
-                    type="number"
-                    min={1}
-                    max={32}
-                    step={1}
-                    value={settings.downloadThreads}
-                    onChange={(event) =>
-                      onChange({
-                        ...settings,
-                        downloadThreads: Math.max(1, Math.min(32, Number(event.target.value) || 1))
-                      })
-                    }
-                  />
-                  <p className="mt-1 text-xs text-[var(--text-muted)]">
-                    {t("settings.downloadThreadsHint")}
-                  </p>
+                <div className="settings-row">
+                  <div className="settings-row-main">
+                    <p className="settings-row-title">{t("settings.downloadThreads")}</p>
+                    <p className="settings-row-hint">{t("settings.downloadThreadsHint")}</p>
+                  </div>
+                  <div className="settings-row-control">
+                    <input
+                      className="ui-input w-24 text-center"
+                      type="number"
+                      min={1}
+                      max={32}
+                      step={1}
+                      value={settings.downloadThreads}
+                      onChange={(event) =>
+                        onChange({
+                          ...settings,
+                          downloadThreads: Math.max(1, Math.min(32, Number(event.target.value) || 1))
+                        })
+                      }
+                    />
+                  </div>
                 </div>
               </div>
 
-              <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
-                <ToggleRow
+              <div className="settings-group">
+                <SettingToggleRow
                   title={t("settings.keepOpen")}
-                  subtitle={t("settings.keepOpenDesc")}
+                  hint={t("settings.keepOpenDesc")}
                   enabled={!settings.hideMainOnLaunch}
                   onToggle={() =>
                     onChange({ ...settings, hideMainOnLaunch: !settings.hideMainOnLaunch })
                   }
                 />
-                <ToggleRow
+                <SettingToggleRow
                   title={t("settings.minimizeToTray")}
-                  subtitle={t("settings.minimizeToTrayDesc")}
+                  hint={t("settings.minimizeToTrayDesc")}
                   enabled={settings.minimizeToTray}
                   onToggle={() =>
                     onChange({ ...settings, minimizeToTray: !settings.minimizeToTray })
                   }
                 />
-                <ToggleRow
+                <SettingToggleRow
                   title={t("settings.launchOnStartup")}
-                  subtitle={t("settings.launchOnStartupDesc")}
+                  hint={t("settings.launchOnStartupDesc")}
                   enabled={settings.launchOnStartup}
                   onToggle={() =>
                     onChange({ ...settings, launchOnStartup: !settings.launchOnStartup })
                   }
                 />
               </div>
-            </Card>
-          </section>
+            </>
+          )}
 
-          <section id="settings-appearance" className="settings-section">
-            <Card
-              as="section"
-              variant="frost"
-              className="page-card page-card-roomy rounded-[10px]"
-              interactive={false}
-            >
-              <SectionTitle
-                icon={<Palette size={18} className="text-[var(--mc-grass)]" />}
-                title={t("settings.themeMode")}
-                subtitle={t("settings.behaviorAppearance")}
-              />
-              <div className="space-y-5">
-                <div className="surface-panel surface-panel-soft rounded-[10px] p-4 md:p-5">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <span className="badge badge-muted normal-case tracking-normal">
-                      {activeThemeLabel}
-                    </span>
-                    <span className="badge badge-muted normal-case tracking-normal inline-flex gap-2">
-                      <span
-                        className="h-2.5 w-2.5 rounded-full"
-                        style={{ backgroundColor: activeAccentColor }}
+          {activeTab === "appearance" && (
+            <>
+              <div className="settings-group">
+                <div className="settings-row">
+                  <div className="settings-row-main">
+                    <p className="settings-row-title">{t("settings.themeMode")}</p>
+                  </div>
+                  <div className="settings-row-control">
+                    <div className="segment-control !p-1">
+                      {themeModes.map((mode) => (
+                        <button
+                          key={mode}
+                          type="button"
+                          onClick={() => onChange({ ...settings, themeMode: mode })}
+                          className={`segment-chip !min-h-8 gap-2 px-3 ${settings.themeMode === mode ? "is-active" : ""}`}
+                        >
+                          {mode === "dark" ? <MoonStar size={14} /> : <SunMedium size={14} />}
+                          {t(`settings.theme.${mode}` as const)}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="settings-row is-stacked">
+                  <div className="settings-row-main">
+                    <p className="settings-row-title">{t("settings.themeAccent")}</p>
+                    <p className="settings-row-hint">{t("settings.customAccentHint")}</p>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-3">
+                    {accentOptions.map((accent) => (
+                      <button
+                        key={accent.id}
+                        type="button"
+                        title={t(`settings.accent.${accent.id}` as const)}
+                        aria-label={t(`settings.accent.${accent.id}` as const)}
+                        onClick={() => {
+                          setAccentError("");
+                          onChange({ ...settings, themeAccent: accent.id });
+                        }}
+                        className={`accent-swatch ${settings.themeAccent === accent.id ? "is-active" : ""}`}
+                        style={{ backgroundColor: accent.swatch }}
                       />
-                      {activeAccentLabel}
-                    </span>
-                  </div>
-
-                  <div className="mt-4">
-                    <FieldLabel>{t("settings.themeMode")}</FieldLabel>
-                    <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
-                      {themeModes.map((mode) => {
-                        const selected = settings.themeMode === mode;
-                        const isDark = mode === "dark";
-                        return (
-                          <button
-                            key={mode}
-                            type="button"
-                            onClick={() => onChange({ ...settings, themeMode: mode })}
-                            className={`theme-option-card ${selected ? "is-active" : ""}`}
-                          >
-                            <div className="flex items-center justify-between gap-3">
-                              <div className="flex items-center gap-3">
-                                <span
-                                  className={`icon-tile h-9 w-9 rounded-[8px] ${selected ? "border-[rgba(var(--accent-rgb),0.24)] bg-[rgba(var(--accent-rgb),0.12)]" : ""}`}
-                                >
-                                  {isDark ? (
-                                    <MoonStar size={16} className="text-[var(--text-primary)]" />
-                                  ) : (
-                                    <SunMedium size={16} className="text-[var(--text-primary)]" />
-                                  )}
-                                </span>
-                                <div>
-                                  <p className="text-sm font-semibold text-[var(--text-primary)]">
-                                    {t(`settings.theme.${mode}` as const)}
-                                  </p>
-                                </div>
-                              </div>
-                              <span
-                                className={`selection-indicator ${selected ? "is-active" : ""}`}
-                              />
-                            </div>
-                          </button>
-                        );
-                      })}
-                    </div>
-                  </div>
-
-                  <div className="mt-5">
-                    <label className="mb-3 flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-[var(--text-muted)]">
-                      <Palette size={14} />
-                      {t("settings.themeAccent")}
-                    </label>
-                    <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-4">
-                      {presetAccentOptions.map((accent) => {
-                        const selected = settings.themeAccent === accent.id;
-                        return (
-                          <button
-                            key={accent.id}
-                            type="button"
-                            onClick={() => {
-                              setAccentError("");
-                              onChange({ ...settings, themeAccent: accent.id });
-                            }}
-                            className={`theme-option-card ${selected ? "is-active" : ""}`}
-                          >
-                            <div className="flex items-center gap-3">
-                              <span
-                                className="h-8 w-8 rounded-full border border-[rgba(255,255,255,0.1)]"
-                                style={{ backgroundColor: accent.swatch }}
-                              />
-                              <div className="min-w-0">
-                                <p className="truncate text-sm font-medium text-[var(--text-primary)]">
-                                  {t(`settings.accent.${accent.id}` as const)}
-                                </p>
-                              </div>
-                            </div>
-                          </button>
-                        );
-                      })}
-                    </div>
-                  </div>
-
-                  <div className="surface-panel mt-5 rounded-[8px] p-4">
+                    ))}
                     <button
                       type="button"
+                      title={t("settings.customAccent")}
+                      aria-label={t("settings.customAccent")}
                       onClick={() => {
                         setAccentError("");
                         onChange({ ...settings, themeAccent: "custom" });
                       }}
-                      className="flex w-full items-center justify-between gap-3 text-left"
-                    >
-                      <div>
-                        <p className="text-sm font-semibold text-[var(--text-primary)]">
-                          {t("settings.customAccent")}
-                        </p>
-                        <p className="mt-1 text-xs text-[var(--text-muted)]">
-                          {t("settings.customAccentHint")}
-                        </p>
-                      </div>
-                      <div className="flex items-center gap-3">
-                        <span
-                          className="h-8 w-8 rounded-full border border-[rgba(255,255,255,0.1)]"
-                          style={{ backgroundColor: settings.customAccentHex }}
-                        />
-                        <span
-                          className={`selection-indicator ${settings.themeAccent === "custom" ? "is-active" : ""}`}
-                        />
-                      </div>
-                    </button>
-
-                    {settings.themeAccent === "custom" ? (
-                      <div className="mt-4 grid grid-cols-1 gap-3 border-t border-[rgba(255,255,255,0.1)] pt-4 md:grid-cols-[88px_minmax(0,1fr)]">
-                        <div>
-                          <label className="field-label">{t("settings.customAccent")}</label>
-                          <input
-                            type="color"
-                            value={settings.customAccentHex}
-                            onChange={(event) => applyCustomAccent(event.target.value)}
-                            className="h-11 w-full cursor-pointer rounded-[8px] border border-[rgba(255,255,255,0.1)] bg-[var(--bg-elevated)] p-1"
-                            aria-label={t("settings.customAccent")}
-                          />
-                        </div>
-                        <div>
-                          <label className="field-label">{t("settings.customAccentHex")}</label>
-                          <input
-                            type="text"
-                            value={customAccentDraft}
-                            onChange={(event) => setCustomAccentDraft(event.target.value)}
-                            onBlur={commitCustomAccentDraft}
-                            onKeyDown={onCustomAccentKeyDown}
-                            className="ui-input"
-                          />
-                        </div>
-                      </div>
-                    ) : null}
-                  </div>
-
-                  <div className="surface-panel mt-5 rounded-[8px] p-4">
-                    <button
-                      type="button"
-                      onClick={activateBackgroundAccent}
-                      className="flex w-full items-center justify-between gap-3 text-left"
-                    >
-                      <div>
-                        <p className="text-sm font-semibold text-[var(--text-primary)]">
-                          {t("settings.backgroundAccent")}
-                        </p>
-                        <p className="mt-1 text-xs text-[var(--text-muted)]">
-                          {t("settings.backgroundAccentHint")}
-                        </p>
-                      </div>
-                      <div className="flex items-center gap-3">
-                        <span
-                          className="h-8 w-8 rounded-full border border-[rgba(255,255,255,0.1)]"
-                          style={{ backgroundColor: settings.customAccentHex }}
-                        />
-                        <span
-                          className={`selection-indicator ${settings.themeAccent === "background" ? "is-active" : ""}`}
-                        />
-                      </div>
-                    </button>
-
-                    {settings.themeAccent === "background" ? (
-                      <div className="mt-4 flex flex-wrap items-center gap-3 border-t border-[rgba(255,255,255,0.1)] pt-4">
-                        <Button
-                          variant="secondary"
-                          size="sm"
-                          className="gap-2"
-                          disabled={!hasBackground || backgroundAccentLoading}
-                          onClick={activateBackgroundAccent}
-                        >
-                          <Palette size={14} />
-                          {backgroundAccentLoading
-                            ? t("settings.backgroundAccentLoading")
-                            : t("settings.backgroundAccentRefresh")}
-                        </Button>
-                        <span className="text-xs text-[var(--text-muted)]">
-                          {settings.customAccentHex}
-                        </span>
-                      </div>
-                    ) : null}
-                  </div>
-
-                  {accentError ? (
-                    <p className="text-xs text-[var(--accent-danger)]">{accentError}</p>
-                  ) : null}
-                </div>
-              </div>
-            </Card>
-          </section>
-
-          <section id="settings-background" className="settings-section">
-            <Card
-              as="section"
-              variant="frost"
-              className="page-card page-card-roomy rounded-[10px]"
-              interactive={false}
-            >
-              <SectionTitle
-                icon={<ImagePlus size={18} className="text-[var(--mc-grass)]" />}
-                title={t("settings.background")}
-                subtitle={t("settings.backgroundDesc")}
-              />
-
-              <div className="space-y-4">
-                <div>
-                  <FieldLabel>{t("settings.backgroundMode")}</FieldLabel>
-                  <div className="segment-control w-fit">
-                    <button
-                      type="button"
-                      onClick={() => switchBackgroundSource("local")}
-                      className={`segment-chip ${settings.backgroundSource === "local" ? "is-active" : ""}`}
-                    >
-                      {t("settings.backgroundMode.local")}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => switchBackgroundSource("web-random")}
-                      className={`segment-chip ${settings.backgroundSource === "web-random" ? "is-active" : ""}`}
-                    >
-                      {t("settings.backgroundMode.web")}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => void switchBackgroundSource("system")}
-                      className={`segment-chip ${settings.backgroundSource === "system" ? "is-active" : ""}`}
-                    >
-                      {t("settings.backgroundMode.system")}
-                    </button>
-                  </div>
-                </div>
-
-                <Card variant="soft" className="overflow-hidden rounded-[10px]" interactive={false}>
-                  {hasBackground ? (
-                    <div
-                      className="h-28 w-full bg-cover bg-center bg-no-repeat"
-                      style={{ backgroundImage: `url("${activeBackgroundUrl}")` }}
+                      className={`accent-swatch ${settings.themeAccent === "custom" ? "is-active" : ""}`}
+                      style={{
+                        background: `conic-gradient(from 180deg, ${settings.customAccentHex}, #2b7fff, #e4578f, ${settings.customAccentHex})`
+                      }}
                     />
-                  ) : (
-                    <div className="flex h-28 items-center justify-center text-sm text-[var(--text-muted)]">
-                      {t("settings.backgroundNoImage")}
+                  </div>
+                  {settings.themeAccent === "custom" && (
+                    <div className="grid grid-cols-[88px_minmax(0,1fr)] gap-3">
+                      <input
+                        type="color"
+                        value={settings.customAccentHex}
+                        onChange={(event) => applyCustomAccent(event.target.value)}
+                        className="h-11 w-full cursor-pointer rounded-[8px] border border-[var(--border-medium)] bg-[var(--bg-elevated)] p-1"
+                        aria-label={t("settings.customAccent")}
+                      />
+                      <input
+                        type="text"
+                        value={customAccentDraft}
+                        onChange={(event) => setCustomAccentDraft(event.target.value)}
+                        onBlur={commitCustomAccentDraft}
+                        onKeyDown={onCustomAccentKeyDown}
+                        className="ui-input"
+                        aria-label={t("settings.customAccentHex")}
+                      />
                     </div>
                   )}
-                </Card>
-
-                <input
-                  ref={backgroundInputRef}
-                  type="file"
-                  accept="image/*"
-                  className="hidden"
-                  onChange={(event) => void handleBackgroundFile(event)}
-                />
-                <div className="flex gap-2">
-                  {settings.backgroundSource === "local" ? (
-                    <Button
-                      variant="secondary"
-                      size="sm"
-                      className="flex-1 gap-2"
-                      onClick={() => backgroundInputRef.current?.click()}
-                    >
-                      <ImagePlus size={14} />
-                      {t("settings.backgroundUpload")}
-                    </Button>
-                  ) : settings.backgroundSource === "web-random" ? (
-                    <Button
-                      variant="secondary"
-                      size="sm"
-                      className="flex-1 gap-2"
-                      onClick={refreshRandomWebBackground}
-                    >
-                      <Globe size={14} />
-                      {t("settings.backgroundRefreshWeb")}
-                    </Button>
-                  ) : (
-                    <Button
-                      variant="secondary"
-                      size="sm"
-                      className="flex-1 gap-2"
-                      onClick={() => void switchBackgroundSource("system")}
-                    >
-                      <Monitor size={14} />
-                      {t("settings.backgroundRefreshSystem")}
-                    </Button>
-                  )}
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className="gap-2"
-                    disabled={!hasBackground}
-                    onClick={() =>
-                      onChange(
-                        settings.backgroundSource === "web-random"
-                          ? { ...settings, backgroundWebUrl: "" }
-                          : { ...settings, backgroundImage: "" }
-                      )
-                    }
-                  >
-                    <Trash2 size={14} />
-                    {t("settings.backgroundClear")}
-                  </Button>
                 </div>
 
-                {settings.backgroundSource === "web-random" ? (
-                  <div>
-                    <FieldLabel>{t("settings.backgroundUrl")}</FieldLabel>
-                    <input
-                      type="url"
-                      value={settings.backgroundWebUrl}
-                      onChange={(event) => handleBackgroundWebUrlChange(event.target.value)}
-                      onBlur={commitBackgroundWebUrl}
-                      onKeyDown={onBackgroundWebUrlKeyDown}
-                      className="ui-input"
-                      placeholder="https://picsum.photos/1920/1080?random=..."
+                <div className="settings-row">
+                  <div className="settings-row-main">
+                    <p className="settings-row-title">{t("settings.backgroundAccent")}</p>
+                    <p className="settings-row-hint">{t("settings.backgroundAccentHint")}</p>
+                  </div>
+                  <div className="settings-row-control">
+                    <span
+                      className={`accent-swatch ${settings.themeAccent === "background" ? "is-active" : ""}`}
+                      style={{ backgroundColor: settings.customAccentHex }}
                     />
-                    <p className="mt-1 text-xs text-[var(--text-muted)]">
-                      {t("settings.backgroundUrlHint")}
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      className="gap-2"
+                      disabled={backgroundAccentLoading}
+                      onClick={activateBackgroundAccent}
+                    >
+                      <Palette size={14} />
+                      {backgroundAccentLoading
+                        ? t("settings.backgroundAccentLoading")
+                        : t("settings.backgroundAccentRefresh")}
+                    </Button>
+                  </div>
+                </div>
+              </div>
+              {accentError && <p className="settings-error">{accentError}</p>}
+            </>
+          )}
+
+          {activeTab === "background" && (
+            <>
+              <div className="settings-group">
+                <div className="settings-row">
+                  <div className="settings-row-main">
+                    <p className="settings-row-title">{t("settings.backgroundMode")}</p>
+                    <p className="settings-row-hint">
+                      {settings.backgroundSource === "web-random"
+                        ? t("settings.backgroundWebHint")
+                        : settings.backgroundSource === "system"
+                          ? t("settings.backgroundSystemHint")
+                          : t("settings.backgroundHint")}
                     </p>
                   </div>
-                ) : null}
+                  <div className="settings-row-control">
+                    <div className="segment-control !p-1">
+                      <button
+                        type="button"
+                        onClick={() => void switchBackgroundSource("local")}
+                        className={`segment-chip !min-h-8 px-3 ${settings.backgroundSource === "local" ? "is-active" : ""}`}
+                      >
+                        {t("settings.backgroundMode.local")}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void switchBackgroundSource("web-random")}
+                        className={`segment-chip !min-h-8 px-3 ${settings.backgroundSource === "web-random" ? "is-active" : ""}`}
+                      >
+                        {t("settings.backgroundMode.web")}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void switchBackgroundSource("system")}
+                        className={`segment-chip !min-h-8 px-3 ${settings.backgroundSource === "system" ? "is-active" : ""}`}
+                      >
+                        {t("settings.backgroundMode.system")}
+                      </button>
+                    </div>
+                  </div>
+                </div>
 
-                <div>
-                  <div className="mb-1 flex items-center justify-between">
-                    <FieldLabel>{t("settings.backgroundOpacity")}</FieldLabel>
+                <div className="settings-row is-stacked">
+                  <div className="settings-preview">
+                    {hasBackground ? (
+                      <div
+                        className="h-32 w-full bg-cover bg-center bg-no-repeat"
+                        style={{ backgroundImage: `url("${activeBackgroundUrl}")` }}
+                      />
+                    ) : (
+                      <div className="flex h-32 items-center justify-center text-sm text-[var(--text-muted)]">
+                        {t("settings.backgroundNoImage")}
+                      </div>
+                    )}
+                  </div>
+                  <input
+                    ref={backgroundInputRef}
+                    type="file"
+                    accept="image/*"
+                    className="hidden"
+                    onChange={(event) => void handleBackgroundFile(event)}
+                  />
+                  <div className="flex gap-2">
+                    {settings.backgroundSource === "local" ? (
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        className="flex-1 gap-2"
+                        onClick={() => backgroundInputRef.current?.click()}
+                      >
+                        <ImagePlus size={14} />
+                        {t("settings.backgroundUpload")}
+                      </Button>
+                    ) : settings.backgroundSource === "web-random" ? (
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        className="flex-1 gap-2"
+                        onClick={refreshRandomWebBackground}
+                      >
+                        <Globe size={14} />
+                        {t("settings.backgroundRefreshWeb")}
+                      </Button>
+                    ) : (
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        className="flex-1 gap-2"
+                        onClick={() => void switchBackgroundSource("system")}
+                      >
+                        <Monitor size={14} />
+                        {t("settings.backgroundRefreshSystem")}
+                      </Button>
+                    )}
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="gap-2"
+                      disabled={!hasBackground}
+                      onClick={() =>
+                        onChange(
+                          settings.backgroundSource === "web-random"
+                            ? { ...settings, backgroundWebUrl: "" }
+                            : { ...settings, backgroundImage: "" }
+                        )
+                      }
+                    >
+                      <Trash2 size={14} />
+                      {t("settings.backgroundClear")}
+                    </Button>
+                  </div>
+                  {settings.backgroundSource === "web-random" && (
+                    <div>
+                      <p className="settings-row-title mb-2">{t("settings.backgroundUrl")}</p>
+                      <input
+                        type="url"
+                        value={settings.backgroundWebUrl}
+                        onChange={(event) => handleBackgroundWebUrlChange(event.target.value)}
+                        onBlur={commitBackgroundWebUrl}
+                        onKeyDown={onBackgroundWebUrlKeyDown}
+                        className="ui-input"
+                        placeholder="https://picsum.photos/1920/1080?random=..."
+                      />
+                      <p className="settings-row-hint mt-1">{t("settings.backgroundUrlHint")}</p>
+                    </div>
+                  )}
+                </div>
+
+                <div className="settings-row is-stacked">
+                  <div className="flex items-center justify-between gap-4">
+                    <p className="settings-row-title">{t("settings.backgroundOpacity")}</p>
                     <span className="text-data text-xs font-semibold text-[var(--text-secondary)]">
                       {settings.backgroundOpacity}%
                     </span>
@@ -1025,9 +865,9 @@ function SettingsPage({
                   />
                 </div>
 
-                <div>
-                  <div className="mb-1 flex items-center justify-between">
-                    <FieldLabel>{t("settings.backgroundBlur")}</FieldLabel>
+                <div className="settings-row is-stacked">
+                  <div className="flex items-center justify-between gap-4">
+                    <p className="settings-row-title">{t("settings.backgroundBlur")}</p>
                     <span className="text-data text-xs font-semibold text-[var(--text-secondary)]">
                       {settings.backgroundBlur}px
                     </span>
@@ -1048,185 +888,160 @@ function SettingsPage({
                     className="h-2 w-full cursor-pointer appearance-none rounded-lg bg-[var(--bg-secondary)] accent-[var(--mc-grass)] disabled:cursor-not-allowed disabled:opacity-50"
                   />
                 </div>
-
-                <p className="text-xs leading-5 text-[var(--text-muted)]">
-                  {settings.backgroundSource === "web-random"
-                    ? t("settings.backgroundWebHint")
-                    : settings.backgroundSource === "system"
-                      ? t("settings.backgroundSystemHint")
-                      : t("settings.backgroundHint")}
-                </p>
-                {backgroundError && (
-                  <p className="text-xs text-[var(--accent-danger)]">{backgroundError}</p>
-                )}
               </div>
-            </Card>
-          </section>
+              {backgroundError && <p className="settings-error">{backgroundError}</p>}
+            </>
+          )}
 
-          <section id="settings-updates" className="settings-section">
-            <Card
-              as="section"
-              variant="strong"
-              className="page-card rounded-[10px]"
-              interactive={false}
-            >
-              <SectionTitle
-                icon={<Download size={18} className="text-[var(--mc-grass)]" />}
-                title={t("settings.launcherUpdates")}
-                subtitle={t("settings.launcherUpdatesDesc")}
-              />
-              <div className="space-y-4">
-                <div>
-                  <FieldLabel>{t("settings.launcherUpdateChannel")}</FieldLabel>
-                  <Select
-                    value={settings.launcherUpdateChannel}
-                    onValueChange={(value) =>
-                      onChange({ ...settings, launcherUpdateChannel: value })
-                    }
-                  >
-                    <Select.Trigger className="ui-select-trigger">
-                      <Select.Value />
-                    </Select.Trigger>
-                    <Select.Content>
-                      {availableLauncherChannels.map((item) => (
-                        <Select.Item key={item.code} value={item.code}>
-                          {item.name}
-                        </Select.Item>
-                      ))}
-                    </Select.Content>
-                  </Select>
+          {activeTab === "updates" && (
+            <>
+              <div className="settings-group">
+                <div className="settings-row">
+                  <div className="settings-row-main">
+                    <p className="settings-row-title">{t("settings.launcherUpdateChannel")}</p>
+                    <p className="settings-row-hint">{t("settings.launcherUpdatesDesc")}</p>
+                  </div>
+                  <div className="settings-row-control w-48">
+                    <Select
+                      value={settings.launcherUpdateChannel}
+                      onValueChange={(value) =>
+                        onChange({ ...settings, launcherUpdateChannel: value })
+                      }
+                    >
+                      <Select.Trigger className="ui-select-trigger w-full">
+                        <Select.Value />
+                      </Select.Trigger>
+                      <Select.Content>
+                        {availableLauncherChannels.map((item) => (
+                          <Select.Item key={item.code} value={item.code}>
+                            {item.name}
+                          </Select.Item>
+                        ))}
+                      </Select.Content>
+                    </Select>
+                  </div>
                 </div>
 
-                <div className="grid grid-cols-3 gap-2">
-                  <InfoTile
-                    label={t("settings.launcherCurrentVersion")}
-                    value={launcherCurrentVersion}
-                  />
-                  <InfoTile
-                    label={t("settings.launcherUpdateStatus")}
-                    value={
-                      launcherUpdateAvailable
-                        ? t("settings.launcherUpdateStatusAvailable")
-                        : t("settings.launcherUpdateStatusUpToDate")
-                    }
-                    tone={launcherUpdateAvailable ? "highlight" : "default"}
-                  />
-                  <InfoTile
-                    label={t("settings.launcherUpdatePublishedAt")}
-                    value={launcherUpdatePublishedAt}
-                  />
-                </div>
+                <InfoRow
+                  label={t("settings.launcherCurrentVersion")}
+                  value={launcherCurrentVersion}
+                />
+                <InfoRow
+                  label={t("settings.launcherUpdateStatus")}
+                  value={
+                    launcherUpdateAvailable
+                      ? t("settings.launcherUpdateStatusAvailable")
+                      : t("settings.launcherUpdateStatusUpToDate")
+                  }
+                  highlight={launcherUpdateAvailable}
+                />
+                <InfoRow
+                  label={t("settings.launcherUpdatePublishedAt")}
+                  value={launcherUpdatePublishedAt}
+                />
+              </div>
 
-                {launcherUpdate && launcherUpdateAvailable ? (
-                  <div className="surface-panel rounded-[10px] p-4">
-                    <p className="text-sm font-semibold text-[var(--text-primary)]">
-                      {t("settings.launcherUpdateAvailable", { version: launcherUpdate.version })}
-                    </p>
-                    <p className="mt-1 text-xs leading-5 text-[var(--text-muted)]">
-                      {launcherUpdate.mandatory
-                        ? t("settings.launcherUpdateMandatory")
-                        : t("settings.launcherUpdateOptional")}
-                    </p>
-
-                    <div className="mt-3 grid grid-cols-2 gap-2">
-                      <InfoTile
-                        label={t("settings.launcherUpdateTarget")}
-                        value={launcherUpdate.target}
-                      />
-                      <InfoTile
-                        label={t("settings.launcherUpdatePublishedAt")}
-                        value={formatPublishedAt(
-                          launcherUpdate.publishedAt,
-                          t("settings.launcherUpdateUnknownDate")
-                        )}
-                      />
+              {launcherUpdate && launcherUpdateAvailable && (
+                <div className="settings-group">
+                  <div className="settings-row is-stacked">
+                    <div className="settings-row-main">
+                      <p className="settings-row-title">
+                        {t("settings.launcherUpdateAvailable", { version: launcherUpdate.version })}
+                      </p>
+                      <p className="settings-row-hint">
+                        {launcherUpdate.mandatory
+                          ? t("settings.launcherUpdateMandatory")
+                          : t("settings.launcherUpdateOptional")}
+                      </p>
                     </div>
-
+                    <div className="flex flex-wrap gap-2">
+                      <span className="badge badge-muted normal-case tracking-normal">
+                        {t("settings.launcherUpdateTarget")}: {launcherUpdate.target}
+                      </span>
+                      {launcherUpdate.fileSize ? (
+                        <span className="badge badge-muted normal-case tracking-normal">
+                          {t("settings.launcherUpdateSize", {
+                            size: formatFileSize(launcherUpdate.fileSize)
+                          })}
+                        </span>
+                      ) : null}
+                    </div>
                     {launcherUpdate.notes && (
-                      <p className="mt-3 whitespace-pre-wrap text-xs leading-6 text-[var(--text-secondary)]">
+                      <p className="whitespace-pre-wrap text-xs leading-6 text-[var(--text-secondary)]">
                         {launcherUpdate.notes.trim()}
                       </p>
                     )}
-                    {(launcherUpdate.fileSize || launcherUpdate.checksum) && (
-                      <div className="mt-3 flex flex-wrap gap-2 text-[11px] text-[var(--text-muted)]">
-                        {launcherUpdate.fileSize ? (
-                          <span className="badge badge-muted normal-case tracking-normal">
-                            {t("settings.launcherUpdateSize", {
-                              size: formatFileSize(launcherUpdate.fileSize)
-                            })}
-                          </span>
-                        ) : null}
-                        {launcherUpdate.checksum ? (
-                          <span className="badge badge-muted normal-case tracking-normal">
-                            SHA-256: <span className="text-data">{launcherUpdate.checksum}</span>
-                          </span>
-                        ) : null}
-                      </div>
+                    {launcherUpdate.checksum && (
+                      <p className="text-data break-all text-[11px] text-[var(--text-muted)]">
+                        SHA-256: {launcherUpdate.checksum}
+                      </p>
                     )}
                     {launcherUpdateDownload && (
-                      <p className="mt-3 text-xs text-[var(--text-secondary)]">
+                      <p className="text-xs text-[var(--text-secondary)]">
                         {t("settings.launcherUpdateDownloaded", {
                           file: launcherUpdateDownload.fileName
                         })}
                       </p>
                     )}
                   </div>
-                ) : null}
+                </div>
+              )}
 
-                {!launcherUpdateAvailable && hasLauncherUpdateNotes && showLauncherUpdateNotes ? (
-                  <div className="surface-panel rounded-[10px] p-4">
+              {!launcherUpdateAvailable && hasLauncherUpdateNotes && showLauncherUpdateNotes && (
+                <div className="settings-group">
+                  <div className="settings-row">
                     <p className="whitespace-pre-wrap text-xs leading-6 text-[var(--text-secondary)]">
                       {launcherUpdate?.notes?.trim()}
                     </p>
                   </div>
-                ) : null}
+                </div>
+              )}
 
-                <div className="flex flex-wrap gap-2">
+              <div className="flex flex-wrap gap-2">
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  className="gap-2"
+                  disabled={launcherUpdateChecking || launcherUpdateDownloading}
+                  onClick={onRefreshLauncherUpdate}
+                >
+                  <RefreshCw size={14} />
+                  {launcherUpdateChecking
+                    ? t("settings.launcherUpdateChecking")
+                    : t("settings.launcherUpdateCheck")}
+                </Button>
+                {launcherUpdateAvailable && (
                   <Button
-                    variant="secondary"
+                    variant="primary"
                     size="sm"
                     className="gap-2"
-                    disabled={launcherUpdateChecking || launcherUpdateDownloading}
-                    onClick={onRefreshLauncherUpdate}
+                    disabled={!launcherUpdateAvailable || launcherUpdateDownloading}
+                    onClick={onInstallLauncherUpdate}
                   >
-                    <RefreshCw size={14} />
-                    {launcherUpdateChecking
-                      ? t("settings.launcherUpdateChecking")
-                      : t("settings.launcherUpdateCheck")}
+                    <Download size={14} />
+                    {launcherUpdateDownloading
+                      ? t("settings.launcherUpdatePreparing")
+                      : t("settings.launcherUpdateInstall")}
                   </Button>
-                  {launcherUpdateAvailable ? (
-                    <Button
-                      variant="primary"
-                      size="sm"
-                      className="gap-2"
-                      disabled={!launcherUpdateAvailable || launcherUpdateDownloading}
-                      onClick={onInstallLauncherUpdate}
-                    >
-                      <Download size={14} />
-                      {launcherUpdateDownloading
-                        ? t("settings.launcherUpdatePreparing")
-                        : t("settings.launcherUpdateInstall")}
-                    </Button>
-                  ) : null}
-                  {!launcherUpdateAvailable && hasLauncherUpdateNotes ? (
-                    <button
-                      type="button"
-                      className="text-sm text-[var(--mc-grass)] transition-opacity hover:opacity-80"
-                      onClick={() => setShowLauncherUpdateNotes((prev) => !prev)}
-                    >
-                      {showLauncherUpdateNotes
-                        ? t("settings.launcherUpdateHideNotes")
-                        : t("settings.launcherUpdateViewNotes")}
-                    </button>
-                  ) : null}
-                </div>
+                )}
+                {!launcherUpdateAvailable && hasLauncherUpdateNotes && (
+                  <button
+                    type="button"
+                    className="text-sm text-[var(--mc-grass)] transition-opacity hover:opacity-80"
+                    onClick={() => setShowLauncherUpdateNotes((prev) => !prev)}
+                  >
+                    {showLauncherUpdateNotes
+                      ? t("settings.launcherUpdateHideNotes")
+                      : t("settings.launcherUpdateViewNotes")}
+                  </button>
+                )}
               </div>
-            </Card>
-          </section>
+            </>
+          )}
         </div>
       </div>
 
-      <footer className="mt-8 flex flex-wrap justify-end gap-3 border-t border-white/5 pt-6">
+      <footer className="mt-8 flex flex-wrap justify-end gap-3 border-t border-[var(--border-subtle)] pt-6">
         <Button variant="ghost" className="gap-2" onClick={onReset}>
           <RefreshCw size={16} /> {t("settings.resetDefaults")}
         </Button>
@@ -1235,67 +1050,51 @@ function SettingsPage({
   );
 }
 
-function SectionTitle({
-  icon,
-  title,
-  subtitle
+function InfoRow({
+  label,
+  value,
+  highlight = false
 }: {
-  icon: ReactNode;
-  title: string;
-  subtitle: string;
+  label: string;
+  value: string;
+  highlight?: boolean;
 }) {
   return (
-    <div className="mb-5 flex items-start gap-3">
-      <div className="icon-tile h-10 w-10 rounded-[8px] shrink-0">{icon}</div>
-      <div className="min-w-0">
-        <h2 className="section-title text-base">{title}</h2>
-        <p className="section-subtitle !mt-1">{subtitle}</p>
+    <div className="settings-row">
+      <div className="settings-row-main">
+        <p className="settings-row-title">{label}</p>
+      </div>
+      <div className="settings-row-control">
+        <span
+          className={`text-data text-sm font-semibold ${highlight ? "text-[var(--mc-grass)]" : "text-[var(--text-secondary)]"}`}
+        >
+          {value}
+        </span>
       </div>
     </div>
   );
 }
 
-function FieldLabel({ children }: { children: string }) {
-  return <label className="field-label">{children}</label>;
-}
-
-function InfoTile({
-  label,
-  value,
-  tone = "default"
-}: {
-  label: string;
-  value: string;
-  tone?: "default" | "highlight";
-}) {
-  return (
-    <div
-      className={`metric-tile ${tone === "highlight" ? "!border-[rgba(var(--accent-rgb),0.24)] !bg-[rgba(var(--accent-rgb),0.1)]" : ""}`}
-    >
-      <p className="metric-label">{label}</p>
-      <p className="metric-value truncate">{value}</p>
-    </div>
-  );
-}
-
-function ToggleRow({
+function SettingToggleRow({
   title,
-  subtitle,
+  hint,
   enabled,
   onToggle
 }: {
   title: string;
-  subtitle: string;
+  hint: string;
   enabled: boolean;
   onToggle: () => void;
 }) {
   return (
-    <button className="toggle-card" onClick={onToggle} type="button">
-      <div>
-        <h4 className="text-sm font-semibold text-[var(--text-primary)]">{title}</h4>
-        <p className="text-xs text-[var(--text-muted)]">{subtitle}</p>
+    <button className="settings-row w-full text-left" onClick={onToggle} type="button">
+      <div className="settings-row-main">
+        <p className="settings-row-title">{title}</p>
+        <p className="settings-row-hint">{hint}</p>
       </div>
-      <div className={`toggle-switch ${enabled ? "is-on" : ""}`} />
+      <div className="settings-row-control">
+        <div className={`toggle-switch ${enabled ? "is-on" : ""}`} />
+      </div>
     </button>
   );
 }

@@ -5,6 +5,7 @@ import Button from "../components/Button";
 import Card from "../components/Card";
 import { resolvePresetVersionId } from "../constants";
 import { useI18n } from "../i18n";
+import { novaVersionIdFor } from "../lib/novaTargets";
 import type { Instance, InstanceSectionEntry } from "../types";
 
 type InstanceSection =
@@ -67,9 +68,14 @@ function InstanceSettingsPage({
   const { t } = useI18n();
   const [sections, setSections] = useState<Record<InstanceSection, SectionState>>(emptySectionState);
   const [activeTab, setActiveTab] = useState<InstanceSection>("saves");
-  const effectiveVersionId = instance && instance.preset
-    ? (resolvePresetVersionId(instance.id) ?? instance.versionId)
-    : instance?.versionId ?? "";
+  // Nova uses per-game-version profiles (FPSMaster-Nova-<gv>); other presets keep their static ids.
+  const effectiveVersionId = !instance
+    ? ""
+    : instance.preset && instance.launcherVersionType === "NOVA"
+      ? novaVersionIdFor(instance.baseVersion)
+      : instance.preset
+        ? (resolvePresetVersionId(instance.id) ?? instance.versionId)
+        : instance.versionId;
   const useForgeEnabled = instance?.useForge !== false;
   const useOptiFineEnabled = instance?.useOptiFine !== false;
 
@@ -237,8 +243,19 @@ function InstanceSettingsPage({
       <header className="page-header mb-6">
         <div className="page-header-main">
           <p className="page-eyebrow">{t("instanceFiles.title")}</p>
-          <h1 className="page-title">{instance.name}</h1>
-          <p className="page-subtitle">{t("instanceFiles.subtitle", { name: instance.name })}</p>
+          <h1 className="page-title">
+            {instance.launcherVersionType === "NOVA"
+              ? `Nova ${instance.baseVersion}`
+              : instance.name}
+          </h1>
+          <p className="page-subtitle">
+            {t("instanceFiles.subtitle", {
+              name:
+                instance.launcherVersionType === "NOVA"
+                  ? `Nova ${instance.baseVersion}`
+                  : instance.name
+            })}
+          </p>
           <div className="mt-3 flex flex-wrap gap-2">
             <MetaBadge>{instance.baseVersion}</MetaBadge>
             <MetaBadge>{loaderLabel(instance.loader, t)}</MetaBadge>

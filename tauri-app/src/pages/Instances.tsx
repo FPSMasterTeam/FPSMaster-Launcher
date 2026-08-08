@@ -1,25 +1,57 @@
-import { Lock, Plus, Search, Settings, Play, Swords, Gamepad2 } from "lucide-react";
+import { AlertTriangle, Lock, Package, Play, Plus, Puzzle, Search, Settings } from "lucide-react";
 import { memo, useMemo, useState } from "react";
 import Button from "../components/Button";
 import Card from "../components/Card";
+import { NOVA_DEFAULT_GAME_VERSION } from "../constants";
 import { useI18n } from "../i18n";
-import type { Instance, LauncherUser, LauncherVersion, PresetPackageStatus } from "../types";
+import {
+  buildNovaEffectiveInstance,
+  isNovaTestingGameVersion,
+  listNovaVersionTargets
+} from "../lib/novaTargets";
+import type {
+  Instance,
+  LauncherUser,
+  LauncherVersion,
+  LauncherVersionMap,
+  PresetPackageStatus
+} from "../types";
 import { resolveInstanceIconPath } from "../utils/launcher";
+
+type InstanceScope = "ALL" | "EDGE" | "NOVA" | "VANILLA" | "EXTREME";
+type InstanceCategory = Exclude<InstanceScope, "ALL">;
+
+type GridTarget = {
+  key: string;
+  category: InstanceCategory;
+  instance: Instance;
+  gameVersion?: string;
+  catalogVersion?: LauncherVersion | null;
+  label: string;
+  subtitle: string;
+};
 
 type InstancesPageProps = {
   instances: Instance[];
-  launcherVersions: Record<"EDGE" | "NOVA", LauncherVersion | null>;
+  launcherVersions: LauncherVersionMap;
+  novaGameVersions: Record<string, LauncherVersion>;
+  selectedNovaGameVersion: string;
+  onSelectNovaGameVersion: (gameVersion: string) => void;
   busy: boolean;
   launchingInstanceId: string | null;
   launchProgressPercent: number | null;
   launchProgressText: string;
   user: LauncherUser | null;
   presetPackageStatuses: Record<string, PresetPackageStatus | undefined>;
+  selectedInstanceId: string | null;
   onDelete: (id: string) => void;
   onGoInstall: () => void;
-  onLaunchInstance: (id: string) => void;
-  onOpenInstanceSettings: (id: string) => void;
+  onLaunchInstance: (id: string, gameVersion?: string) => void;
+  onOpenInstanceSettings: (id: string, gameVersion?: string) => void;
+  onOpenInstanceContent: (id: string, gameVersion?: string) => void;
 };
+
+const SCOPES: InstanceScope[] = ["ALL", "EDGE", "NOVA", "EXTREME", "VANILLA"];
 
 function canAccessInstance(_instance: Instance, _user: LauncherUser | null): boolean {
   // All client instances (Edge/Nova/Extreme) are open to every user. Channel-level entitlements
@@ -32,145 +64,219 @@ function canAccessInstance(_instance: Instance, _user: LauncherUser | null): boo
 function InstancesPage({
   instances,
   launcherVersions,
+  novaGameVersions,
+  selectedNovaGameVersion,
+  onSelectNovaGameVersion,
   busy,
   launchingInstanceId,
   launchProgressPercent,
   launchProgressText,
   user,
   presetPackageStatuses,
+  selectedInstanceId,
   onDelete,
   onGoInstall,
   onLaunchInstance,
-  onOpenInstanceSettings
+  onOpenInstanceSettings,
+  onOpenInstanceContent
 }: InstancesPageProps) {
   const { t } = useI18n();
   const [searchQuery, setSearchQuery] = useState("");
+  const [activeScope, setActiveScope] = useState<InstanceScope>("ALL");
+  const [selectedTargetKey, setSelectedTargetKey] = useState<string | null>(null);
 
-  const filteredInstances = useMemo(() => {
-    const keyword = searchQuery.trim().toLowerCase();
-    let result = instances;
-    if (keyword !== "") {
-      result = instances.filter(
-        (instance) =>
-          instance.name.toLowerCase().includes(keyword) ||
-          instance.versionId.toLowerCase().includes(keyword) ||
-          instance.baseVersion.toLowerCase().includes(keyword)
-      );
+  const edgePreset = useMemo(
+    () => instances.find((item) => item.preset && item.launcherVersionType === "EDGE") ?? null,
+    [instances]
+  );
+  const novaPreset = useMemo(
+    () => instances.find((item) => item.preset && item.launcherVersionType === "NOVA") ?? null,
+    [instances]
+  );
+  const extremePreset = useMemo(
+    () => instances.find((item) => item.preset && item.launcherVersionType === "EXTREME") ?? null,
+    [instances]
+  );
+  const vanillaInstances = useMemo(() => instances.filter((item) => !item.preset), [instances]);
+
+  const allTargets = useMemo(() => {
+    const targets: GridTarget[] = [];
+
+    if (edgePreset) {
+      targets.push({
+        key: edgePreset.id,
+        category: "EDGE",
+        instance: edgePreset,
+        label: "Edge",
+        subtitle: `${edgePreset.baseVersion} · ${loaderLabel(edgePreset.loader, t)}`
+      });
     }
-    return result;
-  }, [instances, searchQuery]);
 
-  // Split into FPSMaster and regular instances
-  const fpsMasterInstances = useMemo(
-    () => filteredInstances.filter((i) => i.preset),
-    [filteredInstances]
-  );
-  const regularInstances = useMemo(
-    () => filteredInstances.filter((i) => !i.preset),
-    [filteredInstances]
-  );
+    if (novaPreset) {
+      for (const { gameVersion, catalogVersion } of listNovaVersionTargets(
+        novaGameVersions,
+        selectedNovaGameVersion
+      )) {
+        const effective = buildNovaEffectiveInstance(novaPreset, gameVersion);
+        targets.push({
+          key: `nova:${gameVersion}`,
+          category: "NOVA",
+          instance: effective,
+          gameVersion,
+          catalogVersion,
+          label: `Nova ${gameVersion}`,
+          subtitle: catalogVersion?.versionName ?? gameVersion
+        });
+      }
+    }
 
-  function renderInstanceCard(instance: Instance) {
-    const icon = resolveInstanceIconPath(instance);
-    const presetStatus = presetPackageStatuses[instance.id];
-    const canAccess = canAccessInstance(instance, user);
+    if (extremePreset) {
+      targets.push({
+        key: extremePreset.id,
+        category: "EXTREME",
+        instance: extremePreset,
+        label: "Extreme",
+        subtitle: extremePreset.baseVersion
+      });
+    }
 
-    return (
-      <Card as="article" key={instance.id} variant="frost" className={`page-card page-card-compact flex flex-col rounded-[10px] ${!canAccess ? "opacity-60" : ""}`} interactive={false}>
-        <div className="flex items-center gap-3">
-          <div className="relative shrink-0">
-            <div className="h-14 w-14 overflow-hidden rounded-[8px] border border-white/5 bg-[var(--bg-elevated)]">
-              {icon ? <img src={icon} alt={instance.name} className="h-full w-full object-cover" /> : null}
-              {!canAccess && (
-                <div className="absolute inset-0 flex items-center justify-center bg-black/50">
-                  <Lock size={14} className="text-white/70" />
-                </div>
-              )}
-            </div>
-          </div>
+    for (const instance of vanillaInstances) {
+      targets.push({
+        key: instance.id,
+        category: "VANILLA",
+        instance,
+        label: instance.name,
+        subtitle: `${instance.baseVersion} · ${loaderLabel(instance.loader, t)}`
+      });
+    }
 
-          <div className="min-w-0 flex-1">
-            <div className="flex items-center gap-2">
-              <h3 className={`truncate text-base font-semibold ${!canAccess ? "text-[var(--text-muted)]" : "text-[var(--text-primary)]"}`}>
-                {instance.name}
-              </h3>
-              {!canAccess && <Lock size={12} className="text-[var(--text-muted)] shrink-0" />}
-              {instance.preset && presetStatus && (presetStatus.state === "update-available" || presetStatus.state === "missing") && canAccess && (
-                <span className="badge badge-warning shrink-0 rounded-[5px] px-2 py-1 text-[10px]">
-                  {t("instances.status.updateAvailable")}
-                </span>
-              )}
-              {instance.preset && presetStatus && presetStatus.state === "needs-repair" && canAccess && (
-                <span className="badge shrink-0 rounded-[5px] border-[#ff6b8f]/25 bg-[#ff6b8f]/10 px-2 py-1 text-[10px] text-[#ff6b8f]">
-                  {t("instances.status.needsRepair")}
-                </span>
-              )}
-            </div>
-            <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-[var(--text-secondary)]">
-              <span className="badge badge-muted text-data rounded-[5px] px-2 py-1 text-[10px]">
-                {instance.baseVersion}
-              </span>
-              <span className={`badge rounded-[5px] px-2 py-1 text-[10px] ${
-                instance.loader === "forge"
-                  ? "badge-warning text-amber-400"
-                  : instance.loader === "fabric"
-                    ? "border-cyan-500/30 bg-cyan-500/10 text-cyan-300"
-                    : "badge-muted"
-              }`}>
-                {loaderLabel(instance.loader, t)}
-              </span>
-              {!instance.preset && instance.launcherVersionType && (
-                <span className="text-data text-[var(--text-muted)]">{instance.launcherVersionType}</span>
-              )}
-            </div>
-          </div>
-          <div className="ml-auto flex shrink-0 items-center gap-2">
-            <Button
-              variant="primary"
-              size="sm"
-              className="gap-1"
-              launchProgress={busy && launchingInstanceId === instance.id}
-              launchProgressPercent={busy && launchingInstanceId === instance.id ? launchProgressPercent : null}
-              disabled={busy || !canAccess}
-              onClick={() => onLaunchInstance(instance.id)}
-            >
-              <Play size={14} fill="currentColor" />
-              {busy && launchingInstanceId === instance.id && typeof launchProgressPercent === "number"
-                ? `${launchProgressPercent}%`
-                : t("instances.play")}
-            </Button>
-            <button
-              className="shrink-0 rounded-lg p-2 text-[var(--text-muted)] transition-colors hover:bg-[var(--surface-soft)] hover:text-[var(--text-primary)] disabled:cursor-not-allowed disabled:opacity-50"
-              type="button"
-              onClick={() => onOpenInstanceSettings(instance.id)}
-              disabled={!canAccess}
-              title={t("instances.settings")}
-            >
-              <Settings size={16} />
-            </button>
-          </div>
-        </div>
-        {busy && launchingInstanceId === instance.id && (
-          <p className="mt-2 text-center text-[11px] text-[var(--text-muted)]">{launchProgressText || t("launch.progress.preparing")}</p>
-        )}
-      </Card>
+    return targets;
+  }, [
+    edgePreset,
+    novaPreset,
+    extremePreset,
+    vanillaInstances,
+    novaGameVersions,
+    selectedNovaGameVersion,
+    t
+  ]);
+
+  const scopeCounts = useMemo(() => {
+    const counts: Record<InstanceScope, number> = {
+      ALL: allTargets.length,
+      EDGE: 0,
+      NOVA: 0,
+      EXTREME: 0,
+      VANILLA: 0
+    };
+    for (const target of allTargets) {
+      counts[target.category] += 1;
+    }
+    return counts;
+  }, [allTargets]);
+
+  const scopedTargets = useMemo(() => {
+    if (activeScope === "ALL") return allTargets;
+    return allTargets.filter((target) => target.category === activeScope);
+  }, [allTargets, activeScope]);
+
+  const filteredTargets = useMemo(() => {
+    const keyword = searchQuery.trim().toLowerCase();
+    if (keyword === "") return scopedTargets;
+    return scopedTargets.filter(
+      (target) =>
+        target.label.toLowerCase().includes(keyword) ||
+        target.subtitle.toLowerCase().includes(keyword) ||
+        target.instance.versionId.toLowerCase().includes(keyword) ||
+        target.instance.baseVersion.toLowerCase().includes(keyword) ||
+        (target.gameVersion ?? "").toLowerCase().includes(keyword)
     );
+  }, [scopedTargets, searchQuery]);
+
+  const resolvedSelectedKey = useMemo(() => {
+    if (selectedTargetKey && filteredTargets.some((item) => item.key === selectedTargetKey)) {
+      return selectedTargetKey;
+    }
+    const novaKey = `nova:${selectedNovaGameVersion}`;
+    if (
+      (activeScope === "ALL" || activeScope === "NOVA") &&
+      filteredTargets.some((item) => item.key === novaKey) &&
+      selectedInstanceId &&
+      novaPreset?.id === selectedInstanceId
+    ) {
+      return novaKey;
+    }
+    if (selectedInstanceId && filteredTargets.some((item) => item.key === selectedInstanceId)) {
+      return selectedInstanceId;
+    }
+    return filteredTargets[0]?.key ?? null;
+  }, [
+    selectedTargetKey,
+    filteredTargets,
+    activeScope,
+    selectedNovaGameVersion,
+    selectedInstanceId,
+    novaPreset?.id
+  ]);
+
+  const selectedTarget =
+    filteredTargets.find((item) => item.key === resolvedSelectedKey) ?? filteredTargets[0] ?? null;
+
+  function selectTarget(target: GridTarget) {
+    setSelectedTargetKey(target.key);
+    if (target.category === "NOVA" && target.gameVersion) {
+      onSelectNovaGameVersion(target.gameVersion);
+    }
   }
+
+  function scopeLabel(scope: InstanceScope): string {
+    if (scope === "ALL") return t("instances.scope.all");
+    if (scope === "EDGE") return t("instances.category.edge");
+    if (scope === "NOVA") return t("instances.category.nova");
+    if (scope === "VANILLA") return t("instances.category.vanilla");
+    return t("instances.category.extreme");
+  }
+
+  function categoryLabel(category: InstanceCategory): string {
+    return scopeLabel(category);
+  }
+
+  // Nova statuses are keyed per game version (`nova:<gv>` — same as target.key);
+  // other presets keep the plain instance-id key.
+  function presetStatusFor(target: GridTarget): PresetPackageStatus | undefined {
+    return target.category === "NOVA"
+      ? presetPackageStatuses[target.key]
+      : presetPackageStatuses[target.instance.id];
+  }
+
+  const selectedIcon = selectedTarget ? resolveInstanceIconPath(selectedTarget.instance) : null;
+  const selectedPresetStatus = selectedTarget ? presetStatusFor(selectedTarget) : undefined;
+  const selectedCanAccess = selectedTarget
+    ? canAccessInstance(selectedTarget.instance, user)
+    : false;
+  const selectedIsLaunching =
+    Boolean(selectedTarget) && busy && launchingInstanceId === selectedTarget!.instance.id;
+  const selectedIsTesting =
+    selectedTarget?.category === "NOVA" &&
+    Boolean(selectedTarget.gameVersion) &&
+    isNovaTestingGameVersion(selectedTarget.gameVersion!);
+  const selectedCatalogRelease =
+    selectedTarget?.catalogVersion ??
+    (selectedTarget?.category === "EDGE"
+      ? launcherVersions.EDGE
+      : selectedTarget?.category === "EXTREME"
+        ? launcherVersions.EXTREME
+        : null);
 
   return (
     <div className="page-shell">
       <header className="page-header mb-6">
         <div className="page-header-main">
           <p className="page-eyebrow">{t("nav.myGames")}</p>
-          <h1 className="page-title">
-            {t("instances.title")}
-          </h1>
+          <h1 className="page-title">{t("instances.title")}</h1>
           <p className="page-subtitle">{t("instances.subtitle")}</p>
         </div>
         <div className="page-header-actions">
-          <Card as="span" variant="frost" className="page-card page-card-compact inline-flex rounded-full px-3 py-1.5 text-xs text-[var(--text-secondary)]" interactive={false}>
-            {t("instances.count", { count: filteredInstances.length })}
-          </Card>
           <Button variant="primary" size="lg" className="gap-2 !rounded-[10px]" onClick={onGoInstall}>
             <Plus size={16} />
             {t("instances.createInstall")}
@@ -178,112 +284,325 @@ function InstancesPage({
         </div>
       </header>
 
-      <div className="search-field mb-5">
-        <Search className="search-field-icon" size={18} />
-        <input
-          type="text"
-          placeholder={t("instances.searchPlaceholder")}
-          value={searchQuery}
-          onChange={(event) => setSearchQuery(event.target.value)}
-          className="ui-input"
-        />
+      <div className="instances-toolbar mb-5">
+        <div className="instances-scope-tabs" role="tablist" aria-label={t("instances.scope.label")}>
+          {SCOPES.map((scope) => (
+            <button
+              key={scope}
+              type="button"
+              role="tab"
+              aria-selected={activeScope === scope}
+              className={`instances-scope-tab ${activeScope === scope ? "is-active" : ""}`}
+              onClick={() => {
+                setActiveScope(scope);
+                setSelectedTargetKey(null);
+              }}
+            >
+              {scopeLabel(scope)}
+              <span className="instances-scope-tab-count">{scopeCounts[scope]}</span>
+            </button>
+          ))}
+        </div>
+
+        <div className="search-field instances-toolbar-search">
+          <Search className="search-field-icon" size={18} />
+          <input
+            type="text"
+            placeholder={t("instances.searchPlaceholder")}
+            value={searchQuery}
+            onChange={(event) => setSearchQuery(event.target.value)}
+            className="ui-input"
+          />
+        </div>
       </div>
 
-      {/* FPSMaster Instances Section */}
-      {fpsMasterInstances.length > 0 && (
-        <div className="mb-6">
-          <div className="mb-3 flex items-center gap-2 px-1">
-            <Swords size={16} className="text-[var(--mc-grass)]" />
-            <h2 className="text-sm font-semibold uppercase tracking-[0.16em] text-[var(--mc-grass)]">FPSMaster</h2>
-            <span className="badge badge-accent rounded-[5px] px-2 py-1 text-xs normal-case tracking-normal">
-              {fpsMasterInstances.length}
-            </span>
-          </div>
-          <section className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
-            {fpsMasterInstances.map((instance) => renderInstanceCard(instance))}
-          </section>
-        </div>
-      )}
+      <div className="instances-layout">
+        <section className="instances-list-pane">
+          {filteredTargets.length > 0 ? (
+            <div className="instances-list">
+              {filteredTargets.map((target) => {
+                const icon = resolveInstanceIconPath(target.instance);
+                const active = target.key === resolvedSelectedKey;
+                const canAccess = canAccessInstance(target.instance, user);
+                const presetStatus = presetStatusFor(target);
+                const launching = busy && launchingInstanceId === target.instance.id;
+                const testing =
+                  target.category === "NOVA" &&
+                  Boolean(target.gameVersion) &&
+                  isNovaTestingGameVersion(target.gameVersion!);
 
-      {/* Regular Instances Section */}
-      {regularInstances.length > 0 && (
-        <div className="mb-6">
-          <div className="mb-3 flex items-center gap-2 px-1">
-            <Gamepad2 size={16} className="text-[var(--text-secondary)]" />
-            <h2 className="text-sm font-semibold uppercase tracking-[0.16em] text-[var(--text-secondary)]">
-              {t("nav.myGames")}
-            </h2>
-            <span className="badge badge-muted rounded-[5px] px-2 py-1 text-xs normal-case tracking-normal">
-              {regularInstances.length}
-            </span>
-          </div>
-          <section className="grid grid-cols-1 gap-4 pb-20 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
-            {regularInstances.map((instance) => renderInstanceCard(instance))}
-          </section>
-        </div>
-      )}
+                return (
+                  <div
+                    key={target.key}
+                    role="button"
+                    tabIndex={0}
+                    className={`instances-row ${active ? "is-active" : ""} ${!canAccess ? "is-locked" : ""}`}
+                    onClick={() => selectTarget(target)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter" || event.key === " ") {
+                        event.preventDefault();
+                        selectTarget(target);
+                      }
+                    }}
+                  >
+                    <div className="instances-row-icon">
+                      {icon ? (
+                        <img src={icon} alt="" />
+                      ) : (
+                        <Package size={20} />
+                      )}
+                      {!canAccess && (
+                        <span className="instances-row-lock">
+                          <Lock size={12} />
+                        </span>
+                      )}
+                    </div>
 
-      {/* Empty state */}
-      {filteredInstances.length === 0 && (
-        <div className="empty-state py-20">
-          <Gamepad2 size={48} className="empty-state-icon" />
-          <p className="empty-state-title">{t("instances.noInstances")}</p>
-          <p className="empty-state-text">{t("instances.noInstancesHint")}</p>
-        </div>
-      )}
+                    <div className="instances-row-main">
+                      <div className="instances-row-title-line">
+                        <span className="instances-row-title">{target.label}</span>
+                        {testing && (
+                          <span className="badge badge-warning shrink-0 rounded-[5px] px-1.5 py-0.5 text-[10px]">
+                            {t("home.novaTestingBadge")}
+                          </span>
+                        )}
+                        {target.category !== "VANILLA" &&
+                          presetStatus &&
+                          (presetStatus.state === "update-available" ||
+                            presetStatus.state === "missing") &&
+                          canAccess && (
+                            <span className="badge badge-warning shrink-0 rounded-[5px] px-1.5 py-0.5 text-[10px]">
+                              {t("instances.status.updateAvailable")}
+                            </span>
+                          )}
+                        {target.category !== "VANILLA" &&
+                          presetStatus?.state === "needs-repair" &&
+                          canAccess && (
+                            <span className="badge badge-danger shrink-0 rounded-[5px] px-1.5 py-0.5 text-[10px]">
+                              {t("instances.status.needsRepair")}
+                            </span>
+                          )}
+                      </div>
+                      <p className="instances-row-sub">
+                        {launching
+                          ? typeof launchProgressPercent === "number"
+                            ? `${launchProgressText || t("launch.progress.preparing")} · ${launchProgressPercent}%`
+                            : launchProgressText || t("launch.progress.preparing")
+                          : target.subtitle}
+                      </p>
+                    </div>
+
+                    <button
+                      type="button"
+                      className="instances-row-play"
+                      disabled={busy || !canAccess}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        onLaunchInstance(target.instance.id, target.gameVersion);
+                      }}
+                      title={t("instances.play")}
+                    >
+                      <Play size={14} fill="currentColor" />
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          ) : (
+            <div className="empty-state py-16">
+              <Package size={48} className="empty-state-icon" />
+              <p className="empty-state-title">
+                {activeScope === "VANILLA" ? t("instances.vanillaEmpty") : t("instances.noInstances")}
+              </p>
+              <p className="empty-state-text">
+                {activeScope === "VANILLA"
+                  ? t("instances.vanillaEmptyHint")
+                  : t("instances.noInstancesHint")}
+              </p>
+              {(activeScope === "VANILLA" || activeScope === "ALL") && (
+                <Button
+                  variant="primary"
+                  size="md"
+                  className="mt-4 gap-2 !rounded-[10px]"
+                  onClick={onGoInstall}
+                >
+                  <Plus size={16} />
+                  {t("instances.createInstall")}
+                </Button>
+              )}
+            </div>
+          )}
+        </section>
+
+        <aside className="instances-detail-pane">
+          {selectedTarget ? (
+            <Card
+              variant="frost"
+              className="instances-detail-card page-card rounded-[14px]"
+              interactive={false}
+            >
+              <div className="instances-detail-head">
+                <div className="instances-detail-icon">
+                  {selectedIcon ? (
+                    <img src={selectedIcon} alt="" />
+                  ) : (
+                    <Package size={24} />
+                  )}
+                </div>
+                <div className="instances-detail-head-main">
+                  <p className="instances-detail-kicker">
+                    {categoryLabel(selectedTarget.category)}
+                  </p>
+                  <h3 className="instances-detail-title">{selectedTarget.label}</h3>
+                </div>
+              </div>
+
+              <p className="instances-detail-desc">
+                {selectedTarget.category === "NOVA"
+                  ? t("instances.detail.novaDesc", {
+                      version: selectedTarget.gameVersion ?? NOVA_DEFAULT_GAME_VERSION
+                    })
+                  : selectedTarget.category === "VANILLA"
+                    ? t("instances.detail.vanillaDesc")
+                    : t("instances.detail.presetDesc", {
+                        name: categoryLabel(selectedTarget.category)
+                      })}
+              </p>
+
+              {selectedIsTesting && (
+                <p className="mt-3 inline-flex items-start gap-1.5 text-xs font-medium text-[var(--warning-text)]">
+                  <AlertTriangle size={12} className="mt-0.5 shrink-0" />
+                  {t("home.novaTestingWarning", {
+                    version: selectedTarget.gameVersion ?? selectedNovaGameVersion
+                  })}
+                </p>
+              )}
+
+              <div className="instances-detail-meta mt-4">
+                <MetaChip
+                  label={t("instances.detail.gameVersion")}
+                  value={selectedTarget.instance.baseVersion}
+                />
+                <MetaChip
+                  label={t("instances.detail.loader")}
+                  value={loaderLabel(selectedTarget.instance.loader, t)}
+                />
+                {selectedTarget.category !== "VANILLA" && selectedPresetStatus && (
+                  <MetaChip
+                    label={t("instances.detail.package")}
+                    value={presetStatusLabel(selectedPresetStatus.state, t)}
+                    tone={resolvePresetStatusTone(selectedPresetStatus.state)}
+                  />
+                )}
+                {selectedCatalogRelease?.channel && (
+                  <MetaChip
+                    label={t("instances.packageChannel")}
+                    value={selectedCatalogRelease.channel}
+                  />
+                )}
+              </div>
+
+              {selectedCatalogRelease?.versionName && (
+                <p className="mt-3 text-xs text-[var(--text-muted)]">
+                  {t("instances.detail.release", {
+                    version: selectedCatalogRelease.versionName
+                  })}
+                </p>
+              )}
+
+              {selectedIsLaunching && (
+                <p className="mt-3 text-center text-[11px] text-[var(--text-muted)]">
+                  {launchProgressText || t("launch.progress.preparing")}
+                </p>
+              )}
+
+              <div className="instances-detail-actions">
+                <button
+                  type="button"
+                  className="instances-detail-icon-btn"
+                  disabled={!selectedCanAccess}
+                  onClick={() =>
+                    onOpenInstanceSettings(
+                      selectedTarget.instance.id,
+                      selectedTarget.gameVersion
+                    )
+                  }
+                  title={t("instances.settings")}
+                >
+                  <Settings size={16} />
+                </button>
+                <button
+                  type="button"
+                  className="instances-detail-icon-btn"
+                  disabled={!selectedCanAccess || selectedTarget.category === "EXTREME"}
+                  onClick={() =>
+                    onOpenInstanceContent(
+                      selectedTarget.instance.id,
+                      selectedTarget.gameVersion
+                    )
+                  }
+                  title={t("instances.manageContent")}
+                >
+                  <Puzzle size={16} />
+                </button>
+                <Button
+                  variant="primary"
+                  size="lg"
+                  className="instances-detail-launch gap-2"
+                  launchProgress={selectedIsLaunching}
+                  launchProgressPercent={selectedIsLaunching ? launchProgressPercent : null}
+                  disabled={busy || !selectedCanAccess}
+                  onClick={() =>
+                    onLaunchInstance(selectedTarget.instance.id, selectedTarget.gameVersion)
+                  }
+                >
+                  <Play size={16} fill="currentColor" />
+                  {selectedIsLaunching && typeof launchProgressPercent === "number"
+                    ? `${launchProgressPercent}%`
+                    : t("instances.play")}
+                </Button>
+              </div>
+
+              {selectedTarget.category === "VANILLA" && (
+                <button
+                  type="button"
+                  className="mt-3 w-full text-center text-xs text-[var(--text-muted)] transition-colors hover:text-[var(--accent-danger)]"
+                  onClick={() => onDelete(selectedTarget.instance.id)}
+                >
+                  {t("instances.delete")}
+                </button>
+              )}
+            </Card>
+          ) : (
+            <Card
+              variant="frost"
+              className="instances-detail-card page-card rounded-[14px]"
+              interactive={false}
+            >
+              <p className="text-sm text-[var(--text-muted)]">{t("instances.detail.empty")}</p>
+            </Card>
+          )}
+        </aside>
+      </div>
     </div>
   );
 }
 
-function MiniMeta({ label, value }: { label: string; value: string }) {
+function MetaChip({
+  label,
+  value,
+  tone
+}: {
+  label: string;
+  value: string;
+  tone?: string;
+}) {
   return (
-    <div className="rounded-lg border border-[var(--border-subtle)] bg-[var(--bg-elevated)] px-2.5 py-2">
-      <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--text-muted)]">{label}</p>
-      <p className="mt-1 truncate text-[11px] font-medium text-[var(--text-secondary)]">{value}</p>
+    <div className="instances-meta-chip">
+      <p className="instances-meta-label">{label}</p>
+      <p className={`instances-meta-value ${tone ?? ""}`}>{value}</p>
     </div>
   );
-}
-
-function formatDate(raw?: string | null): string {
-  if (!raw) {
-    return "-";
-  }
-  const value = new Date(raw);
-  if (Number.isNaN(value.getTime())) {
-    return "-";
-  }
-  return value.toLocaleDateString();
-}
-
-function describePresetPackageStatus(
-  status: PresetPackageStatus,
-  t: ReturnType<typeof useI18n>["t"]
-): string {
-  if (status.state === "ready") {
-    return t("instances.packageReady", { version: status.versionTag ?? "-" });
-  }
-  if (status.state === "update-available") {
-    return t("instances.packageUpdateAvailable", { version: status.targetVersionTag ?? status.versionTag ?? "-" });
-  }
-  if (status.state === "needs-repair") {
-    return t("instances.packageNeedsRepair", { version: status.installedVersionTag ?? status.versionTag ?? "-" });
-  }
-  if (status.state === "syncing") {
-    return t("instances.packageSyncing", { version: status.targetVersionTag ?? status.versionTag ?? "-" });
-  }
-  if (status.state === "checking") {
-    return t("instances.packageChecking");
-  }
-  if (status.state === "error") {
-    return t("instances.packageError", { error: status.lastError ?? "-" });
-  }
-  if (status.state === "pending-release") {
-    return t("instances.packagePendingRelease");
-  }
-  if (status.state === "beta") {
-    return t("instances.packageBetaOnly");
-  }
-  return t("instances.packageMissing");
 }
 
 function loaderLabel(
@@ -311,28 +630,12 @@ function presetStatusLabel(
 }
 
 function resolvePresetStatusTone(state: PresetPackageStatus["state"]): string {
-  if (state === "ready") {
-    return "border-[#25b87a]/25 bg-[#25b87a]/10 text-[#25b87a]";
-  }
-  if (state === "update-available") {
-    return "border-amber-500/35 bg-amber-500/10 text-amber-300";
-  }
-  if (state === "needs-repair") {
-    return "border-[#ff6b8f]/25 bg-[#ff6b8f]/10 text-[#ff6b8f]";
-  }
-  if (state === "syncing" || state === "checking") {
-    return "border-cyan-500/35 bg-cyan-500/10 text-cyan-300";
-  }
-  if (state === "error") {
-    return "border-[#ff6b8f]/25 bg-[#ff6b8f]/10 text-[#ff6b8f]";
-  }
-  if (state === "pending-release") {
-    return "border-violet-500/35 bg-violet-500/10 text-violet-300";
-  }
-  if (state === "beta") {
-    return "border-white/10 bg-[var(--surface-soft)] text-[var(--text-secondary)]";
-  }
-  return "border-white/10 bg-[var(--surface-soft)] text-[var(--text-secondary)]";
+  if (state === "ready") return "text-[#25b87a]";
+  if (state === "update-available") return "text-amber-300";
+  if (state === "needs-repair" || state === "error") return "text-[var(--accent-danger)]";
+  if (state === "syncing" || state === "checking") return "text-cyan-300";
+  if (state === "pending-release") return "text-violet-300";
+  return "text-[var(--text-secondary)]";
 }
 
 export default memo(InstancesPage);

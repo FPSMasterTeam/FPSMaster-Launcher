@@ -9455,32 +9455,76 @@ fn fabric_mod_uses_named_namespace(path: &Path) -> Result<bool, String> {
     let mut archive = zip::ZipArchive::new(file)
         .map_err(|e| format!("Invalid Fabric module archive {}: {e}", path.display()))?;
 
-    for index in 0..archive.len() {
-        let mut entry = archive.by_index(index).map_err(|e| e.to_string())?;
-        if entry.name().ends_with('/') {
-            continue;
-        }
-        let Some(enclosed) = entry.enclosed_name().map(|value| value.to_path_buf()) else {
-            continue;
-        };
-        let Some(file_name) = enclosed.file_name().and_then(|value| value.to_str()) else {
-            continue;
-        };
-        if !file_name.ends_with(".accesswidener") {
-            continue;
-        }
-        let mut content = String::new();
-        entry
-            .read_to_string(&mut content)
-            .map_err(|e| format!("Failed to read access widener {}: {e}", path.display()))?;
-        if let Some(first_line) = content.lines().next() {
-            if first_line.split_whitespace().any(|part| part == "named") {
-                return Ok(true);
+    // Multi-version single-jar builds (e.g. Nova) bundle spare access wideners for
+    // other game targets, and those spares may use the `named` namespace. Fabric
+    // only ever loads the widener declared in fabric.mod.json, so only that entry
+    // decides runtime support. `None` = manifest missing/unreadable -> fall back
+    // to the conservative all-entries scan. `Some(None)` = valid manifest that
+    // declares no widener -> nothing is loaded, the jar is fine.
+    let declared_widener: Option<Option<String>> = match archive.by_name("fabric.mod.json") {
+        Ok(mut entry) => {
+            let mut content = String::new();
+            match entry.read_to_string(&mut content) {
+                Ok(_) => match serde_json::from_str::<serde_json::Value>(&content) {
+                    Ok(value) => Some(
+                        value
+                            .get("accessWidener")
+                            .and_then(|item| item.as_str())
+                            .map(|item| item.to_string()),
+                    ),
+                    Err(_) => None,
+                },
+                Err(_) => None,
             }
         }
-    }
+        Err(_) => None,
+    };
 
-    Ok(false)
+    match declared_widener {
+        Some(Some(widener_path)) => {
+            let Ok(mut entry) = archive.by_name(&widener_path) else {
+                return Ok(false);
+            };
+            let mut content = String::new();
+            entry
+                .read_to_string(&mut content)
+                .map_err(|e| format!("Failed to read access widener {}: {e}", path.display()))?;
+            Ok(access_widener_first_line_is_named(&content))
+        }
+        Some(None) => Ok(false),
+        None => {
+            for index in 0..archive.len() {
+                let mut entry = archive.by_index(index).map_err(|e| e.to_string())?;
+                if entry.name().ends_with('/') {
+                    continue;
+                }
+                let Some(enclosed) = entry.enclosed_name().map(|value| value.to_path_buf()) else {
+                    continue;
+                };
+                let Some(file_name) = enclosed.file_name().and_then(|value| value.to_str()) else {
+                    continue;
+                };
+                if !file_name.ends_with(".accesswidener") {
+                    continue;
+                }
+                let mut content = String::new();
+                entry
+                    .read_to_string(&mut content)
+                    .map_err(|e| format!("Failed to read access widener {}: {e}", path.display()))?;
+                if access_widener_first_line_is_named(&content) {
+                    return Ok(true);
+                }
+            }
+            Ok(false)
+        }
+    }
+}
+
+fn access_widener_first_line_is_named(content: &str) -> bool {
+    content
+        .lines()
+        .next()
+        .is_some_and(|line| line.split_whitespace().any(|part| part == "named"))
 }
 
 fn launcher_installed_file_name(path: &str) -> String {
@@ -9700,7 +9744,9 @@ mod tests {
             .start_file("fabric.mod.json", options)
             .expect("fabric.mod.json should be added");
         writer
-            .write_all(br#"{"schemaVersion":1,"id":"fabric-test","version":"1.0.0"}"#)
+            .write_all(
+                br#"{"schemaVersion":1,"id":"fabric-test","version":"1.0.0","accessWidener":"test.accesswidener"}"#,
+            )
             .expect("fabric.mod.json should be written");
         writer
             .start_file("test.accesswidener", options)
@@ -9708,6 +9754,14 @@ mod tests {
         writer
             .write_all(format!("{first_line}\n").as_bytes())
             .expect("access widener should be written");
+        // Spare widener for another game target — never declared in
+        // fabric.mod.json, so it must NOT count against the module.
+        writer
+            .start_file("spare-other-version.accesswidener", options)
+            .expect("spare access widener should be added");
+        writer
+            .write_all(b"accessWidener v1 named\n")
+            .expect("spare access widener should be written");
         writer.finish().expect("test jar should be finalized");
     }
 }

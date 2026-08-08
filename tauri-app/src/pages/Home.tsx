@@ -198,7 +198,7 @@ function HomePage({
   const quickJoinDisabled = busy || launching || !instanceLaunchable;
   const launchAsName = currentMinecraftAccount?.username ?? t("nav.player");
   const isOfflineAccount = !currentMinecraftAccount || currentMinecraftAccount.type === "offline";
-  const quickServers = useMemo(() => launcherServers.slice(0, 4), [launcherServers]);
+  const quickServers = useMemo(() => launcherServers.slice(0, 10), [launcherServers]);
 
   const weeklyHours = launcherDashboard?.weeklyPlaytime?.totalHours ?? 0;
   const sessionCount = launcherDashboard?.stats?.playSessionCount ?? 0;
@@ -236,8 +236,8 @@ function HomePage({
   };
 
   return (
-    <div className="flex h-full flex-col overflow-hidden">
-      <div className="page-shell flex-1">
+    <div className="relative flex h-full flex-col overflow-hidden">
+      <div className="page-shell flex-1 pb-24">
         <header className="page-header mb-6">
           <div className="page-header-main">
             <p className="page-eyebrow">{t("home.welcomeBack")}</p>
@@ -313,255 +313,210 @@ function HomePage({
           </section>
         )}
 
-        <section className="mb-5">
-          <Card variant="frost" className="page-card page-card-roomy rounded-[10px]" interactive={false}>
-            <div className="section-header !mb-5">
-              <div className="section-header-main">
-                <h2 className="section-title">{t("home.selectedInstance")}</h2>
+        <section className="mb-6">
+          <div className="home-instance-card">
+            <div className="icon-tile relative h-16 w-16 rounded-[12px]">
+              {selectedInstanceIcon ? (
+                <img
+                  src={selectedInstanceIcon}
+                  alt={selectedInstance?.name ?? "instance"}
+                  className="h-full w-full object-cover"
+                />
+              ) : (
+                <Gamepad2 size={24} className="text-[var(--text-muted)]" />
+              )}
+              {selectedInstance && !instanceLaunchable && (
+                <div className="absolute inset-0 flex items-center justify-center bg-black/50">
+                  <Lock size={16} className="text-white/70" />
+                </div>
+              )}
+            </div>
+            <div className="min-w-0 flex-1">
+              <p className="truncate text-lg font-bold leading-tight text-[var(--text-primary)]">
+                {selectedInstance ? selectedInstance.name : t("home.noInstance")}
+              </p>
+              <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1.5">
+                {selectedInstance && (
+                  <span className="text-data truncate text-xs text-[var(--text-secondary)]">
+                    {[selectedBaseVersion, selectedLoaderLabel, selectedInstance.launcherVersionType]
+                      .filter(Boolean)
+                      .join(" · ")}
+                  </span>
+                )}
+                <span className="text-xs text-[var(--text-muted)]">
+                  {t("home.loadout.launchAs", { name: launchAsName })}
+                </span>
+                {isOfflineAccount && (
+                  <span className="inline-flex items-center gap-1 text-xs font-medium text-[var(--warning-text)]">
+                    <AlertTriangle size={11} className="shrink-0" />
+                    {t("home.loadout.offlineNote")}
+                  </span>
+                )}
+                {novaSelectedIsTesting && (
+                  <span className="inline-flex items-center gap-1 text-xs font-medium text-[var(--warning-text)]">
+                    <AlertTriangle size={11} className="shrink-0" />
+                    {t("home.novaTestingWarning", { version: selectedNovaGameVersion })}
+                  </span>
+                )}
               </div>
+            </div>
+            <button
+              className="segment-chip !min-h-9 shrink-0 px-4"
+              type="button"
+              onClick={() => setPickerOpen(true)}
+            >
+              {t("home.loadout.change")}
+            </button>
+          </div>
+        </section>
+
+        {quickServers.length > 0 && (
+          <section className="mb-6">
+            <div className="home-strip-label">
+              <Zap size={13} className="text-[var(--mc-grass)]" />
+              <span>{t("home.quickJoin")}</span>
+            </div>
+            <div className="home-server-strip">
+              {quickServers.map((server) => (
+                <button
+                  key={server.id ?? server.address}
+                  type="button"
+                  className="home-server-icon"
+                  disabled={quickJoinDisabled}
+                  title={`${server.name} · ${server.address}`}
+                  aria-label={server.name}
+                  onClick={() => onLaunchToServer(server.address)}
+                >
+                  {server.iconPath ? (
+                    <img src={server.iconPath} alt={server.name} />
+                  ) : (
+                    server.name.slice(0, 1)
+                  )}
+                </button>
+              ))}
               <button
-                className="segment-chip px-4 !min-h-10"
                 type="button"
-                onClick={() => setPickerOpen(true)}
+                className="home-server-more"
+                onClick={onOpenServers}
+                aria-label={t("home.viewAll")}
               >
-                {t("home.loadout.change")}
+                <ArrowRight size={16} />
               </button>
             </div>
+          </section>
+        )}
 
-            <div className="home-loadout">
-              <div className="icon-tile relative h-16 w-16 rounded-[8px]">
-                {selectedInstanceIcon ? (
-                  <img
-                    src={selectedInstanceIcon}
-                    alt={selectedInstance?.name ?? "instance"}
-                    className="h-full w-full object-cover"
-                  />
-                ) : (
-                  <Gamepad2 size={24} className="text-[var(--text-muted)]" />
-                )}
-                {selectedInstance && !instanceLaunchable && (
-                  <div className="absolute inset-0 flex items-center justify-center bg-black/50">
-                    <Lock size={16} className="text-white/70" />
+        {launcherDashboard && (
+          <section className="mb-6">
+            <div className="home-stats-row">
+              <div className="home-stat">
+                <p className="home-stat-label">
+                  <Clock size={12} />
+                  <span>{t("home.stats.weekly")}</span>
+                </p>
+                <p className="home-stat-value text-data">{weeklyHours.toFixed(1)}h</p>
+              </div>
+              <div className="home-stat">
+                <p className="home-stat-label">
+                  <BarChart3 size={12} />
+                  <span>{t("home.profile.sessions")}</span>
+                </p>
+                <p className="home-stat-value text-data">{sessionCount}</p>
+              </div>
+              <div className="home-stat">
+                <p className="home-stat-label">
+                  <TrendingUp size={12} />
+                  <span>{t("home.stats.level")}</span>
+                </p>
+                <div className="flex items-baseline justify-between gap-3">
+                  <p className="home-stat-value text-data">{levelLabel}</p>
+                  {expText && (
+                    <span className="text-data text-[11px] text-[var(--text-muted)]">{expText}</span>
+                  )}
+                </div>
+                {expPercent !== null && (
+                  <div className="home-level-bar mt-2">
+                    <div className="home-level-bar-fill" style={{ width: `${expPercent}%` }} />
                   </div>
                 )}
               </div>
-              <div className="min-w-0 flex-1">
-                <p className="truncate text-xl font-bold leading-tight text-[var(--text-primary)]">
-                  {selectedInstance ? selectedInstance.name : t("home.noInstance")}
-                </p>
-                {selectedInstance && (
-                  <p className="text-data mt-1.5 truncate text-sm text-[var(--text-secondary)]">
-                    {[selectedBaseVersion, selectedLoaderLabel, selectedInstance.launcherVersionType]
-                      .filter(Boolean)
-                      .join("   ·   ")}
-                  </p>
-                )}
-                <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-2">
-                  <span className="text-xs text-[var(--text-muted)]">
-                    {t("home.loadout.launchAs", { name: launchAsName })}
-                  </span>
-                  {isOfflineAccount && (
-                    <span className="inline-flex items-center gap-1.5 text-xs font-medium text-[#f4c15b]">
-                      <AlertTriangle size={12} className="shrink-0" />
-                      {t("home.loadout.offlineNote")}
-                    </span>
-                  )}
-                  {novaSelectedIsTesting && (
-                    <span className="inline-flex items-center gap-1.5 text-xs font-medium text-[#f4c15b]">
-                      <AlertTriangle size={12} className="shrink-0" />
-                      {t("home.novaTestingWarning", { version: selectedNovaGameVersion })}
-                    </span>
-                  )}
-                </div>
-              </div>
-            </div>
-
-            {quickServers.length > 0 && (
-              <div className="home-quickjoin">
-                <div className="home-quickjoin-head">
-                  <Zap size={14} className="text-[var(--mc-grass)]" />
-                  <span>{t("home.quickJoin")}</span>
-                </div>
-                <div className="home-quickjoin-row">
-                  {quickServers.map((server) => (
-                    <button
-                      key={server.id ?? server.address}
-                      type="button"
-                      className="home-join-chip"
-                      disabled={quickJoinDisabled}
-                      title={`${server.name} · ${server.address}`}
-                      onClick={() => onLaunchToServer(server.address)}
-                    >
-                      <span className="home-join-chip-icon">
-                        {server.iconPath ? (
-                          <img src={server.iconPath} alt={server.name} />
-                        ) : (
-                          server.name.slice(0, 1)
-                        )}
-                      </span>
-                      <span className="min-w-0">
-                        <span className="home-join-chip-name truncate">{server.name}</span>
-                        <span className="home-join-chip-mode truncate">{server.mode}</span>
-                      </span>
-                    </button>
-                  ))}
-                  <button
-                    type="button"
-                    className="home-join-more"
-                    onClick={onOpenServers}
-                    aria-label={t("home.viewAll")}
-                  >
-                    <ArrowRight size={16} />
-                  </button>
-                </div>
-              </div>
-            )}
-          </Card>
-        </section>
-
-        {launcherDashboard && (
-          <section className="mb-5 grid gap-3 sm:grid-cols-3">
-            <div className="metric-tile">
-              <p className="metric-label">
-                <Clock size={13} />
-                <span>{t("home.stats.weekly")}</span>
-              </p>
-              <p className="metric-value text-data !text-lg">{weeklyHours.toFixed(1)}h</p>
-            </div>
-            <div className="metric-tile">
-              <p className="metric-label">
-                <BarChart3 size={13} />
-                <span>{t("home.profile.sessions")}</span>
-              </p>
-              <p className="metric-value text-data !text-lg">{sessionCount}</p>
-            </div>
-            <div className="metric-tile">
-              <p className="metric-label">
-                <TrendingUp size={13} />
-                <span>{t("home.stats.level")}</span>
-              </p>
-              <div className="mt-2.5 flex items-center justify-between gap-3">
-                <span className="text-data text-base font-bold text-[var(--text-primary)]">{levelLabel}</span>
-                {expText && (
-                  <span className="text-data text-[11px] text-[var(--text-muted)]">{expText}</span>
-                )}
-              </div>
-              {expPercent !== null && (
-                <div className="home-level-bar mt-2">
-                  <div className="home-level-bar-fill" style={{ width: `${expPercent}%` }} />
-                </div>
-              )}
             </div>
           </section>
         )}
 
         <section>
-          <Card variant="frost" className="page-card page-card-roomy rounded-[10px]" interactive={false}>
-            <div className="section-header">
-              <div className="section-header-main">
-                <h2 className="section-title flex items-center gap-2">
-                  <Calendar size={18} className="text-[var(--mc-grass)]" />
-                  {t("home.latestNews")}
-                </h2>
-                <p className="section-subtitle">{t("home.news.source")}</p>
-              </div>
-              <div className="section-toolbar">
-                <button
-                  className="segment-chip px-4 !min-h-10"
-                  type="button"
-                  disabled={launcherNews.length === 0}
-                  onClick={() => setActiveNews(launcherNews[0] ?? null)}
-                >
-                  {t("home.viewAll")}
-                </button>
-              </div>
+          <div className="section-header">
+            <div className="section-header-main">
+              <h2 className="section-title flex items-center gap-2">
+                <Calendar size={18} className="text-[var(--mc-grass)]" />
+                {t("home.latestNews")}
+              </h2>
+              <p className="section-subtitle">{t("home.news.source")}</p>
             </div>
-            {launcherNews.length > 0 ? (
-              <div className="grid gap-1">
-                {launcherNews.slice(0, 5).map((news) => (
-                  <button
-                    key={news.id ?? news.title}
-                    type="button"
-                    className="home-news-row"
-                    onClick={() => setActiveNews(news)}
-                  >
-                    <span className={`badge shrink-0 ${news.pinned ? "badge-accent" : "badge-muted"}`}>
-                      {news.pinned ? t("home.news.pinnedTag") : t("home.news.tag")}
+            <div className="section-toolbar">
+              <button
+                className="segment-chip !min-h-9 px-4"
+                type="button"
+                disabled={launcherNews.length === 0}
+                onClick={() => setActiveNews(launcherNews[0] ?? null)}
+              >
+                {t("home.viewAll")}
+              </button>
+            </div>
+          </div>
+          {launcherNews.length > 0 ? (
+            <div className="grid gap-1">
+              {launcherNews.slice(0, 5).map((news) => (
+                <button
+                  key={news.id ?? news.title}
+                  type="button"
+                  className="home-news-row"
+                  onClick={() => setActiveNews(news)}
+                >
+                  <span className={`badge shrink-0 ${news.pinned ? "badge-accent" : "badge-muted"}`}>
+                    {news.pinned ? t("home.news.pinnedTag") : t("home.news.tag")}
+                  </span>
+                  <span className="min-w-0 flex-1 truncate text-sm font-medium text-[var(--text-primary)]">
+                    {news.title}
+                  </span>
+                  {news.publishedAt && (
+                    <span className="text-data shrink-0 text-xs text-[var(--text-muted)]">
+                      {new Date(news.publishedAt).toLocaleDateString()}
                     </span>
-                    <span className="min-w-0 flex-1 truncate text-sm font-medium text-[var(--text-primary)]">
-                      {news.title}
-                    </span>
-                    {news.publishedAt && (
-                      <span className="text-data shrink-0 text-xs text-[var(--text-muted)]">
-                        {new Date(news.publishedAt).toLocaleDateString()}
-                      </span>
-                    )}
-                    <ChevronRight size={15} className="shrink-0 text-[var(--text-muted)]" />
-                  </button>
-                ))}
-              </div>
-            ) : (
-              <div className="home-news-empty">
-                <p className="text-sm text-[var(--text-secondary)]">{t("home.news.emptyTitle")}</p>
-                <button type="button" className="home-news-empty-action" onClick={onOpenServers}>
-                  {t("home.news.emptyAction")}
-                  <ArrowRight size={14} />
+                  )}
+                  <ChevronRight size={15} className="shrink-0 text-[var(--text-muted)]" />
                 </button>
-              </div>
-            )}
-          </Card>
+              ))}
+            </div>
+          ) : (
+            <div className="home-news-empty">
+              <p className="text-sm text-[var(--text-secondary)]">{t("home.news.emptyTitle")}</p>
+              <button type="button" className="home-news-empty-action" onClick={onOpenServers}>
+                {t("home.news.emptyAction")}
+                <ArrowRight size={14} />
+              </button>
+            </div>
+          )}
         </section>
       </div>
 
-      <footer className="sticky-footer-bar px-5 py-2.5 xl:px-8">
-        <div className="grid gap-2.5 md:grid-cols-[minmax(0,1fr)_minmax(220px,260px)] md:items-stretch md:gap-3">
-          <button
-            className="surface-list-item group min-h-[48px] w-full rounded-[8px] text-left !gap-2.5 !px-3 !py-2"
-            onClick={() => setPickerOpen(true)}
-            type="button"
-          >
-            <div className="icon-tile relative h-8 w-8 rounded-[10px] border-[rgba(var(--accent-rgb),0.24)]">
-              {selectedInstanceIcon ? (
-                <img src={selectedInstanceIcon} alt={selectedInstance?.name ?? "instance"} className="h-full w-full object-cover" />
-              ) : null}
-              {selectedInstance && !canAccessInstance(selectedInstance, user) && (
-                <div className="absolute inset-0 flex items-center justify-center bg-black/50">
-                  <Lock size={14} className="text-white/70" />
-                </div>
-              )}
-            </div>
-            <div className="min-w-0 flex-1">
-              <p className={`truncate text-[13px] font-semibold leading-tight ${selectedInstance && !canAccessInstance(selectedInstance, user) ? "text-[var(--text-muted)]" : "text-[var(--text-primary)]"}`}>
-                {selectedInstance ? selectedInstance.name : t("home.noInstance")}
-              </p>
-              {selectedInstance && (
-                <p className="text-data truncate text-[10px] leading-tight text-[var(--text-muted)]">
-                  {[selectedBaseVersion, selectedLoaderLabel, selectedInstance.launcherVersionType]
-                    .filter(Boolean)
-                    .join(" · ")}
-                </p>
-              )}
-            </div>
-            <ChevronRight size={15} className="shrink-0 text-[var(--text-muted)] transition-colors group-hover:text-[var(--text-primary)]" />
-          </button>
-
-          <Button
-            variant="primary"
-            size="md"
-            className="min-h-[48px] w-full justify-center !rounded-[8px]"
-            disabled={busy || !selectedInstance || !canAccessInstance(selectedInstance, user)}
-            launchProgress={launching}
-            launchProgressPercent={launchProgressPercent}
-            onClick={onLaunch}
-          >
-            <span className="flex items-center justify-center gap-2">
-              <Play fill="currentColor" size={15} />
-              {launching
-                ? `${t("home.launching")}${typeof launchProgressPercent === "number" ? ` ${launchProgressPercent}%` : ""}`
-                : t("home.launch")}
-            </span>
-          </Button>
-        </div>
+      <footer className="home-footer">
+        <Button
+          variant="primary"
+          size="md"
+          className="min-h-[46px] min-w-[220px] justify-center !rounded-[10px]"
+          disabled={busy || !selectedInstance || !canAccessInstance(selectedInstance, user)}
+          launchProgress={launching}
+          launchProgressPercent={launchProgressPercent}
+          onClick={onLaunch}
+        >
+          <span className="flex items-center justify-center gap-2">
+            <Play fill="currentColor" size={15} />
+            {launching
+              ? `${t("home.launching")}${typeof launchProgressPercent === "number" ? ` ${launchProgressPercent}%` : ""}`
+              : t("home.launch")}
+          </span>
+        </Button>
       </footer>
 
       {(pickerOpen || pickerClosing) &&

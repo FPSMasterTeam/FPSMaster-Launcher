@@ -24,19 +24,19 @@ const Button: React.FC<ButtonProps> = ({
 
   const variants = {
     primary:
-      'bg-[var(--mc-grass)] text-white rounded-[8px] border border-[#25b87a]/40 shadow-[0_1px_2px_rgba(0,0,0,0.2)] hover:bg-[var(--mc-grass-dark)]',
+      'bg-[var(--mc-grass)] text-white rounded-[8px] border border-[rgba(var(--accent-rgb),0.4)] shadow-[0_1px_2px_rgba(0,0,0,0.2)] hover:bg-[var(--mc-grass-dark)]',
     secondary:
-      'bg-[var(--bg-tertiary)] text-[var(--text-primary)] rounded-[8px] border border-white/8 hover:bg-[var(--bg-elevated)] hover:border-white/14',
+      'bg-[var(--bg-tertiary)] text-[var(--text-primary)] rounded-[8px] border border-[var(--border-subtle)] hover:bg-[var(--bg-elevated)] hover:border-[var(--border-medium)]',
     outline:
-      'bg-transparent border border-white/8 text-[var(--text-secondary)] hover:border-white/14 hover:text-[var(--text-primary)] rounded-[8px] hover:bg-[var(--surface-soft)]',
+      'bg-transparent border border-[var(--border-subtle)] text-[var(--text-secondary)] hover:border-[var(--border-medium)] hover:text-[var(--text-primary)] rounded-[8px] hover:bg-[var(--surface-soft)]',
     ghost:
       'bg-transparent text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[var(--border-subtle)] rounded-[8px]',
     danger:
       'bg-[var(--accent-danger)]/12 text-[var(--accent-danger)] hover:bg-[var(--accent-danger)]/20 rounded-[8px] border border-[#ff6b8f]/25',
     'minecraft-success':
-      'bg-[var(--mc-grass)] text-white rounded-[8px] border border-[#25b87a]/40 shadow-[0_1px_2px_rgba(0,0,0,0.2)] hover:bg-[var(--mc-grass-dark)]',
+      'bg-[var(--mc-grass)] text-white rounded-[8px] border border-[rgba(var(--accent-rgb),0.4)] shadow-[0_1px_2px_rgba(0,0,0,0.2)] hover:bg-[var(--mc-grass-dark)]',
     'minecraft-primary':
-      'bg-[var(--mc-grass)] text-white rounded-[8px] border border-[#25b87a]/40 shadow-[0_1px_2px_rgba(0,0,0,0.2)] hover:bg-[var(--mc-grass-dark)]',
+      'bg-[var(--mc-grass)] text-white rounded-[8px] border border-[rgba(var(--accent-rgb),0.4)] shadow-[0_1px_2px_rgba(0,0,0,0.2)] hover:bg-[var(--mc-grass-dark)]',
   };
 
   const sizes = {

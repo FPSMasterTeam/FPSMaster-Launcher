@@ -47,8 +47,10 @@ export type PageRouterContext = {
   presetPackageStatuses: Record<string, PresetPackageStatus>;
   onSelect: (id: string) => void;
   onRemoveInstance: (id: string) => void;
-  onLaunchInstance: (id: string) => void;
-  onOpenInstanceSettings: (id: string) => void;
+  onLaunchInstance: (id: string, gameVersion?: string) => void;
+  onOpenInstanceSettings: (id: string, gameVersion?: string) => void;
+  onOpenInstanceContent: (id: string, gameVersion?: string) => void;
+  onGoContent: () => void;
   onInstanceRepair: () => void;
   onInstanceDelete: () => void;
   onInstanceDuplicate: () => void;
@@ -187,16 +189,21 @@ export default function PageRouter({ ctx }: { ctx: PageRouterContext }) {
         <InstancesPage
           instances={ctx.instances}
           launcherVersions={ctx.launcherVersions}
+          novaGameVersions={ctx.novaGameVersions}
+          selectedNovaGameVersion={ctx.selectedNovaGameVersion}
+          onSelectNovaGameVersion={ctx.onSelectNovaGameVersion}
           busy={ctx.busy}
           launchingInstanceId={ctx.launchingInstanceId}
           launchProgressPercent={ctx.launchProgressPercent}
           launchProgressText={ctx.launchProgressText}
           user={ctx.user}
           presetPackageStatuses={ctx.presetPackageStatuses}
+          selectedInstanceId={ctx.current?.id ?? null}
           onDelete={ctx.onRemoveInstance}
           onGoInstall={ctx.onGoInstall}
           onLaunchInstance={ctx.onLaunchInstance}
           onOpenInstanceSettings={ctx.onOpenInstanceSettings}
+          onOpenInstanceContent={ctx.onOpenInstanceContent}
         />
       );
     case "instance-settings":
@@ -255,6 +262,9 @@ export default function PageRouter({ ctx }: { ctx: PageRouterContext }) {
           gameDir={ctx.gameDir}
           curseforgeApiKey={ctx.curseforgeApiKey}
           busy={ctx.busy}
+          novaGameVersions={ctx.novaGameVersions}
+          selectedNovaGameVersion={ctx.selectedNovaGameVersion}
+          onSelectNovaGameVersion={ctx.onSelectNovaGameVersion}
           onSelectInstance={ctx.onSelect}
           onStatusChange={ctx.onStatusChange}
         />

@@ -195,7 +195,7 @@ function resolveUserLevel(user: LauncherUser | null, role: string): string {
 
 function resolveRoleBadgeClass(role: string): string {
   if (role === "ADMIN") {
-    return "bg-[#ff6b8f]/14 text-[#ff6b8f]";
+    return "bg-[var(--accent-danger)]/14 text-[var(--accent-danger)]";
   }
   if (role === "SPONSOR") {
     return "bg-[#25b87a]/14 text-[#25b87a]";
