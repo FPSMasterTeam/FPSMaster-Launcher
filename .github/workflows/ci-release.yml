@@ -109,7 +109,7 @@ jobs:
           - target: windows-x86_64-win7
             os: windows-latest
             build_script: build:installer:windows:win7
-            artifact_glob: tauri-app/src-tauri/target/release/bundle/nsis/*.exe
+            artifact_glob: tauri-app/src-tauri/target/x86_64-win7-windows-msvc/release/bundle/nsis/*.exe
             needs_fixed_runtime: true
           - target: linux-x86_64
             os: ubuntu-latest
@@ -153,11 +153,33 @@ jobs:
           distribution: "temurin"
 
       - name: Set up Rust
+        if: matrix.target != 'windows-x86_64-win7'
         uses: dtolnay/rust-toolchain@stable
+
+      - name: Set up Rust for Windows 7
+        if: matrix.target == 'windows-x86_64-win7'
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2026-08-08
+          components: rust-src
 
       - name: Add macOS Rust target
         if: matrix.target == 'macos-aarch64'
         run: rustup target add aarch64-apple-darwin
+
+      - name: Configure Windows 7 Rust target
+        if: matrix.target == 'windows-x86_64-win7'
+        working-directory: tauri-app/src-tauri
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force ".cargo" | Out-Null
+          @'
+          [build]
+          target = "x86_64-win7-windows-msvc"
+
+          [unstable]
+          build-std = true
+          '@ | Set-Content -Encoding utf8 ".cargo/config.toml"
 
       - name: Cache Rust target
         uses: swatinem/rust-cache@v2
@@ -190,6 +212,19 @@ jobs:
       - name: Build installer
         working-directory: tauri-app
         run: npm run ${{ matrix.build_script }}
+
+      - name: Verify Windows 7 binary imports
+        if: matrix.target == 'windows-x86_64-win7'
+        shell: pwsh
+        run: |
+          $binary = "tauri-app/src-tauri/target/x86_64-win7-windows-msvc/release/fpsmaster-launcher.exe"
+          if (-not (Test-Path $binary)) {
+            throw "Windows 7 launcher binary was not produced: $binary"
+          }
+          $contents = [Text.Encoding]::ASCII.GetString([IO.File]::ReadAllBytes($binary))
+          if ($contents.Contains("ProcessPrng")) {
+            throw "Windows 7 launcher still imports the Windows 10-only ProcessPrng API"
+          }
 
       - name: Verify macOS binary has no build-machine dylib references
         if: matrix.target == 'macos-aarch64'
