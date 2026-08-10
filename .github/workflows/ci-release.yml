@@ -259,6 +259,7 @@ jobs:
           import hashlib
           import json
           import os
+          import shutil
           from pathlib import Path
 
           matches = sorted(
@@ -278,21 +279,24 @@ jobs:
           }
           output_dir = Path("build-meta")
           output_dir.mkdir(exist_ok=True)
-          (output_dir / f"{os.environ['TARGET']}.json").write_text(
+          metadata_path = output_dir / f"{os.environ['TARGET']}.json"
+          metadata_path.write_text(
               json.dumps(payload, ensure_ascii=False),
               encoding="utf-8",
           )
+          release_dir = Path("release-dist")
+          release_dir.mkdir(exist_ok=True)
+          shutil.copy2(artifact, release_dir / artifact.name)
+          shutil.copy2(metadata_path, release_dir / metadata_path.name)
           PY
 
-      - name: Upload build artifacts
-        uses: actions/upload-artifact@v4
+      - name: Cache release artifacts
+        if: needs.resolve.outputs.should_publish == 'true'
+        uses: actions/cache@v4
         with:
-          name: launcher-build-${{ matrix.target }}
-          retention-days: 1
-          path: |
-            ${{ matrix.artifact_glob }}
-            build-meta/${{ matrix.target }}.json
-          if-no-files-found: error
+          path: release-dist
+          key: launcher-build-${{ github.run_id }}-${{ matrix.target }}
+          enableCrossOsArchive: true
 
   publish:
     needs:
@@ -301,18 +305,41 @@ jobs:
     if: github.event_name != 'pull_request' && needs.resolve.outputs.should_publish == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/download-artifact@v4
+      - name: Restore Windows artifacts
+        uses: actions/cache/restore@v4
         with:
-          pattern: launcher-build-*
-          path: dist
-          merge-multiple: true
+          path: release-dist
+          key: launcher-build-${{ github.run_id }}-windows-x86_64
+          enableCrossOsArchive: true
+          fail-on-cache-miss: true
+
+      - name: Restore Windows 7 artifacts
+        uses: actions/cache/restore@v4
+        with:
+          path: release-dist
+          key: launcher-build-${{ github.run_id }}-windows-x86_64-win7
+          enableCrossOsArchive: true
+          fail-on-cache-miss: true
+
+      - name: Restore Linux artifacts
+        uses: actions/cache/restore@v4
+        with:
+          path: release-dist
+          key: launcher-build-${{ github.run_id }}-linux-x86_64
+          enableCrossOsArchive: true
+          fail-on-cache-miss: true
+
+      - name: Restore macOS artifacts
+        uses: actions/cache/restore@v4
+        with:
+          path: release-dist
+          key: launcher-build-${{ github.run_id }}-macos-aarch64
+          enableCrossOsArchive: true
+          fail-on-cache-miss: true
 
       - name: Collect release files
         shell: bash
         run: |
-          mkdir -p release-dist
-          find dist -type f \( -name '*.exe' -o -name '*.deb' -o -name '*.dmg' -o -name '*.json' \) \
-            -exec cp '{}' release-dist/ \;
           find release-dist -maxdepth 1 -type f -print
 
       - name: Publish GitHub Release
