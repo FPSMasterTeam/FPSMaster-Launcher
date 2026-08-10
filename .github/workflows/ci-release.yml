@@ -178,7 +178,7 @@ jobs:
           target = "x86_64-win7-windows-msvc"
 
           [unstable]
-          build-std = true
+          build-std = ["std"]
           '@ | Set-Content -Encoding utf8 ".cargo/config.toml"
 
       - name: Cache Rust target
@@ -288,6 +288,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: launcher-build-${{ matrix.target }}
+          retention-days: 1
           path: |
             ${{ matrix.artifact_glob }}
             build-meta/${{ matrix.target }}.json
