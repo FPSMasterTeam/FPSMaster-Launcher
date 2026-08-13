@@ -237,6 +237,69 @@ export function translateLaunchPrepareMessage(ipc: InstallIpcEvent, t: Translato
   return ipc.message ?? null;
 }
 
+export function mergePhaseByteProgress<T extends {
+  current: number;
+  total: number;
+  downloaded: number;
+  cached: number;
+  bytesDone: number;
+  bytesTotal: number;
+  bytesPerSecond: number;
+  etaSeconds: number | null;
+}>(phase: T, ipc: InstallIpcEvent): Pick<T, "current" | "total" | "downloaded" | "cached" | "bytesDone" | "bytesTotal" | "bytesPerSecond" | "etaSeconds"> {
+  const hasBytes = typeof ipc.bytesTotal === "number" && ipc.bytesTotal > 0;
+  return {
+    current: typeof ipc.current === "number" ? ipc.current : phase.current,
+    total: typeof ipc.total === "number" ? ipc.total : phase.total,
+    downloaded: typeof ipc.downloaded === "number" ? ipc.downloaded : phase.downloaded,
+    cached: typeof ipc.cached === "number" ? ipc.cached : phase.cached,
+    // A progress event without byte totals is a file-count stage (or the start of
+    // one). Drop any leftover byte snapshot so the bar does not keep showing the
+    // previous stage's transfer.
+    bytesDone: hasBytes ? (ipc.bytesDone ?? 0) : ipc.event === "progress" ? 0 : phase.bytesDone,
+    bytesTotal: hasBytes ? (ipc.bytesTotal ?? 0) : ipc.event === "progress" ? 0 : phase.bytesTotal,
+    bytesPerSecond: hasBytes ? (ipc.bytesPerSecond ?? 0) : ipc.event === "progress" ? 0 : phase.bytesPerSecond,
+    etaSeconds: hasBytes ? (ipc.etaSeconds ?? null) : ipc.event === "progress" ? null : phase.etaSeconds
+  };
+}
+
+export function phasePercent(phase: {
+  status: string;
+  current: number;
+  total: number;
+  bytesDone: number;
+  bytesTotal: number;
+}): number {
+  if (phase.bytesTotal > 0) {
+    return Math.min(100, Math.floor((phase.bytesDone / phase.bytesTotal) * 100));
+  }
+  if (phase.total > 0) {
+    return Math.min(100, Math.floor((phase.current / phase.total) * 100));
+  }
+  return phase.status === "done" ? 100 : 0;
+}
+
+export function formatByteSize(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes < 0) return "0 B";
+  if (bytes < 1024) return `${Math.round(bytes)} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+}
+
+export function formatEta(seconds: number): string {
+  if (!Number.isFinite(seconds) || seconds <= 0) return "";
+  const whole = Math.round(seconds);
+  if (whole < 60) return `${whole}s`;
+  const minutes = Math.floor(whole / 60);
+  const remain = whole % 60;
+  if (minutes < 60) return remain > 0 ? `${minutes}m ${remain}s` : `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  return `${hours}h ${minutes % 60}m`;
+}
+
+const MAX_TRACKED_ITEMS = 24;
+
 export function reduceLaunchPrepareItems(items: LaunchPrepareItem[], ipc: InstallIpcEvent): LaunchPrepareItem[] {
   if (!ipc.event.startsWith("item-")) {
     return items;
@@ -263,21 +326,36 @@ export function reduceLaunchPrepareItems(items: LaunchPrepareItem[], ipc: Instal
     updatedAt: Date.now()
   };
 
-  const next = existingIndex >= 0 ? [...items] : [nextItem, ...items];
+  let next: LaunchPrepareItem[];
   if (existingIndex >= 0) {
+    next = items.slice();
     next[existingIndex] = nextItem;
+    // Keep the file currently transferring at the top without sorting the whole list.
+    if ((nextStatus === "running" || nextStatus === "error") && existingIndex !== 0) {
+      next.splice(existingIndex, 1);
+      next.unshift(nextItem);
+    }
+  } else {
+    next = [nextItem, ...items];
   }
 
-  next.sort((left, right) => {
-    const leftRank = launchPrepareItemRank(left.status);
-    const rightRank = launchPrepareItemRank(right.status);
-    if (leftRank !== rightRank) {
-      return leftRank - rightRank;
-    }
-    return right.updatedAt - left.updatedAt;
-  });
+  if (next.length <= MAX_TRACKED_ITEMS) {
+    return next;
+  }
+  return pruneLaunchPrepareItems(next, MAX_TRACKED_ITEMS);
+}
 
-  return next;
+function pruneLaunchPrepareItems(items: LaunchPrepareItem[], limit: number): LaunchPrepareItem[] {
+  const keep = items.filter((item) => item.status === "running" || item.status === "error");
+  if (keep.length >= limit) {
+    return keep.slice(0, limit);
+  }
+  for (const item of items) {
+    if (item.status === "running" || item.status === "error") continue;
+    keep.push(item);
+    if (keep.length >= limit) break;
+  }
+  return keep;
 }
 
 export function resolveLaunchPrepareItemStatus(

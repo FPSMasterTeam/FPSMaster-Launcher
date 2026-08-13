@@ -2,7 +2,8 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { LAUNCHER_API_BASE_URL } from "../constants";
 import type { TranslationKey } from "../i18n";
-import { formatLaunchError, isLauncherAppUpdateMissing } from "../lib/launcherError";
+import { describeApiError, formatLaunchError, isLauncherAppUpdateMissing } from "../lib/launcherError";
+import { notifyError } from "../lib/toast";
 import type { DownloadedLauncherUpdate, LauncherAppUpdateChannel, LauncherAppUpdateInfo } from "../types";
 import { compareMajor } from "../utils/launcher";
 
@@ -54,10 +55,13 @@ export function useLauncherUpdate(deps: UseLauncherUpdateDeps): LauncherUpdateCo
         token: token ?? null
       });
       setChannels(items);
-    } catch {
+    } catch (error) {
+      // Channels drive the update-channel picker in settings. Failing silently
+      // left the picker mysteriously empty with no way to tell why.
       setChannels([]);
+      setStatus(t("app.status.failed", { error: describeApiError(error, t) }));
     }
-  }, [token]);
+  }, [token, setStatus, t]);
 
   const refresh = useCallback(
     async (silent = false) => {
@@ -77,12 +81,16 @@ export function useLauncherUpdate(deps: UseLauncherUpdateDeps): LauncherUpdateCo
           );
         }
       } catch (error) {
-        const errorText = formatLaunchError(error);
-        if (isLauncherAppUpdateMissing(errorText)) {
+        const rawText = formatLaunchError(error);
+        if (isLauncherAppUpdateMissing(rawText)) {
           setAppUpdate(null);
           setDownload(null);
-        } else if (!silent) {
+        } else {
+          const errorText = describeApiError(error, t);
           setStatus(t("app.status.failed", { error: errorText }));
+          if (!silent) {
+            notifyError(errorText, t("toast.title.updateFailed"));
+          }
         }
       } finally {
         setChecking(false);
@@ -109,7 +117,9 @@ export function useLauncherUpdate(deps: UseLauncherUpdateDeps): LauncherUpdateCo
       await flushTelemetry();
       await invoke("quit_launcher_app");
     } catch (error) {
-      setStatus(t("app.status.failed", { error: formatLaunchError(error) }));
+      const errorText = describeApiError(error, t);
+      setStatus(t("app.status.failed", { error: errorText }));
+      notifyError(errorText, t("toast.title.updateFailed"));
     } finally {
       setDownloading(false);
     }

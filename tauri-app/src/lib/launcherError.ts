@@ -49,6 +49,169 @@ export function tryExtractMessageFromJson(raw: string): string | null {
   }
 }
 
+/**
+ * Cause of a failed backend call, derived from the error string the Rust side
+ * produced. The backend returns `Result<_, String>` everywhere, so this is the
+ * only classification signal available on the frontend — `describe_http_error`
+ * deliberately flattens the whole reqwest/hyper/rustls source chain into that
+ * string so the distinguishing text is present.
+ */
+export type ApiErrorKind =
+  | "offline"
+  | "timeout"
+  | "dns"
+  | "tls"
+  | "auth"
+  | "notFound"
+  | "rateLimited"
+  | "server"
+  | "internal"
+  | "business";
+
+export type ClassifiedApiError = {
+  kind: ApiErrorKind;
+  /** Original backend text, kept for log/detail surfaces. */
+  raw: string;
+  /** HTTP status parsed out of the message, when present. */
+  status: number | null;
+};
+
+const NETWORK_PATTERNS: ReadonlyArray<{ kind: ApiErrorKind; needles: readonly string[] }> = [
+  {
+    kind: "dns",
+    needles: [
+      "dns error",
+      "failed to lookup address",
+      "name or service not known",
+      "nodename nor servname",
+      "no such host"
+    ]
+  },
+  {
+    kind: "tls",
+    needles: [
+      "certificate",
+      "invalid peer certificate",
+      "self-signed",
+      "tls handshake",
+      "handshake failure",
+      "unknownissuer",
+      "certificate verify failed"
+    ]
+  },
+  {
+    kind: "timeout",
+    needles: ["timed out", "timeout", "operation timed out", "deadline has elapsed"]
+  },
+  {
+    kind: "offline",
+    needles: [
+      "connection refused",
+      "network is unreachable",
+      "no route to host",
+      "connection reset",
+      "connection closed",
+      "failed to connect",
+      "tcp connect error",
+      "proxy",
+      // ECONNREFUSED on macOS / Linux / Windows respectively.
+      "os error 61",
+      "os error 111",
+      "os error 10061"
+    ]
+  }
+];
+
+/** Extracts the JSON/plain business message the server sent, if any. */
+function extractBusinessMessage(text: string): string | null {
+  const maybeJson = text.match(/(\{[\s\S]*\}|\[[\s\S]*\])$/);
+  if (maybeJson) {
+    const parsed = tryExtractMessageFromJson(maybeJson[1]);
+    if (parsed) {
+      return parsed;
+    }
+  }
+  return null;
+}
+
+export function classifyApiError(error: unknown): ClassifiedApiError {
+  const raw = formatLaunchError(error);
+  const normalized = raw.toLowerCase();
+
+  const statusMatch = normalized.match(/http\s*(\d{3})/);
+  const status = statusMatch ? Number.parseInt(statusMatch[1], 10) : null;
+
+  // A `spawn_blocking` join failure means the backend task died, not a network
+  // problem — surfacing it as "check your connection" would send users chasing
+  // the wrong thing.
+  if (normalized.includes("failed to join") && normalized.includes("task")) {
+    return { kind: "internal", raw, status };
+  }
+
+  if (status !== null) {
+    if (status === 401 || status === 403) return { kind: "auth", raw, status };
+    if (status === 404) return { kind: "notFound", raw, status };
+    if (status === 429) return { kind: "rateLimited", raw, status };
+    if (status >= 500) return { kind: "server", raw, status };
+    return { kind: "business", raw, status };
+  }
+
+  if (isAuthExpiredError(error)) {
+    return { kind: "auth", raw, status };
+  }
+
+  for (const { kind, needles } of NETWORK_PATTERNS) {
+    if (needles.some((needle) => normalized.includes(needle))) {
+      return { kind, raw, status };
+    }
+  }
+
+  // reqwest's outermost layer without a recognizable cause: still a transport
+  // failure, just an unspecific one.
+  if (normalized.includes("error sending request")) {
+    return { kind: "offline", raw, status };
+  }
+
+  return { kind: "business", raw, status };
+}
+
+/**
+ * Human-readable, localized description of a failed backend call. Technical
+ * transport failures get an actionable localized sentence; genuine business
+ * errors (which the server already phrases for humans) are passed through.
+ */
+export function describeApiError(error: unknown, t: Translator): string {
+  const classified = classifyApiError(error);
+  switch (classified.kind) {
+    case "offline":
+      return t("error.network.offline");
+    case "timeout":
+      return t("error.network.timeout");
+    case "dns":
+      return t("error.network.dns");
+    case "tls":
+      return t("error.network.tls");
+    case "auth":
+      return t("error.auth.rejected");
+    case "notFound":
+      return t("error.http.notFound");
+    case "rateLimited":
+      return t("error.http.rateLimited");
+    case "server":
+      return t("error.http.server", { status: classified.status ?? 500 });
+    case "internal":
+      return t("error.internal");
+    case "business":
+    default: {
+      const business = extractBusinessMessage(classified.raw);
+      if (business) {
+        return business;
+      }
+      return classified.raw === "" ? t("error.unknown") : classified.raw;
+    }
+  }
+}
+
 export function normalizeLoginError(error: unknown, t: Translator): string {
   let text = formatLaunchError(error);
   text = text.replace(/^login request failed:\s*/i, "").trim();
@@ -61,6 +224,14 @@ export function normalizeLoginError(error: unknown, t: Translator): string {
     if (parsed) {
       return parsed;
     }
+  }
+
+  // Transport-level failures reach here as raw reqwest chains ("error sending
+  // request for url ...: connection timed out"), which told the user nothing.
+  // Classify against the original error so HTTP status and cause are intact.
+  const classified = classifyApiError(error);
+  if (classified.kind !== "business") {
+    return describeApiError(error, t);
   }
 
   if (text === "") {

@@ -1,6 +1,7 @@
 import { useState } from "react";
 import Card from "./Card";
 import { useI18n } from "../i18n";
+import { formatByteSize, formatEta, phasePercent } from "../lib/launchPrepare";
 import type {
   LaunchPrepareDialogState,
   LaunchPrepareItem,
@@ -39,12 +40,7 @@ export default function LaunchPrepareDialog({ dialog, onClose }: LaunchPrepareDi
     dialog.phases.find((phase) => phase.status === "error") ??
     dialog.phases[dialog.phases.length - 1];
 
-  const taskPercent =
-    activePhase && activePhase.total > 0
-      ? Math.min(100, Math.floor((activePhase.current / activePhase.total) * 100))
-      : activePhase?.status === "done"
-        ? 100
-        : 0;
+  const taskPercent = activePhase ? phasePercent(activePhase) : 0;
 
   // Estimated overall progress. The dialog is remounted per session (keyed on
   // sessionId), so this latch resets each launch and only ever advances within one.
@@ -101,7 +97,20 @@ export default function LaunchPrepareDialog({ dialog, onClose }: LaunchPrepareDi
                 <span className="launchPrepareBarMessage" title={activePhase?.message || undefined}>
                   {activePhase?.message || t("dialog.waiting")}
                 </span>
-                {activePhase && activePhase.total > 0 && (
+                {activePhase && activePhase.bytesTotal > 0 ? (
+                  <span className="launchPrepareBarCounts">
+                    {t("download.bytesProgress", {
+                      done: formatByteSize(activePhase.bytesDone),
+                      total: formatByteSize(activePhase.bytesTotal)
+                    })}
+                    {activePhase.bytesPerSecond > 0
+                      ? ` · ${t("download.speed", { speed: formatByteSize(activePhase.bytesPerSecond) })}`
+                      : ""}
+                    {activePhase.etaSeconds
+                      ? ` · ${t("download.eta", { eta: formatEta(activePhase.etaSeconds) })}`
+                      : ""}
+                  </span>
+                ) : activePhase && activePhase.total > 0 ? (
                   <span className="launchPrepareBarCounts">
                     {t("dialog.progress", {
                       current: activePhase.current,
@@ -110,7 +119,7 @@ export default function LaunchPrepareDialog({ dialog, onClose }: LaunchPrepareDi
                       cached: activePhase.cached
                     })}
                   </span>
-                )}
+                ) : null}
               </div>
             </div>
           </div>

@@ -193,6 +193,10 @@ export type InstallIpcEvent = {
   total?: number;
   downloaded?: number;
   cached?: number;
+  bytesDone?: number;
+  bytesTotal?: number;
+  bytesPerSecond?: number;
+  etaSeconds?: number;
   message?: string;
   error?: string;
   itemId?: string;
@@ -220,6 +224,10 @@ export type InstallPhaseState = {
   total: number;
   downloaded: number;
   cached: number;
+  bytesDone: number;
+  bytesTotal: number;
+  bytesPerSecond: number;
+  etaSeconds: number | null;
   items: LaunchPrepareItem[];
 };
 
@@ -271,6 +279,10 @@ export type LaunchPreparePhaseState = {
   total: number;
   downloaded: number;
   cached: number;
+  bytesDone: number;
+  bytesTotal: number;
+  bytesPerSecond: number;
+  etaSeconds: number | null;
   items: LaunchPrepareItem[];
 };
 

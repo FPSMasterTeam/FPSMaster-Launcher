@@ -36,6 +36,10 @@ export function createPhaseState(
     total: 0,
     downloaded: 0,
     cached: 0,
+    bytesDone: 0,
+    bytesTotal: 0,
+    bytesPerSecond: 0,
+    etaSeconds: null,
     items: []
   };
 }
@@ -55,6 +59,10 @@ export function createLaunchPreparePhaseState(
     total: 0,
     downloaded: 0,
     cached: 0,
+    bytesDone: 0,
+    bytesTotal: 0,
+    bytesPerSecond: 0,
+    etaSeconds: null,
     items: []
   };
 }

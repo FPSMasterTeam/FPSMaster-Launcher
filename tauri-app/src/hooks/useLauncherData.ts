@@ -2,7 +2,8 @@ import { useCallback, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { LAUNCHER_API_BASE_URL } from "../constants";
 import type { TranslationKey } from "../i18n";
-import { formatLaunchError, isAuthExpiredError } from "../lib/launcherError";
+import { describeApiError, isAuthExpiredError } from "../lib/launcherError";
+import { notifyError } from "../lib/toast";
 import type {
   LauncherDashboard,
   LauncherHomePayload,
@@ -69,7 +70,7 @@ export function useLauncherData(deps: UseLauncherDataDeps): LauncherDataControll
         setStatus(t("app.status.ready"));
       }
     } catch (error) {
-      const errorText = formatLaunchError(error);
+      const errorText = describeApiError(error, t);
       if (activeToken && isAuthExpiredError(error)) {
         onAuthExpired(t("login.sessionExpired"));
         return;
@@ -79,8 +80,11 @@ export function useLauncherData(deps: UseLauncherDataDeps): LauncherDataControll
         setServers([]);
         setOnlineSummary(null);
       }
+      setStatus(t("app.status.failed", { error: errorText }));
+      // `silent` only suppresses the status line for background refreshes; a
+      // failure the user cannot see at all is what made these look like hangs.
       if (!silent) {
-        setStatus(t("app.status.failed", { error: errorText }));
+        notifyError(errorText, t("toast.title.requestFailed"));
       }
     }
   }, []);
@@ -102,8 +106,10 @@ export function useLauncherData(deps: UseLauncherDataDeps): LauncherDataControll
       }
     } catch (error) {
       setNews([]);
+      const errorText = describeApiError(error, t);
+      setStatus(t("app.status.failed", { error: errorText }));
       if (!silent) {
-        setStatus(t("app.status.failed", { error: formatLaunchError(error) }));
+        notifyError(errorText, t("toast.title.requestFailed"));
       }
     }
   }, []);
@@ -112,20 +118,19 @@ export function useLauncherData(deps: UseLauncherDataDeps): LauncherDataControll
     const { token, t, setStatus } = depsRef.current;
     try {
       const activeToken = (token ?? "").trim();
-      const headers: Record<string, string> = { "Content-Type": "application/json" };
-      if (activeToken) {
-        headers["Authorization"] = `Bearer ${activeToken}`;
-      }
-      const response = await fetch(`${LAUNCHER_API_BASE_URL}/api/v1/launcher/servers`, { headers });
-      const raw = await response.json();
-      const data = (raw as { success?: boolean; data?: ServerItem[] })?.data ?? [];
+      const data = await invoke<ServerItem[]>("launcher_list_servers", {
+        baseUrl: LAUNCHER_API_BASE_URL,
+        token: activeToken || null
+      });
       setServers(data);
       if (!silent) {
         setStatus(t("app.status.loadedServers", { count: data.length }));
       }
     } catch (error) {
+      const errorText = describeApiError(error, t);
+      setStatus(t("app.status.failed", { error: errorText }));
       if (!silent) {
-        setStatus(t("app.status.failed", { error: formatLaunchError(error) }));
+        notifyError(errorText, t("toast.title.requestFailed"));
       }
     }
   }, []);
@@ -148,14 +153,15 @@ export function useLauncherData(deps: UseLauncherDataDeps): LauncherDataControll
         setStatus(t("app.status.ready"));
       }
     } catch (error) {
-      const errorText = formatLaunchError(error);
+      const errorText = describeApiError(error, t);
       if (activeToken && isAuthExpiredError(error)) {
         onAuthExpired(t("login.sessionExpired"));
         return;
       }
       setDashboard(null);
+      setStatus(t("app.status.failed", { error: errorText }));
       if (!silent) {
-        setStatus(t("app.status.failed", { error: errorText }));
+        notifyError(errorText, t("toast.title.requestFailed"));
       }
     }
   }, []);

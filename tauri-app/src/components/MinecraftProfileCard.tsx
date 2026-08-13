@@ -3,6 +3,7 @@ import { ChevronDown, Crown, LoaderCircle, Plus, User, X } from "lucide-react";
 import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useI18n } from "../i18n";
+import { describeApiError } from "../lib/launcherError";
 import type { MinecraftAccount, MinecraftAuthConfig } from "../types";
 
 type MinecraftProfileCardProps = {
@@ -136,7 +137,10 @@ function MinecraftProfileCard({
       onSaveMicrosoftAccount(account);
       closeAddDialog(true);
     } catch (error) {
-      setMicrosoftError(String(error));
+      // Raw `String(error)` here exposed reqwest/hyper source chains from the
+      // Rust side; users saw "error sending request for url ..." and no hint of
+      // what to do about it.
+      setMicrosoftError(describeApiError(error, t));
     } finally {
       setMicrosoftBusy(false);
     }

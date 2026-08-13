@@ -307,6 +307,16 @@ pub async fn launcher_list_news(
 }
 
 #[tauri::command]
+pub async fn launcher_list_servers(
+    base_url: String,
+    token: Option<String>,
+) -> Result<Vec<LauncherServerItem>, String> {
+    tauri::async_runtime::spawn_blocking(move || launcher_list_servers_blocking(base_url, token))
+        .await
+        .map_err(|e| format!("Failed to join launcher servers task: {e}"))?
+}
+
+#[tauri::command]
 pub async fn launcher_get_dashboard(
     base_url: String,
     token: String,
@@ -396,6 +406,57 @@ fn launcher_list_news_blocking(
         .text()
         .map_err(|e| format!("Failed to read launcher news response: {e}"))?;
     parse_launcher_news_response(status, &text)
+}
+
+// Previously the frontend hit this endpoint with a bare `fetch` that never
+// checked `response.ok`, so an HTTP 500 silently became an empty server list.
+// Routing it through the shared API client gives it the same timeout budget,
+// error description and status handling as every other launcher call.
+fn launcher_list_servers_blocking(
+    base_url: String,
+    token: Option<String>,
+) -> Result<Vec<LauncherServerItem>, String> {
+    let normalized_base = normalize_api_base_url(&base_url)?;
+    let client = build_api_http_client()?;
+
+    let url = reqwest::Url::parse(&format!("{normalized_base}/api/v1/launcher/servers"))
+        .map_err(|e| format!("Invalid launcher servers endpoint URL: {e}"))?;
+    let mut request = client.get(url);
+    if let Some(value) = token
+        .map(|item| item.trim().to_string())
+        .filter(|item| !item.is_empty())
+    {
+        request = request.bearer_auth(value);
+    }
+    let response = request
+        .send()
+        .map_err(|e| format!("Launcher servers request failed: {}", describe_http_error(&e)))?;
+    let status = response.status();
+    let text = response
+        .text()
+        .map_err(|e| format!("Failed to read launcher servers response: {e}"))?;
+    parse_launcher_servers_response(status, &text)
+}
+
+fn parse_launcher_servers_response(
+    status: reqwest::StatusCode,
+    body: &str,
+) -> Result<Vec<LauncherServerItem>, String> {
+    if let Ok(items) = parse_api_envelope::<Vec<LauncherServerItem>>(status, body, "launcher servers")
+    {
+        return Ok(items);
+    }
+
+    if !status.is_success() {
+        return Err(extract_api_error_message(body)
+            .unwrap_or_else(|| format!("launcher servers failed with HTTP {}", status.as_u16())));
+    }
+
+    let value: serde_json::Value = serde_json::from_str(body)
+        .map_err(|e| format!("Invalid launcher servers response JSON: {e}"))?;
+    let data = value.get("data").unwrap_or(&value);
+    serde_json::from_value::<Vec<LauncherServerItem>>(data.clone())
+        .map_err(|e| format!("Invalid launcher servers payload: {e}"))
 }
 
 fn launcher_get_dashboard_blocking(

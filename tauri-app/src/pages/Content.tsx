@@ -8,6 +8,7 @@ import Select from "../components/Select";
 import modrinthIcon from "../assets/icons/modrinth.ico";
 import curseforgeIcon from "../assets/icons/curseforge.ico";
 import { useI18n } from "../i18n";
+import { describeApiError } from "../lib/launcherError";
 import { buildNovaEffectiveInstance, listNovaVersionTargets } from "../lib/novaTargets";
 import type {
   ContentInstallProgressEvent,
@@ -504,7 +505,9 @@ function ContentPage({
     if (/CurseForge project id cannot be empty/i.test(normalized)) {
       return t("content.error.curseforgeMissingProjectId");
     }
-    return normalized;
+    // Anything not matched above is usually a transport failure; returning the
+    // raw reqwest chain gave users nothing actionable.
+    return describeApiError(errorValue, t);
   };
 
   return (

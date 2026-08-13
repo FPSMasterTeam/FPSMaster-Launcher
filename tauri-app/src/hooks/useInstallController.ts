@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type { TranslationKey } from "../i18n";
 import { loaderLabelKey } from "../lib/instance";
+import { reportRequestFailure } from "../lib/reportError";
 import type { Loader, OptiFineVersion, Page, Settings } from "../types";
 import { compareMajor, groupByMajor, isSnapshot, resolveInstallVersion } from "../utils/launcher";
 
@@ -112,7 +113,7 @@ export function useInstallController(deps: UseInstallControllerDeps): InstallCon
       setInstallVersion(nextVersion);
       setStatus(t("app.status.loadedVersions", { count: versions.length }));
     } catch (error) {
-      setStatus(t("app.status.failed", { error: String(error) }));
+      reportRequestFailure(error, t, setStatus);
     } finally {
       setCatalogLoading(false);
     }
@@ -147,7 +148,7 @@ export function useInstallController(deps: UseInstallControllerDeps): InstallCon
       if (requestId !== loaderRequestRef.current) return;
       setLoaderOptions([]);
       setLoaderVersion("");
-      setStatus(t("app.status.failed", { error: String(error) }));
+      reportRequestFailure(error, t, setStatus);
     } finally {
       if (requestId === loaderRequestRef.current) {
         setLoaderLoading(false);
@@ -181,7 +182,7 @@ export function useInstallController(deps: UseInstallControllerDeps): InstallCon
       if (requestId !== optiFineRequestRef.current) return;
       setOptiFineOptions([]);
       setOptiFineVersion("");
-      setStatus(t("app.status.failed", { error: String(error) }));
+      reportRequestFailure(error, t, setStatus);
     } finally {
       if (requestId === optiFineRequestRef.current) {
         setOptiFineLoading(false);
