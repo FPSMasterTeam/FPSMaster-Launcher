@@ -8,7 +8,7 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -233,6 +233,9 @@ struct ResolvedLibrary {
     path: PathBuf,
     download_urls: Vec<String>,
     sha1: Option<String>,
+    /// Declared artifact size, when the version metadata provides one. Used to
+    /// build a real byte total for the progress bar before any transfer starts.
+    size: Option<u64>,
     classpath_entry: bool,
     native_entry: bool,
 }
@@ -1265,6 +1268,8 @@ pub(crate) fn install_forge(
         None,
         "forge-installer",
         &installer_artifact,
+        None,
+        None,
     )?;
     install_cancel_error(ipc_session)?;
     emit_install_progress(
@@ -1485,6 +1490,8 @@ pub(crate) fn install_optifine(
         None,
         "optifine",
         &artifact,
+        None,
+        None,
     )?;
     if !fetched && !target_path.is_file() {
         return Err("OptiFine download was skipped but target file is missing".to_string());
@@ -1569,9 +1576,11 @@ pub(crate) fn build_vanilla_launch_plan(
     })?;
     let natives_dir = create_temp_natives_dir(&natives_base_dir)?;
 
+    let libraries = resolve_libraries(&version_json, &request.game_dir, &rule_features, source)?;
+    prefetch_missing_libraries(window, &libraries)?;
+
     let mut classpath_entries = Vec::new();
-    for library in resolve_libraries(&version_json, &request.game_dir, &rule_features, source)? {
-        ensure_library_downloaded(window, &library)?;
+    for library in libraries {
         if library.classpath_entry {
             classpath_entries.push(library.path.clone());
         }
@@ -1726,6 +1735,7 @@ fn resolve_edge_aot_maven_library(
         path: target,
         download_urls: urls,
         sha1: None,
+        size: None,
         classpath_entry: true,
         native_entry: false,
     })
@@ -1890,9 +1900,17 @@ pub(crate) fn build_edge_aot_launch_plan(
     })?;
     let natives_dir = create_temp_natives_dir(&natives_base_dir)?;
 
+    let mut libraries =
+        resolve_libraries(&version_json, &request.game_dir, &rule_features, source)?;
+    let launchwrapper = resolve_edge_aot_launchwrapper_library(&request.game_dir, source)?;
+    libraries.push(launchwrapper.clone());
+    prefetch_missing_libraries(window, &libraries)?;
+    // The launchwrapper was appended only to share the parallel fetch; it is not
+    // part of the resolved classpath order below.
+    libraries.pop();
+
     let mut classpath_entries = vec![runtime_jar_path];
-    for library in resolve_libraries(&version_json, &request.game_dir, &rule_features, source)? {
-        ensure_library_downloaded(window, &library)?;
+    for library in libraries {
         if library.classpath_entry {
             classpath_entries.push(library.path.clone());
         }
@@ -1900,9 +1918,6 @@ pub(crate) fn build_edge_aot_launch_plan(
             extract_native_jar(&library.path, &natives_dir)?;
         }
     }
-
-    let launchwrapper = resolve_edge_aot_launchwrapper_library(&request.game_dir, source)?;
-    ensure_library_downloaded(window, &launchwrapper)?;
     classpath_entries.push(launchwrapper.path);
 
     // Always the official notch client from the version install / Mojang download — never a
@@ -2289,10 +2304,12 @@ fn resolve_libraries(
                     .get("sha1")
                     .and_then(Value::as_str)
                     .map(ToString::to_string);
+                let size = classifier.get("size").and_then(Value::as_u64);
                 resolved.push(ResolvedLibrary {
                     path: target,
                     download_urls: urls,
                     sha1,
+                    size,
                     classpath_entry: false,
                     native_entry: true,
                 });
@@ -2319,10 +2336,12 @@ fn resolve_libraries(
                 .get("sha1")
                 .and_then(Value::as_str)
                 .map(ToString::to_string);
+            let size = artifact.get("size").and_then(Value::as_u64);
             resolved.push(ResolvedLibrary {
                 path: target,
                 download_urls: urls,
                 sha1,
+                size,
                 classpath_entry: true,
                 native_entry: false,
             });
@@ -2341,6 +2360,7 @@ fn resolve_libraries(
                     path
                 )),
                 sha1: None,
+                size: None,
                 classpath_entry: true,
                 native_entry: false,
             });
@@ -2688,11 +2708,116 @@ fn build_classpath(entries: &[PathBuf]) -> String {
     values.join(&classpath_separator().to_string())
 }
 
+/// Locks a mutex, recovering the guard if a previous holder panicked.
+///
+/// Download workers share their queue/error mutexes. `unwrap()`ing a poisoned
+/// lock turned one worker's panic into a panic in every remaining worker, which
+/// surfaced as the useless "download worker panicked" instead of the original
+/// failure. Poison here carries no correctness meaning — the protected data is a
+/// work queue and a first-error slot — so recovering is both safe and strictly
+/// more informative.
+pub(crate) fn lock_recover<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    match mutex.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    }
+}
+
+/// Concurrency for completing libraries that are missing at launch time.
+///
+/// This path has no per-item progress UI, so a fixed modest pool is enough; it
+/// exists purely so a partially-installed instance does not pay N sequential
+/// round trips before the game can start.
+const LAUNCH_PREFETCH_THREADS: usize = 8;
+
+/// Downloads every library not already on disk, concurrently.
+///
+/// Previously this ran inline in the launch plan's classpath loop — one blocking
+/// request at a time — so completing a partial install cost
+/// N × (connect + transfer) of pure latency before launch. Native extraction and
+/// classpath ordering stay sequential in the caller, since both are order-dependent.
+fn prefetch_missing_libraries(
+    window: Option<&tauri::Window>,
+    libraries: &[ResolvedLibrary],
+) -> Result<(), String> {
+    let pending: Vec<ResolvedLibrary> = libraries
+        .iter()
+        .filter(|library| !library.path.is_file())
+        .cloned()
+        .collect();
+    if pending.is_empty() {
+        return Ok(());
+    }
+    if pending.len() == 1 {
+        return ensure_library_downloaded(window, &pending[0]);
+    }
+
+    let worker_count = LAUNCH_PREFETCH_THREADS.min(pending.len());
+    let queue = Arc::new(Mutex::new(std::collections::VecDeque::from(pending)));
+    let failure = Arc::new(Mutex::new(None::<String>));
+    let window_cloned = window.cloned();
+
+    let mut workers = Vec::with_capacity(worker_count);
+    for _ in 0..worker_count {
+        let queue = Arc::clone(&queue);
+        let failure = Arc::clone(&failure);
+        let window = window_cloned.clone();
+        workers.push(thread::spawn(move || loop {
+            if lock_recover(&failure).is_some() {
+                return;
+            }
+            let next = lock_recover(&queue).pop_front();
+            let Some(library) = next else {
+                return;
+            };
+            if let Err(error) = ensure_library_downloaded(window.as_ref(), &library) {
+                let mut slot = lock_recover(&failure);
+                if slot.is_none() {
+                    *slot = Some(error);
+                }
+                return;
+            }
+        }));
+    }
+
+    let mut panicked = false;
+    for worker in workers {
+        if worker.join().is_err() {
+            panicked = true;
+        }
+    }
+
+    if let Some(error) = lock_recover(&failure).clone() {
+        return Err(error);
+    }
+    if panicked {
+        return Err("Library download worker panicked".to_string());
+    }
+    Ok(())
+}
+
+fn cached_file_usable(path: &Path, expected_sha1: Option<&str>) -> bool {
+    let Ok(meta) = fs::metadata(path) else {
+        return false;
+    };
+    // A zero-byte leftover from a killed download is never a valid artifact,
+    // whether or not the manifest supplied a checksum.
+    if !meta.is_file() || meta.len() == 0 {
+        return false;
+    }
+    let Some(expected_sha1) = expected_sha1 else {
+        return true;
+    };
+    compute_sha1_hex(path)
+        .map(|actual| actual.eq_ignore_ascii_case(expected_sha1))
+        .unwrap_or(false)
+}
+
 fn ensure_library_downloaded(
     window: Option<&tauri::Window>,
     library: &ResolvedLibrary,
 ) -> Result<(), String> {
-    if library.path.is_file() {
+    if cached_file_usable(&library.path, library.sha1.as_deref()) {
         return Ok(());
     }
     if library.download_urls.is_empty() {
@@ -2750,16 +2875,8 @@ fn download_file(
     expected_sha1: Option<&str>,
     label: &str,
 ) -> Result<(), String> {
-    if target.is_file() {
-        if let Some(expected_sha1) = expected_sha1 {
-            if let Ok(actual) = compute_sha1_hex(target) {
-                if actual.eq_ignore_ascii_case(expected_sha1) {
-                    return Ok(());
-                }
-            }
-        } else {
-            return Ok(());
-        }
+    if cached_file_usable(target, expected_sha1) {
+        return Ok(());
     }
 
     let parent = target
@@ -2775,18 +2892,23 @@ fn download_file(
     // timeout, so keep the generous general-purpose client here.
     let client = build_blocking_http_client()?;
     let mut last_error = None;
-    for url in urls {
+    for url in mirror_health::prioritize(urls) {
+        let url = url.as_str();
         let response = match client.get(url).send() {
             Ok(response) => response,
             Err(error) => {
+                mirror_health::record_failure(url);
                 last_error = Some(format!("Failed to download {label} from {url}: {error}"));
                 continue;
             }
         };
-        if !response.status().is_success() {
+        let status = response.status();
+        if !status.is_success() {
+            if !status.is_client_error() {
+                mirror_health::record_failure(url);
+            }
             last_error = Some(format!(
-                "Failed to download {label} from {url}: HTTP {}",
-                response.status()
+                "Failed to download {label} from {url}: HTTP {status}"
             ));
             continue;
         }
@@ -2794,6 +2916,7 @@ fn download_file(
         let bytes = match response.bytes() {
             Ok(bytes) => bytes,
             Err(error) => {
+                mirror_health::record_failure(url);
                 last_error = Some(format!(
                     "Failed reading {label} response from {url}: {error}"
                 ));
@@ -2813,6 +2936,7 @@ fn download_file(
                 Ok(actual) if actual.eq_ignore_ascii_case(expected_sha1) => {}
                 Ok(actual) => {
                     let _ = fs::remove_file(&tmp);
+                    mirror_health::record_failure(url);
                     last_error = Some(format!(
                         "SHA1 mismatch for {url}: expected={expected_sha1} actual={actual}"
                     ));
@@ -2834,6 +2958,7 @@ fn download_file(
             })
             .map_err(|e| format!("Failed to move temp file to {}: {e}", target.display()))?;
 
+        mirror_health::record_success(url);
         emit_log(
             window,
             "info",
@@ -2853,39 +2978,26 @@ fn download_file_with_ipc(
     expected_sha1: Option<&str>,
     label: &str,
     artifact: &DownloadArtifact,
+    aggregate: Option<&DownloadAggregate>,
+    expected_size: Option<u64>,
 ) -> Result<bool, String> {
     const DOWNLOAD_PROGRESS_CHUNK_SIZE: usize = 64 * 1024;
     install_cancel_error(session)?;
-    if target.is_file() {
-        if let Some(expected_sha1) = expected_sha1 {
-            if let Ok(actual) = compute_sha1_hex(target) {
-                if actual.eq_ignore_ascii_case(expected_sha1) {
-                    let total = fs::metadata(target).ok().map(|meta| meta.len());
-                    emit_download_item_complete(
-                        window,
-                        session,
-                        artifact,
-                        Some(0),
-                        total,
-                        true,
-                        "Already cached",
-                    );
-                    return Ok(false);
-                }
-            }
-        } else {
-            let total = fs::metadata(target).ok().map(|meta| meta.len());
-            emit_download_item_complete(
-                window,
-                session,
-                artifact,
-                Some(0),
-                total,
-                true,
-                "Already cached",
-            );
-            return Ok(false);
+    if cached_file_usable(target, expected_sha1) {
+        let total = fs::metadata(target).ok().map(|meta| meta.len());
+        if let Some(aggregate) = aggregate {
+            aggregate.add_cached(expected_size.or(total).unwrap_or(0));
         }
+        emit_download_item_complete(
+            window,
+            session,
+            artifact,
+            Some(0),
+            total,
+            true,
+            "Already cached",
+        );
+        return Ok(false);
     }
 
     let parent = target
@@ -2894,25 +3006,39 @@ fn download_file_with_ipc(
     fs::create_dir_all(parent)
         .map_err(|e| format!("Failed to create directory {}: {e}", parent.display()))?;
 
-    emit_download_item_start(window, session, artifact, Some(0), None, "Queued");
+    emit_download_item_start(window, session, artifact, Some(0), expected_size, "Downloading");
     let tmp = target.with_extension("download");
     let client = download_http_client()?;
     let mut last_error = None;
-    for url in urls {
-        for attempt in 1..=DOWNLOAD_RETRY_ATTEMPTS {
+    // Hosts known to be failing right now go last, so a dead mirror costs the
+    // first few files instead of all of them.
+    let candidates = mirror_health::prioritize(urls);
+    let candidate_count = candidates.len();
+    for (index, url) in candidates.iter().enumerate() {
+        let url = url.as_str();
+        // Retrying a host that just failed is only worth it when there is nothing
+        // else left to try; while another candidate is untried, failing over is
+        // strictly faster than waiting out another stall on the same host.
+        let attempts = if index + 1 == candidate_count {
+            DOWNLOAD_RETRY_ATTEMPTS
+        } else {
+            1
+        };
+        for attempt in 1..=attempts {
             install_cancel_error(session)?;
             let response = match client.get(url).send() {
                 Ok(response) => response,
                 Err(error) => {
+                    mirror_health::record_failure(url);
                     last_error = Some(format!("Failed to download {label} from {url}: {error}"));
-                    if attempt < DOWNLOAD_RETRY_ATTEMPTS {
+                    if attempt < attempts {
                         emit_download_item_start(
                             window,
                             session,
                             artifact,
                             Some(0),
                             None,
-                            &format!("Retrying ({attempt}/{})", DOWNLOAD_RETRY_ATTEMPTS - 1),
+                            &format!("Retrying ({attempt}/{})", attempts - 1),
                         );
                     }
                     continue;
@@ -2926,17 +3052,20 @@ fn download_file_with_ipc(
                 // A 4xx means this URL will never serve the file (e.g. the mirror
                 // simply doesn't have it) — retrying it is pointless, so fail over to
                 // the next candidate immediately instead of burning all attempts here.
+                // It also says nothing about the host's health, so it is not recorded
+                // as a failure: a mirror missing one artifact is still worth using.
                 if status.is_client_error() {
                     break;
                 }
-                if attempt < DOWNLOAD_RETRY_ATTEMPTS {
+                mirror_health::record_failure(url);
+                if attempt < attempts {
                     emit_download_item_start(
                         window,
                         session,
                         artifact,
                         Some(0),
                         None,
-                        &format!("Retrying ({attempt}/{})", DOWNLOAD_RETRY_ATTEMPTS - 1),
+                        &format!("Retrying ({attempt}/{})", attempts - 1),
                     );
                 }
                 continue;
@@ -2952,14 +3081,14 @@ fn download_file_with_ipc(
                         "Failed writing temp file {}: {error}",
                         tmp.display()
                     ));
-                    if attempt < DOWNLOAD_RETRY_ATTEMPTS {
+                    if attempt < attempts {
                         emit_download_item_start(
                             window,
                             session,
                             artifact,
                             Some(0),
                             total,
-                            &format!("Retrying ({attempt}/{})", DOWNLOAD_RETRY_ATTEMPTS - 1),
+                            &format!("Retrying ({attempt}/{})", attempts - 1),
                         );
                     }
                     continue;
@@ -2982,6 +3111,9 @@ fn download_file_with_ipc(
                             break;
                         }
                         downloaded_bytes += read_bytes as u64;
+                        if let Some(aggregate) = aggregate {
+                            aggregate.add_transferred(read_bytes as u64);
+                        }
                         if last_progress_emit.elapsed() >= DOWNLOAD_PROGRESS_EMIT_INTERVAL {
                             last_progress_emit = Instant::now();
                             emit_download_item_progress(
@@ -3004,33 +3136,44 @@ fn download_file_with_ipc(
             }
             if let Some(error) = stream_failed {
                 let _ = fs::remove_file(&tmp);
+                // A body that dies mid-stream is the signature of a stalled
+                // mirror, which is exactly what the health tracker exists for.
+                mirror_health::record_failure(url);
+                // The retry re-reads from byte 0, so its partial transfer must not
+                // stay counted or the aggregate bar would overshoot.
+                if let Some(aggregate) = aggregate {
+                    aggregate.discard_transferred(downloaded_bytes);
+                }
                 last_error = Some(error);
-                if attempt < DOWNLOAD_RETRY_ATTEMPTS {
+                if attempt < attempts {
                     emit_download_item_start(
                         window,
                         session,
                         artifact,
                         Some(0),
                         total,
-                        &format!("Retrying ({attempt}/{})", DOWNLOAD_RETRY_ATTEMPTS - 1),
+                        &format!("Retrying ({attempt}/{})", attempts - 1),
                     );
                 }
                 continue;
             }
             if let Err(error) = output.flush() {
                 let _ = fs::remove_file(&tmp);
+                if let Some(aggregate) = aggregate {
+                    aggregate.discard_transferred(downloaded_bytes);
+                }
                 last_error = Some(format!(
                     "Failed flushing temp file {}: {error}",
                     tmp.display()
                 ));
-                if attempt < DOWNLOAD_RETRY_ATTEMPTS {
+                if attempt < attempts {
                     emit_download_item_start(
                         window,
                         session,
                         artifact,
                         Some(0),
                         total,
-                        &format!("Retrying ({attempt}/{})", DOWNLOAD_RETRY_ATTEMPTS - 1),
+                        &format!("Retrying ({attempt}/{})", attempts - 1),
                     );
                 }
                 continue;
@@ -3042,6 +3185,9 @@ fn download_file_with_ipc(
                     Ok(actual) if actual.eq_ignore_ascii_case(expected_sha1) => {}
                     Ok(actual) => {
                         let _ = fs::remove_file(&tmp);
+                        if let Some(aggregate) = aggregate {
+                            aggregate.discard_transferred(downloaded_bytes);
+                        }
                         emit_log(
                             window,
                             "warn",
@@ -3049,10 +3195,13 @@ fn download_file_with_ipc(
                                 "Checksum mismatch for {label}: expected sha1={expected_sha1}, got {actual}; re-downloading"
                             ),
                         );
+                        // Serving the wrong bytes is a mirror-health problem too:
+                        // a mirror with a stale cache will keep doing it.
+                        mirror_health::record_failure(url);
                         last_error = Some(format!(
                             "SHA1 mismatch for {url}: expected={expected_sha1} actual={actual}"
                         ));
-                        if attempt < DOWNLOAD_RETRY_ATTEMPTS {
+                        if attempt < attempts {
                             emit_download_item_start(
                                 window,
                                 session,
@@ -3061,7 +3210,7 @@ fn download_file_with_ipc(
                                 total.or(Some(downloaded_bytes)),
                                 &format!(
                                     "Checksum failed, retrying ({attempt}/{})",
-                                    DOWNLOAD_RETRY_ATTEMPTS - 1
+                                    attempts - 1
                                 ),
                             );
                         }
@@ -3069,15 +3218,18 @@ fn download_file_with_ipc(
                     }
                     Err(error) => {
                         let _ = fs::remove_file(&tmp);
+                        if let Some(aggregate) = aggregate {
+                            aggregate.discard_transferred(downloaded_bytes);
+                        }
                         last_error = Some(error);
-                        if attempt < DOWNLOAD_RETRY_ATTEMPTS {
+                        if attempt < attempts {
                             emit_download_item_start(
                                 window,
                                 session,
                                 artifact,
                                 Some(0),
                                 total.or(Some(downloaded_bytes)),
-                                &format!("Retrying ({attempt}/{})", DOWNLOAD_RETRY_ATTEMPTS - 1),
+                                &format!("Retrying ({attempt}/{})", attempts - 1),
                             );
                         }
                         continue;
@@ -3093,6 +3245,10 @@ fn download_file_with_ipc(
                 })
                 .map_err(|e| format!("Failed to move temp file to {}: {e}", target.display()))?;
 
+            mirror_health::record_success(url);
+            if let Some(aggregate) = aggregate {
+                aggregate.settle(expected_size, downloaded_bytes);
+            }
             emit_log(
                 window,
                 "info",
@@ -3657,6 +3813,8 @@ fn download_client(
         sha1,
         "client",
         &artifact,
+        None,
+        None,
     )
 }
 
@@ -3702,6 +3860,7 @@ fn download_libraries(
                 urls: library.download_urls,
                 target,
                 expected_sha1: library.sha1,
+                expected_size: library.size,
                 label: "library".to_string(),
                 artifact: DownloadArtifact::new(
                     if library.native_entry {
@@ -3773,6 +3932,8 @@ fn download_assets(
         asset_index_sha1,
         "asset-index",
         &asset_index_artifact,
+        None,
+        None,
     )?;
     install_cancel_error(ipc_session)?;
 
@@ -3801,7 +3962,7 @@ fn download_assets(
         "Start downloading assets",
     );
 
-    let mut unique_assets: Vec<(String, PathBuf, String)> = Vec::new();
+    let mut unique_assets: Vec<(String, PathBuf, Option<u64>)> = Vec::new();
     let mut seen = std::collections::HashSet::new();
     for object in objects.values() {
         let hash = object
@@ -3815,13 +3976,17 @@ fn download_assets(
             .join(prefix)
             .join(hash);
         if seen.insert(target.clone()) {
-            unique_assets.push((hash.to_string(), target, hash.to_string()));
+            unique_assets.push((
+                hash.to_string(),
+                target,
+                object.get("size").and_then(Value::as_u64),
+            ));
         }
     }
 
     let jobs = unique_assets
         .iter()
-        .map(|(_, target, hash)| DownloadJob {
+        .map(|(hash, target, size)| DownloadJob {
             urls: source.candidate_urls(&format!(
                 "{}{}/{}",
                 source.default_asset_repo(),
@@ -3830,12 +3995,22 @@ fn download_assets(
             )),
             target: target.clone(),
             expected_sha1: Some(hash.clone()),
+            expected_size: *size,
             label: "asset".to_string(),
             artifact: DownloadArtifact::new("asset", phase, "assets", target, "asset"),
         })
         .collect::<Vec<_>>();
     let _downloaded =
         download_jobs_in_parallel(window, ipc_session, phase, "assets", jobs, download_threads)?;
+
+    // Only pre-1.7 clients read assets by their original path out of
+    // `assets/virtual/legacy`; the index itself declares that with `virtual` /
+    // `map_to_resources`. Doing this unconditionally duplicated the entire asset
+    // set — thousands of files, hundreds of MB — on every modern install for no
+    // reason, which was a large and completely invisible chunk of install time.
+    if !asset_index_needs_virtual_copy(&index_json, asset_index_id) {
+        return Ok(unique_assets.len() as i32);
+    }
 
     let legacy_dir = game_dir.join("assets").join("virtual").join("legacy");
     fs::create_dir_all(&legacy_dir).map_err(|e| {
@@ -3873,19 +4048,244 @@ fn download_assets(
     Ok(unique_assets.len() as i32)
 }
 
+/// Whether the asset index requires the legacy `assets/virtual/legacy` mirror.
+///
+/// Mojang marks those indexes explicitly (`virtual` for 1.6, `map_to_resources`
+/// for pre-1.6). The id check is a fallback for third-party/mirror metadata that
+/// omits the flags but still uses the legacy layout.
+fn asset_index_needs_virtual_copy(index_json: &Value, asset_index_id: &str) -> bool {
+    let flagged = ["virtual", "map_to_resources"].iter().any(|key| {
+        index_json
+            .get(*key)
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+    });
+    if flagged {
+        return true;
+    }
+    matches!(asset_index_id, "legacy" | "pre-1.6")
+}
+
 #[derive(Debug, Clone)]
 struct DownloadJob {
     urls: Vec<String>,
     target: PathBuf,
     expected_sha1: Option<String>,
+    /// Declared size from the manifest, when known. Lets the stage publish a real
+    /// byte total up front instead of discovering it as responses arrive.
+    expected_size: Option<u64>,
     label: String,
     artifact: DownloadArtifact,
+}
+
+/// Aggregate byte accounting for one parallel download stage.
+///
+/// Progress used to be reported purely as "files completed". Asset sets mix
+/// 200-byte JSON with 20 MB jars, so a file-count bar advances in bursts that
+/// have nothing to do with how much is left, and it cannot express a transfer
+/// rate or an ETA at all. Bytes are what the user is actually waiting on.
+struct DownloadAggregate {
+    /// Bytes accounted for: streamed bytes plus the declared size of files that
+    /// were already cached.
+    bytes_done: AtomicU64,
+    /// Bytes that actually crossed the network, which is what the rate is based on.
+    /// Cached files must not inflate the reported speed.
+    bytes_transferred: AtomicU64,
+    /// Sum of declared sizes. Zero when the manifest gave no sizes, in which case
+    /// consumers fall back to file counts.
+    bytes_total: u64,
+    rate: Mutex<RateWindow>,
+}
+
+/// Sliding window used to turn cumulative bytes into a current transfer rate.
+struct RateWindow {
+    at: Instant,
+    transferred: u64,
+    bytes_per_second: u64,
+}
+
+impl DownloadAggregate {
+    fn new(bytes_total: u64) -> Self {
+        Self {
+            bytes_done: AtomicU64::new(0),
+            bytes_transferred: AtomicU64::new(0),
+            bytes_total,
+            rate: Mutex::new(RateWindow {
+                at: Instant::now(),
+                transferred: 0,
+                bytes_per_second: 0,
+            }),
+        }
+    }
+
+    fn add_transferred(&self, delta: u64) {
+        self.bytes_done.fetch_add(delta, Ordering::Relaxed);
+        self.bytes_transferred.fetch_add(delta, Ordering::Relaxed);
+    }
+
+    /// Undoes the partial transfer of a failed attempt so a retry does not make
+    /// the bar overshoot.
+    fn discard_transferred(&self, delta: u64) {
+        if delta == 0 {
+            return;
+        }
+        self.bytes_done.fetch_sub(delta, Ordering::Relaxed);
+        self.bytes_transferred.fetch_sub(delta, Ordering::Relaxed);
+    }
+
+    /// Credits a file that was already on disk: it counts toward completion but
+    /// not toward the transfer rate.
+    fn add_cached(&self, bytes: u64) {
+        self.bytes_done.fetch_add(bytes, Ordering::Relaxed);
+    }
+
+    /// Reconciles the accounted bytes for a finished file against its declared
+    /// size, so a wrong or missing `Content-Length` cannot leave the bar short.
+    fn settle(&self, expected: Option<u64>, actual: u64) {
+        let Some(expected) = expected else { return };
+        if expected > actual {
+            self.bytes_done
+                .fetch_add(expected - actual, Ordering::Relaxed);
+        }
+    }
+
+    /// Current rate in bytes/second, recomputed at most once per window so the
+    /// number is a live speed rather than a cumulative average.
+    fn bytes_per_second(&self) -> u64 {
+        const MIN_WINDOW: Duration = Duration::from_millis(400);
+        let transferred = self.bytes_transferred.load(Ordering::Relaxed);
+        let mut window = lock_recover(&self.rate);
+        let elapsed = window.at.elapsed();
+        if elapsed >= MIN_WINDOW {
+            let delta = transferred.saturating_sub(window.transferred);
+            window.bytes_per_second = (delta as f64 / elapsed.as_secs_f64()) as u64;
+            window.at = Instant::now();
+            window.transferred = transferred;
+        }
+        window.bytes_per_second
+    }
+
+    fn snapshot(&self) -> DownloadRateSnapshot {
+        let done = self.bytes_done.load(Ordering::Relaxed).min(self.bytes_total);
+        let bytes_per_second = self.bytes_per_second();
+        let eta_seconds = if bytes_per_second > 0 && self.bytes_total > done {
+            Some((self.bytes_total - done) / bytes_per_second)
+        } else {
+            None
+        };
+        DownloadRateSnapshot {
+            bytes_done: done,
+            bytes_total: self.bytes_total,
+            bytes_per_second,
+            eta_seconds,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct DownloadRateSnapshot {
+    bytes_done: u64,
+    bytes_total: u64,
+    bytes_per_second: u64,
+    eta_seconds: Option<u64>,
 }
 
 const DOWNLOAD_RETRY_ATTEMPTS: usize = 3;
 // Progress IPC per item at most this often; the dialog only refreshes on a 500ms
 // poll, so per-64KB-chunk events were pure serialization overhead.
 const DOWNLOAD_PROGRESS_EMIT_INTERVAL: Duration = Duration::from_millis(200);
+
+/// Process-wide memory of which download hosts are currently reachable.
+///
+/// Candidate URLs are tried in a fixed order (mirror-first by default) and each
+/// one used to get the full retry budget. With a mirror that is down or heavily
+/// throttled, every single file in an install re-paid that budget — three
+/// 20-second stalls each, across thousands of assets — so "mirror first" behaved
+/// like a hang instead of a fallback. Remembering a host's recent outcome lets
+/// later files skip straight to a candidate that is actually working.
+pub(crate) mod mirror_health {
+    use std::collections::HashMap;
+    use std::sync::{Mutex, OnceLock};
+    use std::time::{Duration, Instant};
+
+    /// Consecutive failures before a host is demoted behind its alternatives.
+    const FAILURE_THRESHOLD: u32 = 3;
+    /// Long enough to cover an install phase, short enough that a brief outage
+    /// does not pin the launcher to a slower fallback for the whole session.
+    const DEMOTION_DURATION: Duration = Duration::from_secs(120);
+
+    #[derive(Default)]
+    struct HostHealth {
+        consecutive_failures: u32,
+        demoted_until: Option<Instant>,
+    }
+
+    fn registry() -> &'static Mutex<HashMap<String, HostHealth>> {
+        static REGISTRY: OnceLock<Mutex<HashMap<String, HostHealth>>> = OnceLock::new();
+        REGISTRY.get_or_init(|| Mutex::new(HashMap::new()))
+    }
+
+    fn host_of(url: &str) -> Option<String> {
+        reqwest::Url::parse(url)
+            .ok()
+            .and_then(|parsed| parsed.host_str().map(str::to_ascii_lowercase))
+    }
+
+    pub(crate) fn record_success(url: &str) {
+        let Some(host) = host_of(url) else { return };
+        // A poisoned lock here only means some other download thread panicked;
+        // health data is advisory, so recovering the guard is better than
+        // cascading the panic into every remaining download.
+        let mut guard = match registry().lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        let entry = guard.entry(host).or_default();
+        entry.consecutive_failures = 0;
+        entry.demoted_until = None;
+    }
+
+    pub(crate) fn record_failure(url: &str) {
+        let Some(host) = host_of(url) else { return };
+        let mut guard = match registry().lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        let entry = guard.entry(host).or_default();
+        entry.consecutive_failures = entry.consecutive_failures.saturating_add(1);
+        if entry.consecutive_failures >= FAILURE_THRESHOLD {
+            entry.demoted_until = Some(Instant::now() + DEMOTION_DURATION);
+        }
+    }
+
+    fn is_demoted(url: &str) -> bool {
+        let Some(host) = host_of(url) else {
+            return false;
+        };
+        let guard = match registry().lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        guard
+            .get(&host)
+            .and_then(|entry| entry.demoted_until)
+            .is_some_and(|deadline| Instant::now() < deadline)
+    }
+
+    /// Reorders candidates so currently-failing hosts are tried last, preserving
+    /// the configured preference order within each group.
+    pub(crate) fn prioritize(urls: &[String]) -> Vec<String> {
+        if urls.len() < 2 {
+            return urls.to_vec();
+        }
+        let (healthy, demoted): (Vec<String>, Vec<String>) =
+            urls.iter().cloned().partition(|url| !is_demoted(url));
+        if demoted.is_empty() {
+            return healthy;
+        }
+        healthy.into_iter().chain(demoted).collect()
+    }
+}
 
 // One shared HTTP client for all file downloads. reqwest pools keep-alive connections
 // per client, so building a client per file (the previous behavior) forced a fresh
@@ -3931,9 +4331,15 @@ fn download_jobs_in_parallel(
 
     let total = jobs.len();
     let worker_count = download_threads.max(1).min(total);
-    for job in &jobs {
-        emit_download_item_start(window, ipc_session, &job.artifact, Some(0), None, "Queued");
-    }
+    // Every job used to be announced as "Queued" up front. For an asset stage
+    // that is thousands of IPC lines in one burst, each one forcing the dialog to
+    // re-reduce and re-sort a growing item list, and it told the user nothing the
+    // aggregate counters do not already say.
+    let bytes_total = jobs
+        .iter()
+        .map(|job| job.expected_size.unwrap_or(0))
+        .sum::<u64>();
+    let aggregate = Arc::new(DownloadAggregate::new(bytes_total));
     let queue = Arc::new(Mutex::new(std::collections::VecDeque::from(jobs)));
     let completed = Arc::new(AtomicUsize::new(0));
     let downloaded = Arc::new(AtomicUsize::new(0));
@@ -3949,23 +4355,24 @@ fn download_jobs_in_parallel(
         let completed = Arc::clone(&completed);
         let downloaded = Arc::clone(&downloaded);
         let error = Arc::clone(&error);
+        let aggregate = Arc::clone(&aggregate);
         let window = window_cloned.clone();
         let session = session_owned.clone();
         let phase = phase_owned.clone();
         let stage = stage_owned.clone();
         workers.push(thread::spawn(move || loop {
-            if error.lock().unwrap().is_some() {
+            if lock_recover(&error).is_some() {
                 return;
             }
             if let Err(cancel_error) = install_cancel_error(session.as_deref()) {
-                *error.lock().unwrap() = Some(cancel_error);
+                let mut slot = lock_recover(&error);
+                if slot.is_none() {
+                    *slot = Some(cancel_error);
+                }
                 return;
             }
 
-            let next = {
-                let mut guard = queue.lock().unwrap();
-                guard.pop_front()
-            };
+            let next = lock_recover(&queue).pop_front();
             let Some(job) = next else {
                 return;
             };
@@ -3978,6 +4385,8 @@ fn download_jobs_in_parallel(
                 job.expected_sha1.as_deref(),
                 &job.label,
                 &job.artifact,
+                Some(aggregate.as_ref()),
+                job.expected_size,
             );
 
             match outcome {
@@ -3987,7 +4396,7 @@ fn download_jobs_in_parallel(
                         downloaded.fetch_add(1, Ordering::Relaxed);
                     }
                     let downloaded_now = downloaded.load(Ordering::Relaxed);
-                    emit_install_progress(
+                    emit_install_progress_with_bytes(
                         window.as_ref(),
                         session.as_deref(),
                         &phase,
@@ -3997,24 +4406,35 @@ fn download_jobs_in_parallel(
                         downloaded_now as i32,
                         (current - downloaded_now) as i32,
                         &format!("Downloaded {stage} {current}/{total}"),
+                        Some(aggregate.snapshot()),
                     );
                 }
                 Err(err) => {
-                    *error.lock().unwrap() = Some(err);
+                    let mut slot = lock_recover(&error);
+                    if slot.is_none() {
+                        *slot = Some(err);
+                    }
                     return;
                 }
             }
         }));
     }
 
+    // Join every worker before reporting: returning early on the first panic left
+    // the remaining threads detached and still writing progress IPC.
+    let mut panicked = false;
     for worker in workers {
         if worker.join().is_err() {
-            return Err(format!("{stage} download worker panicked"));
+            panicked = true;
         }
     }
 
-    if let Some(err) = error.lock().unwrap().clone() {
+    // A recorded error is always more useful than "a worker panicked", so it wins.
+    if let Some(err) = lock_recover(&error).clone() {
         return Err(err);
+    }
+    if panicked {
+        return Err(format!("{stage} download worker panicked"));
     }
 
     Ok(downloaded.load(Ordering::Relaxed) as i32)
@@ -4103,7 +4523,27 @@ fn emit_install_progress(
     cached: i32,
     message: &str,
 ) {
-    emit_install_ipc(
+    emit_install_progress_with_bytes(
+        window, session, phase, stage, current, total, downloaded, cached, message, None,
+    );
+}
+
+/// Progress event that also carries the stage's byte totals, transfer rate and
+/// ETA, so the dialog can show real download progress instead of a file counter.
+#[allow(clippy::too_many_arguments)]
+fn emit_install_progress_with_bytes(
+    window: Option<&tauri::Window>,
+    session: Option<&str>,
+    phase: &str,
+    stage: &str,
+    current: i32,
+    total: i32,
+    downloaded: i32,
+    cached: i32,
+    message: &str,
+    rate: Option<DownloadRateSnapshot>,
+) {
+    emit_install_ipc_inner(
         window,
         session,
         "progress",
@@ -4115,6 +4555,7 @@ fn emit_install_progress(
         Some(cached),
         Some(message),
         None,
+        rate,
     );
 }
 
@@ -4214,6 +4655,27 @@ fn emit_install_ipc(
     message: Option<&str>,
     error: Option<&str>,
 ) {
+    emit_install_ipc_inner(
+        window, session, event, phase, stage, current, total, downloaded, cached, message, error,
+        None,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn emit_install_ipc_inner(
+    window: Option<&tauri::Window>,
+    session: Option<&str>,
+    event: &str,
+    phase: &str,
+    stage: &str,
+    current: Option<i32>,
+    total: Option<i32>,
+    downloaded: Option<i32>,
+    cached: Option<i32>,
+    message: Option<&str>,
+    error: Option<&str>,
+    rate: Option<DownloadRateSnapshot>,
+) {
     let mut payload = serde_json::Map::new();
     payload.insert("channel".to_string(), Value::String("install".to_string()));
     payload.insert("event".to_string(), Value::String(event.to_string()));
@@ -4242,6 +4704,25 @@ fn emit_install_ipc(
     }
     if let Some(error) = error.filter(|value| !value.trim().is_empty()) {
         payload.insert("error".to_string(), Value::String(error.to_string()));
+    }
+    // Only emitted when the manifest gave real sizes; a zero total would make the
+    // dialog show a byte bar it cannot fill.
+    if let Some(rate) = rate.filter(|rate| rate.bytes_total > 0) {
+        payload.insert("bytesDone".to_string(), Value::Number(rate.bytes_done.into()));
+        payload.insert(
+            "bytesTotal".to_string(),
+            Value::Number(rate.bytes_total.into()),
+        );
+        payload.insert(
+            "bytesPerSecond".to_string(),
+            Value::Number(rate.bytes_per_second.into()),
+        );
+        if let Some(eta_seconds) = rate.eta_seconds {
+            payload.insert(
+                "etaSeconds".to_string(),
+                Value::Number(eta_seconds.into()),
+            );
+        }
     }
 
     let line = format!(

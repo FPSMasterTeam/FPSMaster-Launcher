@@ -3,12 +3,13 @@ import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { listen, TauriEvent } from "@tauri-apps/api/event";
 import packageInfo from "../package.json";
-import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import AppBackground from "./components/AppBackground";
 import InstallDialog from "./components/InstallDialog";
 import LaunchErrorDialog from "./components/LaunchErrorDialog";
 import LaunchPrepareDialog from "./components/LaunchPrepareDialog";
 import Sidebar from "./components/Sidebar";
+import ToastViewport from "./components/ToastViewport";
 import WindowTitleBar from "./components/WindowTitleBar";
 import {
   DEFAULT_LOGIN_PREFS,
@@ -27,6 +28,7 @@ import {
 } from "./i18n";
 import {
   mapLaunchPreparePhaseKey,
+  mergePhaseByteProgress,
   parseLaunchPrepareJdkLog,
   parseLaunchProgressLog,
   reduceLaunchPrepareItems,
@@ -35,10 +37,11 @@ import {
 } from "./lib/launchPrepare";
 import { isLauncherVersionCompatible } from "./lib/version";
 import {
-  formatLaunchError,
+  describeApiError,
   isAuthExpiredError,
   normalizeLoginError
 } from "./lib/launcherError";
+import { notifyError, notifyWarning } from "./lib/toast";
 import {
   parseMinecraftAccounts,
   refreshMinecraftAccount,
@@ -237,6 +240,19 @@ function Launcher() {
   const launchPrepareDialogRef = useRef<LaunchPrepareDialogState | null>(null);
 
   const t = useMemo(() => createTranslator(settings.language), [settings.language]);
+
+  // `status` is not rendered anywhere in the shell, so on its own it swallows
+  // every failure. Anything the user explicitly triggered goes through here so
+  // it also reaches a toast.
+  const reportFailure = useCallback(
+    (error: unknown) => {
+      const errorText = describeApiError(error, t);
+      setStatus(t("app.status.failed", { error: errorText }));
+      notifyError(errorText, t("toast.title.requestFailed"));
+    },
+    [t]
+  );
+
   const backgroundMode = settings.minimizeToTray && !windowVisible;
   const telemetry = useLauncherTelemetry({
     token: launcherAuth?.token ?? null,
@@ -482,7 +498,6 @@ function Launcher() {
 
   const shouldPollUiLogs =
     windowVisible &&
-    !monitorWindowOpen &&
     (launchingInstanceId !== null || installDialog !== null || launchPrepareDialog !== null);
 
   useEffect(() => {
@@ -533,7 +548,6 @@ function Launcher() {
   useEffect(() => {
     if (activeGamePid === null || activeGamePid <= 0) return;
     if (!windowVisible) return;
-    if (monitorWindowOpen) return;
     let active = true;
     const probe = async () => {
       try {
@@ -554,7 +568,7 @@ function Launcher() {
       active = false;
       window.clearInterval(timer);
     };
-  }, [activeGamePid, windowVisible, monitorWindowOpen]);
+  }, [activeGamePid, windowVisible]);
 
   useEffect(() => {
     void syncAutostart(settings.launchOnStartup);
@@ -612,10 +626,7 @@ function Launcher() {
                 : currentPhase.status,
         stage: ipc.stage ?? currentPhase.stage,
         message: translateLaunchPrepareMessage(ipc, t) ?? currentPhase.message,
-        current: typeof ipc.current === "number" ? ipc.current : currentPhase.current,
-        total: typeof ipc.total === "number" ? ipc.total : currentPhase.total,
-        downloaded: typeof ipc.downloaded === "number" ? ipc.downloaded : currentPhase.downloaded,
-        cached: typeof ipc.cached === "number" ? ipc.cached : currentPhase.cached,
+        ...mergePhaseByteProgress(currentPhase, ipc),
         items: reduceLaunchPrepareItems(currentPhase.items, ipc)
       };
 
@@ -662,10 +673,7 @@ function Launcher() {
                 : currentPhase.status,
         stage: ipc.stage ?? currentPhase.stage,
         message: ipc.message ?? currentPhase.message,
-        current: typeof ipc.current === "number" ? ipc.current : currentPhase.current,
-        total: typeof ipc.total === "number" ? ipc.total : currentPhase.total,
-        downloaded: typeof ipc.downloaded === "number" ? ipc.downloaded : currentPhase.downloaded,
-        cached: typeof ipc.cached === "number" ? ipc.cached : currentPhase.cached,
+        ...mergePhaseByteProgress(currentPhase, ipc),
         items: reduceLaunchPrepareItems(currentPhase.items, ipc)
       } satisfies LaunchPreparePhaseState;
 
@@ -827,13 +835,14 @@ function Launcher() {
       }
       return { map, novaMap, error: null };
     } catch (error) {
-      const errorText = formatLaunchError(error);
+      const errorText = describeApiError(error, t);
       if (token && isAuthExpiredError(error)) {
         handleAuthExpired(t("login.sessionExpired"));
         return { map: null, novaMap: null, error: t("login.sessionExpired") };
       }
+      setStatus(t("app.status.failed", { error: errorText }));
       if (!silent) {
-        setStatus(t("app.status.failed", { error: errorText }));
+        notifyError(errorText, t("toast.title.requestFailed"));
       }
       return { map: null, novaMap: null, error: errorText };
     } finally {
@@ -943,7 +952,7 @@ function Launcher() {
           versionTag: expected.versionName,
           targetVersionTag: expected.versionName,
           changelog: expected.changelog,
-          lastError: formatLaunchError(error)
+          lastError: describeApiError(error, t)
         });
       }
     }
@@ -1058,7 +1067,7 @@ function Launcher() {
       setLaunchProgressText(t("launch.progress.startingGame"));
       markLaunchPreparePhase("launch", "done", "complete", t("launch.progress.startingGame"));
     } catch (error) {
-      const errorText = formatLaunchError(error);
+      const errorText = describeApiError(error, t);
       setStatus(t("app.status.launchFailed", { error: errorText }));
       setLaunchError(errorText);
       failLaunchPrepare(errorText);
@@ -1156,7 +1165,7 @@ function Launcher() {
       });
       const normalizedToken = normalizeStoredToken(result.token);
       if (!normalizedToken) {
-        return "登录异常: 未能读取到有效 token";
+        return t("login.missingToken");
       }
       setLauncherAuth({
         token: normalizedToken,
@@ -1173,11 +1182,20 @@ function Launcher() {
         void syncPresetLauncherPackages(refresh.map, refresh.novaMap);
       }
       setPage("home");
-      return refresh.error;
+      // Sign-in itself succeeded, so the login page unmounts right here and can
+      // never render this error. Raise it as a toast instead of returning it
+      // into a dead component.
+      if (refresh.error) {
+        notifyWarning(refresh.error, t("toast.title.requestFailed"));
+      }
+      return null;
     } catch (error) {
       const errorText = normalizeLoginError(error, t);
-      if (!silent) {
-        setStatus(t("app.status.failed", { error: errorText }));
+      setStatus(t("app.status.failed", { error: errorText }));
+      // Auto-login runs with `silent` and has no form to render the failure in,
+      // so it needs a toast; the interactive path shows it inline on the form.
+      if (silent) {
+        notifyWarning(t("login.autoLoginFailed", { error: errorText }), t("toast.title.loginFailed"));
       }
       return errorText;
     } finally {
@@ -1404,7 +1422,7 @@ function Launcher() {
           : t("app.status.autoInstallModsDone", { count: result.installedFiles })
       );
     } catch (error) {
-      const errorText = formatLaunchError(error);
+      const errorText = describeApiError(error, t);
       setPresetPackageStatuses((prev) => ({
         ...prev,
         [instance.id]: createPresetPackageStatus("error", {
@@ -1960,7 +1978,7 @@ function Launcher() {
       setLaunchProgressText(t("launch.progress.startingGame"));
       markLaunchPreparePhase("launch", "done", "complete", t("launch.progress.startingGame"));
     } catch (error) {
-      const errorText = formatLaunchError(error);
+      const errorText = describeApiError(error, t);
       setStatus(t("app.status.launchFailed", { error: errorText }));
       setLaunchError(errorText);
       failLaunchPrepare(errorText);
@@ -2068,7 +2086,7 @@ function Launcher() {
       setLaunchProgressText(t("launch.progress.startingGame"));
       markLaunchPreparePhase("launch", "done", "complete", t("launch.progress.startingGame"));
     } catch (error) {
-      const errorText = formatLaunchError(error);
+      const errorText = describeApiError(error, t);
       setStatus(t("app.status.launchFailed", { error: errorText }));
       setLaunchError(errorText);
       failLaunchPrepare(errorText);
@@ -2375,7 +2393,7 @@ function Launcher() {
       setSelected(duplicated.id);
       setStatus(t("app.status.instanceDuplicated", { name: source.name }));
     } catch (error) {
-      setStatus(t("app.status.failed", { error: formatLaunchError(error) }));
+      reportFailure(error);
     }
   }
 
@@ -2391,7 +2409,7 @@ function Launcher() {
       });
       setStatus(t("app.status.instanceExported", { name: source.name }));
     } catch (error) {
-      setStatus(t("app.status.failed", { error: formatLaunchError(error) }));
+      reportFailure(error);
     }
   }
 
@@ -2437,7 +2455,7 @@ function Launcher() {
       }
       setStatus(t("app.status.instanceRepaired", { name: source.name }));
     } catch (error) {
-      setStatus(t("app.status.failed", { error: formatLaunchError(error) }));
+      reportFailure(error);
     } finally {
       setBusy(false);
     }
@@ -2456,9 +2474,8 @@ function Launcher() {
       await invoke("cancel_install", { sessionId: active.sessionId });
       setStatus(t("dialog.cancelling"));
     } catch (error) {
-      const errorText = String(error);
       setInstallDialog((prev) => (prev ? { ...prev, cancelling: false } : prev));
-      setStatus(t("app.status.failed", { error: errorText }));
+      reportFailure(error);
     }
   }
 
@@ -2870,6 +2887,8 @@ function Launcher() {
         {authenticated && launchError && (
           <LaunchErrorDialog message={launchError} onConfirm={() => setLaunchError(null)} />
         )}
+
+        <ToastViewport />
       </div>
     </I18nProvider>
   );

@@ -8,8 +8,8 @@ mod secure_storage;
 use launcher_api::{
     download_launcher_app_update, launcher_get_app_update,
     launcher_get_dashboard, launcher_get_home, launcher_list_app_update_channels,
-    launcher_list_available_versions, launcher_list_news, launcher_login, normalize_api_base_url,
-    open_downloaded_file, parse_api_envelope,
+    launcher_list_available_versions, launcher_list_news, launcher_list_servers, launcher_login,
+    normalize_api_base_url, open_downloaded_file, parse_api_envelope,
 };
 use microsoft_auth::{
     get_minecraft_auth_config, poll_minecraft_device_login, refresh_minecraft_account,
@@ -18,7 +18,7 @@ use microsoft_auth::{
 use secure_storage::{secure_storage_delete, secure_storage_get, secure_storage_set};
 
 use base64::Engine;
-use minecraft_core::VanillaLaunchRequest;
+use minecraft_core::{lock_recover, VanillaLaunchRequest};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256, Sha512};
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -57,8 +57,19 @@ use xz2::bufread::XzDecoder;
 use xz2::stream::Stream;
 
 const DEFAULT_DOWNLOAD_THREADS: i32 = 16;
+// Browser-shaped UA: some CDNs on the JDK download path reject plain library
+// agents. The platform token must match the machine we are actually on — the
+// hardcoded "Windows NT 10.0" told mirrors that pick artifacts by UA to serve
+// Windows builds to macOS and Linux users.
+#[cfg(target_os = "windows")]
 const JDK_DOWNLOAD_USER_AGENT: &str =
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) FPSMasterLauncher/0.1 (+https://github.com/fpsmaster)";
+#[cfg(target_os = "macos")]
+const JDK_DOWNLOAD_USER_AGENT: &str =
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) FPSMasterLauncher/0.1 (+https://github.com/fpsmaster)";
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
+const JDK_DOWNLOAD_USER_AGENT: &str =
+    "Mozilla/5.0 (X11; Linux x86_64) FPSMasterLauncher/0.1 (+https://github.com/fpsmaster)";
 const MOJANG_JAVA_ALL_JSON_URL: &str =
     "https://piston-meta.mojang.com/v1/products/java-runtime/2ec0cc96c44e5a76b9c8b7c39df7210883d12871/all.json";
 
@@ -785,9 +796,7 @@ fn attach_main_window_handlers(window: &WebviewWindow, app: &AppHandle) {
         if let WindowEvent::CloseRequested { api, .. } = event {
             if should_minimize_to_tray(&app_handle) {
                 api.prevent_close();
-                if let Some(window) = app_handle.get_webview_window("main") {
-                    let _ = window.destroy();
-                }
+                let _ = hide_main_window_internal(&app_handle);
             } else {
                 flush_launcher_telemetry_session(&app_handle);
             }
@@ -823,16 +832,13 @@ fn ensure_main_window(app: &AppHandle) -> Result<WebviewWindow, String> {
 fn hide_main_window_internal(app: &AppHandle) -> Result<(), String> {
     let window = main_window(app)?;
     window
-        .destroy()
-        .map_err(|e| format!("Failed to destroy main window: {e}"))?;
-
+        .hide()
+        .map_err(|e| format!("Failed to hide main window: {e}"))?;
     Ok(())
 }
 
 fn show_main_window_internal(app: &AppHandle) -> Result<(), String> {
     let window = ensure_main_window(app)?;
-    let _ = window.reload();
-
     if window
         .is_minimized()
         .map_err(|e| format!("Failed to inspect minimized state: {e}"))?
@@ -966,6 +972,15 @@ fn flush_launcher_telemetry_session(app: &AppHandle) {
 // the main thread stalls window event handling (visible jank under game load).
 #[tauri::command]
 async fn poll_ui_logs(after_seq: Option<u64>) -> UiLogPollResult {
+    tauri::async_runtime::spawn_blocking(move || poll_ui_logs_blocking(after_seq))
+        .await
+        .unwrap_or_else(|_| UiLogPollResult {
+            entries: Vec::new(),
+            next_seq: 0,
+        })
+}
+
+fn poll_ui_logs_blocking(after_seq: Option<u64>) -> UiLogPollResult {
     if let Ok(store) = ui_log_store().lock() {
         // The UI keeps at most 1000 lines, so returning more per poll is pure
         // serialization waste; on a burst (or first poll over the full backlog)
@@ -991,9 +1006,14 @@ async fn poll_ui_logs(after_seq: Option<u64>) -> UiLogPollResult {
     }
 }
 
-// Async for the same reason as poll_ui_logs: keep the periodic poll off the main thread.
 #[tauri::command]
 async fn poll_game_runtime(pid: i64) -> Result<GameRuntimeStats, String> {
+    tauri::async_runtime::spawn_blocking(move || poll_game_runtime_blocking(pid))
+        .await
+        .map_err(|e| format!("Failed to join runtime poll: {e}"))?
+}
+
+fn poll_game_runtime_blocking(pid: i64) -> Result<GameRuntimeStats, String> {
     if pid <= 0 {
         return Err("Invalid pid".to_string());
     }
@@ -8332,24 +8352,24 @@ fn download_mojang_runtime_files(
         let runtime_root = runtime_root.to_path_buf();
         let window = window.cloned();
         workers.push(thread::spawn(move || loop {
-            let next = {
-                let mut guard = jobs.lock().unwrap();
-                guard.pop_front()
-            };
+            let next = lock_recover(&jobs).pop_front();
             let Some((relative_path, entry)) = next else {
                 return;
             };
 
-            if error.lock().unwrap().is_some() {
+            if lock_recover(&error).is_some() {
                 return;
             }
 
+            // One part per file: this pool already has `worker_count` files in
+            // flight, so also sharding each file would multiply out to
+            // `threads × threads` simultaneous connections.
             let result = process_mojang_runtime_entry(
                 window.as_ref(),
                 &runtime_root,
                 &relative_path,
                 &entry,
-                download_threads,
+                1,
             );
 
             match result {
@@ -8371,23 +8391,31 @@ fn download_mojang_runtime_files(
                     }
                 }
                 Err(err) => {
-                    *error.lock().unwrap() = Some(format!(
-                        "Failed processing Mojang runtime entry {relative_path}: {err}"
-                    ));
+                    let mut slot = lock_recover(&error);
+                    if slot.is_none() {
+                        *slot = Some(format!(
+                            "Failed processing Mojang runtime entry {relative_path}: {err}"
+                        ));
+                    }
                     return;
                 }
             }
         }));
     }
 
+    let mut panicked = false;
     for worker in workers {
         if worker.join().is_err() {
-            return Err("Mojang runtime worker panicked".to_string());
+            panicked = true;
         }
     }
 
-    if let Some(err) = error.lock().unwrap().clone() {
+    // The recorded cause is always more useful than "a worker panicked".
+    if let Some(err) = lock_recover(&error).clone() {
         return Err(err);
+    }
+    if panicked {
+        return Err("Mojang runtime worker panicked".to_string());
     }
     Ok(())
 }
@@ -8406,7 +8434,7 @@ fn process_mojang_runtime_entry(
     runtime_root: &Path,
     relative_path: &str,
     entry: &MojangJavaRemoteEntry,
-    download_threads: usize,
+    max_parts: usize,
 ) -> Result<bool, String> {
     // Manifest paths are always forward-slash separated. Join component-by-component so
     // the OS separator is used on every platform — `replace('/', "\\")` would create a
@@ -8430,7 +8458,7 @@ fn process_mojang_runtime_entry(
             fs::write(&target, entry.target.as_bytes()).map_err(|e| e.to_string())?;
             Ok(true)
         }
-        "file" => download_mojang_runtime_file(window, &target, entry, download_threads),
+        "file" => download_mojang_runtime_file(window, &target, entry, max_parts),
         other => Err(format!("Unsupported Mojang runtime entry type: {other}")),
     }
 }
@@ -8439,7 +8467,7 @@ fn download_mojang_runtime_file(
     window: Option<&tauri::Window>,
     target: &Path,
     entry: &MojangJavaRemoteEntry,
-    download_threads: usize,
+    max_parts: usize,
 ) -> Result<bool, String> {
     if let Some(parent) = target.parent() {
         fs::create_dir_all(parent).map_err(|e| e.to_string())?;
@@ -8467,7 +8495,7 @@ fn download_mojang_runtime_file(
             &lzma.url,
             &temp_lzma,
             &lzma.sha1,
-            download_threads,
+            max_parts,
         )?;
         let temp_output = target.with_extension("tmp");
         let input = fs::File::open(&temp_lzma).map_err(|e| e.to_string())?;
@@ -8509,7 +8537,7 @@ fn download_mojang_runtime_file(
             &raw.url,
             target,
             &raw.sha1,
-            download_threads,
+            max_parts,
         )?;
     } else {
         return Err("No downloadable source found".to_string());
@@ -8535,9 +8563,9 @@ fn download_file_with_sha1(
     url: &str,
     target: &Path,
     expected_sha1: &str,
-    download_threads: usize,
+    max_parts: usize,
 ) -> Result<(), String> {
-    download_file_blocking(window, source_name, url, target, download_threads, None)?;
+    download_file_blocking(window, source_name, url, target, max_parts, None)?;
     let sha1 = compute_sha1_hex(target)?;
     if !sha1.eq_ignore_ascii_case(expected_sha1) {
         return Err(format!(
@@ -8615,12 +8643,41 @@ struct MojangJavaRemoteEntry {
 /// which require `'static + Send + Sync` closures.
 type DownloadProgressCallback = Arc<dyn Fn(u64, Option<u64>) + Send + Sync>;
 
+/// Shared client for runtime/JDK downloads.
+///
+/// This used to be built per call. A Mojang Java manifest is hundreds of small
+/// files, so that meant a fresh DNS + TCP + TLS handshake for every one of them
+/// and no keep-alive reuse at all — the dominant cost of installing a runtime.
+/// The 30-minute timeout is a whole-request budget for the multi-hundred-MB
+/// archive downloads that also use this path.
+fn jdk_download_client() -> Result<&'static reqwest::blocking::Client, String> {
+    static CLIENT: OnceLock<reqwest::blocking::Client> = OnceLock::new();
+    if let Some(client) = CLIENT.get() {
+        return Ok(client);
+    }
+    let client = reqwest::blocking::Client::builder()
+        .user_agent(JDK_DOWNLOAD_USER_AGENT)
+        .connect_timeout(std::time::Duration::from_secs(30))
+        .timeout(std::time::Duration::from_secs(60 * 30))
+        .redirect(reqwest::redirect::Policy::limited(10))
+        .build()
+        .map_err(|e| e.to_string())?;
+    Ok(CLIENT.get_or_init(|| client))
+}
+
+/// Downloads one file, optionally splitting it into `max_parts` Range requests.
+///
+/// `max_parts` is a budget for *this file only*. Callers that are already
+/// downloading many files concurrently must pass 1: multiplying an outer worker
+/// pool by an inner part pool opened `threads × threads` sockets at once, which
+/// on a 16-thread setting meant 256 concurrent connections and made the runtime
+/// install slower than a plain sequential fetch.
 fn download_file_blocking(
     window: Option<&tauri::Window>,
     source_name: &str,
     url: &str,
     target: &Path,
-    download_threads: usize,
+    max_parts: usize,
     progress: Option<DownloadProgressCallback>,
 ) -> Result<(), String> {
     const MIN_PARALLEL_SIZE: u64 = 8 * 1024 * 1024;
@@ -8630,19 +8687,15 @@ fn download_file_blocking(
         fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
 
-    let client = reqwest::blocking::Client::builder()
-        .user_agent(JDK_DOWNLOAD_USER_AGENT)
-        .connect_timeout(std::time::Duration::from_secs(30))
-        .timeout(std::time::Duration::from_secs(60 * 30))
-        .redirect(reqwest::redirect::Policy::limited(10))
-        .build()
-        .map_err(|e| e.to_string())?;
+    let client = jdk_download_client()?;
 
-    if download_threads > 1 {
-        if let Ok(Some(total_size)) = probe_parallel_download_support(&client, url) {
+    // The probe costs an extra HEAD round trip, so it is only worth doing when
+    // sharding is actually on the table.
+    if max_parts > 1 {
+        if let Ok(Some(total_size)) = probe_parallel_download_support(client, url) {
             if total_size >= MIN_PARALLEL_SIZE {
-                let max_parts = ((total_size + MIN_PART_SIZE - 1) / MIN_PART_SIZE) as usize;
-                let part_count = download_threads.min(max_parts.max(1));
+                let size_limited_parts = total_size.div_ceil(MIN_PART_SIZE) as usize;
+                let part_count = max_parts.min(size_limited_parts.max(1));
                 if part_count > 1 {
                     emit_log(
                         window,
@@ -8653,7 +8706,7 @@ fn download_file_blocking(
                     );
                     return download_file_blocking_parallel(
                         window,
-                        &client,
+                        client,
                         source_name,
                         url,
                         target,
@@ -8666,7 +8719,7 @@ fn download_file_blocking(
         }
     }
 
-    download_file_blocking_single(window, &client, source_name, url, target, progress)
+    download_file_blocking_single(window, client, source_name, url, target, progress)
 }
 
 fn probe_parallel_download_support(
@@ -10229,6 +10282,7 @@ fn main() {
             launcher_login,
             launcher_list_available_versions,
             launcher_list_news,
+            launcher_list_servers,
             launcher_get_dashboard,
             launcher_get_home,
             launcher_get_app_update,

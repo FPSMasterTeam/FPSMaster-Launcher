@@ -68,12 +68,11 @@
         display: block;
       }
     </style>
-    <!-- External resources loaded after critical styles -->
-    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <!-- Fonts stay on the system stack so the first paint is not blocked by an
+         overseas CDN (Google Fonts is frequently unreachable from mainland China). -->
     <style>
-      /* Override body font once Manrope loads */
       body {
-        font-family: "Manrope", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Noto Sans SC", "Microsoft YaHei", sans-serif;
         -webkit-font-smoothing: antialiased;
         -moz-osx-font-smoothing: grayscale;
       }

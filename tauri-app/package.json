@@ -1,7 +1,7 @@
 {
   "name": "fpsmaster-launcher-ui",
   "private": true,
-  "version": "0.3.16",
+  "version": "0.3.17",
   "type": "module",
   "scripts": {
     "version:sync": "node scripts/sync-version.mjs",
@@ -27,7 +27,6 @@
     "@radix-ui/react-select": "^2.2.6",
     "@tauri-apps/api": "2.10.1",
     "@tauri-apps/plugin-dialog": "2.6.0",
-    "@tauri-apps/plugin-shell": "^2.0.2",
     "lucide-react": "^0.563.0",
     "react": "^19.2.4",
     "react-dom": "^19.2.4"

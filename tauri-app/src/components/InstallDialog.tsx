@@ -1,5 +1,6 @@
 import Card from "./Card";
 import { useI18n } from "../i18n";
+import { formatByteSize, formatEta, phasePercent } from "../lib/launchPrepare";
 import type { InstallDialogState, InstallPhaseState, LaunchPrepareItem, LaunchPrepareItemStatus } from "../types";
 
 type InstallDialogProps = {
@@ -50,7 +51,7 @@ export default function InstallDialog({ dialog, onClose, onCancel }: InstallDial
 
 function InstallPhaseView({ phase }: { phase: InstallPhaseState }) {
   const { t } = useI18n();
-  const percent = phase.total > 0 ? Math.min(100, Math.floor((phase.current / phase.total) * 100)) : phase.status === "done" ? 100 : 0;
+  const percent = phasePercent(phase);
 
   const stage = translateStage(phase.stage, t);
   const status = translateStatus(phase.status, t);
@@ -69,7 +70,20 @@ function InstallPhaseView({ phase }: { phase: InstallPhaseState }) {
       <div className="progressTrack">
         <div className="progressFill" style={{ width: `${percent}%` }} />
       </div>
-      {phase.total > 0 ? <p className="phaseMeta">{t("dialog.simpleProgress", { current: phase.current, total: phase.total })}</p> : null}
+      {phase.bytesTotal > 0 ? (
+        <p className="phaseMeta">
+          {t("download.bytesProgress", {
+            done: formatByteSize(phase.bytesDone),
+            total: formatByteSize(phase.bytesTotal)
+          })}
+          {phase.bytesPerSecond > 0
+            ? ` · ${t("download.speed", { speed: formatByteSize(phase.bytesPerSecond) })}`
+            : ""}
+          {phase.etaSeconds ? ` · ${t("download.eta", { eta: formatEta(phase.etaSeconds) })}` : ""}
+        </p>
+      ) : phase.total > 0 ? (
+        <p className="phaseMeta">{t("dialog.simpleProgress", { current: phase.current, total: phase.total })}</p>
+      ) : null}
       {phase.items.length > 0 ? (
         <div className="installFileList mt-3">
           {phase.items.map((item) => (
