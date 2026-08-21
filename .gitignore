@@ -13,7 +13,14 @@ tauri-app/src-tauri/target/
 tauri-app/src-tauri/target-codex-check*/
 tmp-check/
 
-# Reference
+# Reference (HMCL, etc. - not redistributable)
 reference
 
+# Test / local Minecraft assets - never commit Mojang assets
+test-round/
+test-round
+
+# IDE
 .idea
+.DS_Store
+*.pid

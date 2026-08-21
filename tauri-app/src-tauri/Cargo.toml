@@ -2,7 +2,9 @@
 name = "fpsmaster-launcher"
 version = "0.3.17"
 edition = "2021"
-
+license = "MIT"
+repository = "https://github.com/FPSMasterTeam/FPSMaster-Launcher"
+authors = ["FPSMaster Team"]
 [build-dependencies]
 tauri-build = { version = "2.4", features = [] }
 
