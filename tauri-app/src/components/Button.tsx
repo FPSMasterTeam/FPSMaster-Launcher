@@ -1,7 +1,7 @@
 import React, { memo } from 'react';
 
 interface ButtonProps extends React.ButtonHTMLAttributes<HTMLButtonElement> {
-  variant?: 'primary' | 'minecraft-success' | 'minecraft-primary' | 'secondary' | 'outline' | 'ghost' | 'danger';
+  variant?: 'primary' | 'secondary' | 'outline' | 'ghost' | 'danger';
   size?: 'sm' | 'md' | 'lg' | 'xl';
   fullWidth?: boolean;
   launchProgress?: boolean;
@@ -33,10 +33,6 @@ const Button: React.FC<ButtonProps> = ({
       'bg-transparent text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[var(--border-subtle)] rounded-[8px]',
     danger:
       'bg-[var(--accent-danger)]/12 text-[var(--accent-danger)] hover:bg-[var(--accent-danger)]/20 rounded-[8px] border border-[#ff6b8f]/25',
-    'minecraft-success':
-      'bg-[var(--mc-grass)] text-white rounded-[8px] border border-[rgba(var(--accent-rgb),0.4)] shadow-[0_1px_2px_rgba(0,0,0,0.2)] hover:bg-[var(--mc-grass-dark)]',
-    'minecraft-primary':
-      'bg-[var(--mc-grass)] text-white rounded-[8px] border border-[rgba(var(--accent-rgb),0.4)] shadow-[0_1px_2px_rgba(0,0,0,0.2)] hover:bg-[var(--mc-grass-dark)]',
   };
 
   const sizes = {
