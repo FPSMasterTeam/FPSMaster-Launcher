@@ -1,5 +1,6 @@
-import { ExternalLink, Play, X } from "lucide-react";
+import { Play, X } from "lucide-react";
 import { createPortal } from "react-dom";
+import { useEffect, useRef } from "react";
 import { useI18n } from "../i18n";
 import Button from "./Button";
 import Card from "./Card";
@@ -27,6 +28,26 @@ export default function ServerDialog({
   launchProgressPercent,
 }: ServerDialogProps) {
   const { t } = useI18n();
+  const closeButtonRef = useRef<HTMLButtonElement | null>(null);
+  const onCloseRef = useRef(onClose);
+
+  useEffect(() => {
+    onCloseRef.current = onClose;
+  }, [onClose]);
+
+  useEffect(() => {
+    if (!server) return;
+    const previouslyFocused = document.activeElement as HTMLElement | null;
+    closeButtonRef.current?.focus();
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onCloseRef.current();
+    };
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.removeEventListener("keydown", handleKeyDown);
+      previouslyFocused?.focus();
+    };
+  }, [server]);
 
   if (!server || typeof document === "undefined") return null;
 
@@ -34,8 +55,12 @@ export default function ServerDialog({
     <div
       className={`modal-shell ${closing ? "modal-backdrop-animate-out" : "modal-backdrop-animate"}`}
       onClick={onClose}
+      role="presentation"
     >
       <Card
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="server-dialog-title"
         variant="strong"
         className={`${closing ? "modal-animate-out" : "modal-animate"} modal-card page-card w-full max-w-2xl`}
         interactive={false}
@@ -56,11 +81,12 @@ export default function ServerDialog({
             </div>
             <div className="min-w-0 flex-1">
               <p className="page-eyebrow">{t("servers.serverDetail")}</p>
-              <h3 className="page-title !mt-1 !text-[28px] truncate">{server.name}</h3>
+              <h3 id="server-dialog-title" className="page-title !mt-1 !text-[28px] truncate">{server.name}</h3>
               <p className="mt-1 text-sm text-[var(--text-muted)] truncate">{server.address}</p>
             </div>
           </div>
           <button
+            ref={closeButtonRef}
             className="modal-close"
             onClick={onClose}
             type="button"
@@ -111,14 +137,6 @@ export default function ServerDialog({
               </span>
             </Button>
 
-            <Button
-              variant="secondary"
-              size="lg"
-              className="min-h-[48px] px-5"
-              title={t("servers.addToServerList")}
-            >
-              <ExternalLink size={16} />
-            </Button>
           </div>
         </div>
       </Card>

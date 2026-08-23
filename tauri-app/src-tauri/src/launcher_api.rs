@@ -3,11 +3,12 @@ use std::path::PathBuf;
 
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 
 use crate::{
     build_api_http_client, build_blocking_http_client, describe_http_error,
-    download_file_quiet_blocking, open_file_with_system, sanitize_file_name, verify_file_sha256,
+    download_file_with_progress_callback_blocking, open_file_with_system, sanitize_file_name,
+    verify_file_sha256,
 };
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -242,6 +243,15 @@ pub struct DownloadedLauncherUpdate {
     pub file_name: String,
     #[serde(rename = "filePath")]
     pub file_path: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct LauncherAppUpdateProgress {
+    #[serde(rename = "downloadedBytes")]
+    downloaded_bytes: u64,
+    #[serde(rename = "totalBytes")]
+    total_bytes: Option<u64>,
+    percent: Option<u8>,
 }
 
 #[tauri::command]
@@ -587,6 +597,9 @@ fn download_launcher_app_update_blocking(
     if normalized_version.is_empty() {
         return Err("Launcher update version is empty".to_string());
     }
+    let expected_checksum = checksum
+        .and_then(|item| normalize_launcher_update_checksum(&item))
+        .ok_or_else(|| "Launcher update checksum is missing or invalid".to_string())?;
 
     let client = build_blocking_http_client()?;
     let file_name = infer_download_file_name(&normalized_download_url, &normalized_version);
@@ -602,15 +615,35 @@ fn download_launcher_app_update_blocking(
         )
     })?;
     let target_path = updates_dir.join(&file_name);
-    download_file_quiet_blocking(&client, &normalized_download_url, &target_path)
-        .map_err(|e| format!("Failed to download launcher installer: {e}"))?;
+    download_file_with_progress_callback_blocking(
+        &client,
+        &normalized_download_url,
+        &target_path,
+        |downloaded_bytes, total_bytes| {
+            let percent = total_bytes
+                .filter(|value| *value > 0)
+                .map(|value| {
+                    downloaded_bytes
+                        .saturating_mul(100)
+                        .min(value.saturating_mul(100))
+                        / value
+                })
+                .and_then(|value| u8::try_from(value).ok());
+            let _ = app.emit(
+                "launcher-app-update-progress",
+                LauncherAppUpdateProgress {
+                    downloaded_bytes,
+                    total_bytes,
+                    percent,
+                },
+            );
+        },
+    )
+    .map_err(|e| format!("Failed to download launcher installer: {e}"))?;
 
-    if let Some(expected_checksum) = checksum
-        .map(|item| item.trim().to_string())
-        .filter(|item| !item.is_empty())
-    {
-        verify_file_sha256(&target_path, &expected_checksum)
-            .map_err(|e| format!("Launcher installer checksum mismatch: {e}"))?;
+    if let Err(error) = verify_file_sha256(&target_path, &expected_checksum) {
+        let _ = fs::remove_file(&target_path);
+        return Err(format!("Launcher installer checksum mismatch: {error}"));
     }
 
     Ok(DownloadedLauncherUpdate {
@@ -618,6 +651,20 @@ fn download_launcher_app_update_blocking(
         file_name,
         file_path: target_path.to_string_lossy().to_string(),
     })
+}
+
+fn normalize_launcher_update_checksum(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    let normalized = trimmed
+        .strip_prefix("sha256:")
+        .or_else(|| trimmed.strip_prefix("SHA256:"))
+        .unwrap_or(trimmed)
+        .trim();
+    if normalized.len() == 64 && normalized.chars().all(|ch| ch.is_ascii_hexdigit()) {
+        Some(normalized.to_ascii_lowercase())
+    } else {
+        None
+    }
 }
 
 fn launcher_list_available_versions_blocking(

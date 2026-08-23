@@ -353,6 +353,7 @@ function ContentPage({
       setError(t("content.noInstance"));
       return;
     }
+    if (!window.confirm(t("content.uninstallConfirm", { title: item.projectTitle }))) return;
     setUninstallingProjectId(`${item.source}:${item.contentType}:${item.projectId}`);
     setError(null);
     onStatusChange(t("content.uninstalling", { title: item.projectTitle }));

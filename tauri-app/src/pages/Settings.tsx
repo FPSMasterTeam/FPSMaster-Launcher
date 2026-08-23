@@ -40,6 +40,7 @@ import type {
   ThemeAccent,
   ThemeMode
 } from "../types";
+import { IS_WINDOWS } from "../utils/platform";
 import { resolveBackgroundAssetUrl } from "../utils/launcher";
 
 type SettingsTab =
@@ -58,6 +59,7 @@ type SettingsPageProps = {
   launcherUpdateAvailable: boolean;
   launcherUpdateChecking: boolean;
   launcherUpdateDownloading: boolean;
+  launcherUpdateProgressPercent: number | null;
   launcherUpdateDownload: DownloadedLauncherUpdate | null;
   launcherUser: LauncherUser | null;
   onLogoutLauncherAccount: () => void;
@@ -76,6 +78,7 @@ function SettingsPage({
   launcherUpdateAvailable,
   launcherUpdateChecking,
   launcherUpdateDownloading,
+  launcherUpdateProgressPercent,
   launcherUpdateDownload,
   launcherUser,
   onLogoutLauncherAccount,
@@ -243,6 +246,7 @@ function SettingsPage({
   }
 
   async function switchBackgroundSource(source: BackgroundSource) {
+    if (source === "system" && !IS_WINDOWS) return;
     if (source === "web-random") {
       applyBackgroundSettings({
         ...settings,
@@ -742,13 +746,15 @@ function SettingsPage({
                       >
                         {t("settings.backgroundMode.web")}
                       </button>
-                      <button
-                        type="button"
-                        onClick={() => void switchBackgroundSource("system")}
-                        className={`segment-chip !min-h-8 px-3 ${settings.backgroundSource === "system" ? "is-active" : ""}`}
-                      >
-                        {t("settings.backgroundMode.system")}
-                      </button>
+                      {IS_WINDOWS && (
+                        <button
+                          type="button"
+                          onClick={() => void switchBackgroundSource("system")}
+                          className={`segment-chip !min-h-8 px-3 ${settings.backgroundSource === "system" ? "is-active" : ""}`}
+                        >
+                          {t("settings.backgroundMode.system")}
+                        </button>
+                      )}
                     </div>
                   </div>
                 </div>
@@ -1022,7 +1028,9 @@ function SettingsPage({
                   >
                     <Download size={14} />
                     {launcherUpdateDownloading
-                      ? t("settings.launcherUpdatePreparing")
+                      ? typeof launcherUpdateProgressPercent === "number"
+                        ? t("settings.launcherUpdateDownloadingProgress", { percent: launcherUpdateProgressPercent })
+                        : t("settings.launcherUpdatePreparing")
                       : t("settings.launcherUpdateInstall")}
                   </Button>
                 )}

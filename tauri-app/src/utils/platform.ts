@@ -12,6 +12,12 @@ export const IS_MAC =
     ? navigator.platform.toLowerCase().includes("mac")
     : /Mac/i.test(navigator.userAgent));
 
+export const IS_WINDOWS =
+  typeof navigator !== "undefined" &&
+  (navigator.platform
+    ? navigator.platform.toLowerCase().includes("win")
+    : /Windows/i.test(navigator.userAgent));
+
 // Width reserved on the left of custom title bars for the native macOS
 // traffic-light buttons (positioned via trafficLightPosition in tauri config).
 export const MAC_TRAFFIC_LIGHT_INSET = 78;

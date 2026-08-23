@@ -84,6 +84,7 @@ export type PageRouterContext = {
   launcherUpdateChannels: LauncherAppUpdateChannel[];
   launcherUpdateChecking: boolean;
   launcherUpdateDownloading: boolean;
+  launcherUpdateProgressPercent: number | null;
   launcherUpdateDownload: DownloadedLauncherUpdate | null;
   onRefreshLauncherUpdate: () => void;
   onInstallLauncherUpdate: () => void;
@@ -274,6 +275,7 @@ export default function PageRouter({ ctx }: { ctx: PageRouterContext }) {
         <MandatoryUpdatePage
           launcherUpdate={ctx.launcherUpdate}
           launcherUpdateDownloading={ctx.launcherUpdateDownloading}
+          launcherUpdateProgressPercent={ctx.launcherUpdateProgressPercent}
           launcherUpdateDownload={ctx.launcherUpdateDownload}
           onInstallLauncherUpdate={ctx.onInstallLauncherUpdate}
         />
@@ -288,6 +290,7 @@ export default function PageRouter({ ctx }: { ctx: PageRouterContext }) {
           launcherUpdateAvailable={ctx.launcherUpdateAvailable}
           launcherUpdateChecking={ctx.launcherUpdateChecking}
           launcherUpdateDownloading={ctx.launcherUpdateDownloading}
+          launcherUpdateProgressPercent={ctx.launcherUpdateProgressPercent}
           launcherUpdateDownload={ctx.launcherUpdateDownload}
           launcherUser={ctx.user}
           onLogoutLauncherAccount={ctx.onLogoutLauncherAccount}

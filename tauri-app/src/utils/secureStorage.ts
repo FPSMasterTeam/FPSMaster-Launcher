@@ -14,12 +14,7 @@ export async function secureStorageDelete(key: string): Promise<void> {
 }
 
 export async function loadSecureRaw(key: string): Promise<string | null> {
-  let raw: string | null = null;
-  try {
-    raw = await secureStorageGet(key);
-  } catch (error) {
-    console.warn(`[secure-storage] read failed for ${key}:`, error);
-  }
+  const raw = await secureStorageGet(key);
   if (raw !== null) {
     return raw;
   }
@@ -27,13 +22,9 @@ export async function loadSecureRaw(key: string): Promise<string | null> {
   if (legacy === null) {
     return null;
   }
-  try {
-    await secureStorageSet(key, legacy);
-    window.localStorage.removeItem(key);
-    console.info(`[secure-storage] migrated ${key} from localStorage`);
-  } catch (error) {
-    console.warn(`[secure-storage] migration failed for ${key}:`, error);
-  }
+  await secureStorageSet(key, legacy);
+  window.localStorage.removeItem(key);
+  console.info(`[secure-storage] migrated ${key} from localStorage`);
   return legacy;
 }
 

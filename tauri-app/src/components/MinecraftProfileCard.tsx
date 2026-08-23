@@ -206,6 +206,9 @@ function MinecraftProfileCard({
                         aria-label={t("minecraftAccount.delete")}
                         onClick={(event) => {
                           event.stopPropagation();
+                          if (!window.confirm(t("minecraftAccount.deleteConfirm", { name: account.username }))) {
+                            return;
+                          }
                           onDeleteAccount(account.id);
                         }}
                       >

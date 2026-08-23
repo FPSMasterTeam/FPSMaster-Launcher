@@ -9,6 +9,7 @@ import type { DownloadedLauncherUpdate, LauncherAppUpdateInfo } from "../types";
 type MandatoryUpdatePageProps = {
   launcherUpdate: LauncherAppUpdateInfo | null;
   launcherUpdateDownloading: boolean;
+  launcherUpdateProgressPercent: number | null;
   launcherUpdateDownload: DownloadedLauncherUpdate | null;
   onInstallLauncherUpdate: () => void;
 };
@@ -16,6 +17,7 @@ type MandatoryUpdatePageProps = {
 function MandatoryUpdatePage({
   launcherUpdate,
   launcherUpdateDownloading,
+  launcherUpdateProgressPercent,
   launcherUpdateDownload,
   onInstallLauncherUpdate,
 }: MandatoryUpdatePageProps) {
@@ -95,7 +97,11 @@ function MandatoryUpdatePage({
               disabled={!launcherUpdate || launcherUpdateDownloading}
             >
               <Download size={16} />
-              {launcherUpdateDownloading ? t("mandatoryUpdate.installing") : t("mandatoryUpdate.install")}
+              {launcherUpdateDownloading
+                ? typeof launcherUpdateProgressPercent === "number"
+                  ? t("settings.launcherUpdateDownloadingProgress", { percent: launcherUpdateProgressPercent })
+                  : t("mandatoryUpdate.installing")
+                : t("mandatoryUpdate.install")}
             </Button>
           </div>
         </Card>

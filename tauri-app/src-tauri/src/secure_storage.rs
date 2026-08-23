@@ -8,6 +8,7 @@ use std::{
     fs::{self, OpenOptions},
     io::Write,
     path::{Path, PathBuf},
+    sync::{Mutex, OnceLock},
 };
 use tauri::{AppHandle, Manager};
 
@@ -19,6 +20,12 @@ const MAX_KEY_LEN: usize = 200;
 const MAX_VALUE_LEN: usize = 256 * 1024;
 const CREDENTIALS_DIR: &str = "credentials-v1";
 const MASTER_KEY_FILE: &str = "master.key";
+const KEYRING_SERVICE: &str = "com.fpsmaster.launcher";
+
+fn master_key_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+}
 
 fn validate_key(raw: &str) -> Result<&str, String> {
     let key = raw.trim();
@@ -93,43 +100,75 @@ fn atomic_write(path: &Path, data: &[u8]) -> Result<(), String> {
 }
 
 fn load_or_create_master_key(dir: &Path) -> Result<[u8; KEY_LEN], String> {
+    let _guard = master_key_lock()
+        .lock()
+        .map_err(|_| "Secure storage master key lock is poisoned".to_string())?;
     ensure_dir(dir)?;
-    let path = dir.join(MASTER_KEY_FILE);
-    match fs::read(&path) {
-        Ok(bytes) => {
-            if bytes.len() != KEY_LEN {
-                return Err("Secure storage master key is truncated or invalid".into());
-            }
-            let mut key = [0u8; KEY_LEN];
-            key.copy_from_slice(&bytes);
-            Ok(key)
-        }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            let mut key = [0u8; KEY_LEN];
-            OsRng.fill_bytes(&mut key);
-            let mut options = OpenOptions::new();
-            options.write(true).create_new(true);
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::OpenOptionsExt;
-                options.mode(0o600);
-            }
-            match options.open(&path) {
-                Ok(mut file) => {
-                    file.write_all(&key)
-                        .and_then(|_| file.sync_all())
-                        .map_err(|e| format!("Failed to save master key: {e}"))?;
-                    set_mode(&path, 0o600)?;
-                    Ok(key)
+    let legacy_path = dir.join(MASTER_KEY_FILE);
+    let keyring_user = format!(
+        "secure-storage-master-key-v1-{:x}",
+        Sha256::digest(dir.as_os_str().to_string_lossy().as_bytes())
+    );
+    let entry = keyring::Entry::new(KEYRING_SERVICE, &keyring_user)
+        .map_err(|e| format!("Failed to access the system credential store: {e}"))?;
+
+    let stored = match entry.get_secret() {
+        Ok(bytes) => bytes,
+        Err(keyring::Error::NoEntry) => {
+            let bytes = match fs::read(&legacy_path) {
+                Ok(bytes) => bytes,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    let mut bytes = vec![0u8; KEY_LEN];
+                    OsRng.fill_bytes(&mut bytes);
+                    bytes
                 }
-                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-                    load_or_create_master_key(dir)
-                }
-                Err(e) => Err(format!("Failed to create master key: {e}")),
+                Err(e) => return Err(format!("Failed to read legacy master key: {e}")),
+            };
+            validate_master_key(&bytes)?;
+            entry.set_secret(&bytes).map_err(|e| {
+                format!("Failed to save master key in the system credential store: {e}")
+            })?;
+            let confirmed = entry.get_secret().map_err(|e| {
+                format!("Failed to verify the system credential store master key: {e}")
+            })?;
+            if confirmed != bytes {
+                return Err("System credential store returned a different master key".into());
             }
+            confirmed
         }
-        Err(e) => Err(format!("Failed to read master key: {e}")),
+        Err(e) => {
+            return Err(format!(
+                "Failed to read master key from the system credential store: {e}"
+            ))
+        }
+    };
+
+    let key = validate_master_key(&stored)?;
+    match fs::read(&legacy_path) {
+        Ok(legacy) => {
+            if validate_master_key(&legacy)? != key {
+                return Err(
+                    "System credential store and legacy master key disagree; legacy data was left untouched"
+                        .into(),
+                );
+            }
+            fs::remove_file(&legacy_path).map_err(|e| {
+                format!("Master key migrated but the legacy file could not be removed: {e}")
+            })?;
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(format!("Failed to inspect the legacy master key: {e}")),
     }
+    Ok(key)
+}
+
+fn validate_master_key(bytes: &[u8]) -> Result<[u8; KEY_LEN], String> {
+    if bytes.len() != KEY_LEN {
+        return Err("Secure storage master key is truncated or invalid".into());
+    }
+    let mut key = [0u8; KEY_LEN];
+    key.copy_from_slice(bytes);
+    Ok(key)
 }
 
 fn encrypt(key: &[u8; KEY_LEN], plaintext: &[u8]) -> Result<Vec<u8>, String> {
@@ -168,23 +207,36 @@ fn decrypt(key: &[u8; KEY_LEN], blob: &[u8]) -> Result<Vec<u8>, String> {
 }
 
 #[tauri::command]
-pub fn secure_storage_get(app: AppHandle, key: String) -> Result<Option<String>, String> {
+pub async fn secure_storage_get(app: AppHandle, key: String) -> Result<Option<String>, String> {
+    tauri::async_runtime::spawn_blocking(move || secure_storage_get_blocking(app, key))
+        .await
+        .map_err(|e| format!("Failed to join secure storage read task: {e}"))?
+}
+
+fn secure_storage_get_blocking(app: AppHandle, key: String) -> Result<Option<String>, String> {
     let key = validate_key(&key)?;
     let dir = credentials_dir(&app)?;
+    let master = load_or_create_master_key(&dir)?;
     let path = entry_path(&dir, key);
     let blob = match fs::read(&path) {
         Ok(v) => v,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(e) => return Err(format!("Failed to read secure storage credential: {e}")),
     };
-    let plaintext = decrypt(&load_or_create_master_key(&dir)?, &blob)?;
+    let plaintext = decrypt(&master, &blob)?;
     String::from_utf8(plaintext)
         .map(Some)
         .map_err(|_| "Secure storage credential is not valid UTF-8".into())
 }
 
 #[tauri::command]
-pub fn secure_storage_set(app: AppHandle, key: String, value: String) -> Result<(), String> {
+pub async fn secure_storage_set(app: AppHandle, key: String, value: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || secure_storage_set_blocking(app, key, value))
+        .await
+        .map_err(|e| format!("Failed to join secure storage write task: {e}"))?
+}
+
+fn secure_storage_set_blocking(app: AppHandle, key: String, value: String) -> Result<(), String> {
     let key = validate_key(&key)?;
     if value.len() > MAX_VALUE_LEN {
         return Err(format!(
@@ -197,7 +249,13 @@ pub fn secure_storage_set(app: AppHandle, key: String, value: String) -> Result<
 }
 
 #[tauri::command]
-pub fn secure_storage_delete(app: AppHandle, key: String) -> Result<(), String> {
+pub async fn secure_storage_delete(app: AppHandle, key: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || secure_storage_delete_blocking(app, key))
+        .await
+        .map_err(|e| format!("Failed to join secure storage delete task: {e}"))?
+}
+
+fn secure_storage_delete_blocking(app: AppHandle, key: String) -> Result<(), String> {
     let key = validate_key(&key)?;
     let path = entry_path(&credentials_dir(&app)?, key);
     match fs::remove_file(path) {
@@ -254,5 +312,11 @@ mod tests {
             Err(e) => Err(e),
         };
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn master_key_requires_exact_length() {
+        assert!(validate_master_key(&[0; KEY_LEN]).is_ok());
+        assert!(validate_master_key(&[0; KEY_LEN - 1]).is_err());
     }
 }

@@ -6,10 +6,10 @@ mod minecraft_core;
 mod secure_storage;
 
 use launcher_api::{
-    download_launcher_app_update, launcher_get_app_update,
-    launcher_get_dashboard, launcher_get_home, launcher_list_app_update_channels,
-    launcher_list_available_versions, launcher_list_news, launcher_list_servers, launcher_login,
-    normalize_api_base_url, open_downloaded_file, parse_api_envelope,
+    download_launcher_app_update, launcher_get_app_update, launcher_get_dashboard,
+    launcher_get_home, launcher_list_app_update_channels, launcher_list_available_versions,
+    launcher_list_news, launcher_list_servers, launcher_login, normalize_api_base_url,
+    open_downloaded_file, parse_api_envelope,
 };
 use microsoft_auth::{
     get_minecraft_auth_config, poll_minecraft_device_login, refresh_minecraft_account,
@@ -936,8 +936,8 @@ fn take_launcher_telemetry_session(app: &AppHandle) -> Option<LauncherTelemetryS
 
 fn post_launcher_telemetry_offline(session: &LauncherTelemetrySession) -> Result<(), String> {
     let client = reqwest::blocking::Client::builder()
-        .connect_timeout(Duration::from_secs(2))
-        .timeout(Duration::from_secs(3))
+        .connect_timeout(Duration::from_millis(250))
+        .timeout(Duration::from_millis(350))
         .build()
         .map_err(|e| format!("Failed to build telemetry HTTP client: {e}"))?;
     let normalized_base = normalize_api_base_url(&session.base_url)?;
@@ -1135,10 +1135,17 @@ fn create_tray(app: &AppHandle) -> Result<(), String> {
             } = event
             {
                 let app = tray.app_handle();
-                if app.get_webview_window("main").is_some() {
-                    let _ = hide_main_window_internal(app);
-                } else {
-                    let _ = show_main_window_internal(app);
+                match app.get_webview_window("main").and_then(|window| {
+                    let visible = window.is_visible().ok()?;
+                    let minimized = window.is_minimized().ok()?;
+                    Some(visible && !minimized)
+                }) {
+                    Some(true) => {
+                        let _ = hide_main_window_internal(app);
+                    }
+                    _ => {
+                        let _ = show_main_window_internal(app);
+                    }
                 }
             }
         })
@@ -5725,7 +5732,7 @@ pub(crate) fn download_file_quiet_blocking(
     url: &str,
     target: &Path,
 ) -> Result<(), String> {
-    download_file_quiet_with_progress_blocking(client, url, target, None, None)
+    download_file_with_progress_callback_blocking(client, url, target, |_, _| {})
 }
 
 fn emit_content_install_progress(
@@ -5764,6 +5771,22 @@ fn download_file_quiet_with_progress_blocking(
     window: Option<&tauri::Window>,
     project_key: Option<&str>,
 ) -> Result<(), String> {
+    download_file_with_progress_callback_blocking(client, url, target, |downloaded, total| {
+        if let Some(key) = project_key {
+            emit_content_install_progress(window, key, downloaded, total);
+        }
+    })
+}
+
+pub(crate) fn download_file_with_progress_callback_blocking<F>(
+    client: &reqwest::blocking::Client,
+    url: &str,
+    target: &Path,
+    mut on_progress: F,
+) -> Result<(), String>
+where
+    F: FnMut(u64, Option<u64>),
+{
     if let Some(parent) = target.parent() {
         fs::create_dir_all(parent).map_err(|e| {
             format!(
@@ -5795,9 +5818,7 @@ fn download_file_quiet_with_progress_blocking(
             continue;
         }
         let total_bytes = response.content_length();
-        if let Some(key) = project_key {
-            emit_content_install_progress(window, key, 0, total_bytes);
-        }
+        on_progress(0, total_bytes);
 
         let mut file = fs::File::create(&tmp)
             .map_err(|e| format!("Failed to create temp file {}: {e}", tmp.display()))?;
@@ -5818,9 +5839,7 @@ fn download_file_quiet_with_progress_blocking(
                 break;
             }
             downloaded_bytes += read as u64;
-            if let Some(key) = project_key {
-                emit_content_install_progress(window, key, downloaded_bytes, total_bytes);
-            }
+            on_progress(downloaded_bytes, total_bytes);
         }
         match write_result {
             Ok(_) => {
@@ -5838,10 +5857,7 @@ fn download_file_quiet_with_progress_blocking(
                         target.display()
                     )
                 })?;
-                if let Some(key) = project_key {
-                    let final_total = total_bytes.or(Some(downloaded_bytes));
-                    emit_content_install_progress(window, key, downloaded_bytes, final_total);
-                }
+                on_progress(downloaded_bytes, total_bytes.or(Some(downloaded_bytes)));
                 return Ok(());
             }
             Err(err) => {
@@ -5924,7 +5940,7 @@ fn replace_directory_with_stage(target_dir: &Path, stage_dir: &Path) -> Result<(
         .parent()
         .ok_or_else(|| format!("Invalid target directory: {}", target_dir.display()))?;
     let backup_dir = parent_dir.join(format!(
-        ".fpsmaster-launcher-mods-backup-{}-{}",
+        ".fpsmaster-launcher-backup-{}-{}",
         std::process::id(),
         now_epoch_millis()
     ));
@@ -5941,7 +5957,7 @@ fn replace_directory_with_stage(target_dir: &Path, stage_dir: &Path) -> Result<(
     if had_existing {
         fs::rename(target_dir, &backup_dir).map_err(|e| {
             format!(
-                "Failed to move existing mods directory {} to backup {}: {e}",
+                "Failed to move existing directory {} to backup {}: {e}",
                 target_dir.display(),
                 backup_dir.display()
             )
@@ -5954,7 +5970,7 @@ fn replace_directory_with_stage(target_dir: &Path, stage_dir: &Path) -> Result<(
             let _ = fs::rename(&backup_dir, target_dir);
         }
         return Err(format!(
-            "Failed to promote staged mods directory {} to {}: {err}",
+            "Failed to promote staged directory {} to {}: {err}",
             stage_dir.display(),
             target_dir.display()
         ));
@@ -6529,17 +6545,20 @@ fn native_app_marker_path(install_dir: &Path) -> PathBuf {
     install_dir.join(".fpsmaster-launcher-app.json")
 }
 
-/// Best-effort: drop the macOS quarantine attribute from a freshly extracted
-/// tree so a signed+notarized binary launches without a Gatekeeper prompt.
-/// A no-op (and ignored failure) on non-macOS.
-fn clear_quarantine(_path: &Path) {
-    #[cfg(target_os = "macos")]
-    {
-        let _ = Command::new("xattr")
-            .args(["-dr", "com.apple.quarantine"])
-            .arg(_path)
-            .status();
+fn preserve_native_app_user_data(install_dir: &Path, stage_dir: &Path) -> Result<(), String> {
+    for name in ["mods", "resourcepacks", "local_assets"] {
+        copy_directory_contents(&install_dir.join(name), &stage_dir.join(name))?;
     }
+    let settings = install_dir.join("fpsmaster_options.txt");
+    if settings.is_file() {
+        fs::copy(&settings, stage_dir.join("fpsmaster_options.txt")).map_err(|e| {
+            format!(
+                "Failed to preserve native app settings {}: {e}",
+                settings.display()
+            )
+        })?;
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -6579,7 +6598,8 @@ fn install_native_app_blocking(
         .unwrap_or_else(|| normalized_url.clone());
     let normalized_checksum = checksum
         .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty());
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| format!("Checksum is required for native app {version_id}"))?;
 
     let game_dir_path = resolve_game_dir_path(&game_dir)?;
     let install_dir = native_app_install_dir(&game_dir_path, &version_id);
@@ -6590,7 +6610,9 @@ fn install_native_app_blocking(
     if binary_path.exists() {
         if let Ok(bytes) = fs::read(&marker_path) {
             if let Ok(marker) = serde_json::from_slice::<NativeAppInstallMarker>(&bytes) {
-                if marker.version_tag == normalized_tag && marker.checksum == normalized_checksum {
+                if marker.version_tag == normalized_tag
+                    && marker.checksum.as_deref() == Some(normalized_checksum.as_str())
+                {
                     return Ok(NativeAppInstallResult {
                         install_dir: install_dir.to_string_lossy().to_string(),
                         version_tag: normalized_tag,
@@ -6612,53 +6634,78 @@ fn install_native_app_blocking(
     let tmp_dir = game_dir_path.join("apps").join(".downloads");
     fs::create_dir_all(&tmp_dir)
         .map_err(|e| format!("Failed to create download dir {}: {e}", tmp_dir.display()))?;
-    let archive_path = tmp_dir.join(format!("{version_id}-{normalized_tag}.tar.gz"));
+    let archive_path = tmp_dir.join(format!(
+        "{version_id}-{}.tar.gz",
+        sanitize_file_name(&normalized_tag)
+    ));
 
     download_file_quiet_blocking(&client, &normalized_url, &archive_path)?;
-    if let Some(expected) = normalized_checksum.as_deref() {
-        verify_file_sha256(&archive_path, expected).map_err(|err| {
-            let _ = fs::remove_file(&archive_path);
-            format!("Checksum mismatch for {version_id}: {err}")
-        })?;
-    }
+    verify_file_sha256(&archive_path, &normalized_checksum).map_err(|err| {
+        let _ = fs::remove_file(&archive_path);
+        format!("Checksum mismatch for {version_id}: {err}")
+    })?;
 
-    // Replace the install dir atomically-ish: extract into a fresh temp, then swap.
-    if install_dir.exists() {
-        fs::remove_dir_all(&install_dir)
-            .map_err(|e| format!("Failed to clear {}: {e}", install_dir.display()))?;
-    }
-    fs::create_dir_all(&install_dir)
-        .map_err(|e| format!("Failed to create {}: {e}", install_dir.display()))?;
-    extract_tar_gz_into(&archive_path, &install_dir)?;
-    let _ = fs::remove_file(&archive_path);
+    let apps_dir = install_dir.parent().ok_or_else(|| {
+        format!(
+            "Invalid native app install directory: {}",
+            install_dir.display()
+        )
+    })?;
+    let stage_dir = apps_dir.join(format!(
+        ".{version_id}-stage-{}-{}",
+        std::process::id(),
+        now_epoch_millis()
+    ));
+    fs::create_dir_all(&stage_dir).map_err(|e| {
+        format!(
+            "Failed to create staging directory {}: {e}",
+            stage_dir.display()
+        )
+    })?;
 
-    if !binary_path.exists() {
-        return Err(format!(
-            "Extracted package is missing {} at {}",
-            native_app_binary_name(),
-            binary_path.display()
-        ));
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        if let Ok(meta) = fs::metadata(&binary_path) {
-            let mut perms = meta.permissions();
-            perms.set_mode(perms.mode() | 0o755);
-            let _ = fs::set_permissions(&binary_path, perms);
+    let stage_result = (|| {
+        extract_tar_gz_into(&archive_path, &stage_dir)?;
+        let staged_binary = stage_dir.join(native_app_binary_name());
+        if !staged_binary.is_file() {
+            return Err(format!(
+                "Extracted package is missing {} at {}",
+                native_app_binary_name(),
+                staged_binary.display()
+            ));
         }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = fs::metadata(&staged_binary)
+                .map_err(|e| format!("Failed to inspect {}: {e}", staged_binary.display()))?
+                .permissions();
+            perms.set_mode(perms.mode() | 0o755);
+            fs::set_permissions(&staged_binary, perms).map_err(|e| {
+                format!("Failed to make {} executable: {e}", staged_binary.display())
+            })?;
+        }
+        if install_dir.exists() {
+            preserve_native_app_user_data(&install_dir, &stage_dir)?;
+        }
+        let marker = NativeAppInstallMarker {
+            version_tag: normalized_tag.clone(),
+            checksum: Some(normalized_checksum.clone()),
+            download_url: Some(normalized_url.clone()),
+        };
+        let marker_bytes = serde_json::to_vec_pretty(&marker)
+            .map_err(|e| format!("Failed to encode marker: {e}"))?;
+        fs::write(native_app_marker_path(&stage_dir), marker_bytes)
+            .map_err(|e| format!("Failed to write staged native app marker: {e}"))?;
+        replace_directory_with_stage(&install_dir, &stage_dir)
+    })();
+    let _ = fs::remove_file(&archive_path);
+    if let Err(err) = stage_result {
+        let _ = fs::remove_dir_all(&stage_dir);
+        return Err(err);
     }
-    clear_quarantine(&install_dir);
 
-    let marker = NativeAppInstallMarker {
-        version_tag: normalized_tag.clone(),
-        checksum: normalized_checksum,
-        download_url: Some(normalized_url),
-    };
-    let marker_bytes =
-        serde_json::to_vec_pretty(&marker).map_err(|e| format!("Failed to encode marker: {e}"))?;
-    fs::write(&marker_path, marker_bytes)
-        .map_err(|e| format!("Failed to write marker {}: {e}", marker_path.display()))?;
+    debug_assert!(binary_path.exists());
+    debug_assert!(marker_path.exists());
 
     Ok(NativeAppInstallResult {
         install_dir: install_dir.to_string_lossy().to_string(),
@@ -7406,7 +7453,31 @@ fn default_game_dir_path() -> Result<PathBuf, String> {
     }
 
     if let Some(home) = env::var_os("HOME") {
-        return Ok(PathBuf::from(home).join(".fpsmaster"));
+        let home = PathBuf::from(home);
+        let legacy_dir = home.join(".fpsmaster");
+        if legacy_dir.is_dir() {
+            return Ok(legacy_dir);
+        }
+
+        #[cfg(target_os = "macos")]
+        return Ok(home
+            .join("Library")
+            .join("Application Support")
+            .join("FPSMaster"));
+
+        #[cfg(target_os = "linux")]
+        {
+            if let Some(xdg_data_home) = env::var_os("XDG_DATA_HOME") {
+                let xdg_data_home = PathBuf::from(xdg_data_home);
+                if xdg_data_home.is_absolute() {
+                    return Ok(xdg_data_home.join("FPSMaster"));
+                }
+            }
+            return Ok(home.join(".local").join("share").join("fpsmaster"));
+        }
+
+        #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+        return Ok(legacy_dir);
     }
 
     env::current_dir()
@@ -7467,6 +7538,27 @@ fn prefers_zulu_over_mojang_x64(major: i32, force_x64: bool) -> bool {
     cfg!(target_os = "macos") && force_x64 && major == 8
 }
 
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+fn ensure_x64_emulation_available() -> Result<(), String> {
+    let status = Command::new("/usr/bin/arch")
+        .args(["-x86_64", "/usr/bin/true"])
+        .status()
+        .map_err(|e| format!("Failed to check Rosetta 2 availability: {e}"))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(
+            "This Minecraft version requires Rosetta 2. Install it with `softwareupdate --install-rosetta`, then try again."
+                .to_string(),
+        )
+    }
+}
+
+#[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+fn ensure_x64_emulation_available() -> Result<(), String> {
+    Ok(())
+}
+
 // Mojang's macOS runtimes extract as <root>/jre.bundle/Contents/Home/bin/java; Zulu
 // archives never contain a `jre.bundle` component. Used to spot pre-Zulu installs.
 fn is_mojang_bundle_layout(java_path: &Path) -> bool {
@@ -7482,6 +7574,9 @@ fn ensure_managed_jdk_runtime(
     download_threads: Option<i32>,
     force_x64: bool,
 ) -> Result<PathBuf, String> {
+    if force_x64 {
+        ensure_x64_emulation_available()?;
+    }
     fs::create_dir_all(runtime_root).map_err(|e| {
         format!(
             "Failed creating runtime dir {}: {e}",
@@ -8329,13 +8424,13 @@ fn download_mojang_runtime_files(
     download_threads: usize,
 ) -> Result<(), String> {
     fs::create_dir_all(runtime_root).map_err(|e| e.to_string())?;
-    let entries: Vec<(String, MojangJavaRemoteEntry)> = manifest
+    let (entries, links): (Vec<_>, Vec<_>) = manifest
         .files
         .iter()
         .map(|(path, entry)| (path.clone(), clone_mojang_entry(entry)))
-        .collect();
+        .partition(|(_, entry)| entry.entry_type != "link");
 
-    let total = entries.len().max(1);
+    let total = (entries.len() + links.len()).max(1);
     let completed = Arc::new(std::sync::atomic::AtomicU64::new(0));
     let downloaded = Arc::new(std::sync::atomic::AtomicU64::new(0));
     let jobs = Arc::new(Mutex::new(VecDeque::from(entries)));
@@ -8417,6 +8512,27 @@ fn download_mojang_runtime_files(
     if panicked {
         return Err("Mojang runtime worker panicked".to_string());
     }
+    for (relative_path, entry) in links {
+        let fetched = process_mojang_runtime_entry(window, runtime_root, &relative_path, &entry, 1)
+            .map_err(|err| {
+                format!("Failed processing Mojang runtime entry {relative_path}: {err}")
+            })?;
+        let done = completed.fetch_add(1, Ordering::Relaxed) + 1;
+        if fetched {
+            downloaded.fetch_add(1, Ordering::Relaxed);
+        }
+        if done % 10 == 0 || done as usize == total {
+            emit_log(
+                window,
+                "info",
+                &format!(
+                    "Mojang runtime progress: {done}/{total} downloaded={} cached={}",
+                    downloaded.load(Ordering::Relaxed),
+                    done.saturating_sub(downloaded.load(Ordering::Relaxed))
+                ),
+            );
+        }
+    }
     Ok(())
 }
 
@@ -8455,7 +8571,25 @@ fn process_mojang_runtime_entry(
             if let Some(parent) = target.parent() {
                 fs::create_dir_all(parent).map_err(|e| e.to_string())?;
             }
-            fs::write(&target, entry.target.as_bytes()).map_err(|e| e.to_string())?;
+            if fs::symlink_metadata(&target).is_ok() {
+                fs::remove_file(&target).map_err(|e| e.to_string())?;
+            }
+            #[cfg(unix)]
+            std::os::unix::fs::symlink(&entry.target, &target).map_err(|e| e.to_string())?;
+            #[cfg(windows)]
+            {
+                let source = target
+                    .parent()
+                    .ok_or_else(|| "Runtime link has no parent".to_string())?
+                    .join(&entry.target);
+                fs::copy(&source, &target).map_err(|e| {
+                    format!(
+                        "Failed to materialize runtime link {} from {}: {e}",
+                        target.display(),
+                        source.display()
+                    )
+                })?;
+            }
             Ok(true)
         }
         "file" => download_mojang_runtime_file(window, &target, entry, max_parts),
@@ -9635,8 +9769,9 @@ mod tests {
     use super::{
         cleanup_launch_natives_dir, fabric_mod_uses_named_namespace,
         is_nested_launcher_mod_jar_path, is_unsupported_launcher_runtime_mod_name,
-        launcher_package_has_unsupported_runtime_mods, FabricInstallResult, ForgeInstallResult,
-        LauncherInstalledFileRecord, LauncherModsInstallMarker,
+        launcher_package_has_unsupported_runtime_mods, process_mojang_runtime_entry,
+        preserve_native_app_user_data, FabricInstallResult, ForgeInstallResult,
+        LauncherInstalledFileRecord, LauncherModsInstallMarker, MojangJavaRemoteEntry,
     };
     use std::fs;
     use std::io::Write;
@@ -9697,6 +9832,69 @@ mod tests {
         cleanup_launch_natives_dir(&dir);
 
         assert!(!dir.exists());
+    }
+
+    #[test]
+    fn native_app_update_preserves_user_data() {
+        let temp = tempfile::tempdir().expect("temp dir should be created");
+        let installed = temp.path().join("installed");
+        let staged = temp.path().join("staged");
+        fs::create_dir_all(installed.join("mods")).expect("mods dir should be created");
+        fs::create_dir_all(installed.join("resourcepacks"))
+            .expect("resourcepacks dir should be created");
+        fs::create_dir_all(installed.join("local_assets"))
+            .expect("local assets dir should be created");
+        fs::create_dir_all(staged.join("resourcepacks"))
+            .expect("staged resourcepacks should be created");
+        fs::write(installed.join("mods/user-mod.js"), "user mod").unwrap();
+        fs::write(installed.join("resourcepacks/user.zip"), "user pack").unwrap();
+        fs::write(installed.join("local_assets/asset.bin"), "asset").unwrap();
+        fs::write(installed.join("fpsmaster_options.txt"), "user settings").unwrap();
+        fs::write(staged.join("resourcepacks/bundled.zip"), "bundled pack").unwrap();
+
+        preserve_native_app_user_data(&installed, &staged).expect("user data should be preserved");
+
+        assert_eq!(
+            fs::read_to_string(staged.join("mods/user-mod.js")).unwrap(),
+            "user mod"
+        );
+        assert_eq!(
+            fs::read_to_string(staged.join("resourcepacks/user.zip")).unwrap(),
+            "user pack"
+        );
+        assert_eq!(
+            fs::read_to_string(staged.join("resourcepacks/bundled.zip")).unwrap(),
+            "bundled pack"
+        );
+        assert_eq!(
+            fs::read_to_string(staged.join("local_assets/asset.bin")).unwrap(),
+            "asset"
+        );
+        assert_eq!(
+            fs::read_to_string(staged.join("fpsmaster_options.txt")).unwrap(),
+            "user settings"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn mojang_runtime_link_is_created_as_a_symlink() {
+        let temp = tempfile::tempdir().expect("temp dir should be created");
+        fs::create_dir_all(temp.path().join("lib")).unwrap();
+        fs::write(temp.path().join("lib/source.txt"), "runtime data").unwrap();
+        let entry = MojangJavaRemoteEntry {
+            entry_type: "link".to_string(),
+            executable: false,
+            downloads: Default::default(),
+            target: "../lib/source.txt".to_string(),
+        };
+
+        process_mojang_runtime_entry(None, temp.path(), "bin/runtime-link", &entry, 1)
+            .expect("runtime link should be created");
+
+        let link = temp.path().join("bin/runtime-link");
+        assert!(fs::symlink_metadata(&link).unwrap().file_type().is_symlink());
+        assert_eq!(fs::read_to_string(link).unwrap(), "runtime data");
     }
 
     #[test]

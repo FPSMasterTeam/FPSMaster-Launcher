@@ -5,6 +5,7 @@ import { listen, TauriEvent } from "@tauri-apps/api/event";
 import packageInfo from "../package.json";
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import AppBackground from "./components/AppBackground";
+import Button from "./components/Button";
 import InstallDialog from "./components/InstallDialog";
 import LaunchErrorDialog from "./components/LaunchErrorDialog";
 import LaunchPrepareDialog from "./components/LaunchPrepareDialog";
@@ -204,6 +205,7 @@ function Launcher() {
   const [launcherAuth, setLauncherAuth] = useState<LauncherAuthState | null>(null);
   const [launcherLoginPrefs, setLauncherLoginPrefs] = useState<LauncherLoginPrefs>(DEFAULT_LOGIN_PREFS);
   const [secureStorageReady, setSecureStorageReady] = useState(false);
+  const [secureStorageError, setSecureStorageError] = useState<string | null>(null);
   const [launcherVersions, setLauncherVersions] = useState<LauncherVersionMap>(EMPTY_LAUNCHER_VERSIONS);
   const [novaGameVersions, setNovaGameVersions] = useState<NovaVersionMap>({});
   const [selectedNovaGameVersion, setSelectedNovaGameVersion] = useState<string>(
@@ -341,17 +343,23 @@ function Launcher() {
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      const [authRaw, prefsRaw, accountsRaw] = await Promise.all([
-        loadSecureRaw(STORAGE_KEYS.launcherAuth),
-        loadSecureRaw(STORAGE_KEYS.launcherLoginPrefs),
-        loadSecureRaw(STORAGE_KEYS.minecraftAccounts)
-      ]);
-      if (cancelled) return;
-      setLauncherAuth(authRaw === null ? null : parseLauncherAuthState(authRaw));
-      setLauncherLoginPrefs(prefsRaw === null ? DEFAULT_LOGIN_PREFS : parseLauncherLoginPrefs(prefsRaw));
-      const accounts = accountsRaw === null ? [] : parseMinecraftAccounts(accountsRaw);
-      mcAccounts.setAccounts(accounts);
-      setSecureStorageReady(true);
+      try {
+        const [authRaw, prefsRaw, accountsRaw] = await Promise.all([
+          loadSecureRaw(STORAGE_KEYS.launcherAuth),
+          loadSecureRaw(STORAGE_KEYS.launcherLoginPrefs),
+          loadSecureRaw(STORAGE_KEYS.minecraftAccounts)
+        ]);
+        if (cancelled) return;
+        setLauncherAuth(authRaw === null ? null : parseLauncherAuthState(authRaw));
+        setLauncherLoginPrefs(prefsRaw === null ? DEFAULT_LOGIN_PREFS : parseLauncherLoginPrefs(prefsRaw));
+        const accounts = accountsRaw === null ? [] : parseMinecraftAccounts(accountsRaw);
+        mcAccounts.setAccounts(accounts);
+        setSecureStorageReady(true);
+      } catch (error) {
+        if (cancelled) return;
+        setSecureStorageError(String(error));
+        window.dispatchEvent(new Event("fpsmaster:loaded"));
+      }
     })();
     return () => {
       cancelled = true;
@@ -2360,6 +2368,7 @@ function Launcher() {
       setStatus(t("app.status.presetCannotDelete"));
       return;
     }
+    if (!window.confirm(t("instances.deleteConfirm", { name: item.name }))) return;
     const next = instances.filter((entry) => entry.id !== id);
     setInstances(next);
     if (selected === id && next.length > 0) setSelected(next[0].id);
@@ -2788,6 +2797,7 @@ function Launcher() {
     launcherUpdateChannels: launcherUpdate.channels,
     launcherUpdateChecking: launcherUpdate.checking,
     launcherUpdateDownloading: launcherUpdate.downloading,
+    launcherUpdateProgressPercent: launcherUpdate.progressPercent,
     launcherUpdateDownload: launcherUpdate.download,
     onRefreshLauncherUpdate,
     onInstallLauncherUpdate,
@@ -2849,7 +2859,26 @@ function Launcher() {
         />
         <WindowTitleBar version={currentLauncherVersion} onClose={stableCloseWindow} />
 
-        {authenticated ? (
+        {!secureStorageReady ? (
+          <main className="relative z-10 flex h-full w-full flex-1 items-center justify-center overflow-hidden px-6 py-8">
+            {secureStorageError ? (
+              <div className="surface-panel max-w-lg rounded-[10px] p-6 text-center">
+                <h1 className="page-title !text-xl">{t("secureStorage.unavailableTitle")}</h1>
+                <p className="mt-3 text-sm leading-6 text-[var(--text-secondary)]">
+                  {t("secureStorage.unavailableDescription")}
+                </p>
+                <pre className="mt-4 max-h-32 overflow-auto whitespace-pre-wrap rounded-[8px] bg-black/25 p-3 text-left text-xs text-[var(--text-muted)]">
+                  {secureStorageError}
+                </pre>
+                <Button variant="primary" className="mt-5" onClick={() => window.location.reload()}>
+                  {t("secureStorage.retry")}
+                </Button>
+              </div>
+            ) : (
+              <PageFallback />
+            )}
+          </main>
+        ) : authenticated ? (
           <div className="relative z-10 flex h-full w-full flex-1 pt-10">
             <Sidebar
               currentPage={page}
@@ -2905,4 +2934,3 @@ function PageFallback() {
 function selectDefaultEdgeOptiFineVersion(versions: OptiFineVersion[]): OptiFineVersion | undefined {
   return versions.find((item) => item.compatibility !== "incompatible");
 }
-

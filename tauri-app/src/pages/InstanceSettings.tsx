@@ -145,6 +145,7 @@ function InstanceSettingsPage({
 
   async function deleteEntry(section: InstanceSection, entryName: string) {
     if (!instance) return;
+    if (!window.confirm(t("instanceFiles.deleteConfirm", { name: entryName }))) return;
     try {
       await invoke("delete_instance_section_entry", {
         gameDir,

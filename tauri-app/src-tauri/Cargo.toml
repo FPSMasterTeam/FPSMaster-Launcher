@@ -13,6 +13,7 @@ aes-gcm = "0.11.0"
 base64 = "0.22"
 flate2 = "1.1"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "gif", "bmp", "webp"] }
+keyring = { version = "3.6.3", features = ["apple-native", "windows-native", "sync-secret-service"] }
 rand = "0.8"
 # rustls-tls (= webpki-roots) 单独用会只信任编译进二进制的 Mozilla 根列表，完全
 # 不读 Windows 系统证书存储。装了 HTTPS 扫描类杀软(360/火绒/卡巴)或走企业代理

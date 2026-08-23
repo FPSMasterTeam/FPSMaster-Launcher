@@ -1,11 +1,19 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { LAUNCHER_API_BASE_URL } from "../constants";
 import type { TranslationKey } from "../i18n";
 import { describeApiError, formatLaunchError, isLauncherAppUpdateMissing } from "../lib/launcherError";
 import { notifyError } from "../lib/toast";
 import type { DownloadedLauncherUpdate, LauncherAppUpdateChannel, LauncherAppUpdateInfo } from "../types";
 import { compareMajor } from "../utils/launcher";
+import { IS_WINDOWS } from "../utils/platform";
+
+type LauncherAppUpdateProgress = {
+  downloadedBytes: number;
+  totalBytes: number | null;
+  percent: number | null;
+};
 
 type Translator = (key: TranslationKey, values?: Record<string, string | number>) => string;
 
@@ -23,6 +31,7 @@ export type LauncherUpdateController = {
   channels: LauncherAppUpdateChannel[];
   checking: boolean;
   downloading: boolean;
+  progressPercent: number | null;
   download: DownloadedLauncherUpdate | null;
   available: boolean;
   mandatoryRequired: boolean;
@@ -40,6 +49,7 @@ export function useLauncherUpdate(deps: UseLauncherUpdateDeps): LauncherUpdateCo
   const [channels, setChannels] = useState<LauncherAppUpdateChannel[]>([]);
   const [checking, setChecking] = useState(false);
   const [downloading, setDownloading] = useState(false);
+  const [progressPercent, setProgressPercent] = useState<number | null>(null);
   const [download, setDownload] = useState<DownloadedLauncherUpdate | null>(null);
 
   const available = useMemo(
@@ -104,23 +114,40 @@ export function useLauncherUpdate(deps: UseLauncherUpdateDeps): LauncherUpdateCo
       return;
     }
     setDownloading(true);
+    setProgressPercent(null);
+    let completed = false;
+    let stopProgressListener: (() => void) | undefined;
     try {
       setStatus(t("settings.launcherUpdateDownloading", { version: appUpdate.version }));
+      stopProgressListener = await listen<LauncherAppUpdateProgress>(
+        "launcher-app-update-progress",
+        ({ payload }) => {
+          if (typeof payload.percent === "number") {
+            setProgressPercent(payload.percent);
+            setStatus(t("settings.launcherUpdateDownloadingProgress", { percent: payload.percent }));
+          }
+        }
+      );
       const downloaded = await invoke<DownloadedLauncherUpdate>("download_launcher_app_update", {
         downloadUrl: appUpdate.downloadUrl,
         version: appUpdate.version,
         checksum: appUpdate.checksum
       });
       setDownload(downloaded);
+      completed = true;
       await invoke("open_downloaded_file", { filePath: downloaded.filePath });
       setStatus(t("settings.launcherUpdateInstallerOpened", { file: downloaded.fileName }));
-      await flushTelemetry();
-      await invoke("quit_launcher_app");
+      if (IS_WINDOWS) {
+        await flushTelemetry();
+        await invoke("quit_launcher_app");
+      }
     } catch (error) {
       const errorText = describeApiError(error, t);
       setStatus(t("app.status.failed", { error: errorText }));
       notifyError(errorText, t("toast.title.updateFailed"));
     } finally {
+      stopProgressListener?.();
+      if (!completed) setProgressPercent(null);
       setDownloading(false);
     }
   }, [appUpdate, available, flushTelemetry, setStatus, t]);
@@ -141,6 +168,7 @@ export function useLauncherUpdate(deps: UseLauncherUpdateDeps): LauncherUpdateCo
     channels,
     checking,
     downloading,
+    progressPercent,
     download,
     available,
     mandatoryRequired,

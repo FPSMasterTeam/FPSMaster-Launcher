@@ -1,5 +1,6 @@
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { DEFAULT_SETTINGS, PRESET_INSTANCES, STORAGE_KEYS } from "../constants";
+import { IS_WINDOWS } from "./platform";
 import fabricIcon from "../assets/icons/fabric.png";
 import forgeIcon from "../assets/icons/forge.png";
 import grassIcon from "../assets/icons/grass.png";
@@ -157,7 +158,9 @@ export function loadSettings(): Settings {
     const themeMode = parseThemeMode(parsed.themeMode);
     const themeAccent = parseThemeAccent(parsed.themeAccent);
     const customAccentHex = parseCustomAccentHex(parsed.customAccentHex);
-    const backgroundSource = parseBackgroundSource(parsed.backgroundSource);
+    const parsedBackgroundSource = parseBackgroundSource(parsed.backgroundSource);
+    const backgroundSource =
+      parsedBackgroundSource === "system" && !IS_WINDOWS ? DEFAULT_SETTINGS.backgroundSource : parsedBackgroundSource;
     return {
       gameDir:
         typeof parsed.gameDir === "string" && parsed.gameDir
