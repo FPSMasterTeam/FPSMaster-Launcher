@@ -44,5 +44,10 @@ GitHub 仓库需要配置以下 Secrets：
 
 - `FPSMASTER_CI_API_BASE_URL`：后端 API 地址
 - `FPSMASTER_CI_UPLOAD_TOKEN`：后端配置项 `fps.launcher.ci-upload-token`
+- `QINIU_ACCESS_KEY`、`QINIU_SECRET_KEY`、`QINIU_BUCKET`、`QINIU_S3_ENDPOINT`、`QINIU_S3_REGION`、`QINIU_CDN_BASE_URL`：发布包上传配置
+- `APPLE_CERTIFICATE`、`APPLE_CERTIFICATE_PASSWORD`、`KEYCHAIN_PASSWORD`：macOS Developer ID Application 签名证书与 CI 临时钥匙串
+- `APPLE_ID`、`APPLE_PASSWORD`、`APPLE_TEAM_ID`：Apple 公证凭据；`APPLE_PASSWORD` 使用 app-specific password
 
-工作流构建命令为 `npm run build:installer`，发布产物路径为 `tauri-app/src-tauri/target/release/bundle/nsis/*.exe`，回调接口为 `POST /api/v1/launcher/releases/ci`，其中 `productCode` 固定为 `launcher`，`target` 固定为 `windows-x86_64`。
+工作流发布 Windows x64、Windows 7 x64、Linux x64 `.deb` 和 Apple Silicon macOS `.dmg`。Intel Mac 暂不打包。Linux 在 Ubuntu 22.04 构建并校验最高 GLIBC 需求不超过 2.35；macOS tag 发布缺少 Developer ID 或公证凭据时会直接失败。PR 和普通分支上的 macOS 包只使用 ad-hoc 签名，不能替代正式分发所需的 Developer ID 签名与 Apple 公证。
+
+发布回调接口为 `POST /api/v1/launcher/releases/ci`，`productCode` 固定为 `launcher`，`target` 按产物平台填写。

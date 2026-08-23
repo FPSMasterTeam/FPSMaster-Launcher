@@ -16,7 +16,7 @@
     "build:installer:windows": "npx tauri build --bundles nsis --ci --no-sign",
     "build:installer:windows:win7": "npx tauri build --bundles nsis --ci --no-sign --config src-tauri/win7.config.json",
     "build:installer:linux": "npx tauri build --bundles deb --ci --no-sign",
-    "build:installer:macos": "npx tauri build --target aarch64-apple-darwin --bundles dmg --ci --no-sign",
+    "build:installer:macos": "npx tauri build --target aarch64-apple-darwin --bundles dmg --ci",
     "preview": "vite preview",
     "pretauri": "npm run version:sync",
     "tauri": "tauri",
