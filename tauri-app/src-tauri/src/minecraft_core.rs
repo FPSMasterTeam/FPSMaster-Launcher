@@ -3281,6 +3281,8 @@ fn extract_native_jar(native_jar: &Path, natives_dir: &Path) -> Result<(), Strin
         .map_err(|e| format!("Failed to open native jar {}: {e}", native_jar.display()))?;
     let mut archive = zip::ZipArchive::new(file)
         .map_err(|e| format!("Invalid native jar {}: {e}", native_jar.display()))?;
+    crate::zip_budget::NATIVE_JAR_BUDGET.check_archive(&mut archive, "native jar")?;
+    let mut budget = crate::zip_budget::NATIVE_JAR_BUDGET.tracker();
     for index in 0..archive.len() {
         let mut entry = archive.by_index(index).map_err(|e| {
             format!(
@@ -3307,8 +3309,11 @@ fn extract_native_jar(native_jar: &Path, natives_dir: &Path) -> Result<(), Strin
                 target.display()
             )
         })?;
-        io::copy(&mut entry, &mut output)
-            .map_err(|e| format!("Failed to extract native {}: {e}", target.display()))?;
+        budget.copy_entry(
+            &mut entry,
+            &mut output,
+            &format!("native {}", target.display()),
+        )?;
     }
     Ok(())
 }
@@ -3550,11 +3555,11 @@ fn inspect_forge_installer(installer_path: &Path) -> Result<ForgeInstallerProfil
     let mut entry = archive
         .by_name("install_profile.json")
         .map_err(|e| format!("Forge installer missing install_profile.json: {e}"))?;
-    let mut text = String::new();
-    use std::io::Read;
-    entry
-        .read_to_string(&mut text)
-        .map_err(|e| format!("Failed reading install_profile.json: {e}"))?;
+    let text = crate::zip_budget::read_text_entry_bounded(
+        &mut entry,
+        crate::zip_budget::MAX_TEXT_ENTRY_BYTES,
+        "forge install_profile.json",
+    )?;
     let payload: Value = serde_json::from_str(&text)
         .map_err(|e| format!("Invalid forge install_profile.json: {e}"))?;
     Ok(ForgeInstallerProfile {
@@ -3617,12 +3622,11 @@ fn install_forge_old_profile(
             target_library.display()
         )
     })?;
-    io::copy(&mut entry, &mut output).map_err(|e| {
-        format!(
-            "Failed to extract forge universal jar {}: {e}",
-            target_library.display()
-        )
-    })?;
+    crate::zip_budget::FORGE_INSTALLER_BUDGET.tracker().copy_entry(
+        &mut entry,
+        &mut output,
+        &format!("forge universal jar {}", target_library.display()),
+    )?;
 
     let version_id = version_info
         .get("id")

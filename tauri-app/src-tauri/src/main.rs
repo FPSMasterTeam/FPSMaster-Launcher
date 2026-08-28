@@ -4,6 +4,7 @@ mod launcher_api;
 mod microsoft_auth;
 mod minecraft_core;
 mod secure_storage;
+mod zip_budget;
 
 use launcher_api::{
     download_launcher_app_update, launcher_get_app_update, launcher_get_dashboard,
@@ -5266,6 +5267,8 @@ fn extract_archive_to_stage(
     let cursor = Cursor::new(archive_data.to_vec());
     let mut archive = zip::ZipArchive::new(cursor)
         .map_err(|e| format!("Invalid {archive_label} archive ZIP: {e}"))?;
+    zip_budget::IMPORT_ARCHIVE_BUDGET.check_archive(&mut archive, archive_label)?;
+    let mut budget = zip_budget::IMPORT_ARCHIVE_BUDGET.tracker();
     let mut extracted_entries = 0usize;
 
     for index in 0..archive.len() {
@@ -5310,12 +5313,11 @@ fn extract_archive_to_stage(
                 out_path.display()
             )
         })?;
-        std::io::copy(&mut entry, &mut output).map_err(|e| {
-            format!(
-                "Failed to extract {archive_label} file {}: {e}",
-                out_path.display()
-            )
-        })?;
+        budget.copy_entry(
+            &mut entry,
+            &mut output,
+            &format!("{archive_label} file {}", out_path.display()),
+        )?;
         output.flush().map_err(|e| {
             format!(
                 "Failed to flush extracted {archive_label} file {}: {e}",
@@ -5533,6 +5535,8 @@ fn extract_world_archive_to_stage(archive_data: &[u8], stage_root: &Path) -> Res
     let cursor = Cursor::new(archive_data.to_vec());
     let mut archive =
         zip::ZipArchive::new(cursor).map_err(|e| format!("Invalid world archive ZIP: {e}"))?;
+    zip_budget::IMPORT_ARCHIVE_BUDGET.check_archive(&mut archive, "world")?;
+    let mut budget = zip_budget::IMPORT_ARCHIVE_BUDGET.tracker();
     let mut extracted_entries = 0usize;
 
     for index in 0..archive.len() {
@@ -5577,8 +5581,11 @@ fn extract_world_archive_to_stage(archive_data: &[u8], stage_root: &Path) -> Res
                 out_path.display()
             )
         })?;
-        std::io::copy(&mut entry, &mut output)
-            .map_err(|e| format!("Failed to extract world file {}: {e}", out_path.display()))?;
+        budget.copy_entry(
+            &mut entry,
+            &mut output,
+            &format!("world file {}", out_path.display()),
+        )?;
         output.flush().map_err(|e| {
             format!(
                 "Failed to flush extracted world file {}: {e}",
@@ -6756,6 +6763,8 @@ fn prepare_extreme_assets_blocking(game_dir: String, version_id: String) -> Resu
         .map_err(|e| format!("Failed opening client jar {}: {e}", jar_path.display()))?;
     let mut zip = zip::ZipArchive::new(BufReader::new(file))
         .map_err(|e| format!("Invalid client jar: {e}"))?;
+    zip_budget::CLIENT_JAR_BUDGET.check_archive(&mut zip, "client jar")?;
+    let mut budget = zip_budget::CLIENT_JAR_BUDGET.tracker();
     let mut extracted = 0usize;
     for i in 0..zip.len() {
         let mut entry = zip
@@ -6773,8 +6782,7 @@ fn prepare_extreme_assets_blocking(game_dir: String, version_id: String) -> Resu
         }
         let mut out = fs::File::create(&out_path)
             .map_err(|e| format!("Failed to write {}: {e}", out_path.display()))?;
-        std::io::copy(&mut entry, &mut out)
-            .map_err(|e| format!("Failed extracting {name}: {e}"))?;
+        budget.copy_entry(&mut entry, &mut out, &format!("client jar asset {name}"))?;
         extracted += 1;
     }
     if extracted == 0 || !assets_minecraft.is_dir() {
@@ -8364,7 +8372,13 @@ fn install_zulu_jre_archive(
 fn extract_tar_gz_into(archive_path: &Path, dest: &Path) -> Result<(), String> {
     let file = fs::File::open(archive_path)
         .map_err(|e| format!("Failed opening archive {}: {e}", archive_path.display()))?;
-    let decoder = flate2::read::GzDecoder::new(BufReader::new(file));
+    // Tar entries cannot be pre-flighted without decompressing the stream, so
+    // the budget is enforced on the decompressed byte count instead.
+    let decoder = zip_budget::BudgetedReader::new(
+        flate2::read::GzDecoder::new(BufReader::new(file)),
+        zip_budget::JRE_ARCHIVE_BUDGET.max_total_uncompressed_bytes,
+        "JRE archive",
+    );
     let mut archive = tar::Archive::new(decoder);
     archive.set_preserve_permissions(true);
     archive.set_overwrite(true);
@@ -8379,6 +8393,11 @@ fn extract_zip_into(archive_path: &Path, dest: &Path) -> Result<(), String> {
         .map_err(|e| format!("Failed opening archive {}: {e}", archive_path.display()))?;
     let mut archive =
         zip::ZipArchive::new(file).map_err(|e| format!("Invalid JRE archive: {e}"))?;
+    // Pre-flight on declared sizes only; `extract` keeps the crate's own path
+    // sanitization and permission handling. The archive's checksum is verified
+    // against trusted metadata before this point, which bounds the residual
+    // risk of a header that understates its real size.
+    zip_budget::JRE_ARCHIVE_BUDGET.check_archive(&mut archive, "JRE")?;
     archive
         .extract(dest)
         .map_err(|e| format!("Failed extracting JRE archive: {e}"))?;
@@ -9375,6 +9394,8 @@ fn extract_launcher_mod_archive(
         .map_err(|e| format!("Failed to open launcher archive {}: {e}", archive.display()))?;
     let mut zip_archive = zip::ZipArchive::new(file)
         .map_err(|e| format!("Invalid launcher zip archive {}: {e}", archive.display()))?;
+    zip_budget::MOD_ARCHIVE_BUDGET.check_archive(&mut zip_archive, "launcher mod")?;
+    let mut budget = zip_budget::MOD_ARCHIVE_BUDGET.tracker();
 
     let mut has_mods_paths = false;
     for i in 0..zip_archive.len() {
@@ -9433,12 +9454,11 @@ fn extract_launcher_mod_archive(
                 out_path.to_string_lossy()
             )
         })?;
-        std::io::copy(&mut entry, &mut out_file).map_err(|e| {
-            format!(
-                "Failed to write mod output file {}: {e}",
-                out_path.to_string_lossy()
-            )
-        })?;
+        budget.copy_entry(
+            &mut entry,
+            &mut out_file,
+            &format!("mod output file {}", out_path.to_string_lossy()),
+        )?;
         installed_files.push(build_launcher_installed_file_record(
             &out_path,
             &relative_path,
@@ -9490,6 +9510,8 @@ fn extract_nested_launcher_mod_jars(
                 package_path.display()
             )
         })?;
+        zip_budget::MOD_ARCHIVE_BUDGET.check_archive(&mut archive, "launcher mod")?;
+        let mut budget = zip_budget::MOD_ARCHIVE_BUDGET.tracker();
 
         for index in 0..archive.len() {
             let mut entry = archive.by_index(index).map_err(|e| e.to_string())?;
@@ -9522,12 +9544,11 @@ fn extract_nested_launcher_mod_jars(
                     out_path.display()
                 )
             })?;
-            std::io::copy(&mut entry, &mut out_file).map_err(|e| {
-                format!(
-                    "Failed to write nested launcher mod {}: {e}",
-                    out_path.display()
-                )
-            })?;
+            budget.copy_entry(
+                &mut entry,
+                &mut out_file,
+                &format!("nested launcher mod {}", out_path.display()),
+            )?;
             nested_files.push(build_launcher_installed_file_record(
                 &out_path,
                 &nested_relative_path,
@@ -9650,9 +9671,12 @@ fn fabric_mod_uses_named_namespace(path: &Path) -> Result<bool, String> {
     // declares no widener -> nothing is loaded, the jar is fine.
     let declared_widener: Option<Option<String>> = match archive.by_name("fabric.mod.json") {
         Ok(mut entry) => {
-            let mut content = String::new();
-            match entry.read_to_string(&mut content) {
-                Ok(_) => match serde_json::from_str::<serde_json::Value>(&content) {
+            match zip_budget::read_text_entry_bounded(
+                &mut entry,
+                zip_budget::MAX_TEXT_ENTRY_BYTES,
+                "fabric.mod.json",
+            ) {
+                Ok(content) => match serde_json::from_str::<serde_json::Value>(&content) {
                     Ok(value) => Some(
                         value
                             .get("accessWidener")
@@ -9672,10 +9696,11 @@ fn fabric_mod_uses_named_namespace(path: &Path) -> Result<bool, String> {
             let Ok(mut entry) = archive.by_name(&widener_path) else {
                 return Ok(false);
             };
-            let mut content = String::new();
-            entry
-                .read_to_string(&mut content)
-                .map_err(|e| format!("Failed to read access widener {}: {e}", path.display()))?;
+            let content = zip_budget::read_text_entry_bounded(
+                &mut entry,
+                zip_budget::MAX_TEXT_ENTRY_BYTES,
+                &format!("access widener {}", path.display()),
+            )?;
             Ok(access_widener_first_line_is_named(&content))
         }
         Some(None) => Ok(false),
@@ -9694,10 +9719,11 @@ fn fabric_mod_uses_named_namespace(path: &Path) -> Result<bool, String> {
                 if !file_name.ends_with(".accesswidener") {
                     continue;
                 }
-                let mut content = String::new();
-                entry
-                    .read_to_string(&mut content)
-                    .map_err(|e| format!("Failed to read access widener {}: {e}", path.display()))?;
+                let content = zip_budget::read_text_entry_bounded(
+                    &mut entry,
+                    zip_budget::MAX_TEXT_ENTRY_BYTES,
+                    &format!("access widener {}", path.display()),
+                )?;
                 if access_widener_first_line_is_named(&content) {
                     return Ok(true);
                 }
