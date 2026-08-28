@@ -35,6 +35,8 @@ const zhCN: EnUSTranslations = {
   "error.network.tls": "安全连接建立失败。请检查系统时间，或检查代理/杀毒软件是否拦截了 HTTPS 流量。",
   "error.auth.rejected": "登录状态已失效，请重新登录。",
   "error.http.notFound": "服务器上不存在所请求的资源。",
+  "error.catalog.notFound": "所选游戏或加载器版本已不在目录中。请刷新版本列表后选择可用版本。",
+  "error.download.notFound": "当前下载源缺少必需的游戏文件。请切换下载源或选择其他兼容版本。",
   "error.http.rateLimited": "请求过于频繁，请稍后再试。",
   "error.http.server": "服务器返回错误（HTTP {status}），请稍后重试。",
   "error.internal": "启动器内部错误，请重试或重启启动器。",

@@ -193,8 +193,24 @@ export function describeApiError(error: unknown, t: Translator): string {
       return t("error.network.tls");
     case "auth":
       return t("error.auth.rejected");
-    case "notFound":
+    case "notFound": {
+      const normalized = classified.raw.toLowerCase();
+      if (
+        normalized.includes("catalog") ||
+        normalized.includes("version manifest") ||
+        normalized.includes("profile metadata")
+      ) {
+        return t("error.catalog.notFound");
+      }
+      if (
+        normalized.includes("download") ||
+        normalized.includes("artifact") ||
+        normalized.includes("installer")
+      ) {
+        return t("error.download.notFound");
+      }
       return t("error.http.notFound");
+    }
     case "rateLimited":
       return t("error.http.rateLimited");
     case "server":
