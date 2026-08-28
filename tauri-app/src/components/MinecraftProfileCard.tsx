@@ -1,9 +1,11 @@
 import { invoke } from "@tauri-apps/api/core";
-import { ChevronDown, Crown, LoaderCircle, Plus, User, X } from "lucide-react";
-import { memo, useEffect, useMemo, useRef, useState } from "react";
+import { ChevronDown, Crown, LoaderCircle, Plus, TriangleAlert, User, X } from "lucide-react";
+import { memo, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import steveFaceUrl from "../assets/steve-face.svg";
 import { useI18n } from "../i18n";
 import { describeApiError } from "../lib/launcherError";
+import { lookupMinecraftSkinUrl } from "../lib/minecraftAccount";
 import type { MinecraftAccount, MinecraftAuthConfig } from "../types";
 
 type MinecraftProfileCardProps = {
@@ -92,8 +94,11 @@ function MinecraftProfileCard({
 
   const displayAccount = currentAccount ?? accounts[0] ?? null;
   const profileTitle = displayAccount?.username?.trim() || t("minecraftAccount.emptyTitle");
-  const profileSubtitle = displayAccount ? t(`minecraftAccount.type.${displayAccount.type}` as const) : t("minecraftAccount.emptySubtitle");
-  const skinUrl = useMemo(() => resolveMinecraftSkinUrl(displayAccount), [displayAccount]);
+  const profileSubtitle = displayAccount
+    ? displayAccount.needsRelogin
+      ? t("minecraftAccount.reloginRequired")
+      : t(`minecraftAccount.type.${displayAccount.type}` as const)
+    : t("minecraftAccount.emptySubtitle");
 
   function resetDialogState(nextMode: AccountDialogMode = "offline") {
     setMode(nextMode);
@@ -154,10 +159,12 @@ function MinecraftProfileCard({
           className={`minecraft-profile-card ${open ? "is-open" : ""}`}
           onClick={() => setOpen((value) => !value)}
         >
-          <MinecraftAvatar skinUrl={skinUrl} title={profileTitle} className="minecraft-profile-avatar" />
+          <MinecraftAvatar account={displayAccount} title={profileTitle} className="minecraft-profile-avatar" />
           <div className="minecraft-profile-copy">
             <p className="minecraft-profile-name">{profileTitle}</p>
-            <p className="minecraft-profile-subtitle">{profileSubtitle}</p>
+            <p className={`minecraft-profile-subtitle ${displayAccount?.needsRelogin ? "text-[var(--accent-danger)]" : ""}`}>
+              {profileSubtitle}
+            </p>
           </div>
           <ChevronDown size={16} className={`minecraft-profile-chevron ${open ? "is-open" : ""}`} />
         </button>
@@ -186,7 +193,7 @@ function MinecraftProfileCard({
                     tabIndex={0}
                   >
                     <div className="minecraft-account-row-main">
-                      <MinecraftAvatar skinUrl={resolveMinecraftSkinUrl(account)} title={account.username} className="minecraft-account-row-avatar" />
+                      <MinecraftAvatar account={account} title={account.username} className="minecraft-account-row-avatar" />
                       <div className="minecraft-account-row-copy">
                         <div className="minecraft-account-row-title">
                           <span className="truncate">{account.username}</span>
@@ -195,7 +202,14 @@ function MinecraftProfileCard({
                             {t(`minecraftAccount.type.${account.type}` as const)}
                           </span>
                         </div>
-                        <p className="minecraft-account-row-meta">{account.uuid || t("minecraftAccount.uuidPending")}</p>
+                        {account.needsRelogin ? (
+                          <p className="minecraft-account-row-meta flex items-center gap-1 text-[var(--accent-danger)]">
+                            <TriangleAlert size={11} />
+                            {t("minecraftAccount.reloginRequired")}
+                          </p>
+                        ) : (
+                          <p className="minecraft-account-row-meta">{account.uuid || t("minecraftAccount.uuidPending")}</p>
+                        )}
                       </div>
                     </div>
                     <div className="minecraft-account-row-actions">
@@ -364,11 +378,47 @@ async function startMinecraftBrowserLogin(): Promise<MinecraftAccount> {
   return invoke<MinecraftAccount>("start_minecraft_browser_login");
 }
 
-function resolveMinecraftSkinUrl(account: MinecraftAccount | null | undefined): string | null {
-  return account?.skinUrl?.trim() || null;
+// Resolves the skin to render for an account: the stored skinUrl when present,
+// otherwise a cached backend lookup by uuid (premium) / username (offline names
+// that map to a real Mojang profile). Returns null while unresolved or when the
+// account has no real profile skin — the avatar then falls back to Steve.
+function useResolvedMinecraftSkinUrl(account: MinecraftAccount | null | undefined): string | null {
+  const storedSkinUrl = account?.skinUrl?.trim() || null;
+  const accountType = account?.type ?? null;
+  const accountUuid = account?.uuid ?? "";
+  const accountUsername = account?.username ?? "";
+  const [lookedUpSkinUrl, setLookedUpSkinUrl] = useState<string | null>(null);
+
+  useEffect(() => {
+    setLookedUpSkinUrl(null);
+    if (storedSkinUrl || !accountType) {
+      return;
+    }
+    let disposed = false;
+    void lookupMinecraftSkinUrl({ type: accountType, uuid: accountUuid, username: accountUsername })
+      .then((url) => {
+        if (!disposed && url) {
+          setLookedUpSkinUrl(url);
+        }
+      });
+    return () => {
+      disposed = true;
+    };
+  }, [storedSkinUrl, accountType, accountUuid, accountUsername]);
+
+  return storedSkinUrl ?? lookedUpSkinUrl;
 }
 
-function MinecraftAvatar({ skinUrl, title, className }: { skinUrl: string | null; title: string; className: string }) {
+function MinecraftAvatar({
+  account,
+  title,
+  className
+}: {
+  account: MinecraftAccount | null;
+  title: string;
+  className: string;
+}) {
+  const skinUrl = useResolvedMinecraftSkinUrl(account);
   const [failed, setFailed] = useState(false);
   const showSkin = skinUrl && !failed;
 
@@ -384,7 +434,7 @@ function MinecraftAvatar({ skinUrl, title, className }: { skinUrl: string | null
           <img src={skinUrl} alt="" className="minecraft-avatar-overlay" onError={() => setFailed(true)} />
         </>
       ) : (
-        <span className="minecraft-avatar-fallback" />
+        <img src={steveFaceUrl} alt="" className="minecraft-avatar-steve" />
       )}
     </span>
   );
