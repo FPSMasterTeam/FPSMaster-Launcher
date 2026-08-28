@@ -10,6 +10,7 @@
 //! check. All checks fail closed.
 
 use std::io::{Read, Seek, Write};
+use std::path::Path;
 
 const MIB: u64 = 1024 * 1024;
 const GIB: u64 = 1024 * MIB;
@@ -61,8 +62,8 @@ pub(crate) const FORGE_INSTALLER_BUDGET: ZipExtractBudget = ZipExtractBudget {
     max_total_uncompressed_bytes: GIB,
 };
 
-/// Cap for individual text entries read fully into memory
-/// (manifests, JSON profiles, access wideners).
+/// Cap for individual text entries or extracted text files read fully into
+/// memory (manifests, JSON profiles, access wideners).
 pub(crate) const MAX_TEXT_ENTRY_BYTES: u64 = 16 * MIB;
 
 impl ZipExtractBudget {
@@ -168,6 +169,23 @@ pub(crate) fn read_text_entry_bounded<R: Read>(
         ));
     }
     String::from_utf8(buffer).map_err(|e| format!("Failed to read {context}: {e}"))
+}
+
+/// Opens and reads a text file through the same bounded path used for archive
+/// entries. This is used for metadata that may have originated in an imported
+/// archive, so extraction limits cannot be bypassed by a later full-file read.
+pub(crate) fn read_text_file_bounded(
+    path: &Path,
+    max_bytes: u64,
+    context: &str,
+) -> Result<String, String> {
+    let mut file = std::fs::File::open(path)
+        .map_err(|e| format!("Failed to read {context} {}: {e}", path.display()))?;
+    read_text_entry_bounded(
+        &mut file,
+        max_bytes,
+        &format!("{context} {}", path.display()),
+    )
 }
 
 /// Wraps a decompression stream and fails once more than the budgeted number

@@ -1245,12 +1245,11 @@ fn get_version_profile_base_version(
     if !profile_json.is_file() {
         return Ok(None);
     }
-    let raw = fs::read_to_string(&profile_json).map_err(|e| {
-        format!(
-            "Failed to read version profile {}: {e}",
-            profile_json.display()
-        )
-    })?;
+    let raw = zip_budget::read_text_file_bounded(
+        &profile_json,
+        zip_budget::MAX_TEXT_ENTRY_BYTES,
+        "version profile",
+    )?;
     let parsed: serde_json::Value = serde_json::from_str(&raw).map_err(|e| {
         format!(
             "Failed to parse version profile {}: {e}",
@@ -1534,6 +1533,7 @@ fn import_instance_archive_blocking(
             stage_root.display()
         )
     })?;
+    let _stage_cleanup = StagingDirectoryCleanup(stage_root.clone());
 
     let extracted_entries = extract_archive_to_stage(&archive_data, &stage_root, "instance")?;
     if extracted_entries == 0 {
@@ -1757,8 +1757,11 @@ async fn repair_instance_runtime(
 }
 
 fn rewrite_version_profile_id(json_path: &Path, version_id: &str) -> Result<(), String> {
-    let profile_json_text = fs::read_to_string(json_path)
-        .map_err(|e| format!("Failed to read profile json {}: {e}", json_path.display()))?;
+    let profile_json_text = zip_budget::read_text_file_bounded(
+        json_path,
+        zip_budget::MAX_TEXT_ENTRY_BYTES,
+        "profile json",
+    )?;
     let mut profile_json: serde_json::Value = serde_json::from_str(&profile_json_text)
         .map_err(|e| format!("Failed to parse profile json {}: {e}", json_path.display()))?;
     if let Some(object) = profile_json.as_object_mut() {
@@ -2830,6 +2833,7 @@ fn install_world_archive_with_metadata(
             stage_root.display()
         )
     })?;
+    let _stage_cleanup = StagingDirectoryCleanup(stage_root.clone());
 
     let extracted_entries = extract_world_archive_to_stage(&archive_data, &stage_root)?;
     if extracted_entries == 0 {
@@ -2958,12 +2962,11 @@ fn read_edge_aot_marker(marker_path: &Path) -> Result<Option<EdgeAotInstallMarke
     if !marker_path.exists() {
         return Ok(None);
     }
-    let content = fs::read_to_string(marker_path).map_err(|e| {
-        format!(
-            "Failed to read Edge AOT marker {}: {e}",
-            marker_path.display()
-        )
-    })?;
+    let content = zip_budget::read_text_file_bounded(
+        marker_path,
+        zip_budget::MAX_TEXT_ENTRY_BYTES,
+        "Edge AOT marker",
+    )?;
     if content.trim().is_empty() {
         return Ok(None);
     }
@@ -3339,12 +3342,11 @@ fn read_fabric_api_marker(marker_path: &Path) -> Result<Option<FabricApiInstallM
     if !marker_path.exists() {
         return Ok(None);
     }
-    let content = fs::read_to_string(marker_path).map_err(|e| {
-        format!(
-            "Failed to read Fabric API marker {}: {e}",
-            marker_path.display()
-        )
-    })?;
+    let content = zip_budget::read_text_file_bounded(
+        marker_path,
+        zip_budget::MAX_TEXT_ENTRY_BYTES,
+        "Fabric API marker",
+    )?;
     if content.trim().is_empty() {
         return Ok(None);
     }
@@ -3940,7 +3942,10 @@ fn install_launcher_manifest_package(
         return Err(err);
     }
     let mut installed_files = install_result?;
-    sanitize_launcher_mod_package(&stage_dir, &mut installed_files)?;
+    if let Err(err) = sanitize_launcher_mod_package(&stage_dir, &mut installed_files) {
+        let _ = fs::remove_dir_all(&stage_dir);
+        return Err(err);
+    }
 
     if let Err(err) = apply_staged_launcher_package(
         mods_dir,
@@ -5039,12 +5044,11 @@ fn read_installed_content_index(runtime_root: &Path) -> Result<Vec<InstalledCont
     if !index_path.exists() {
         return Ok(Vec::new());
     }
-    let content = fs::read_to_string(&index_path).map_err(|e| {
-        format!(
-            "Failed to read installed content index {}: {e}",
-            index_path.display()
-        )
-    })?;
+    let content = zip_budget::read_text_file_bounded(
+        &index_path,
+        zip_budget::MAX_TEXT_ENTRY_BYTES,
+        "installed content index",
+    )?;
     serde_json::from_str::<Vec<InstalledContentItem>>(&content).map_err(|e| {
         format!(
             "Invalid installed content index {}: {e}",
@@ -5259,12 +5263,20 @@ fn archive_file_stem(raw: &str) -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
+struct StagingDirectoryCleanup(PathBuf);
+
+impl Drop for StagingDirectoryCleanup {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
+}
+
 fn extract_archive_to_stage(
     archive_data: &[u8],
     stage_root: &Path,
     archive_label: &str,
 ) -> Result<usize, String> {
-    let cursor = Cursor::new(archive_data.to_vec());
+    let cursor = Cursor::new(archive_data);
     let mut archive = zip::ZipArchive::new(cursor)
         .map_err(|e| format!("Invalid {archive_label} archive ZIP: {e}"))?;
     zip_budget::IMPORT_ARCHIVE_BUDGET.check_archive(&mut archive, archive_label)?;
@@ -5402,12 +5414,11 @@ fn find_instance_profile_json(root_dir: &Path) -> Result<PathBuf, String> {
 }
 
 fn parse_instance_profile_metadata(json_path: &Path) -> Result<InstanceProfileMetadata, String> {
-    let profile_json_text = fs::read_to_string(json_path).map_err(|e| {
-        format!(
-            "Failed to read instance profile {}: {e}",
-            json_path.display()
-        )
-    })?;
+    let profile_json_text = zip_budget::read_text_file_bounded(
+        json_path,
+        zip_budget::MAX_TEXT_ENTRY_BYTES,
+        "instance profile",
+    )?;
     let profile_json: serde_json::Value =
         serde_json::from_str(&profile_json_text).map_err(|e| {
             format!(
@@ -5532,7 +5543,7 @@ fn detect_loader_version_from_profile_id(
 }
 
 fn extract_world_archive_to_stage(archive_data: &[u8], stage_root: &Path) -> Result<usize, String> {
-    let cursor = Cursor::new(archive_data.to_vec());
+    let cursor = Cursor::new(archive_data);
     let mut archive =
         zip::ZipArchive::new(cursor).map_err(|e| format!("Invalid world archive ZIP: {e}"))?;
     zip_budget::IMPORT_ARCHIVE_BUDGET.check_archive(&mut archive, "world")?;
@@ -6782,7 +6793,13 @@ fn prepare_extreme_assets_blocking(game_dir: String, version_id: String) -> Resu
         }
         let mut out = fs::File::create(&out_path)
             .map_err(|e| format!("Failed to write {}: {e}", out_path.display()))?;
-        budget.copy_entry(&mut entry, &mut out, &format!("client jar asset {name}"))?;
+        if let Err(error) =
+            budget.copy_entry(&mut entry, &mut out, &format!("client jar asset {name}"))
+        {
+            drop(out);
+            let _ = fs::remove_dir_all(&assets_root);
+            return Err(error);
+        }
         extracted += 1;
     }
     if extracted == 0 || !assets_minecraft.is_dir() {
@@ -8365,7 +8382,13 @@ fn install_zulu_jre_archive(
         extract_tar_gz_into(&archive_path, runtime_root)
     };
     let _ = fs::remove_file(&archive_path);
-    extract_result?;
+    if let Err(error) = extract_result {
+        // A capped extraction may have written files before it reaches the
+        // limit. Never let a later runtime probe mistake that partial tree for
+        // a complete JRE.
+        let _ = fs::remove_dir_all(runtime_root);
+        return Err(error);
+    }
     Ok(())
 }
 
@@ -8382,9 +8405,45 @@ fn extract_tar_gz_into(archive_path: &Path, dest: &Path) -> Result<(), String> {
     let mut archive = tar::Archive::new(decoder);
     archive.set_preserve_permissions(true);
     archive.set_overwrite(true);
-    archive
-        .unpack(dest)
-        .map_err(|e| format!("Failed extracting JRE archive: {e}"))?;
+
+    if dest.symlink_metadata().is_err() {
+        fs::create_dir_all(dest).map_err(|e| {
+            format!(
+                "Failed to create JRE extraction directory {}: {e}",
+                dest.display()
+            )
+        })?;
+    }
+    let destination = dest.canonicalize().unwrap_or_else(|_| dest.to_path_buf());
+    let mut directories = Vec::new();
+    let mut entry_count = 0usize;
+    let entries = archive
+        .entries()
+        .map_err(|e| format!("Failed reading JRE archive entries: {e}"))?;
+    for entry in entries {
+        entry_count = entry_count.saturating_add(1);
+        if entry_count > zip_budget::JRE_ARCHIVE_BUDGET.max_entries {
+            return Err(format!(
+                "Refusing to extract JRE archive: {entry_count} entries exceed the limit of {}",
+                zip_budget::JRE_ARCHIVE_BUDGET.max_entries
+            ));
+        }
+        let mut entry =
+            entry.map_err(|e| format!("Failed reading JRE archive entry {entry_count}: {e}"))?;
+        if entry.header().entry_type() == tar::EntryType::Directory {
+            directories.push(entry);
+        } else {
+            entry
+                .unpack_in(&destination)
+                .map_err(|e| format!("Failed extracting JRE archive entry {entry_count}: {e}"))?;
+        }
+    }
+    directories.sort_by(|left, right| right.path_bytes().cmp(&left.path_bytes()));
+    for mut directory in directories {
+        directory
+            .unpack_in(&destination)
+            .map_err(|e| format!("Failed extracting JRE archive directory: {e}"))?;
+    }
     Ok(())
 }
 
@@ -9235,7 +9294,11 @@ fn read_mods_marker(marker_path: &Path) -> Result<Option<LauncherModsInstallMark
     if !marker_path.exists() {
         return Ok(None);
     }
-    let content = match fs::read_to_string(marker_path) {
+    let content = match zip_budget::read_text_file_bounded(
+        marker_path,
+        zip_budget::MAX_TEXT_ENTRY_BYTES,
+        "launcher mods marker",
+    ) {
         Ok(text) => text,
         Err(_) => return Ok(None),
     };
@@ -9490,6 +9553,9 @@ fn extract_nested_launcher_mod_jars(
         .map(|file| file.path.to_ascii_lowercase())
         .collect();
     let mut nested_files = Vec::new();
+    // One operation-level tracker covers every containing jar. Resetting the
+    // allowance per jar would let a package multiply the extraction ceiling.
+    let mut nested_budget = zip_budget::MOD_ARCHIVE_BUDGET.tracker();
 
     for file in package_files {
         let relative_path = normalize_manifest_relative_path(&file.path)?;
@@ -9511,7 +9577,6 @@ fn extract_nested_launcher_mod_jars(
             )
         })?;
         zip_budget::MOD_ARCHIVE_BUDGET.check_archive(&mut archive, "launcher mod")?;
-        let mut budget = zip_budget::MOD_ARCHIVE_BUDGET.tracker();
 
         for index in 0..archive.len() {
             let mut entry = archive.by_index(index).map_err(|e| e.to_string())?;
@@ -9544,7 +9609,7 @@ fn extract_nested_launcher_mod_jars(
                     out_path.display()
                 )
             })?;
-            budget.copy_entry(
+            nested_budget.copy_entry(
                 &mut entry,
                 &mut out_file,
                 &format!("nested launcher mod {}", out_path.display()),
@@ -9662,6 +9727,7 @@ fn fabric_mod_uses_named_namespace(path: &Path) -> Result<bool, String> {
         .map_err(|e| format!("Failed to open Fabric module {}: {e}", path.display()))?;
     let mut archive = zip::ZipArchive::new(file)
         .map_err(|e| format!("Invalid Fabric module archive {}: {e}", path.display()))?;
+    zip_budget::MOD_ARCHIVE_BUDGET.check_archive(&mut archive, "Fabric module")?;
 
     // Multi-version single-jar builds (e.g. Nova) bundle spare access wideners for
     // other game targets, and those spares may use the `named` namespace. Fabric
