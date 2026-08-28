@@ -10442,13 +10442,9 @@ fn main() {
         .manage(LauncherRuntimeState::default())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
-            // Callback when a second instance is launched
-            // Show and focus the main window
-            if let Ok(window) = ensure_main_window(app) {
-                let _ = window.show();
-                let _ = window.set_focus();
-                let _ = window.unminimize();
-            }
+            // Reuse the normal show path so the frontend also resumes paused
+            // background video after the launcher is restored from the tray.
+            let _ = show_main_window_internal(app);
         }))
         .plugin({
             #[cfg(target_os = "macos")]

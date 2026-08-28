@@ -4296,7 +4296,9 @@ button:disabled {
   .page-transition,
   .panel-transition,
   .modal-animate,
+  .modal-animate-out,
   .modal-backdrop-animate,
+  .modal-backdrop-animate-out,
   .login-slide,
   .login-dot {
     animation: none;
