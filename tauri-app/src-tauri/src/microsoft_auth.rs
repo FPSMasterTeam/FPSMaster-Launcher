@@ -13,10 +13,14 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder};
 
-use crate::{describe_http_error, emit_launch_prepare_ipc};
+use crate::{describe_http_error, emit_launch_prepare_ipc, push_ui_log};
 
 const DEFAULT_MINECRAFT_MICROSOFT_CLIENT_ID: &str = "057064c6-d180-43df-b010-834b4571532f";
-const DEFAULT_MINECRAFT_MICROSOFT_REDIRECT_URL: &str = "http://localhost:3389/oauth";
+// Port 3389 is the Windows Remote Desktop port: binding it fails whenever RDP (or
+// anything else) already listens there, which broke browser login on many Windows
+// machines. Entra ignores the port when matching loopback redirect URIs (only the
+// host and path must match the registration), so any free localhost port works.
+const DEFAULT_MINECRAFT_MICROSOFT_REDIRECT_URL: &str = "http://localhost:43189/oauth";
 const MINECRAFT_MICROSOFT_SCOPE: &str = "XboxLive.signin offline_access openid profile email";
 
 #[derive(Debug, Clone, Serialize)]
@@ -135,6 +139,21 @@ struct MinecraftLoginResponse {
 struct MinecraftProfileResponse {
     id: String,
     name: String,
+    #[serde(default)]
+    skins: Vec<MinecraftProfileSkin>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct MinecraftProfileSkin {
+    #[serde(default)]
+    url: Option<String>,
+    #[serde(default)]
+    state: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct MojangUsernameLookupResponse {
+    id: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -219,6 +238,22 @@ pub async fn refresh_minecraft_account(
     .map_err(|e| format!("Failed to join Minecraft refresh task: {e}"))?
 }
 
+/// Resolves a skin URL for an arbitrary profile so the UI can render avatars even
+/// when the stored `skinUrl` is missing. Accepts either a profile UUID (premium
+/// accounts) or a plain username (offline accounts that may map to a real Mojang
+/// profile). Returns `Ok(None)` when no matching profile or skin exists.
+#[tauri::command]
+pub async fn lookup_minecraft_skin_url(
+    uuid: Option<String>,
+    username: Option<String>,
+) -> Result<Option<String>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        lookup_minecraft_skin_url_blocking(uuid.as_deref(), username.as_deref())
+    })
+    .await
+    .map_err(|e| format!("Failed to join Minecraft skin lookup task: {e}"))?
+}
+
 fn resolve_minecraft_auth_config_status() -> MinecraftAuthConfigStatus {
     match resolve_minecraft_client_id() {
         Ok((_, source)) => MinecraftAuthConfigStatus {
@@ -283,7 +318,7 @@ fn start_minecraft_browser_login_blocking(
     let code_verifier = create_oauth_random_token(64);
     let code_challenge = create_pkce_code_challenge(&code_verifier);
 
-    let listener = bind_minecraft_redirect_listener(&redirect_url)?;
+    let (listener, redirect_url) = bind_minecraft_redirect_listener(&redirect_url)?;
     let authorize_url =
         build_minecraft_authorize_url(&client_id, &redirect_url, &state, &code_challenge)?;
 
@@ -476,6 +511,13 @@ fn refresh_minecraft_account_blocking(
                 normalize_microsoft_error_description(value.error_description.as_deref(), fallback)
             })
             .unwrap_or_else(|| parse_microsoft_error_response(status, &text, fallback));
+        // Diagnostic only carries the HTTP status and Microsoft's error description
+        // (AADSTS...): no tokens, account names or auth URLs may enter the log store.
+        push_ui_log(
+            "auth",
+            "warn",
+            &format!("Microsoft token refresh rejected (HTTP {status}): {error}"),
+        );
         return Err(error);
     }
     let token: MicrosoftTokenSuccessResponse = serde_json::from_str(&text)
@@ -693,9 +735,7 @@ fn complete_minecraft_microsoft_account(
     }
     let profile_payload: MinecraftProfileResponse = serde_json::from_str(&profile_text)
         .map_err(|e| format!("Failed to decode Minecraft profile response: {e}"))?;
-    let skin_url = fetch_minecraft_skin_url(client, &profile_payload.id)
-        .ok()
-        .flatten();
+    let skin_url = resolve_minecraft_account_skin_url(client, &profile_payload);
     let now = unix_timestamp_millis();
     let expires_at = now.saturating_add(
         i64::try_from(minecraft_login_payload.expires_in.saturating_mul(1000)).unwrap_or(i64::MAX),
@@ -712,6 +752,114 @@ fn complete_minecraft_microsoft_account(
         expires_at,
         added_at: now,
     })
+}
+
+/// Resolves the skin URL for a freshly signed-in or refreshed premium account.
+/// Tries sessionserver first (with one retry), then falls back to the skins list
+/// the Minecraft Services profile endpoint already returned, so a transient Mojang
+/// session hiccup no longer silently drops the avatar.
+fn resolve_minecraft_account_skin_url(
+    client: &reqwest::blocking::Client,
+    profile: &MinecraftProfileResponse,
+) -> Option<String> {
+    for attempt in 1..=2 {
+        match fetch_minecraft_skin_url(client, &profile.id) {
+            Ok(Some(url)) => return Some(url),
+            Ok(None) => break,
+            Err(_) => {
+                // The underlying error can embed request URLs (profile identifiers),
+                // so the diagnostic stays generic.
+                push_ui_log(
+                    "auth",
+                    "warn",
+                    &format!(
+                        "Minecraft session skin lookup failed (attempt {attempt}/2); will fall back to profile skin data"
+                    ),
+                );
+            }
+        }
+    }
+    active_profile_skin_url(&profile.skins)
+}
+
+fn active_profile_skin_url(skins: &[MinecraftProfileSkin]) -> Option<String> {
+    skins
+        .iter()
+        .find(|skin| {
+            skin.state
+                .as_deref()
+                .is_some_and(|state| state.eq_ignore_ascii_case("ACTIVE"))
+        })
+        .or_else(|| skins.first())
+        .and_then(|skin| skin.url.clone())
+        .map(|url| url.trim().to_string())
+        .filter(|url| !url.is_empty())
+}
+
+fn lookup_minecraft_skin_url_blocking(
+    uuid: Option<&str>,
+    username: Option<&str>,
+) -> Result<Option<String>, String> {
+    let client = build_minecraft_auth_http_client()?;
+    let normalized_uuid = uuid
+        .map(|value| value.trim().replace('-', "").to_ascii_lowercase())
+        .filter(|value| value.len() == 32 && value.bytes().all(|b| b.is_ascii_hexdigit()))
+        .filter(|value| value.bytes().any(|b| b != b'0'));
+    let resolved_uuid = match normalized_uuid {
+        Some(value) => Some(value),
+        None => match username.map(str::trim).filter(|name| !name.is_empty()) {
+            Some(name) => resolve_mojang_profile_uuid(&client, name)?,
+            None => None,
+        },
+    };
+    let Some(profile_uuid) = resolved_uuid else {
+        return Ok(None);
+    };
+    fetch_minecraft_skin_url(&client, &profile_uuid)
+}
+
+/// Maps a username to a Mojang profile UUID. Returns `Ok(None)` when the name cannot
+/// belong to a real profile (offline-only nicknames) or no profile exists.
+fn resolve_mojang_profile_uuid(
+    client: &reqwest::blocking::Client,
+    username: &str,
+) -> Result<Option<String>, String> {
+    let is_plausible_mojang_name = username.len() <= 16
+        && username
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_');
+    if !is_plausible_mojang_name {
+        return Ok(None);
+    }
+    let response = client
+        .get(format!(
+            "https://api.mojang.com/users/profiles/minecraft/{username}"
+        ))
+        .send()
+        .map_err(|e| {
+            format!(
+                "Failed to look up Minecraft profile by name: {}",
+                describe_http_error(&e)
+            )
+        })?;
+    let status = response.status();
+    if status.as_u16() == 404 || status.as_u16() == 204 {
+        return Ok(None);
+    }
+    let text = response
+        .text()
+        .map_err(|e| format!("Failed to read Minecraft profile lookup response: {e}"))?;
+    if !status.is_success() {
+        return Err(format!(
+            "Failed to look up Minecraft profile by name: HTTP {status}"
+        ));
+    }
+    if text.trim().is_empty() {
+        return Ok(None);
+    }
+    let payload: MojangUsernameLookupResponse = serde_json::from_str(&text)
+        .map_err(|e| format!("Failed to decode Minecraft profile lookup response: {e}"))?;
+    Ok(Some(payload.id).filter(|id| !id.trim().is_empty()))
 }
 
 fn fetch_minecraft_skin_url(
@@ -733,10 +881,18 @@ fn fetch_minecraft_skin_url(
     let text = response
         .text()
         .map_err(|e| format!("Failed to read Minecraft session profile response: {e}"))?;
+    // sessionserver answers 204/404 with an empty body for unknown profiles
+    // (offline UUIDs land here); that is "no skin", not an error.
+    if status.as_u16() == 204 || status.as_u16() == 404 {
+        return Ok(None);
+    }
     if !status.is_success() {
         return Err(format!(
             "Failed to fetch Minecraft session profile: HTTP {status}"
         ));
+    }
+    if text.trim().is_empty() {
+        return Ok(None);
     }
 
     let profile: MinecraftSessionProfileResponse = serde_json::from_str(&text)
@@ -796,37 +952,58 @@ fn validate_minecraft_redirect_url(raw: &str) -> Result<String, String> {
     Ok(parsed.to_string())
 }
 
-fn bind_minecraft_redirect_listener(redirect_url: &str) -> Result<TcpListener, String> {
-    let parsed = reqwest::Url::parse(redirect_url)
+/// Binds the local OAuth callback listener. Returns the listener together with the
+/// effective redirect URL: when the configured port is taken (or privileged) on a
+/// loopback host, an OS-assigned ephemeral port is used instead and the redirect URL
+/// is rewritten to match it. Entra ignores the port when matching loopback redirect
+/// URIs (RFC 8252 §7.3), so the rewritten URL still matches the app registration.
+fn bind_minecraft_redirect_listener(redirect_url: &str) -> Result<(TcpListener, String), String> {
+    let mut parsed = reqwest::Url::parse(redirect_url)
         .map_err(|e| format!("Invalid Minecraft redirect URL: {e}"))?;
     let host = parsed
         .host_str()
-        .ok_or_else(|| "Minecraft redirect URL is missing host".to_string())?;
+        .ok_or_else(|| "Minecraft redirect URL is missing host".to_string())?
+        .to_string();
     let port = parsed
         .port_or_known_default()
         .ok_or_else(|| "Minecraft redirect URL is missing port".to_string())?;
+    let is_loopback_host =
+        host.eq_ignore_ascii_case("localhost") || host == "127.0.0.1" || host == "[::1]";
     let bind_target = format!("{host}:{port}");
-    let listener = TcpListener::bind(&bind_target).map_err(|e| {
-        let kind = e.kind();
-        if matches!(
-            kind,
-            std::io::ErrorKind::AddrInUse | std::io::ErrorKind::PermissionDenied
-        ) {
-            format!(
-                "Cannot bind the Microsoft OAuth callback listener on {bind_target} ({e}). \
-                 The port is already in use (port {port} is the Windows Remote Desktop port by default). \
-                 Override the redirect URL by setting the FPSMASTER_MINECRAFT_REDIRECT_URL environment \
-                 variable to e.g. http://localhost:43289/oauth, then make sure the same redirect URI is \
-                 registered in your Microsoft Entra application."
-            )
-        } else {
-            format!("Failed to bind Minecraft OAuth redirect listener on {bind_target}: {e}")
+    let listener = match TcpListener::bind(&bind_target) {
+        Ok(listener) => listener,
+        Err(e)
+            if is_loopback_host
+                && matches!(
+                    e.kind(),
+                    std::io::ErrorKind::AddrInUse | std::io::ErrorKind::PermissionDenied
+                ) =>
+        {
+            let fallback = TcpListener::bind(format!("{host}:0")).map_err(|fallback_err| {
+                format!(
+                    "Cannot bind the Microsoft OAuth callback listener on {bind_target} ({e}), \
+                     and no fallback loopback port was available either ({fallback_err})."
+                )
+            })?;
+            let actual_port = fallback
+                .local_addr()
+                .map_err(|e| format!("Failed to read Minecraft OAuth fallback listener port: {e}"))?
+                .port();
+            parsed
+                .set_port(Some(actual_port))
+                .map_err(|_| "Failed to rewrite Minecraft redirect URL port".to_string())?;
+            fallback
         }
-    })?;
+        Err(e) => {
+            return Err(format!(
+                "Failed to bind Minecraft OAuth redirect listener on {bind_target}: {e}"
+            ));
+        }
+    };
     listener
         .set_nonblocking(true)
         .map_err(|e| format!("Failed to configure Minecraft OAuth redirect listener: {e}"))?;
-    Ok(listener)
+    Ok((listener, parsed.to_string()))
 }
 
 fn build_minecraft_authorize_url(
