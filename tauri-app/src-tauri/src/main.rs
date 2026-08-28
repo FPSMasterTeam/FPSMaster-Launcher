@@ -7323,11 +7323,68 @@ fn rewrite_launch_game_dir_argument(command: &mut Vec<String>, runtime_dir: &Pat
 
 fn format_quoted_command(executable: &str, args: &[String]) -> String {
     let mut parts = Vec::with_capacity(args.len() + 1);
-    parts.push(quote_arg(executable));
+    parts.push(quote_arg(&redact_path_for_log(Path::new(executable))));
+    let mut redact_next = false;
     for arg in args {
-        parts.push(quote_arg(arg));
+        let normalized = arg.to_ascii_lowercase();
+        let rendered = if redact_next {
+            redact_next = false;
+            "<redacted>".to_string()
+        } else if matches!(
+            normalized.as_str(),
+            "--accesstoken"
+                | "--access-token"
+                | "--username"
+                | "--uuid"
+                | "--xuid"
+                | "--clientid"
+                | "--server"
+                | "--connect"
+                | "--gamedir"
+                | "--game-dir"
+                | "--assets"
+                | "-cp"
+                | "-classpath"
+        ) {
+            redact_next = true;
+            arg.clone()
+        } else if normalized.starts_with("-dfpsmaster.auth.token=")
+            || normalized.starts_with("--accesstoken=")
+            || normalized.starts_with("--access-token=")
+            || normalized.starts_with("--server=")
+            || normalized.starts_with("--connect=")
+            || normalized.starts_with("--gamedir=")
+            || normalized.starts_with("--game-dir=")
+            || normalized.starts_with("-djava.library.path=")
+            || normalized.starts_with("-djava.class.path=")
+        {
+            format!(
+                "{}=<redacted>",
+                arg.split_once('=').map(|(key, _)| key).unwrap_or(arg)
+            )
+        } else if Path::new(arg).is_absolute() {
+            redact_path_for_log(Path::new(arg))
+        } else {
+            arg.clone()
+        };
+        parts.push(quote_arg(&rendered));
     }
     parts.join(" ")
+}
+
+fn redact_path_for_log(path: &Path) -> String {
+    let components = path
+        .components()
+        .filter_map(|component| match component {
+            std::path::Component::Normal(value) => Some(value.to_string_lossy().to_string()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    if components.is_empty() {
+        return "<path>".to_string();
+    }
+    let keep_from = components.len().saturating_sub(2);
+    format!("…/{}", components[keep_from..].join("/"))
 }
 
 fn quote_arg(arg: &str) -> String {
@@ -7375,17 +7432,21 @@ fn describe_spawn_failure(
 ) -> String {
     use std::fmt::Write as _;
     let mut detail = format!("启动进程失败: {err}");
+    let safe_executable = redact_path_for_log(Path::new(executable));
     match fs::metadata(Path::new(executable)) {
         Ok(meta) => {
             let kind = if meta.is_dir() { "目录" } else { "文件" };
             let _ = write!(
                 detail,
-                "\n  目标程序: {executable}  (存在, {kind}, {} 字节)",
+                "\n  目标程序: {safe_executable}  (存在, {kind}, {} 字节)",
                 meta.len()
             );
         }
         Err(meta_err) => {
-            let _ = write!(detail, "\n  目标程序: {executable}  (无法访问: {meta_err})");
+            let _ = write!(
+                detail,
+                "\n  目标程序: {safe_executable}  (无法访问: {meta_err})"
+            );
         }
     }
     let dir_state = if game_dir.is_dir() {
@@ -7396,7 +7457,7 @@ fn describe_spawn_failure(
     let _ = write!(
         detail,
         "\n  工作目录: {}  ({dir_state})",
-        game_dir.display()
+        redact_path_for_log(game_dir)
     );
     let _ = write!(detail, "\n  参数个数: {}", args.len());
     let _ = write!(
@@ -7933,16 +7994,37 @@ async fn install_optifine(
         let session = ipc_session.clone();
         let game_dir_path = resolve_game_dir_path(&game_dir)?;
         let normalized_loader = normalize_loader_kind(&loader)?;
+        let normalized_version_id = version_id.trim();
+        let normalized_game_version = game_version.trim();
+        let java_executable =
+            if normalized_loader == "vanilla" && normalized_version_id == normalized_game_version {
+                let requirement = minecraft_core::resolve_java_runtime_requirement(
+                    Some(&game_dir_path),
+                    normalized_game_version,
+                    download_source.as_deref(),
+                )?;
+                let java_major = requirement.major_version.max(8);
+                Some(ensure_managed_jdk_runtime(
+                    Some(&window),
+                    &managed_jdk_runtime_root(&game_dir_path, java_major, false),
+                    java_major,
+                    Some(DEFAULT_DOWNLOAD_THREADS),
+                    false,
+                )?)
+            } else {
+                None
+            };
         let result = minecraft_core::install_optifine(
             Some(&window),
             &game_dir_path,
-            version_id.trim(),
-            game_version.trim(),
+            normalized_version_id,
+            normalized_game_version,
             &normalized_loader,
             loader_version.as_deref(),
             optifine_version.trim(),
             download_source.as_deref(),
             ipc_session.as_deref(),
+            java_executable.as_deref(),
         );
         clear_install_cancel(session.as_deref());
         result
@@ -7972,15 +8054,29 @@ async fn install_forge(
             .filter(|value| !value.is_empty())
         {
             Some(value) => value,
-            None => ensure_managed_jdk_runtime(
-                Some(&window),
-                &managed_jdk_runtime_root(&game_dir_path, 17, false),
-                17,
-                Some(normalized_download_threads as i32),
-                false,
-            )?
-            .to_string_lossy()
-            .to_string(),
+            None => {
+                let game_version = forge_version
+                    .trim()
+                    .split('-')
+                    .next()
+                    .filter(|value| !value.is_empty())
+                    .ok_or_else(|| format!("Invalid Forge version: {forge_version}"))?;
+                let requirement = minecraft_core::resolve_java_runtime_requirement(
+                    Some(&game_dir_path),
+                    game_version,
+                    download_source.as_deref(),
+                )?;
+                let java_major = requirement.major_version.max(8);
+                ensure_managed_jdk_runtime(
+                    Some(&window),
+                    &managed_jdk_runtime_root(&game_dir_path, java_major, false),
+                    java_major,
+                    Some(normalized_download_threads as i32),
+                    false,
+                )?
+                .to_string_lossy()
+                .to_string()
+            }
         };
         let result = minecraft_core::install_forge(
             Some(&window),
@@ -9768,6 +9864,7 @@ fn trim_to_mods_relative_path(path: &Path) -> Option<PathBuf> {
 mod tests {
     use super::{
         cleanup_launch_natives_dir, fabric_mod_uses_named_namespace,
+        format_quoted_command,
         is_nested_launcher_mod_jar_path, is_unsupported_launcher_runtime_mod_name,
         launcher_package_has_unsupported_runtime_mods, process_mojang_runtime_entry,
         preserve_native_app_user_data, FabricInstallResult, ForgeInstallResult,
@@ -9815,6 +9912,32 @@ mod tests {
             result.profile_json_path,
             r"E:\test\1.20.1-forge-47.4.18.json"
         );
+    }
+
+    #[test]
+    fn launch_command_logs_redact_identity_tokens_and_paths() {
+        let rendered = format_quoted_command(
+            "/home/private/runtime/bin/java",
+            &[
+                "-Dfpsmaster.auth.token=secret-token".to_string(),
+                "-cp".to_string(),
+                "/home/private/a.jar:/home/private/b.jar".to_string(),
+                "net.minecraft.client.main.Main".to_string(),
+                "--username".to_string(),
+                "PrivatePlayer".to_string(),
+                "--accessToken".to_string(),
+                "minecraft-token".to_string(),
+                "--server".to_string(),
+                "private.example:25565".to_string(),
+            ],
+        );
+
+        assert!(!rendered.contains("secret-token"));
+        assert!(!rendered.contains("minecraft-token"));
+        assert!(!rendered.contains("PrivatePlayer"));
+        assert!(!rendered.contains("private.example"));
+        assert!(!rendered.contains("/home/private"));
+        assert!(rendered.contains("net.minecraft.client.main.Main"));
     }
 
     #[test]

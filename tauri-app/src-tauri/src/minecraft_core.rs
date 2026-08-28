@@ -3,8 +3,10 @@ use crate::{
     JavaRuntimeRequirement, LaunchPlan,
 };
 use base64::Engine;
+use regex::Regex;
 use serde_json::{json, Map, Value};
 use std::collections::{HashMap, HashSet};
+use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
@@ -160,9 +162,11 @@ impl DownloadSource {
 
     fn fabric_loader_profile_urls(self, game_version: &str, loader_version: &str) -> Vec<String> {
         self.pair_candidates(
-            format!("https://meta.fabricmc.net/v2/versions/loader/{game_version}/{loader_version}"),
             format!(
-                "https://bmclapi2.bangbang93.com/fabric-meta/v2/versions/loader/{game_version}/{loader_version}"
+                "https://meta.fabricmc.net/v2/versions/loader/{game_version}/{loader_version}/profile/json"
+            ),
+            format!(
+                "https://bmclapi2.bangbang93.com/fabric-meta/v2/versions/loader/{game_version}/{loader_version}/profile/json"
             ),
         )
     }
@@ -245,6 +249,8 @@ struct MavenCoordinates {
     group: String,
     artifact: String,
     version: String,
+    classifier: Option<String>,
+    extension: String,
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]
@@ -261,27 +267,54 @@ struct OptiFineVersionListRow {
     forge: Option<String>,
 }
 
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+struct StandaloneOptiFineOverlay {
+    optifine_version: String,
+    optifine_jar: String,
+    launchwrapper_jar: String,
+}
+
 impl MavenCoordinates {
     fn parse(descriptor: &str) -> Result<Self, String> {
-        let parts: Vec<&str> = descriptor.split(':').collect();
-        if parts.len() < 3 {
+        let (coordinates, extension) = descriptor
+            .rsplit_once('@')
+            .map(|(coordinates, extension)| (coordinates, extension))
+            .unwrap_or((descriptor, "jar"));
+        let parts: Vec<&str> = coordinates.split(':').collect();
+        if !(3..=4).contains(&parts.len())
+            || parts[..3].iter().any(|part| part.trim().is_empty())
+            || extension.trim().is_empty()
+        {
             return Err(format!("Invalid maven descriptor: {descriptor}"));
         }
         Ok(Self {
             group: parts[0].to_string(),
             artifact: parts[1].to_string(),
             version: parts[2].to_string(),
+            classifier: parts
+                .get(3)
+                .map(|value| value.trim())
+                .filter(|value| !value.is_empty())
+                .map(ToString::to_string),
+            extension: extension.trim().to_string(),
         })
     }
 
-    fn to_jar_path(&self) -> String {
+    fn to_path(&self) -> String {
+        let classifier = self
+            .classifier
+            .as_deref()
+            .map(|value| format!("-{value}"))
+            .unwrap_or_default();
         format!(
-            "{}/{}/{}/{}-{}.jar",
+            "{}/{}/{}/{}-{}{}.{}",
             self.group.replace('.', "/"),
             self.artifact,
             self.version,
             self.artifact,
-            self.version
+            self.version,
+            classifier,
+            self.extension
         )
     }
 }
@@ -295,7 +328,8 @@ pub(crate) fn list_vanilla_versions(
         window,
         &source.version_manifest_urls(),
         Some(DownloadSource::VERSION_LIST_TIMEOUT),
-    )?;
+    )
+    .map_err(|error| format!("Minecraft version catalog failed: {error}"))?;
     let versions = manifest
         .get("versions")
         .and_then(Value::as_array)
@@ -506,6 +540,22 @@ pub(crate) fn install_vanilla(
         download_threads,
     )?;
 
+    emit_install_phase_start(
+        window,
+        ipc_session,
+        phase,
+        "logging",
+        "Download logging configuration",
+    );
+    ensure_logging_config(
+        window,
+        &version_json,
+        &normalized_game_dir,
+        phase,
+        ipc_session,
+        source,
+    )?;
+
     emit_install_phase_start(window, ipc_session, phase, "assets", "Download assets");
     let assets_downloaded = download_assets(
         window,
@@ -605,6 +655,15 @@ pub(crate) fn verify_installed_files(
         download_threads,
     )?;
 
+    emit_install_phase_start(
+        window,
+        ipc_session,
+        phase,
+        "logging",
+        "Verify logging configuration",
+    );
+    ensure_logging_config(window, merged, game_dir, phase, ipc_session, source)?;
+
     emit_install_phase_start(window, ipc_session, phase, "assets", "Verify assets");
     let assets_repaired = download_assets(
         window,
@@ -644,7 +703,8 @@ pub(crate) fn list_fabric_loader_versions(
         window,
         &source.fabric_loader_list_urls(game_version),
         Some(DownloadSource::VERSION_LIST_TIMEOUT),
-    )?;
+    )
+    .map_err(|error| format!("Fabric loader catalog failed for {game_version}: {error}"))?;
     let rows = payload
         .as_array()
         .ok_or_else(|| format!("Fabric loader list is not an array for {game_version}"))?;
@@ -715,7 +775,12 @@ pub(crate) fn install_fabric(
         window,
         &source.fabric_loader_profile_urls(game_version, &loader_version),
         Some(DownloadSource::METADATA_TIMEOUT),
-    )?;
+    )
+    .map_err(|error| {
+        format!(
+            "Fabric profile metadata failed for {game_version} loader {loader_version}: {error}"
+        )
+    })?;
     install_cancel_error(ipc_session)?;
     emit_install_progress(
         window,
@@ -728,80 +793,43 @@ pub(crate) fn install_fabric(
         0,
         "Fabric loader metadata ready",
     );
-    let launcher_meta = row
-        .get("launcherMeta")
-        .and_then(Value::as_object)
-        .ok_or_else(|| "Fabric profile missing launcherMeta".to_string())?;
-    let intermediary = row
-        .get("intermediary")
-        .and_then(Value::as_object)
-        .ok_or_else(|| "Fabric profile missing intermediary".to_string())?;
-    let loader = row
-        .get("loader")
-        .and_then(Value::as_object)
-        .ok_or_else(|| "Fabric profile missing loader".to_string())?;
-    let created = row
-        .get("created")
-        .and_then(Value::as_str)
-        .unwrap_or("1970-01-01T00:00:00Z");
-
     let profile_id = format!("fabric-loader-{loader_version}-{game_version}");
-    let main_class_value = launcher_meta
-        .get("mainClass")
-        .ok_or_else(|| "Fabric launcherMeta missing mainClass".to_string())?;
-    let main_class = if let Some(client) = main_class_value
+    let mut version_json = row
         .as_object()
-        .and_then(|value| value.get("client"))
+        .cloned()
+        .ok_or_else(|| "Fabric generated profile is not an object".to_string())?;
+    let returned_profile_id = version_json
+        .get("id")
         .and_then(Value::as_str)
+        .ok_or_else(|| "Fabric generated profile is missing id".to_string())?;
+    if returned_profile_id != profile_id {
+        return Err(format!(
+            "Fabric generated profile id mismatch: expected {profile_id}, received {returned_profile_id}"
+        ));
+    }
+    let inherited_version = version_json
+        .get("inheritsFrom")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "Fabric generated profile is missing inheritsFrom".to_string())?;
+    if inherited_version != game_version {
+        return Err(format!(
+            "Fabric generated profile targets {inherited_version}, expected {game_version}"
+        ));
+    }
+    if version_json
+        .get("mainClass")
+        .and_then(Value::as_str)
+        .is_none()
     {
-        client.to_string()
-    } else {
-        main_class_value
-            .as_str()
-            .ok_or_else(|| "Fabric mainClass is invalid".to_string())?
-            .to_string()
-    };
-
-    let mut version_json = serde_json::Map::new();
-    version_json.insert("id".to_string(), Value::String(profile_id.clone()));
-    version_json.insert(
-        "inheritsFrom".to_string(),
-        Value::String(game_version.to_string()),
-    );
-    version_json.insert("time".to_string(), Value::String(created.to_string()));
-    version_json.insert(
-        "releaseTime".to_string(),
-        Value::String(created.to_string()),
-    );
-    version_json.insert("mainClass".to_string(), Value::String(main_class));
-    if let Some(arguments) = launcher_meta.get("arguments") {
-        version_json.insert("arguments".to_string(), arguments.clone());
+        return Err("Fabric generated profile is missing mainClass".to_string());
     }
-
-    let mut libraries = Vec::new();
-    if let Some(groups) = launcher_meta.get("libraries").and_then(Value::as_object) {
-        for key in ["common", "client", "server"] {
-            if let Some(entries) = groups.get(key).and_then(Value::as_array) {
-                libraries.extend(entries.iter().cloned());
-            }
-        }
+    let libraries = version_json
+        .get("libraries")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "Fabric generated profile is missing libraries".to_string())?;
+    if libraries.is_empty() {
+        return Err("Fabric generated profile contains no libraries".to_string());
     }
-
-    libraries.push(json!({
-        "name": intermediary
-            .get("maven")
-            .and_then(Value::as_str)
-            .ok_or_else(|| "Fabric intermediary missing maven".to_string())?,
-        "url": "https://maven.fabricmc.net/"
-    }));
-    libraries.push(json!({
-        "name": loader
-            .get("maven")
-            .and_then(Value::as_str)
-            .ok_or_else(|| "Fabric loader missing maven".to_string())?,
-        "url": "https://maven.fabricmc.net/"
-    }));
-    version_json.insert("libraries".to_string(), Value::Array(libraries));
 
     let profile_dir = game_dir.join("versions").join(&profile_id);
     fs::create_dir_all(&profile_dir).map_err(|e| {
@@ -885,7 +913,11 @@ pub(crate) fn list_forge_versions(
                         );
                         continue;
                     }
-                    Err(error) => return Err(error),
+                    Err(error) => {
+                        return Err(format!(
+                            "Forge version catalog failed for {game_version}: {error}"
+                        ))
+                    }
                 };
                 let rows = payload.as_array().ok_or_else(|| {
                     format!("Forge version list is not an array for {game_version}")
@@ -939,7 +971,11 @@ pub(crate) fn list_forge_versions(
                         );
                         continue;
                     }
-                    Err(error) => return Err(error),
+                    Err(error) => {
+                        return Err(format!(
+                            "Forge version catalog failed for {game_version}: {error}"
+                        ))
+                    }
                 };
                 let prefix = format!("{game_version}-");
                 let mut versions = Vec::new();
@@ -982,7 +1018,8 @@ pub(crate) fn list_optifine_versions(
             "https://bmclapi2.bangbang93.com/optifine/versionlist".to_string(),
         ),
         Some(DownloadSource::VERSION_LIST_TIMEOUT),
-    )?;
+    )
+    .map_err(|error| format!("OptiFine version catalog failed for {game_version}: {error}"))?;
     let rows: Vec<OptiFineVersionListRow> = serde_json::from_value(payload)
         .map_err(|e| format!("Invalid OptiFine version list response: {e}"))?;
     let normalized_game_version = normalize_optifine_game_version(game_version);
@@ -1330,9 +1367,8 @@ pub(crate) fn install_forge(
         java_executable,
         &installer_path,
         &[
-            "--installClient",
-            "--installDir",
-            &game_dir.to_string_lossy(),
+            OsString::from("--installClient"),
+            game_dir.as_os_str().to_os_string(),
         ],
     )?;
     let profile_id = if first.exit_code == 0 {
@@ -1354,12 +1390,17 @@ pub(crate) fn install_forge(
             game_dir,
             java_executable,
             &installer_path,
-            &["--installClient"],
+            &[OsString::from("--installClient")],
         )?;
         if fallback.exit_code != 0 {
             return Err(format!(
-                "Forge installer failed. first={} fallback={}",
-                first.output, fallback.output
+                "Forge installer process failed (explicit path exit {}, fallback exit {}). {}",
+                first.exit_code,
+                fallback.exit_code,
+                bounded_process_output(&format!(
+                    "First attempt:\n{}\nFallback:\n{}",
+                    first.output, fallback.output
+                ))
             ));
         }
         select_forge_profile_id_after_install(
@@ -1405,6 +1446,7 @@ pub(crate) fn install_optifine(
     requested_optifine_version: &str,
     download_source_id: Option<&str>,
     ipc_session: Option<&str>,
+    java_executable: Option<&Path>,
 ) -> Result<crate::OptiFineInstallResult, String> {
     install_cancel_error(ipc_session)?;
     let normalized_version_id = version_id.trim();
@@ -1446,6 +1488,23 @@ pub(crate) fn install_optifine(
         &format!("Prepare OptiFine install version={normalized_optifine_version}"),
     );
 
+    let source = DownloadSource::from_id(download_source_id)?;
+    if normalized_loader == "vanilla" && normalized_version_id == normalized_game_version {
+        let java_executable = java_executable.ok_or_else(|| {
+            "OptiFine standalone install requires a Java runtime for the patch stage".to_string()
+        })?;
+        return install_standalone_optifine(
+            window,
+            game_dir,
+            normalized_version_id,
+            normalized_game_version,
+            &selected,
+            java_executable,
+            source,
+            ipc_session,
+        );
+    }
+
     let mods_dir = resolve_version_runtime_dir(game_dir, normalized_version_id)?.join("mods");
     fs::create_dir_all(&mods_dir).map_err(|e| {
         format!(
@@ -1480,7 +1539,6 @@ pub(crate) fn install_optifine(
         &selected.optifine_type,
         &selected.patch,
     );
-    let source = DownloadSource::from_id(download_source_id)?;
     let urls = source.pair_candidates(download_url.clone(), download_url);
     let fetched = download_file_with_ipc(
         window,
@@ -1525,6 +1583,315 @@ fn build_optifine_download_url(game_version: &str, optifine_type: &str, patch: &
     )
 }
 
+fn install_standalone_optifine(
+    window: Option<&tauri::Window>,
+    game_dir: &Path,
+    version_id: &str,
+    game_version: &str,
+    selected: &crate::OptiFineVersionInfo,
+    java_executable: &Path,
+    source: DownloadSource,
+    ipc_session: Option<&str>,
+) -> Result<crate::OptiFineInstallResult, String> {
+    let version_dir = resolve_version_runtime_dir(game_dir, version_id)?;
+    let overlay_dir = version_dir.join("optifine");
+    fs::create_dir_all(&overlay_dir).map_err(|error| {
+        format!(
+            "Failed to create OptiFine runtime directory {}: {error}",
+            overlay_dir.display()
+        )
+    })?;
+
+    let patched_file_name = format!("OptiFine-{game_version}_{}.jar", selected.version);
+    let patched_path = overlay_dir.join(&patched_file_name);
+    let marker_path = overlay_dir.join("overlay.json");
+    if let Ok(Some(existing)) = read_standalone_optifine_overlay(&version_dir) {
+        if existing.optifine_version == selected.version
+            && overlay_dir.join(&existing.optifine_jar).is_file()
+            && overlay_dir.join(&existing.launchwrapper_jar).is_file()
+        {
+            emit_install_phase_complete(
+                window,
+                ipc_session,
+                "optifine",
+                "complete",
+                "OptiFine standalone runtime is already installed",
+            );
+            return Ok(crate::OptiFineInstallResult {
+                version_id: version_id.to_string(),
+                opti_fine_version: selected.version.clone(),
+                file_name: selected.file_name.clone(),
+                installed_path: overlay_dir
+                    .join(existing.optifine_jar)
+                    .to_string_lossy()
+                    .to_string(),
+                skipped: true,
+            });
+        }
+    }
+
+    let installer_path = overlay_dir.join(format!("installer-{}", selected.file_name));
+    let artifact = DownloadArtifact::new(
+        "optifine-installer",
+        "optifine",
+        "download",
+        &installer_path,
+        "installer",
+    );
+    let download_url =
+        build_optifine_download_url(game_version, &selected.optifine_type, &selected.patch);
+    let urls = source.pair_candidates(download_url.clone(), download_url);
+    download_file_with_ipc(
+        window,
+        ipc_session,
+        &urls,
+        &installer_path,
+        None,
+        "optifine-installer",
+        &artifact,
+        None,
+        None,
+    )
+    .map_err(|error| format!("OptiFine installer download stage failed: {error}"))?;
+    install_cancel_error(ipc_session)?;
+
+    let base_jar = game_dir
+        .join("versions")
+        .join(game_version)
+        .join(format!("{game_version}.jar"));
+    if !base_jar.is_file() {
+        return Err(format!(
+            "OptiFine patch stage cannot find the vanilla client jar for {game_version}"
+        ));
+    }
+
+    emit_install_phase_start(
+        window,
+        ipc_session,
+        "optifine",
+        "patch",
+        "Patching vanilla client for standalone OptiFine",
+    );
+    let patch_output = patched_path.with_extension("patching");
+    let _ = fs::remove_file(&patch_output);
+    run_optifine_patcher(
+        game_dir,
+        java_executable,
+        &base_jar,
+        &installer_path,
+        &patch_output,
+    )?;
+    if !patch_output.is_file()
+        || fs::metadata(&patch_output)
+            .map(|metadata| metadata.len() == 0)
+            .unwrap_or(true)
+    {
+        return Err("OptiFine patch stage completed without producing a usable jar".to_string());
+    }
+    replace_file(&patch_output, &patched_path).map_err(|error| {
+        format!(
+            "Failed to store patched OptiFine jar {}: {error}",
+            patched_path.display()
+        )
+    })?;
+
+    let launchwrapper_path = extract_optifine_launchwrapper(&installer_path, &overlay_dir)?;
+    let launchwrapper_file_name = launchwrapper_path
+        .file_name()
+        .and_then(OsStr::to_str)
+        .ok_or_else(|| "OptiFine launchwrapper file name is not valid UTF-8".to_string())?
+        .to_string();
+    let marker = StandaloneOptiFineOverlay {
+        optifine_version: selected.version.clone(),
+        optifine_jar: patched_file_name,
+        launchwrapper_jar: launchwrapper_file_name,
+    };
+    fs::write(
+        &marker_path,
+        serde_json::to_vec_pretty(&marker)
+            .map_err(|error| format!("Failed to serialize OptiFine overlay marker: {error}"))?,
+    )
+    .map_err(|error| {
+        format!(
+            "Failed to write OptiFine overlay marker {}: {error}",
+            marker_path.display()
+        )
+    })?;
+
+    emit_install_phase_complete(
+        window,
+        ipc_session,
+        "optifine",
+        "complete",
+        &format!(
+            "OptiFine standalone install completed file={}",
+            patched_path.display()
+        ),
+    );
+    Ok(crate::OptiFineInstallResult {
+        version_id: version_id.to_string(),
+        opti_fine_version: selected.version.clone(),
+        file_name: selected.file_name.clone(),
+        installed_path: patched_path.to_string_lossy().to_string(),
+        skipped: false,
+    })
+}
+
+fn read_standalone_optifine_overlay(
+    version_dir: &Path,
+) -> Result<Option<StandaloneOptiFineOverlay>, String> {
+    let marker_path = version_dir.join("optifine").join("overlay.json");
+    if !marker_path.is_file() {
+        return Ok(None);
+    }
+    let marker: StandaloneOptiFineOverlay =
+        serde_json::from_slice(&fs::read(&marker_path).map_err(|error| {
+            format!(
+                "Failed to read OptiFine overlay marker {}: {error}",
+                marker_path.display()
+            )
+        })?)
+        .map_err(|error| {
+            format!(
+                "Invalid OptiFine overlay marker {}: {error}",
+                marker_path.display()
+            )
+        })?;
+    for file_name in [&marker.optifine_jar, &marker.launchwrapper_jar] {
+        if Path::new(file_name).file_name() != Some(OsStr::new(file_name)) {
+            return Err("OptiFine overlay marker contains an unsafe file name".to_string());
+        }
+    }
+    Ok(Some(marker))
+}
+
+fn extract_optifine_launchwrapper(
+    installer_path: &Path,
+    overlay_dir: &Path,
+) -> Result<PathBuf, String> {
+    let file = fs::File::open(installer_path).map_err(|error| {
+        format!(
+            "Failed to open OptiFine installer {}: {error}",
+            installer_path.display()
+        )
+    })?;
+    let mut archive = zip::ZipArchive::new(file)
+        .map_err(|error| format!("Invalid OptiFine installer archive: {error}"))?;
+    let launchwrapper_version = {
+        let mut entry = archive.by_name("launchwrapper-of.txt").map_err(|error| {
+            format!("OptiFine installer is missing launchwrapper metadata: {error}")
+        })?;
+        let mut version = String::new();
+        entry
+            .read_to_string(&mut version)
+            .map_err(|error| format!("Failed to read OptiFine launchwrapper metadata: {error}"))?;
+        version.trim().to_string()
+    };
+    if launchwrapper_version.is_empty()
+        || !launchwrapper_version
+            .bytes()
+            .all(|value| value.is_ascii_digit() || value == b'.')
+    {
+        return Err(format!(
+            "OptiFine installer has an invalid launchwrapper version: {launchwrapper_version}"
+        ));
+    }
+    let entry_name = format!("launchwrapper-of-{launchwrapper_version}.jar");
+    let target = overlay_dir.join(&entry_name);
+    if target.is_file() {
+        return Ok(target);
+    }
+    let mut entry = archive
+        .by_name(&entry_name)
+        .map_err(|error| format!("OptiFine installer is missing {entry_name}: {error}"))?;
+    let temp = target.with_extension("extracting");
+    let mut output = fs::File::create(&temp).map_err(|error| {
+        format!(
+            "Failed to create OptiFine launchwrapper {}: {error}",
+            temp.display()
+        )
+    })?;
+    io::copy(&mut entry, &mut output)
+        .map_err(|error| format!("Failed to extract OptiFine launchwrapper: {error}"))?;
+    drop(output);
+    replace_file(&temp, &target).map_err(|error| {
+        format!(
+            "Failed to store OptiFine launchwrapper {}: {error}",
+            target.display()
+        )
+    })?;
+    Ok(target)
+}
+
+fn run_optifine_patcher(
+    game_dir: &Path,
+    java_executable: &Path,
+    base_jar: &Path,
+    installer_path: &Path,
+    output_path: &Path,
+) -> Result<(), String> {
+    let mut command = std::process::Command::new(java_executable);
+    command
+        .arg("-Djava.awt.headless=true")
+        .arg("-cp")
+        .arg(installer_path)
+        .arg("optifine.Patcher")
+        .arg(base_jar)
+        .arg(installer_path)
+        .arg(output_path)
+        .current_dir(game_dir)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x0800_0000);
+    }
+    let output = command.output().map_err(|error| {
+        format!(
+            "OptiFine patch stage could not start Java runtime {}: {error}",
+            java_executable.display()
+        )
+    })?;
+    if !output.status.success() {
+        let mut detail = String::from_utf8_lossy(&output.stdout).to_string();
+        detail.push_str(&String::from_utf8_lossy(&output.stderr));
+        return Err(format!(
+            "OptiFine patch stage failed with exit code {}: {}",
+            output.status.code().unwrap_or(-1),
+            bounded_process_output(&detail)
+        ));
+    }
+    Ok(())
+}
+
+fn replace_file(source: &Path, target: &Path) -> io::Result<()> {
+    if target.exists() {
+        fs::remove_file(target)?;
+    }
+    fs::rename(source, target).or_else(|_| {
+        fs::copy(source, target)
+            .map(|_| ())
+            .and_then(|_| fs::remove_file(source))
+    })
+}
+
+fn bounded_process_output(output: &str) -> String {
+    const MAX_CHARS: usize = 4000;
+    let trimmed = output.trim();
+    let start = trimmed
+        .char_indices()
+        .rev()
+        .nth(MAX_CHARS)
+        .map(|(index, _)| index)
+        .unwrap_or(0);
+    if start == 0 {
+        trimmed.to_string()
+    } else {
+        format!("…{}", &trimmed[start..])
+    }
+}
+
 fn remove_existing_optifine_jars(mods_dir: &Path, keep_path: &Path) -> Result<(), String> {
     if !mods_dir.exists() {
         return Ok(());
@@ -1567,6 +1934,7 @@ pub(crate) fn build_vanilla_launch_plan(
         .game_dir
         .join("versions")
         .join(request.version_id.trim());
+    let optifine_overlay = read_standalone_optifine_overlay(&version_dir)?;
     let natives_base_dir = version_dir.join("natives");
     fs::create_dir_all(&natives_base_dir).map_err(|e| {
         format!(
@@ -1587,6 +1955,22 @@ pub(crate) fn build_vanilla_launch_plan(
         if library.native_entry {
             extract_native_jar(&library.path, &natives_dir)?;
         }
+    }
+
+    if let Some(overlay) = optifine_overlay.as_ref() {
+        let overlay_dir = version_dir.join("optifine");
+        let optifine_jar = overlay_dir.join(&overlay.optifine_jar);
+        let launchwrapper_jar = overlay_dir.join(&overlay.launchwrapper_jar);
+        for required in [&optifine_jar, &launchwrapper_jar] {
+            if !required.is_file() {
+                return Err(format!(
+                    "Standalone OptiFine runtime is incomplete; reinstall OptiFine (missing {})",
+                    required.file_name().unwrap_or_default().to_string_lossy()
+                ));
+            }
+        }
+        classpath_entries.push(optifine_jar);
+        classpath_entries.push(launchwrapper_jar);
     }
 
     let jar_version_id = descriptor.jar_version_id;
@@ -1612,11 +1996,29 @@ pub(crate) fn build_vanilla_launch_plan(
     {
         jvm_args.extend(resolve_argument_array(args, &variables, &rule_features));
     }
+    if let Some(logging_argument) = ensure_logging_config(
+        window,
+        &version_json,
+        &request.game_dir,
+        "launch",
+        None,
+        source,
+    )? {
+        if !jvm_args
+            .iter()
+            .any(|argument| argument.starts_with("-Dlog4j.configurationFile="))
+        {
+            jvm_args.push(logging_argument);
+        }
+    }
     jvm_args = normalize_jvm_arguments(jvm_args);
 
     // Inject the FPSMaster platform auth token only for preset Edge/Nova instances so the
     // client inherits the launcher login. Edge/Nova read -Dfpsmaster.auth.token at startup.
-    if matches!(request.version_id.trim(), "FPSMaster-Edge" | "FPSMaster-Nova") {
+    if matches!(
+        request.version_id.trim(),
+        "FPSMaster-Edge" | "FPSMaster-Nova"
+    ) {
         if let Some(token) = request
             .fpsmaster_token
             .as_deref()
@@ -1627,11 +2029,15 @@ pub(crate) fn build_vanilla_launch_plan(
         }
     }
 
-    let main_class = version_json
-        .get("mainClass")
-        .and_then(Value::as_str)
-        .ok_or_else(|| format!("Version {} missing mainClass", request.version_id))?
-        .to_string();
+    let main_class = if optifine_overlay.is_some() {
+        "net.minecraft.launchwrapper.Launch".to_string()
+    } else {
+        version_json
+            .get("mainClass")
+            .and_then(Value::as_str)
+            .ok_or_else(|| format!("Version {} missing mainClass", request.version_id))?
+            .to_string()
+    };
     let mut game_args = if let Some(args) = version_json
         .get("arguments")
         .and_then(|value| value.get("game"))
@@ -1642,9 +2048,10 @@ pub(crate) fn build_vanilla_launch_plan(
         .get("minecraftArguments")
         .and_then(Value::as_str)
     {
-        raw.split(' ')
+        parse_legacy_arguments(raw)
+            .into_iter()
             .filter_map(|token| {
-                let replaced = replace_variables(token, &variables).trim().to_string();
+                let replaced = replace_variables(&token, &variables).trim().to_string();
                 if replaced.is_empty() {
                     None
                 } else {
@@ -1656,6 +2063,14 @@ pub(crate) fn build_vanilla_launch_plan(
         Vec::new()
     };
     ensure_default_resolution_args(&mut game_args, &variables);
+    if optifine_overlay.is_some()
+        && !game_args
+            .windows(2)
+            .any(|arguments| arguments == ["--tweakClass", "optifine.OptiFineTweaker"])
+    {
+        game_args.push("--tweakClass".to_string());
+        game_args.push("optifine.OptiFineTweaker".to_string());
+    }
 
     if let Some(server) = request
         .server_address
@@ -1724,7 +2139,7 @@ fn resolve_edge_aot_maven_library(
     maven: &str,
 ) -> Result<ResolvedLibrary, String> {
     let coords = MavenCoordinates::parse(maven)?;
-    let relative_path = coords.to_jar_path();
+    let relative_path = coords.to_path();
     let target = game_dir.join("libraries").join(&relative_path);
     let urls = source.candidate_urls(&format!(
         "{}{}",
@@ -1972,12 +2387,30 @@ pub(crate) fn build_edge_aot_launch_plan(
     {
         jvm_args.extend(resolve_argument_array(args, &variables, &rule_features));
     }
+    if let Some(logging_argument) = ensure_logging_config(
+        window,
+        &version_json,
+        &request.game_dir,
+        "launch",
+        None,
+        source,
+    )? {
+        if !jvm_args
+            .iter()
+            .any(|argument| argument.starts_with("-Dlog4j.configurationFile="))
+        {
+            jvm_args.push(logging_argument);
+        }
+    }
     jvm_args = normalize_jvm_arguments(jvm_args);
     jvm_args.extend(jvm_extra);
 
     // Inject the FPSMaster platform auth token only for preset Edge instances, matching
     // the Forge launch path.
-    if matches!(request.version_id.trim(), "FPSMaster-Edge" | "FPSMaster-Nova") {
+    if matches!(
+        request.version_id.trim(),
+        "FPSMaster-Edge" | "FPSMaster-Nova"
+    ) {
         if let Some(token) = request
             .fpsmaster_token
             .as_deref()
@@ -1999,9 +2432,10 @@ pub(crate) fn build_edge_aot_launch_plan(
         .get("minecraftArguments")
         .and_then(Value::as_str)
     {
-        raw.split(' ')
+        parse_legacy_arguments(raw)
+            .into_iter()
             .filter_map(|token| {
-                let replaced = replace_variables(token, &variables).trim().to_string();
+                let replaced = replace_variables(&token, &variables).trim().to_string();
                 if replaced.is_empty() {
                     None
                 } else {
@@ -2277,7 +2711,8 @@ fn resolve_libraries(
 
         let downloads = library.get("downloads");
         let classifiers = downloads.and_then(|value| value.get("classifiers"));
-        let native_key = resolve_native_classifier_key(&library, classifiers);
+        let native_key = resolve_native_classifier_key(&library, classifiers)
+            .or_else(|| declared_native_classifier_key(&library));
 
         if let (Some(native_key), Some(classifiers)) = (
             native_key.as_deref(),
@@ -2316,6 +2751,26 @@ fn resolve_libraries(
             }
         }
 
+        if classifiers.is_none() {
+            if let Some(native_classifier) = native_key.as_deref() {
+                let mut coordinates = MavenCoordinates::parse(name)?;
+                coordinates.classifier = Some(native_classifier.to_string());
+                let path = coordinates.to_path();
+                resolved.push(ResolvedLibrary {
+                    path: game_dir.join("libraries").join(&path),
+                    download_urls: source.candidate_urls(&format!(
+                        "{}{}",
+                        normalize_base_url(library_repo),
+                        path
+                    )),
+                    sha1: None,
+                    size: None,
+                    classpath_entry: false,
+                    native_entry: true,
+                });
+            }
+        }
+
         if let Some(artifact) = downloads
             .and_then(|value| value.get("artifact"))
             .and_then(Value::as_object)
@@ -2348,9 +2803,9 @@ fn resolve_libraries(
             continue;
         }
 
-        if native_key.is_none() {
+        if downloads.and_then(|value| value.get("artifact")).is_none() {
             let coordinates = MavenCoordinates::parse(name)?;
-            let path = coordinates.to_jar_path();
+            let path = coordinates.to_path();
             let target = game_dir.join("libraries").join(&path);
             resolved.push(ResolvedLibrary {
                 path: target,
@@ -2359,8 +2814,11 @@ fn resolve_libraries(
                     normalize_base_url(library_repo),
                     path
                 )),
-                sha1: None,
-                size: None,
+                sha1: library
+                    .get("sha1")
+                    .and_then(Value::as_str)
+                    .map(ToString::to_string),
+                size: library.get("size").and_then(Value::as_u64),
                 classpath_entry: true,
                 native_entry: false,
             });
@@ -2386,12 +2844,27 @@ fn rules_match(rules: Option<&Vec<Value>>, features: &HashMap<String, bool>) -> 
         };
         let mut matches = true;
 
-        if let Some(os_name) = rule_object
-            .get("os")
-            .and_then(|value| value.get("name"))
-            .and_then(Value::as_str)
-        {
-            matches = current_os == os_name;
+        if let Some(os_rule) = rule_object.get("os").and_then(Value::as_object) {
+            if let Some(os_name) = os_rule.get("name").and_then(Value::as_str) {
+                matches = current_os == os_name;
+            }
+            if matches {
+                if let Some(arch) = os_rule.get("arch").and_then(Value::as_str) {
+                    matches = minecraft_arch_name() == arch;
+                }
+            }
+            if matches {
+                if let Some(version_pattern) = os_rule.get("version").and_then(Value::as_str) {
+                    matches = sysinfo::System::os_version()
+                        .as_deref()
+                        .and_then(|version| {
+                            Regex::new(version_pattern)
+                                .ok()
+                                .map(|pattern| pattern.is_match(version))
+                        })
+                        .unwrap_or(false);
+                }
+            }
         }
 
         if matches {
@@ -2447,6 +2920,14 @@ fn resolve_native_classifier_key(library: &Value, classifiers: Option<&Value>) -
     candidates
         .into_iter()
         .find(|candidate| classifiers.contains_key(candidate))
+}
+
+fn declared_native_classifier_key(library: &Value) -> Option<String> {
+    library
+        .get("natives")
+        .and_then(|value| value.get(minecraft_os_name()))
+        .and_then(Value::as_str)
+        .map(|value| value.replace("${arch}", arch_token()))
 }
 
 fn build_variables(
@@ -2585,6 +3066,39 @@ fn resolve_argument_array(
             }
             _ => {}
         }
+    }
+    result
+}
+
+fn parse_legacy_arguments(raw: &str) -> Vec<String> {
+    let mut result = Vec::new();
+    let mut current = String::new();
+    let mut quote = None::<char>;
+    let mut chars = raw.chars().peekable();
+    while let Some(character) = chars.next() {
+        match quote {
+            Some(active_quote) if character == active_quote => quote = None,
+            Some(active_quote) if character == '\\' => {
+                if matches!(chars.peek(), Some(next) if *next == active_quote || *next == '\\') {
+                    if let Some(escaped) = chars.next() {
+                        current.push(escaped);
+                    }
+                } else {
+                    current.push(character);
+                }
+            }
+            Some(_) => current.push(character),
+            None if character == '"' || character == '\'' => quote = Some(character),
+            None if character.is_whitespace() => {
+                if !current.is_empty() {
+                    result.push(std::mem::take(&mut current));
+                }
+            }
+            None => current.push(character),
+        }
+    }
+    if !current.is_empty() {
+        result.push(current);
     }
     result
 }
@@ -3459,6 +3973,16 @@ fn minecraft_os_name() -> &'static str {
     }
 }
 
+fn minecraft_arch_name() -> &'static str {
+    match std::env::consts::ARCH {
+        "x86" => "x86",
+        "x86_64" => "x86_64",
+        "aarch64" => "arm64",
+        "arm" => "arm",
+        other => other,
+    }
+}
+
 fn arch_token() -> &'static str {
     if cfg!(target_pointer_width = "64") {
         "64"
@@ -3586,7 +4110,7 @@ fn install_forge_old_profile(
         .ok_or_else(|| "Old forge installer missing path".to_string())?;
 
     let artifact = MavenCoordinates::parse(path_descriptor)?;
-    let target_library = game_dir.join("libraries").join(artifact.to_jar_path());
+    let target_library = game_dir.join("libraries").join(artifact.to_path());
     if let Some(parent) = target_library.parent() {
         fs::create_dir_all(parent).map_err(|e| {
             format!(
@@ -3655,10 +4179,13 @@ fn run_forge_installer(
     game_dir: &Path,
     java_executable: &Path,
     installer_path: &Path,
-    args: &[&str],
+    args: &[OsString],
 ) -> Result<ProcessOutput, String> {
     let mut command = std::process::Command::new(java_executable);
-    command.arg("-jar").arg(installer_path);
+    command
+        .arg("-Djava.awt.headless=true")
+        .arg("-jar")
+        .arg(installer_path);
     command.args(args);
     command.current_dir(game_dir);
     command.stdout(std::process::Stdio::piped());
@@ -3698,7 +4225,7 @@ fn select_forge_profile_id_after_install(
             return Ok(candidate);
         }
     }
-    first_profile_id_after_install(game_dir, game_version)
+    first_profile_id_after_install(game_dir, game_version, forge_version)
 }
 
 fn forge_profile_id_candidates(
@@ -3753,7 +4280,11 @@ fn push_forge_profile_id_candidate(candidates: &mut Vec<String>, value: Option<&
     }
 }
 
-fn first_profile_id_after_install(game_dir: &Path, game_version: &str) -> Result<String, String> {
+fn first_profile_id_after_install(
+    game_dir: &Path,
+    game_version: &str,
+    forge_version: &str,
+) -> Result<String, String> {
     let versions_dir = game_dir.join("versions");
     let read_dir = fs::read_dir(&versions_dir).map_err(|e| {
         format!(
@@ -3774,14 +4305,91 @@ fn first_profile_id_after_install(game_dir: &Path, game_version: &str) -> Result
         else {
             continue;
         };
-        if name.contains("forge") && name.contains(game_version) {
+        if !name.contains("forge") || !name.contains(game_version) {
+            continue;
+        }
+        let profile_json_path = path.join(format!("{name}.json"));
+        let profile_matches = fs::read_to_string(&profile_json_path)
+            .ok()
+            .and_then(|text| serde_json::from_str::<Value>(&text).ok())
+            .map(|profile| {
+                profile
+                    .get("inheritsFrom")
+                    .and_then(Value::as_str)
+                    .map(|parent| parent == game_version)
+                    .unwrap_or(true)
+                    && profile.to_string().contains(forge_version)
+            })
+            .unwrap_or(false);
+        if profile_matches {
             candidates.push(name);
         }
     }
     candidates.sort();
-    candidates
-        .pop()
-        .ok_or_else(|| "Forge profile not found after installer run".to_string())
+    candidates.pop().ok_or_else(|| {
+        format!("Forge installer completed but did not create a profile for {forge_version}")
+    })
+}
+
+fn ensure_logging_config(
+    window: Option<&tauri::Window>,
+    version_json: &Value,
+    game_dir: &Path,
+    phase: &str,
+    ipc_session: Option<&str>,
+    source: DownloadSource,
+) -> Result<Option<String>, String> {
+    let Some(client_logging) = version_json
+        .get("logging")
+        .and_then(|value| value.get("client"))
+        .and_then(Value::as_object)
+    else {
+        return Ok(None);
+    };
+    let file = client_logging
+        .get("file")
+        .and_then(Value::as_object)
+        .ok_or_else(|| "Logging metadata is missing client.file".to_string())?;
+    let file_id = file
+        .get("id")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "Logging metadata is missing client.file.id".to_string())?;
+    if Path::new(file_id).file_name() != Some(OsStr::new(file_id)) {
+        return Err(format!(
+            "Logging metadata contains an unsafe file id: {file_id}"
+        ));
+    }
+    let url = file
+        .get("url")
+        .and_then(Value::as_str)
+        .ok_or_else(|| format!("Logging metadata is missing URL for {file_id}"))?;
+    let target = game_dir.join("assets").join("log_configs").join(file_id);
+    let artifact = DownloadArtifact::new(
+        "logging-config",
+        phase,
+        "logging",
+        &target,
+        "logging-config",
+    );
+    download_file_with_ipc(
+        window,
+        ipc_session,
+        &source.candidate_urls(url),
+        &target,
+        file.get("sha1").and_then(Value::as_str),
+        "logging-config",
+        &artifact,
+        None,
+        file.get("size").and_then(Value::as_u64),
+    )
+    .map_err(|error| format!("Logging configuration download failed for {file_id}: {error}"))?;
+
+    Ok(client_logging
+        .get("argument")
+        .and_then(Value::as_str)
+        .map(|argument| argument.replace("${path}", &target.to_string_lossy())))
 }
 
 fn download_client(
@@ -4790,8 +5398,9 @@ fn emit_install_item_ipc(
 mod tests {
     use super::{
         build_classpath, build_rule_features, build_vanilla_launch_plan, classpath_separator,
-        forge_profile_id_candidates, resolve_java_runtime_requirement,
-        resolve_optifine_compatibility, should_omit_resolved_arg, DownloadSource,
+        forge_profile_id_candidates, minecraft_arch_name, parse_legacy_arguments,
+        resolve_java_runtime_requirement, resolve_optifine_compatibility, rules_match,
+        should_omit_resolved_arg, DownloadSource, MavenCoordinates, StandaloneOptiFineOverlay,
         VanillaLaunchRequest,
     };
     use serde_json::json;
@@ -5017,6 +5626,110 @@ mod tests {
             ]
             .join(&sep)
         );
+    }
+
+    #[test]
+    fn maven_coordinates_support_classifiers_and_extensions() {
+        let classified = MavenCoordinates::parse("org.lwjgl:lwjgl:3.3.3:natives-windows-arm64")
+            .expect("classified coordinate should parse");
+        assert_eq!(
+            classified.to_path(),
+            "org/lwjgl/lwjgl/3.3.3/lwjgl-3.3.3-natives-windows-arm64.jar"
+        );
+
+        let zipped = MavenCoordinates::parse("example.group:artifact:1.0:client@zip")
+            .expect("coordinate extension should parse");
+        assert_eq!(
+            zipped.to_path(),
+            "example/group/artifact/1.0/artifact-1.0-client.zip"
+        );
+    }
+
+    #[test]
+    fn legacy_arguments_preserve_quoted_values_and_windows_paths() {
+        assert_eq!(
+            parse_legacy_arguments(
+                r#"--username "Player Name" --workDir "C:\Games & Tools\Minecraft" --demo"#
+            ),
+            vec![
+                "--username",
+                "Player Name",
+                "--workDir",
+                r"C:\Games & Tools\Minecraft",
+                "--demo"
+            ]
+        );
+    }
+
+    #[test]
+    fn architecture_rules_do_not_apply_x86_arguments_to_other_architectures() {
+        if minecraft_arch_name() == "x86" {
+            return;
+        }
+        let rules = vec![json!({
+            "action": "allow",
+            "os": { "arch": "x86" }
+        })];
+        assert!(!rules_match(Some(&rules), &build_rule_features()));
+    }
+
+    #[test]
+    fn standalone_optifine_overlay_switches_to_launchwrapper() {
+        let game_dir = make_temp_dir("optifine-overlay");
+        let version_dir = game_dir.join("versions").join("1.20.1");
+        let overlay_dir = version_dir.join("optifine");
+        fs::create_dir_all(&overlay_dir).expect("overlay dir should exist");
+        fs::write(version_dir.join("1.20.1.jar"), "").expect("client jar should exist");
+        fs::write(overlay_dir.join("OptiFine-1.20.1_HD_U_I6.jar"), "")
+            .expect("OptiFine jar should exist");
+        fs::write(overlay_dir.join("launchwrapper-of-2.3.jar"), "")
+            .expect("launchwrapper should exist");
+        fs::write(
+            overlay_dir.join("overlay.json"),
+            serde_json::to_vec(&StandaloneOptiFineOverlay {
+                optifine_version: "HD_U_I6".to_string(),
+                optifine_jar: "OptiFine-1.20.1_HD_U_I6.jar".to_string(),
+                launchwrapper_jar: "launchwrapper-of-2.3.jar".to_string(),
+            })
+            .expect("marker should serialize"),
+        )
+        .expect("marker should be written");
+        fs::write(
+            version_dir.join("1.20.1.json"),
+            json!({
+                "id": "1.20.1",
+                "mainClass": "net.minecraft.client.main.Main",
+                "libraries": [],
+                "assetIndex": { "id": "1.20" },
+                "arguments": {
+                    "game": ["--username", "${auth_player_name}"]
+                }
+            })
+            .to_string(),
+        )
+        .expect("version json should be written");
+        let request = VanillaLaunchRequest {
+            game_dir,
+            version_id: "1.20.1".to_string(),
+            player_name: "Player".to_string(),
+            uuid: "00000000-0000-0000-0000-000000000000".to_string(),
+            access_token: "offline".to_string(),
+            java_path: PathBuf::from("java"),
+            max_memory_mb: 1024,
+            server_address: None,
+            fpsmaster_token: None,
+        };
+
+        let plan = build_vanilla_launch_plan(None, &request, None)
+            .expect("OptiFine launch plan should build");
+        assert_eq!(plan.plan.main_class, "net.minecraft.launchwrapper.Launch");
+        assert!(plan
+            .plan
+            .command
+            .windows(2)
+            .any(|args| args == ["--tweakClass", "optifine.OptiFineTweaker"]));
+        assert!(plan.plan.classpath.contains("OptiFine-1.20.1_HD_U_I6.jar"));
+        assert!(plan.plan.classpath.contains("launchwrapper-of-2.3.jar"));
     }
 
     #[test]
