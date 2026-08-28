@@ -187,7 +187,10 @@ jobs:
         with:
           workspaces: |
             tauri-app/src-tauri -> target
-          key: ${{ matrix.target }}
+          # matrix.os keeps caches isolated per runner image: an ubuntu-latest
+          # (glibc 2.39) cache once poisoned ubuntu-22.04 builds with build
+          # scripts that abort with "GLIBC_2.39 not found".
+          key: ${{ matrix.target }}-${{ matrix.os }}
 
       - name: Install frontend dependencies
         working-directory: tauri-app
