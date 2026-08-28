@@ -22,10 +22,7 @@ function normalizeMinecraftSkinUrl(raw: unknown): string | null {
   }
   try {
     const parsed = new URL(raw.trim());
-    if (
-      parsed.protocol === "http:" &&
-      parsed.hostname.toLowerCase() === "textures.minecraft.net"
-    ) {
+    if (parsed.protocol === "http:" && parsed.hostname.toLowerCase() === "textures.minecraft.net") {
       parsed.protocol = "https:";
     }
     return parsed.protocol === "https:" ? parsed.toString() : null;
@@ -148,9 +145,11 @@ export function shouldRefreshMicrosoftAccount(
   return expiresAt <= now + marginMs;
 }
 
-export function resolveMinecraftLaunchIdentity(
-  account: MinecraftAccount
-): { playerName: string; uuid: string; accessToken: string } {
+export function resolveMinecraftLaunchIdentity(account: MinecraftAccount): {
+  playerName: string;
+  uuid: string;
+  accessToken: string;
+} {
   if (account.type === "microsoft") {
     if (!account.uuid.trim() || !account.accessToken.trim() || account.needsRelogin) {
       throw new Error("Minecraft premium account is not logged in yet");
@@ -207,7 +206,7 @@ function skinLookupParams(
   const lookupUuid =
     identity.type === "microsoft" && uuid && uuid !== NIL_MINECRAFT_UUID ? uuid : null;
   if (lookupUuid) {
-    const normalizedUuid = lookupUuid.replaceAll("-", "").toLowerCase();
+    const normalizedUuid = lookupUuid.replace(/-/g, "").toLowerCase();
     return { key: `uuid:${normalizedUuid}`, uuid: normalizedUuid, username: null };
   }
   if (username) {
@@ -245,7 +244,10 @@ export async function lookupMinecraftSkinUrl(
     })
     .catch(() => {
       // Transient failure: remember briefly so the UI retries soon without spamming.
-      skinLookupCache.set(params.key, { url: null, expiresAt: Date.now() + SKIN_LOOKUP_ERROR_TTL_MS });
+      skinLookupCache.set(params.key, {
+        url: null,
+        expiresAt: Date.now() + SKIN_LOOKUP_ERROR_TTL_MS
+      });
       return null;
     })
     .finally(() => {
