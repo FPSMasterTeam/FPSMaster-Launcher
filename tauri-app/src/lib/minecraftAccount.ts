@@ -1,8 +1,16 @@
 // Minecraft account parsing / identity helpers. Extracted from App.tsx.
 import { invoke } from "@tauri-apps/api/core";
 import { STORAGE_KEYS } from "../constants";
-import type { MinecraftAccount } from "../types";
+import type { MinecraftAccount, MinecraftAccountType } from "../types";
 import { createSessionId } from "../utils/launcher";
+import { createOfflineMinecraftUuid } from "./offlineUuid";
+
+export const NIL_MINECRAFT_UUID = "00000000-0000-0000-0000-000000000000";
+
+// How far before the actual expiry a Microsoft session is refreshed. Applied both
+// by the background scheduler and at launch, so a token never enters the game with
+// only seconds of validity left.
+export const MICROSOFT_REFRESH_MARGIN_MS = 7 * 60_000;
 
 export function createMicrosoftAccountId(uuid: string): string {
   return `microsoft-${uuid.trim().toLowerCase()}`;
@@ -19,9 +27,7 @@ export function normalizeMinecraftAccount(raw: unknown): MinecraftAccount | null
     return null;
   }
   const uuid =
-    typeof value.uuid === "string" && value.uuid.trim()
-      ? value.uuid
-      : "00000000-0000-0000-0000-000000000000";
+    typeof value.uuid === "string" && value.uuid.trim() ? value.uuid : NIL_MINECRAFT_UUID;
   return {
     id:
       typeof value.id === "string" && value.id.trim()
@@ -45,7 +51,8 @@ export function normalizeMinecraftAccount(raw: unknown): MinecraftAccount | null
     xuid: typeof value.xuid === "string" && value.xuid.trim() ? value.xuid : null,
     skinUrl: typeof value.skinUrl === "string" && value.skinUrl.trim() ? value.skinUrl : null,
     expiresAt: typeof value.expiresAt === "number" ? value.expiresAt : null,
-    addedAt: typeof value.addedAt === "number" ? value.addedAt : Date.now()
+    addedAt: typeof value.addedAt === "number" ? value.addedAt : Date.now(),
+    needsRelogin: type === "microsoft" && value.needsRelogin === true
   };
 }
 
@@ -80,22 +87,51 @@ export function createOfflineMinecraftAccount(username: string): MinecraftAccoun
   return {
     id: createSessionId(),
     type: "offline",
+    // New offline profiles use the Java OfflinePlayer name-based UUID instead of the
+    // nil UUID, matching what offline-mode servers derive from the name. Accounts
+    // already saved with the nil UUID keep it (see normalizeMinecraftAccount): their
+    // singleplayer playerdata is keyed by the old UUID and must not be orphaned.
+    uuid: createOfflineMinecraftUuid(normalizedName),
     username: normalizedName,
-    uuid: "00000000-0000-0000-0000-000000000000",
     accessToken: "offline",
     refreshToken: null,
     xuid: null,
     skinUrl: null,
     expiresAt: null,
-    addedAt: Date.now()
+    addedAt: Date.now(),
+    needsRelogin: false
   };
+}
+
+/**
+ * True when a Microsoft account's token cannot be trusted for the next
+ * `marginMs` and a refresh must run first. A token without a known expiry is
+ * treated as expired: it may have been dead for weeks, and refreshing is the
+ * only way to find out.
+ */
+export function shouldRefreshMicrosoftAccount(
+  account: MinecraftAccount,
+  marginMs: number = MICROSOFT_REFRESH_MARGIN_MS,
+  now: number = Date.now()
+): boolean {
+  if (account.type !== "microsoft") {
+    return false;
+  }
+  if (!account.accessToken.trim()) {
+    return true;
+  }
+  const expiresAt = typeof account.expiresAt === "number" ? account.expiresAt : null;
+  if (expiresAt === null) {
+    return true;
+  }
+  return expiresAt <= now + marginMs;
 }
 
 export function resolveMinecraftLaunchIdentity(
   account: MinecraftAccount
 ): { playerName: string; uuid: string; accessToken: string } {
   if (account.type === "microsoft") {
-    if (!account.uuid.trim() || !account.accessToken.trim()) {
+    if (!account.uuid.trim() || !account.accessToken.trim() || account.needsRelogin) {
       throw new Error("Minecraft premium account is not logged in yet");
     }
     return {
@@ -106,7 +142,7 @@ export function resolveMinecraftLaunchIdentity(
   }
   return {
     playerName: account.username,
-    uuid: account.uuid || "00000000-0000-0000-0000-000000000000",
+    uuid: account.uuid || NIL_MINECRAFT_UUID,
     accessToken: account.accessToken || "offline"
   };
 }
@@ -116,4 +152,83 @@ export async function refreshMinecraftAccount(
   ipcSession?: string
 ): Promise<MinecraftAccount> {
   return invoke<MinecraftAccount>("refresh_minecraft_account", { refreshToken, ipcSession });
+}
+
+// --- avatar/skin resolution -------------------------------------------------
+// Accounts whose stored skinUrl is empty still get an avatar: premium profiles are
+// resolved by UUID, offline names by a Mojang username lookup (a name matching a
+// real profile shows that profile's skin). Results are cached so rendering account
+// rows never hammers the Mojang APIs; misses are cached shorter than hits so a new
+// skin shows up reasonably fast after being uploaded.
+
+export type MinecraftSkinIdentity = {
+  type: MinecraftAccountType;
+  uuid: string;
+  username: string;
+};
+
+type SkinLookupCacheEntry = { url: string | null; expiresAt: number };
+
+const SKIN_LOOKUP_HIT_TTL_MS = 60 * 60_000;
+const SKIN_LOOKUP_MISS_TTL_MS = 10 * 60_000;
+const SKIN_LOOKUP_ERROR_TTL_MS = 60_000;
+
+const skinLookupCache = new Map<string, SkinLookupCacheEntry>();
+const skinLookupInFlight = new Map<string, Promise<string | null>>();
+
+function skinLookupParams(
+  identity: MinecraftSkinIdentity
+): { key: string; uuid: string | null; username: string | null } | null {
+  const uuid = identity.uuid.trim();
+  const username = identity.username.trim();
+  // Offline UUIDs (nil or name-derived) do not exist on Mojang's servers; the
+  // username is the only identity that can map to a real profile skin there.
+  const lookupUuid =
+    identity.type === "microsoft" && uuid && uuid !== NIL_MINECRAFT_UUID ? uuid : null;
+  if (lookupUuid) {
+    return { key: `uuid:${lookupUuid.toLowerCase()}`, uuid: lookupUuid, username: null };
+  }
+  if (username) {
+    return { key: `name:${username.toLowerCase()}`, uuid: null, username };
+  }
+  return null;
+}
+
+export async function lookupMinecraftSkinUrl(
+  identity: MinecraftSkinIdentity
+): Promise<string | null> {
+  const params = skinLookupParams(identity);
+  if (!params) {
+    return null;
+  }
+  const cached = skinLookupCache.get(params.key);
+  if (cached && cached.expiresAt > Date.now()) {
+    return cached.url;
+  }
+  const inFlight = skinLookupInFlight.get(params.key);
+  if (inFlight) {
+    return inFlight;
+  }
+  const request = invoke<string | null>("lookup_minecraft_skin_url", {
+    uuid: params.uuid,
+    username: params.username
+  })
+    .then((url) => {
+      const normalized = typeof url === "string" && url.trim() ? url : null;
+      skinLookupCache.set(params.key, {
+        url: normalized,
+        expiresAt: Date.now() + (normalized ? SKIN_LOOKUP_HIT_TTL_MS : SKIN_LOOKUP_MISS_TTL_MS)
+      });
+      return normalized;
+    })
+    .catch(() => {
+      // Transient failure: remember briefly so the UI retries soon without spamming.
+      skinLookupCache.set(params.key, { url: null, expiresAt: Date.now() + SKIN_LOOKUP_ERROR_TTL_MS });
+      return null;
+    })
+    .finally(() => {
+      skinLookupInFlight.delete(params.key);
+    });
+  skinLookupInFlight.set(params.key, request);
+  return request;
 }

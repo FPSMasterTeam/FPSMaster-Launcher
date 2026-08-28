@@ -45,8 +45,8 @@ import {
 import { notifyError, notifyWarning } from "./lib/toast";
 import {
   parseMinecraftAccounts,
-  refreshMinecraftAccount,
-  resolveMinecraftLaunchIdentity
+  resolveMinecraftLaunchIdentity,
+  shouldRefreshMicrosoftAccount
 } from "./lib/minecraftAccount";
 import {
   normalizeStoredToken,
@@ -285,7 +285,8 @@ function Launcher() {
   const mcAccounts = useMinecraftAccounts({
     secureStorageReady,
     playerName: settings.playerName,
-    setPlayerName: (name) => setSettings((prev) => ({ ...prev, playerName: name }))
+    setPlayerName: (name) => setSettings((prev) => ({ ...prev, playerName: name })),
+    t
   });
 
   // For Nova, expose the version-specialised profile so Settings/Content hit FPSMaster-Nova-<gv>.
@@ -2619,23 +2620,31 @@ function Launcher() {
       return account;
     }
 
-    const expiresAt = typeof account.expiresAt === "number" ? account.expiresAt : null;
-    const hasAccessToken = account.accessToken.trim().length > 0;
-    const shouldRefresh = !hasAccessToken || (expiresAt !== null && expiresAt <= Date.now() + 60_000);
-
-    if (!shouldRefresh) {
+    // A missing expiry means the stored token cannot be trusted, and a
+    // needs-relogin flag from an earlier failed refresh gets one more attempt
+    // here (the failure may have been transient). Only a token that is verifiably
+    // valid for the whole refresh margin skips the refresh.
+    if (!shouldRefreshMicrosoftAccount(account) && !account.needsRelogin) {
       markLaunchPreparePhase("login", "done", "complete", t("launch.progress.loginReady"));
       return account;
     }
 
-    const refreshToken = account.refreshToken?.trim();
-    if (!refreshToken) {
+    if (!account.refreshToken?.trim()) {
       throw new Error(t("minecraftAccount.microsoftRefreshRequired"));
     }
 
-    const refreshedAccount = await refreshMinecraftAccount(refreshToken, ipcSession);
-    mcAccounts.save(refreshedAccount);
-    return refreshedAccount;
+    try {
+      return await mcAccounts.refreshMicrosoftAccount(account.id, ipcSession);
+    } catch (error) {
+      // The hook already kept the account and marked it needs-relogin; surface a
+      // human message in the launch dialog instead of launching with a dead token.
+      const detail = describeApiError(error, t);
+      throw new Error(
+        detail
+          ? `${t("minecraftAccount.microsoftRefreshRequired")} (${detail})`
+          : t("minecraftAccount.microsoftRefreshRequired")
+      );
+    }
   }
 
 
