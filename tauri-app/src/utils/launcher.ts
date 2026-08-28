@@ -1,5 +1,10 @@
 import { convertFileSrc } from "@tauri-apps/api/core";
-import { DEFAULT_SETTINGS, PRESET_INSTANCES, STORAGE_KEYS } from "../constants";
+import {
+  DEFAULT_SETTINGS,
+  PRESET_INSTANCES,
+  resolveVisualProfile,
+  STORAGE_KEYS
+} from "../constants";
 import { IS_WINDOWS } from "./platform";
 import fabricIcon from "../assets/icons/fabric.png";
 import forgeIcon from "../assets/icons/forge.png";
@@ -21,8 +26,7 @@ import type {
   Settings,
   ThemeAccent,
   ThemeMode,
-  UiLogEntry,
-  VisualProfile
+  UiLogEntry
 } from "../types";
 
 export function createPhaseState(
@@ -163,6 +167,15 @@ export function loadSettings(): Settings {
     const parsedBackgroundSource = parseBackgroundSource(parsed.backgroundSource);
     const backgroundSource =
       parsedBackgroundSource === "system" && !IS_WINDOWS ? DEFAULT_SETTINGS.backgroundSource : parsedBackgroundSource;
+    const blurMode = parseBlurMode(parsed.blurMode);
+    const cornerRadiusScale =
+      typeof parsed.cornerRadiusScale === "number"
+        ? clamp(Math.round(parsed.cornerRadiusScale), 75, 150)
+        : DEFAULT_SETTINGS.cornerRadiusScale;
+    const glowAmount =
+      typeof parsed.glowAmount === "number"
+        ? clamp(Math.round(parsed.glowAmount), 0, 100)
+        : DEFAULT_SETTINGS.glowAmount;
     return {
       gameDir:
         typeof parsed.gameDir === "string" && parsed.gameDir
@@ -217,16 +230,10 @@ export function loadSettings(): Settings {
         typeof parsed.backgroundBlur === "number"
           ? clamp(parsed.backgroundBlur, 0, 32)
           : DEFAULT_SETTINGS.backgroundBlur,
-      blurMode: parseBlurMode(parsed.blurMode),
-      cornerRadiusScale:
-        typeof parsed.cornerRadiusScale === "number"
-          ? clamp(Math.round(parsed.cornerRadiusScale), 75, 150)
-          : DEFAULT_SETTINGS.cornerRadiusScale,
-      glowAmount:
-        typeof parsed.glowAmount === "number"
-          ? clamp(Math.round(parsed.glowAmount), 0, 100)
-          : DEFAULT_SETTINGS.glowAmount,
-      visualProfile: parseVisualProfile(parsed.visualProfile),
+      blurMode,
+      cornerRadiusScale,
+      glowAmount,
+      visualProfile: resolveVisualProfile({ blurMode, cornerRadiusScale, glowAmount }),
       curseforgeApiKey:
         typeof parsed.curseforgeApiKey === "string"
           ? parsed.curseforgeApiKey
@@ -364,13 +371,6 @@ function parseBlurMode(input: unknown): BlurMode {
   return DEFAULT_SETTINGS.blurMode;
 }
 
-function parseVisualProfile(input: unknown): VisualProfile {
-  if (input === "standard" || input === "glass" || input === "custom") {
-    return input;
-  }
-  return DEFAULT_SETTINGS.visualProfile;
-}
-
 export function resolveBackgroundAssetUrl(settings: Settings): string {
   if (settings.backgroundSource === "video") {
     return "";
@@ -398,8 +398,16 @@ export function resolveBackgroundVideoUrl(settings: Settings): string {
   if (!value) {
     return "";
   }
-  if (value.startsWith("blob:") || value.startsWith("data:") || value.startsWith("http")) {
+  if (value.startsWith("blob:") || value.startsWith("data:")) {
     return value;
+  }
+  try {
+    const protocol = new URL(value).protocol;
+    if (protocol === "http:" || protocol === "https:") {
+      return value;
+    }
+  } catch {
+    // Local file paths are handled by Tauri's scoped asset protocol below.
   }
   try {
     return convertFileSrc(value);

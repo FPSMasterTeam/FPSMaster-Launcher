@@ -373,7 +373,7 @@ function HomePage({
               <Button
                 variant="primary"
                 size="md"
-                className="cta-glow min-h-[46px] min-w-[164px] justify-center !rounded-[10px]"
+                className="cta-glow min-h-[46px] min-w-[164px] justify-center !rounded-[var(--radius-lg)]"
                 disabled={busy || !selectedInstance || !instanceLaunchable}
                 launchProgress={launching}
                 launchProgressPercent={launchProgressPercent}

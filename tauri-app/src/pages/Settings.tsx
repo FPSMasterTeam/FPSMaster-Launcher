@@ -105,6 +105,13 @@ function SettingsPage({
   const backgroundInputRef = useRef<HTMLInputElement>(null);
   const backgroundVideoInputRef = useRef<HTMLInputElement>(null);
   const backgroundAccentRequestRef = useRef(0);
+  const browserVideoUrlRef = useRef("");
+
+  function releaseBrowserVideoUrl() {
+    if (!browserVideoUrlRef.current) return;
+    URL.revokeObjectURL(browserVideoUrlRef.current);
+    browserVideoUrlRef.current = "";
+  }
 
   function isAbsolutePath(path: string): boolean {
     const trimmed = path.trim();
@@ -267,6 +274,7 @@ function SettingsPage({
         filters: [{ name: "Video", extensions: ["mp4", "webm"] }]
       });
       if (selected && typeof selected === "string") {
+        releaseBrowserVideoUrl();
         onChange({ ...settings, backgroundSource: "video", backgroundVideo: selected });
         setBackgroundError("");
       }
@@ -279,12 +287,28 @@ function SettingsPage({
     const file = event.target.files?.[0];
     event.target.value = "";
     if (!file) return;
-    if (file.type !== "video/mp4" && file.type !== "video/webm") {
+    const supportedMimeType = file.type === "video/mp4" || file.type === "video/webm";
+    const supportedExtension = /\.(mp4|webm)$/i.test(file.name);
+    if (!supportedMimeType && !(file.type === "" && supportedExtension)) {
       setBackgroundError(t("settings.backgroundVideoTypeError"));
       return;
     }
-    onChange({ ...settings, backgroundSource: "video", backgroundVideo: URL.createObjectURL(file) });
+    releaseBrowserVideoUrl();
+    const objectUrl = URL.createObjectURL(file);
+    browserVideoUrlRef.current = objectUrl;
+    onChange({ ...settings, backgroundSource: "video", backgroundVideo: objectUrl });
     setBackgroundError("");
+  }
+
+  function clearBackground() {
+    if (settings.backgroundSource === "video") {
+      releaseBrowserVideoUrl();
+      onChange({ ...settings, backgroundVideo: "" });
+    } else if (settings.backgroundSource === "web-random") {
+      onChange({ ...settings, backgroundWebUrl: "" });
+    } else {
+      onChange({ ...settings, backgroundImage: "" });
+    }
   }
 
   async function switchBackgroundSource(source: BackgroundSource) {
@@ -367,6 +391,15 @@ function SettingsPage({
   useEffect(() => {
     setShowLauncherUpdateNotes(false);
   }, [launcherUpdate?.version, launcherUpdate?.notes]);
+
+  useEffect(
+    () => () => {
+      if (browserVideoUrlRef.current) {
+        URL.revokeObjectURL(browserVideoUrlRef.current);
+      }
+    },
+    []
+  );
 
   function applyCustomAccent(hex: string) {
     const normalized = normalizeHexColor(hex);
@@ -899,10 +932,10 @@ function SettingsPage({
                       <span className="badge badge-accent normal-case tracking-normal">
                         {t("settings.visualPreviewBadge")}
                       </span>
-                      <Button variant="primary" size="sm" className="cta-glow gap-2">
+                      <span className="appearance-preview-cta cta-glow">
                         <Play fill="currentColor" size={12} />
                         {t("home.launch")}
-                      </Button>
+                      </span>
                     </div>
                   </div>
                 </div>
@@ -1049,15 +1082,7 @@ function SettingsPage({
                       size="sm"
                       className="gap-2"
                       disabled={!hasBackground}
-                      onClick={() =>
-                        onChange(
-                          settings.backgroundSource === "web-random"
-                            ? { ...settings, backgroundWebUrl: "" }
-                            : settings.backgroundSource === "video"
-                              ? { ...settings, backgroundVideo: "" }
-                              : { ...settings, backgroundImage: "" }
-                        )
-                      }
+                      onClick={clearBackground}
                     >
                       <Trash2 size={14} />
                       {t("settings.backgroundClear")}

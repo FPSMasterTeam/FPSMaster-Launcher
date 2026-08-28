@@ -24,15 +24,15 @@ const Button: React.FC<ButtonProps> = ({
 
   const variants = {
     primary:
-      'bg-[var(--mc-grass)] text-white rounded-[8px] border border-[rgba(var(--accent-rgb),0.4)] shadow-[0_1px_2px_rgba(0,0,0,0.2)] hover:bg-[var(--mc-grass-dark)]',
+      'bg-[var(--mc-grass)] text-white rounded-[var(--radius-control)] border border-[rgba(var(--accent-rgb),0.4)] shadow-[0_1px_2px_rgba(0,0,0,0.2)] hover:bg-[var(--mc-grass-dark)]',
     secondary:
-      'bg-[var(--bg-tertiary)] text-[var(--text-primary)] rounded-[8px] border border-[var(--border-subtle)] hover:bg-[var(--bg-elevated)] hover:border-[var(--border-medium)]',
+      'bg-[var(--bg-tertiary)] text-[var(--text-primary)] rounded-[var(--radius-control)] border border-[var(--border-subtle)] hover:bg-[var(--bg-elevated)] hover:border-[var(--border-medium)]',
     outline:
-      'bg-transparent border border-[var(--border-subtle)] text-[var(--text-secondary)] hover:border-[var(--border-medium)] hover:text-[var(--text-primary)] rounded-[8px] hover:bg-[var(--surface-soft)]',
+      'bg-transparent border border-[var(--border-subtle)] text-[var(--text-secondary)] hover:border-[var(--border-medium)] hover:text-[var(--text-primary)] rounded-[var(--radius-control)] hover:bg-[var(--surface-soft)]',
     ghost:
-      'bg-transparent text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[var(--border-subtle)] rounded-[8px]',
+      'bg-transparent text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[var(--border-subtle)] rounded-[var(--radius-control)]',
     danger:
-      'bg-[var(--accent-danger)]/12 text-[var(--accent-danger)] hover:bg-[var(--accent-danger)]/20 rounded-[8px] border border-[#ff6b8f]/25',
+      'bg-[var(--accent-danger)]/12 text-[var(--accent-danger)] hover:bg-[var(--accent-danger)]/20 rounded-[var(--radius-control)] border border-[#ff6b8f]/25',
   };
 
   const sizes = {

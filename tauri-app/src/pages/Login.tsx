@@ -39,10 +39,27 @@ function LoginPage({ loading, initialPrefs, statusText, onSubmit }: LoginPagePro
   const [slide, setSlide] = useState(0);
 
   useEffect(() => {
-    const timer = window.setInterval(() => {
-      setSlide((current) => (current + 1) % CAROUSEL_SLIDES.length);
-    }, CAROUSEL_INTERVAL);
-    return () => window.clearInterval(timer);
+    const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
+    let timer: number | undefined;
+    const syncTimer = () => {
+      if (timer !== undefined) {
+        window.clearInterval(timer);
+        timer = undefined;
+      }
+      if (!reduceMotion.matches) {
+        timer = window.setInterval(() => {
+          setSlide((current) => (current + 1) % CAROUSEL_SLIDES.length);
+        }, CAROUSEL_INTERVAL);
+      }
+    };
+    syncTimer();
+    reduceMotion.addEventListener("change", syncTimer);
+    return () => {
+      reduceMotion.removeEventListener("change", syncTimer);
+      if (timer !== undefined) {
+        window.clearInterval(timer);
+      }
+    };
   }, []);
 
   async function submit(event: FormEvent<HTMLFormElement>) {

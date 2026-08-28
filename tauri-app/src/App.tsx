@@ -4,7 +4,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { listen, TauriEvent } from "@tauri-apps/api/event";
 import packageInfo from "../package.json";
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import AppBackground from "./components/AppBackground";
+import AppBackground, { BACKGROUND_VIDEO_STATE_EVENT } from "./components/AppBackground";
 import Button from "./components/Button";
 import InstallDialog from "./components/InstallDialog";
 import LaunchErrorDialog from "./components/LaunchErrorDialog";
@@ -456,12 +456,16 @@ function Launcher() {
       try {
         const currentWindow = getCurrentWindow();
         const visible = await currentWindow.isVisible();
-        if (!disposed) {
-          setWindowVisible(visible);
-        }
+        const publishVisibility = (nextVisible: boolean) => {
+          if (disposed) return;
+          document.documentElement.setAttribute("data-window-visible", String(nextVisible));
+          setWindowVisible(nextVisible);
+          window.dispatchEvent(new Event(BACKGROUND_VIDEO_STATE_EVENT));
+        };
+        publishVisibility(visible);
         unlistenVisibility = await listen<boolean>(
           "fpsmaster://main-window-visibility",
-          ({ payload }) => setWindowVisible(payload)
+          ({ payload }) => publishVisibility(payload)
         );
       } catch {
       }
@@ -495,6 +499,11 @@ function Launcher() {
       activeBackgroundVideoUrl !== ""
     );
   }, [settings.blurMode, settings.cornerRadiusScale, settings.glowAmount, activeBackgroundVideoUrl]);
+
+  useEffect(() => {
+    document.documentElement.setAttribute("data-monitor-open", String(monitorWindowOpen));
+    window.dispatchEvent(new Event(BACKGROUND_VIDEO_STATE_EVENT));
+  }, [monitorWindowOpen]);
 
   useEffect(() => {
     if (current) localStorage.setItem(STORAGE_KEYS.selected, current.id);

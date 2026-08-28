@@ -1,5 +1,7 @@
 import { memo, type CSSProperties, useEffect, useRef } from "react";
 
+export const BACKGROUND_VIDEO_STATE_EVENT = "fpsmaster:background-video-state";
+
 type AppBackgroundProps = {
   url: string | null;
   videoUrl: string | null;
@@ -35,7 +37,13 @@ export function BackgroundVideo({
     video.defaultMuted = true;
     const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
     const sync = () => {
-      const shouldPause = paused || document.hidden || reduceMotion.matches;
+      const root = document.documentElement;
+      const shouldPause =
+        paused ||
+        document.hidden ||
+        reduceMotion.matches ||
+        root.getAttribute("data-window-visible") === "false" ||
+        root.getAttribute("data-monitor-open") === "true";
       if (shouldPause) {
         video.pause();
       } else {
@@ -47,11 +55,13 @@ export function BackgroundVideo({
     };
     sync();
     document.addEventListener("visibilitychange", sync);
+    window.addEventListener(BACKGROUND_VIDEO_STATE_EVENT, sync);
     reduceMotion.addEventListener("change", sync);
     video.addEventListener("loadeddata", sync);
     video.addEventListener("canplay", sync);
     return () => {
       document.removeEventListener("visibilitychange", sync);
+      window.removeEventListener(BACKGROUND_VIDEO_STATE_EVENT, sync);
       reduceMotion.removeEventListener("change", sync);
       video.removeEventListener("loadeddata", sync);
       video.removeEventListener("canplay", sync);
@@ -112,7 +122,7 @@ function AppBackground({ url, videoUrl, opacity, blur, paused, hidden }: AppBack
           }}
         />
       )}
-      <div className="absolute inset-0 bg-[var(--bg-primary)]/16" />
+      <div className="app-background-scrim absolute inset-0" />
     </div>
   );
 }

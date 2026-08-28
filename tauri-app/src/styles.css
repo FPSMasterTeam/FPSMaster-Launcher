@@ -286,6 +286,18 @@
   object-fit: cover;
 }
 
+.app-background-scrim {
+  background: rgba(10, 15, 19, 0.26);
+}
+
+:root[data-blur-mode="frost"] .app-background-scrim {
+  background: rgba(10, 15, 19, 0.36);
+}
+
+:root[data-theme="light"] .app-background-scrim {
+  background: rgba(230, 234, 240, 0.3);
+}
+
 * {
   box-sizing: border-box;
 }
@@ -599,7 +611,7 @@ select:focus-visible {
   align-items: center;
   gap: 9px;
   padding: 5px 10px 5px 5px;
-  border-radius: 9px;
+  border-radius: var(--radius-control);
   border: 1px solid var(--linear-card-edge);
   background: var(--linear-card-bg);
   box-shadow: var(--card-shadow);
@@ -1253,7 +1265,7 @@ select:focus-visible {
 .ui-input,
 .ui-textarea {
   width: 100%;
-  border-radius: 8px;
+  border-radius: var(--radius-control);
   border: 1px solid var(--border-medium);
   background: rgba(11, 16, 22, 0.92);
   color: var(--text-primary);
@@ -2466,7 +2478,7 @@ select:focus-visible {
   flex-wrap: wrap;
   align-items: center;
   gap: 6px;
-  border-radius: 8px;
+  border-radius: var(--radius-control);
   border: 1px solid var(--border-subtle);
   background: rgba(255, 255, 255, 0.035);
   padding: 6px;
@@ -2478,7 +2490,7 @@ select:focus-visible {
   align-items: center;
   justify-content: center;
   gap: 8px;
-  border-radius: 8px;
+  border-radius: var(--radius-control);
   border: 1px solid transparent;
   background: transparent;
   padding: 0 16px;
@@ -2522,7 +2534,7 @@ select:focus-visible {
 
 .ui-select-trigger {
   min-height: 44px;
-  border-radius: 8px;
+  border-radius: var(--radius-control);
   border-color: var(--border-medium) !important;
   background: rgba(11, 16, 22, 0.92) !important;
   box-shadow: none;
@@ -4191,7 +4203,6 @@ button:disabled {
    blur here — animating blur invalidates the whole layer every frame and stutters
    on weak GPUs. */
 .page-transition {
-  will-change: opacity, transform;
   contain: paint;
   transform: translate3d(0, 0, 0);
   backface-visibility: hidden;
@@ -4285,8 +4296,11 @@ button:disabled {
   .page-transition,
   .panel-transition,
   .modal-animate,
-  .modal-backdrop-animate {
+  .modal-backdrop-animate,
+  .login-slide,
+  .login-dot {
     animation: none;
+    transition: none;
   }
 
   .accent-swatch:hover,
@@ -5384,6 +5398,21 @@ button:disabled {
 
 .appearance-preview-main {
   min-width: 0;
+}
+
+.appearance-preview-cta {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 32px;
+  padding: 6px 12px;
+  border: 1px solid rgba(var(--accent-rgb), 0.4);
+  border-radius: var(--radius-control);
+  background: var(--mc-grass);
+  color: white;
+  font-size: 12px;
+  font-weight: 600;
 }
 
 .profile-option {
