@@ -102,6 +102,7 @@ import type {
     LaunchExecutionResult,
   Loader,
   MinecraftAccount,
+  ModpackInstallResult,
   OptiFineInstallResult,
   OptiFineVersion,
     Page,
@@ -2721,6 +2722,24 @@ function Launcher() {
   const onUpdateInstance = useStableCallback((next: Instance) => {
     setInstances((prev) => prev.map((item) => (item.id === next.id ? next : item)));
   });
+  const onModpackInstalled = useStableCallback((result: ModpackInstallResult) => {
+    const item: Instance = {
+      id: `instance-${Date.now()}-${Math.floor(Math.random() * 10000)}`,
+      name: result.name,
+      versionId: result.versionId,
+      baseVersion: result.baseVersion,
+      loader: result.loader,
+      loaderVersion: result.loaderVersion ?? undefined,
+      preset: false
+    };
+    setInstances((prev) => [item, ...prev]);
+    installCtl.setInstalledVersions((prev) =>
+      prev.includes(result.versionId) ? prev : [result.versionId, ...prev]
+    );
+    setSelected(item.id);
+    setStatus(t("app.status.installed", { name: item.name }));
+    navigatePage("instances");
+  });
   const onSelectMajor = useStableCallback((nextMajor: string) => {
     installCtl.setShowSnapshots(false);
     installCtl.setMajor(nextMajor);
@@ -2768,6 +2787,7 @@ function Launcher() {
     onOpenInstanceSettings,
     onOpenInstanceContent,
     onGoContent: goContent,
+    onModpackInstalled,
     onInstanceRepair,
     onInstanceDelete,
     onInstanceDuplicate,

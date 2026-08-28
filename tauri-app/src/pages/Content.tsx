@@ -1,23 +1,26 @@
 import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
-import { Archive, Box, Download, File, Globe, HardDriveDownload, PackageCheck, PackageOpen, Palette, Search, Trash2, X } from "lucide-react";
+import { Archive, Box, Download, File, Globe, HardDriveDownload, Layers, PackageCheck, PackageOpen, Palette, Search, Trash2, X } from "lucide-react";
 import { memo, type ChangeEvent, useEffect, useMemo, useRef, useState } from "react";
 import Button from "../components/Button";
 import Card from "../components/Card";
 import Select from "../components/Select";
 import modrinthIcon from "../assets/icons/modrinth.ico";
 import curseforgeIcon from "../assets/icons/curseforge.ico";
-import { useI18n } from "../i18n";
+import { useI18n, type TranslationKey } from "../i18n";
 import { describeApiError } from "../lib/launcherError";
 import { buildNovaEffectiveInstance, listNovaVersionTargets } from "../lib/novaTargets";
 import type {
   ContentInstallProgressEvent,
   ContentProjectType,
   ContentSource,
+  DownloadSource,
   InstalledContentItem,
   InstalledContentUpdate,
   Instance,
   LauncherVersion,
+  ModpackInstallProgressEvent,
+  ModpackInstallResult,
   ModrinthInstallResult,
   ModrinthSearchResult,
   OnlineContentSource,
@@ -40,25 +43,48 @@ type ContentPageProps = {
   current: Instance | null;
   gameDir: string;
   curseforgeApiKey: string;
+  downloadSource: DownloadSource;
+  downloadThreads: number;
   busy: boolean;
   novaGameVersions: Record<string, LauncherVersion>;
   selectedNovaGameVersion: string;
   onSelectNovaGameVersion: (gameVersion: string) => void;
   onSelectInstance: (id: string) => void;
+  onModpackInstalled: (result: ModpackInstallResult) => void;
   onStatusChange: (message: string) => void;
 };
 
 const CONTENT_TYPES: readonly { id: ContentProjectType; icon: React.ReactNode }[] = [
   { id: "mod", icon: <Box size={16} /> },
+  { id: "modpack", icon: <Layers size={16} /> },
   { id: "resourcepack", icon: <Palette size={16} /> },
   { id: "shader", icon: <File size={16} /> },
   { id: "world", icon: <Globe size={16} /> }
 ];
 
+const MODPACK_STAGE_LABEL_KEYS: Record<string, TranslationKey> = {
+  catalog: "content.modpack.stage.catalog",
+  "download-pack": "content.modpack.stage.downloadPack",
+  parse: "content.modpack.stage.parse",
+  loader: "content.modpack.stage.loader",
+  files: "content.modpack.stage.files",
+  overrides: "content.modpack.stage.overrides",
+  finalize: "content.modpack.stage.finalize"
+};
+
+// Backend modpack errors carry a machine-readable "[modpack:<stage>] " prefix
+// so the UI can name the failed stage instead of showing a generic failure.
+function splitModpackError(raw: string): { stage: string | null; message: string } {
+  const match = /^\[modpack:([a-z-]+)\]\s*/i.exec(raw);
+  if (!match) return { stage: null, message: raw };
+  return { stage: match[1].toLowerCase(), message: raw.slice(match[0].length) };
+}
+
 function contentTypeLabel(value: ContentProjectType, t: ReturnType<typeof useI18n>["t"]): string {
   if (value === "resourcepack") return t("content.type.resourcepack");
   if (value === "shader") return t("content.type.shader");
   if (value === "world") return t("content.type.world");
+  if (value === "modpack") return t("content.type.modpack");
   return t("content.type.mod");
 }
 
@@ -73,11 +99,14 @@ function ContentPage({
   current,
   gameDir,
   curseforgeApiKey,
+  downloadSource,
+  downloadThreads,
   busy,
   novaGameVersions,
   selectedNovaGameVersion,
   onSelectNovaGameVersion,
   onSelectInstance,
+  onModpackInstalled,
   onStatusChange
 }: ContentPageProps) {
   const { t } = useI18n();
@@ -97,6 +126,7 @@ function ContentPage({
   const [installedUpdates, setInstalledUpdates] = useState<InstalledContentUpdate[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [contentInstallProgress, setContentInstallProgress] = useState<ContentInstallProgressEvent | null>(null);
+  const [modpackProgress, setModpackProgress] = useState<ModpackInstallProgressEvent | null>(null);
   const worldFileInputRef = useRef<HTMLInputElement | null>(null);
 
   const novaPreset = useMemo(
@@ -172,6 +202,9 @@ function ContentPage({
       ? (["modrinth", "curseforge", "local"] as const satisfies readonly ContentSource[])
       : (["modrinth", "curseforge"] as const satisfies readonly OnlineContentSource[]);
   const worldImportMode = contentType === "world" && source === "local";
+  // Modpack search/install builds a brand-new instance, so it never depends on
+  // the currently selected instance.
+  const modpackMode = contentType === "modpack";
   const contentNavigationBusy =
     loading || batchUpdating || importingWorld || Boolean(installingProjectId) || Boolean(uninstallingProjectId);
   const searchPlaceholder = worldImportMode
@@ -206,21 +239,25 @@ function ContentPage({
   );
 
   async function fetchProjects(queryValue: string): Promise<ModrinthSearchResult[]> {
-    if (!currentInstance) return [];
+    if (!currentInstance && !modpackMode) return [];
+    // Modpacks bring their own Minecraft version and loader, so their search
+    // is not filtered by the selected instance.
+    const gameVersion = modpackMode ? undefined : currentInstance?.baseVersion;
+    const loader = modpackMode ? undefined : currentInstance?.loader;
     if (source === "modrinth") {
       return invoke<ModrinthSearchResult[]>("modrinth_search_projects", {
         query: queryValue,
         projectType: contentType,
-        gameVersion: currentInstance.baseVersion,
-        loader: currentInstance.loader
+        gameVersion,
+        loader
       });
     }
     if (source === "curseforge") {
       return invoke<ModrinthSearchResult[]>("curseforge_search_projects", {
         query: queryValue,
         projectType: contentType,
-        gameVersion: currentInstance.baseVersion,
-        loader: currentInstance.loader,
+        gameVersion,
+        loader,
         apiKey: curseforgeApiKey
       });
     }
@@ -228,7 +265,7 @@ function ContentPage({
   }
 
   async function loadTrendingProjects() {
-    if (!currentInstance || worldImportMode) return;
+    if ((!currentInstance && !modpackMode) || worldImportMode) return;
     setLoading(true);
     setError(null);
     onStatusChange(t("content.loadingTrending"));
@@ -285,7 +322,7 @@ function ContentPage({
   }
 
   async function searchProjects() {
-    if (!currentInstance) return;
+    if (!currentInstance && !modpackMode) return;
     const trimmedQuery = query.trim();
     if (!trimmedQuery) {
       await loadTrendingProjects();
@@ -307,12 +344,56 @@ function ContentPage({
     }
   }
 
+  async function installModpack(params: {
+    source: OnlineContentSource;
+    projectId: string;
+    title: string;
+  }): Promise<boolean> {
+    const projectKey = `${params.source}:modpack:${params.projectId}`;
+    setInstallingProjectId(projectKey);
+    setContentInstallProgress({ projectKey, downloadedBytes: 0, totalBytes: null, percent: null });
+    setModpackProgress(null);
+    setError(null);
+    onStatusChange(t("content.modpack.installing", { title: params.title }));
+    try {
+      const result = await invoke<ModpackInstallResult>("install_modpack", {
+        gameDir,
+        source: params.source,
+        projectId: params.projectId,
+        projectTitle: params.title,
+        apiKey: params.source === "curseforge" ? curseforgeApiKey : undefined,
+        downloadSource,
+        downloadThreads
+      });
+      onModpackInstalled(result);
+      onStatusChange(t("content.modpack.installDone", { name: result.name }));
+      return true;
+    } catch (invokeError) {
+      const raw = typeof invokeError === "string" ? invokeError : invokeError instanceof Error ? invokeError.message : String(invokeError);
+      const { stage, message } = splitModpackError(raw.trim());
+      const stageLabelKey = stage ? MODPACK_STAGE_LABEL_KEYS[stage] : undefined;
+      const errorText = stageLabelKey
+        ? t("content.modpack.stageFailed", { stage: t(stageLabelKey), error: message })
+        : normalizeError(message);
+      setError(errorText);
+      onStatusChange(t("app.status.failed", { error: errorText }));
+      return false;
+    } finally {
+      setInstallingProjectId(null);
+      setContentInstallProgress(null);
+      setModpackProgress(null);
+    }
+  }
+
   async function installProject(params: {
     source: OnlineContentSource;
     projectId: string;
     projectType: string;
     title: string;
   }): Promise<boolean> {
+    if (params.projectType === "modpack") {
+      return installModpack(params);
+    }
     if (!currentInstance) {
       setError(t("content.noInstance"));
       return false;
@@ -443,6 +524,7 @@ function ContentPage({
     setResults([]);
     setError(null);
     setContentInstallProgress(null);
+    setModpackProgress(null);
     setHasSearched(false);
     setRightTab("search");
   }, [currentInstance?.id, currentInstance?.versionId, contentType, source]);
@@ -452,7 +534,7 @@ function ContentPage({
   }, [currentInstance]);
 
   useEffect(() => {
-    if (!currentInstance || worldImportMode || query.trim()) {
+    if ((!currentInstance && !modpackMode) || worldImportMode || query.trim()) {
       if (worldImportMode) {
         setResults([]);
         setHasSearched(false);
@@ -467,6 +549,24 @@ function ContentPage({
     let unlisten: (() => void) | null = null;
     void listen<ContentInstallProgressEvent>("content-install-progress", (event) => {
       if (!cancelled) setContentInstallProgress(event.payload);
+    }).then((dispose) => {
+      if (cancelled) {
+        dispose();
+        return;
+      }
+      unlisten = dispose;
+    });
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    let unlisten: (() => void) | null = null;
+    void listen<ModpackInstallProgressEvent>("modpack-install-progress", (event) => {
+      if (!cancelled) setModpackProgress(event.payload);
     }).then((dispose) => {
       if (cancelled) {
         dispose();
@@ -565,6 +665,11 @@ function ContentPage({
                       disabled={contentNavigationBusy}
                       onClick={() => {
                         setContentType(item.id);
+                        // "local" only exists for worlds; keeping it selected on
+                        // other tabs would silently return empty results.
+                        if (item.id !== "world" && source === "local") {
+                          setSource("modrinth");
+                        }
                         setRightTab("search");
                       }}
                       className={`content-type-item ${isActive ? "is-active" : ""}`}
@@ -723,6 +828,33 @@ function ContentPage({
             </div>
           )}
 
+          {modpackProgress && installingProjectId === modpackProgress.projectKey && (
+            <Card variant="frost" className="page-card page-card-compact mb-5 rounded-[10px]" interactive={false}>
+              <div className="flex items-center gap-3">
+                <Layers size={16} className="shrink-0 text-[var(--text-secondary)]" />
+                <div className="min-w-0 flex-1">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="badge badge-accent normal-case tracking-normal">
+                      {t(MODPACK_STAGE_LABEL_KEYS[modpackProgress.stage] ?? "content.modpack.stage.files")}
+                    </span>
+                    <p className="truncate text-xs text-[var(--text-secondary)]">{modpackProgress.message}</p>
+                  </div>
+                  <div className="progressTrack">
+                    <div
+                      className="progressFill"
+                      style={{ width: `${modpackProgress.percent ?? (modpackProgress.total > 0 ? Math.round((modpackProgress.current / modpackProgress.total) * 100) : 0)}%` }}
+                    />
+                  </div>
+                </div>
+                {modpackProgress.total > 0 && (
+                  <span className="shrink-0 text-xs text-[var(--text-muted)] text-data">
+                    {modpackProgress.percent != null ? `${modpackProgress.percent}%` : `${modpackProgress.current}/${modpackProgress.total}`}
+                  </span>
+                )}
+              </div>
+            </Card>
+          )}
+
           {rightTab === "search" ? (
             !hasSearched || loading ? (
               <div className="empty-state">
@@ -838,7 +970,9 @@ function ContentPage({
             <div className="empty-state">
               <Archive size={40} className="empty-state-icon" />
               <p className="empty-state-title">{t("content.installed")}</p>
-              <p className="empty-state-text">{t("content.installedEmpty")}</p>
+              <p className="empty-state-text">
+                {modpackMode ? t("content.modpack.installedHint") : t("content.installedEmpty")}
+              </p>
             </div>
           )}
         </div>
