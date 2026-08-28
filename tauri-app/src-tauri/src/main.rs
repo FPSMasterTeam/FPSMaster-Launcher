@@ -3,6 +3,7 @@
 mod launcher_api;
 mod microsoft_auth;
 mod minecraft_core;
+mod modpack;
 mod secure_storage;
 
 use launcher_api::{
@@ -2135,6 +2136,35 @@ async fn curseforge_search_projects(
 }
 
 #[tauri::command]
+async fn install_modpack(
+    window: tauri::Window,
+    game_dir: String,
+    source: String,
+    project_id: String,
+    project_title: String,
+    api_key: Option<String>,
+    download_source: Option<String>,
+    download_threads: Option<i32>,
+) -> Result<modpack::ModpackInstallResult, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        modpack::install_modpack_blocking(
+            window,
+            game_dir,
+            source,
+            project_id,
+            project_title,
+            api_key,
+            download_source,
+            download_threads,
+        )
+    })
+    .await
+    .map_err(|e| format!("Failed to join modpack install task: {e}"))
+    .and_then(std::convert::identity)
+    .inspect_err(|e| log_command_error("install_modpack", e))
+}
+
+#[tauri::command]
 async fn install_curseforge_project(
     window: tauri::Window,
     game_dir: String,
@@ -2300,6 +2330,12 @@ fn install_modrinth_project_blocking(
     loader: Option<String>,
 ) -> Result<ModrinthInstallResult, String> {
     let normalized_project_type = normalize_content_project_type(&project_type)?;
+    if normalized_project_type == "modpack" {
+        return Err(
+            "Modpacks create a whole instance and must be installed via install_modpack"
+                .to_string(),
+        );
+    }
     let normalized_project_id = project_id.trim().to_string();
     if normalized_project_id.is_empty() {
         return Err("Modrinth project id cannot be empty".to_string());
@@ -2539,6 +2575,12 @@ fn install_curseforge_project_blocking(
     api_key: String,
 ) -> Result<ModrinthInstallResult, String> {
     let normalized_project_type = normalize_content_project_type(&project_type)?;
+    if normalized_project_type == "modpack" {
+        return Err(
+            "Modpacks create a whole instance and must be installed via install_modpack"
+                .to_string(),
+        );
+    }
     let normalized_api_key = normalize_curseforge_api_key(&api_key)?;
     let normalized_project_id = project_id.trim().to_string();
     if normalized_project_id.is_empty() {
@@ -4356,8 +4398,9 @@ fn normalize_content_project_type(value: &str) -> Result<String, String> {
         "resourcepack" => Ok("resourcepack".to_string()),
         "shader" => Ok("shader".to_string()),
         "world" => Ok("world".to_string()),
+        "modpack" => Ok("modpack".to_string()),
         other => Err(format!(
-            "Unsupported content project type '{other}'. Expected mod/resourcepack/shader/world"
+            "Unsupported content project type '{other}'. Expected mod/resourcepack/shader/world/modpack"
         )),
     }
 }
@@ -4387,7 +4430,9 @@ fn build_modrinth_search_facets(
         facets.push(vec![format!("versions:{version}")]);
     }
 
-    if project_type == "mod" {
+    // Modrinth also files modpacks under loader categories (fabric/forge/...),
+    // so the same facet applies to both types.
+    if matches!(project_type, "mod" | "modpack") {
         if let Some(loader_value) = loader.map(str::trim).filter(|value| !value.is_empty()) {
             facets.push(vec![format!(
                 "categories:{}",
@@ -4436,6 +4481,7 @@ fn curseforge_class_id_for_project_type(project_type: &str) -> Result<u64, Strin
         "resourcepack" => Ok(12),
         "world" => Ok(17),
         "shader" => Ok(6552),
+        "modpack" => Ok(modpack::CURSEFORGE_MODPACK_CLASS_ID),
         other => Err(format!(
             "Unsupported CurseForge class for content type '{other}'"
         )),
@@ -10503,6 +10549,7 @@ fn main() {
             install_modrinth_project,
             curseforge_search_projects,
             install_curseforge_project,
+            install_modpack,
             list_installed_content,
             uninstall_installed_content,
             check_installed_content_updates,
