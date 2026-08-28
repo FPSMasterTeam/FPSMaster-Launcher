@@ -425,6 +425,7 @@ const enUS = {
   "content.modpack.installDone": "Modpack installed: {name}. A new instance was created.",
   "content.modpack.installedHint": "Installed modpacks appear as instances in the instance list.",
   "content.modpack.stageFailed": "Modpack install failed during {stage}: {error}",
+  "content.modpack.stageProgress": "In progress: {stage}",
   "content.modpack.stage.catalog": "Catalog lookup",
   "content.modpack.stage.downloadPack": "Pack download",
   "content.modpack.stage.parse": "Manifest parsing",

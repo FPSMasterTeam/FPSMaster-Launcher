@@ -837,7 +837,11 @@ function ContentPage({
                     <span className="badge badge-accent normal-case tracking-normal">
                       {t(MODPACK_STAGE_LABEL_KEYS[modpackProgress.stage] ?? "content.modpack.stage.files")}
                     </span>
-                    <p className="truncate text-xs text-[var(--text-secondary)]">{modpackProgress.message}</p>
+                    <p className="truncate text-xs text-[var(--text-secondary)]">
+                      {t("content.modpack.stageProgress", {
+                        stage: t(MODPACK_STAGE_LABEL_KEYS[modpackProgress.stage] ?? "content.modpack.stage.files")
+                      })}
+                    </p>
                   </div>
                   <div className="progressTrack">
                     <div
@@ -875,7 +879,7 @@ function ContentPage({
                   const canUpdate = updateState?.status === "update-available";
                   const isInstalled = installedMap.has(`${item.source}:${item.projectType}:${item.projectId}`);
                   const itemKey = `${item.source}:${item.projectType}:${item.projectId}`;
-                  const actionBusy = busy || installingProjectId === itemKey;
+                  const actionBusy = busy || Boolean(installingProjectId) || Boolean(uninstallingProjectId);
                   const installProgress = contentInstallProgress?.projectKey === itemKey ? contentInstallProgress : null;
                   return (
                     <Card key={itemKey} variant="frost" className={`page-card page-card-compact rounded-[10px] ${isInstalled ? "border-[rgba(var(--accent-rgb),0.28)]" : ""}`} interactive={false}>
@@ -928,7 +932,7 @@ function ContentPage({
                 const canUpdate = updateState?.status === "update-available";
                 const supportsOnlineUpdate = item.source !== "local";
                 const itemKey = `${item.source}:${item.contentType}:${item.projectId}`;
-                const isItemBusy = installingProjectId === itemKey || uninstallingProjectId === itemKey;
+                const isItemBusy = busy || Boolean(installingProjectId) || Boolean(uninstallingProjectId);
                 const installProgress = contentInstallProgress?.projectKey === itemKey ? contentInstallProgress : null;
                 return (
                   <div key={itemKey} className={`surface-list-item ${canUpdate ? "is-warning" : ""}`}>

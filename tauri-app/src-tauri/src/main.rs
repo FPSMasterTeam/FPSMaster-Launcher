@@ -2159,7 +2159,7 @@ async fn install_modpack(
         )
     })
     .await
-    .map_err(|e| format!("Failed to join modpack install task: {e}"))
+    .map_err(|e| format!("[modpack:finalize] Failed to join modpack install task: {e}"))
     .and_then(std::convert::identity)
     .inspect_err(|e| log_command_error("install_modpack", e))
 }

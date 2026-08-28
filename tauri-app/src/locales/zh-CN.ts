@@ -423,6 +423,7 @@ const zhCN: EnUSTranslations = {
   "content.modpack.installDone": "整合包安装完成：{name}，已创建新实例。",
   "content.modpack.installedHint": "已安装的整合包会以实例形式出现在实例列表中。",
   "content.modpack.stageFailed": "整合包安装在「{stage}」阶段失败：{error}",
+  "content.modpack.stageProgress": "正在进行：{stage}",
   "content.modpack.stage.catalog": "目录检索",
   "content.modpack.stage.downloadPack": "整合包下载",
   "content.modpack.stage.parse": "清单解析",

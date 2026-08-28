@@ -14,7 +14,7 @@
 //! the UI can render a stage-specific message (see Content.tsx).
 
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs;
 use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
@@ -135,6 +135,8 @@ pub(crate) struct MrpackIndex {
     #[serde(rename = "formatVersion", default)]
     pub format_version: u32,
     #[serde(default)]
+    pub game: String,
+    #[serde(default)]
     pub name: String,
     #[serde(rename = "versionId", default)]
     pub version_id: String,
@@ -166,16 +168,36 @@ pub(crate) struct MrpackFileEnv {
 pub(crate) fn parse_mrpack_index(raw: &str) -> Result<MrpackIndex, String> {
     let index = serde_json::from_str::<MrpackIndex>(raw)
         .map_err(|e| format!("Invalid modrinth.index.json: {e}"))?;
-    if index.format_version != 0 && index.format_version != 1 {
+    if index.format_version != 1 {
         return Err(format!(
             "Unsupported mrpack format version {}",
             index.format_version
         ));
     }
-    if !index.dependencies.contains_key("minecraft") {
+    if !index.game.trim().eq_ignore_ascii_case("minecraft") {
+        return Err(format!(
+            "Unsupported mrpack game '{}'; expected minecraft",
+            index.game.trim()
+        ));
+    }
+    if dependency_value(&index.dependencies, "minecraft")
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .is_none()
+    {
         return Err("modrinth.index.json is missing the required minecraft dependency".to_string());
     }
     Ok(index)
+}
+
+fn dependency_value<'a>(
+    dependencies: &'a HashMap<String, String>,
+    expected_key: &str,
+) -> Option<&'a str> {
+    dependencies
+        .iter()
+        .find(|(key, _)| key.trim().eq_ignore_ascii_case(expected_key))
+        .map(|(_, value)| value.as_str())
 }
 
 pub(crate) fn resolve_mrpack_loader(
@@ -222,6 +244,10 @@ pub(crate) fn resolve_mrpack_loader(
 
 #[derive(Debug, Clone, Deserialize)]
 pub(crate) struct CurseForgeManifest {
+    #[serde(rename = "manifestType", default)]
+    pub manifest_type: String,
+    #[serde(rename = "manifestVersion", default)]
+    pub manifest_version: u32,
     #[serde(default)]
     pub name: String,
     #[serde(default)]
@@ -265,8 +291,29 @@ fn default_true() -> bool {
 pub(crate) fn parse_curseforge_manifest(raw: &str) -> Result<CurseForgeManifest, String> {
     let manifest = serde_json::from_str::<CurseForgeManifest>(raw)
         .map_err(|e| format!("Invalid CurseForge manifest.json: {e}"))?;
+    if manifest.manifest_type.trim() != "minecraftModpack" {
+        return Err(format!(
+            "Unsupported CurseForge manifest type '{}'; expected minecraftModpack",
+            manifest.manifest_type.trim()
+        ));
+    }
+    if manifest.manifest_version != 1 {
+        return Err(format!(
+            "Unsupported CurseForge manifest version {}",
+            manifest.manifest_version
+        ));
+    }
     if manifest.minecraft.version.trim().is_empty() {
         return Err("CurseForge manifest is missing the Minecraft version".to_string());
+    }
+    if manifest
+        .files
+        .iter()
+        .any(|entry| entry.project_id == 0 || entry.file_id == 0)
+    {
+        return Err(
+            "CurseForge manifest contains an invalid zero project ID or file ID".to_string(),
+        );
     }
     Ok(manifest)
 }
@@ -485,12 +532,10 @@ fn resolve_modrinth_pack_download(
                 .iter()
                 .find(|file| file.filename.to_ascii_lowercase().ends_with(".mrpack"))
         })
-        .or_else(|| version.files.iter().find(|file| file.primary))
-        .or_else(|| version.files.first())
         .cloned()
         .ok_or_else(|| {
             format!(
-                "Modrinth modpack version {} does not contain downloadable files",
+                "Modrinth modpack version {} does not contain a downloadable .mrpack file",
                 version.id
             )
         })?;
@@ -524,6 +569,10 @@ struct CurseForgePackFileRow {
     file_date: Option<String>,
     #[serde(rename = "isServerPack", default)]
     is_server_pack: bool,
+    #[serde(default)]
+    hashes: Vec<CurseForgeFileHash>,
+    #[serde(rename = "fileLength", default)]
+    file_length: Option<u64>,
 }
 
 fn resolve_curseforge_pack_download(
@@ -559,10 +608,14 @@ fn resolve_curseforge_pack_download(
     let mut files: Vec<CurseForgePackFileRow> = payload
         .data
         .into_iter()
-        .filter(|row| !row.is_server_pack)
+        .filter(|row| {
+            !row.is_server_pack && row.file_name.to_ascii_lowercase().ends_with(".zip")
+        })
         .collect();
     if files.is_empty() {
-        return Err("This CurseForge project has no downloadable client modpack files".to_string());
+        return Err(
+            "This CurseForge project has no downloadable client modpack ZIP files".to_string(),
+        );
     }
     files.sort_by(|left, right| {
         let rank = |row: &CurseForgePackFileRow| {
@@ -584,7 +637,20 @@ fn resolve_curseforge_pack_download(
         .filter(|value| !value.is_empty())
     {
         Some(value) => value,
-        None => crate::fetch_curseforge_file_download_url(client, api_key, project_id, file.id)?,
+        None => crate::fetch_curseforge_file_download_url(client, api_key, project_id, file.id)
+            .map_err(|err| {
+                if is_curseforge_distribution_blocked_error(&err) {
+                    format!(
+                        "CurseForge modpack archive '{}' cannot be downloaded because \
+                         third-party distribution is disabled",
+                        file.file_name
+                    )
+                } else {
+                    format!(
+                        "Failed to resolve the CurseForge modpack archive download URL: {err}"
+                    )
+                }
+            })?,
     };
     let pack_version = if file.display_name.trim().is_empty() {
         file.file_name.clone()
@@ -593,16 +659,21 @@ fn resolve_curseforge_pack_download(
     };
     Ok(ResolvedPackDownload {
         url: download_url,
-        file_name: if file.file_name.trim().is_empty() {
-            format!("curseforge-pack-{}.zip", file.id)
-        } else {
-            file.file_name.clone()
-        },
+        file_name: file.file_name.clone(),
         pack_version,
         sha512: None,
-        sha1: None,
-        size: None,
+        sha1: file
+            .hashes
+            .iter()
+            .find(|hash| hash.algo == 1)
+            .map(|hash| hash.value.clone()),
+        size: file.file_length,
     })
+}
+
+fn is_curseforge_distribution_blocked_error(error: &str) -> bool {
+    let normalized = error.to_ascii_lowercase();
+    normalized.contains("http 403") || normalized.contains("distribution disabled")
 }
 
 // ---------------------------------------------------------------------------
@@ -612,6 +683,8 @@ fn resolve_curseforge_pack_download(
 #[derive(Debug, Clone, Deserialize)]
 struct CurseForgeBatchFile {
     id: u64,
+    #[serde(rename = "modId")]
+    mod_id: u64,
     #[serde(rename = "fileName", default)]
     file_name: String,
     #[serde(rename = "downloadUrl", default)]
@@ -810,10 +883,21 @@ fn download_modpack_files(
         }));
     }
     for worker in workers {
-        let _ = worker.join();
+        if worker.join().is_err() {
+            let mut slot = crate::minecraft_core::lock_recover(&failure);
+            if slot.is_none() {
+                *slot = Some("A modpack download worker stopped unexpectedly".to_string());
+            }
+        }
     }
     if let Some(err) = crate::minecraft_core::lock_recover(&failure).clone() {
         return Err(err);
+    }
+    let completed_count = completed.load(Ordering::SeqCst);
+    if completed_count != total {
+        return Err(format!(
+            "Modpack file download ended early: completed {completed_count} of {total} files"
+        ));
     }
     Ok(total)
 }
@@ -874,7 +958,8 @@ fn verify_job_checksums(path: &Path, job: &ModpackFileJob) -> Result<(), String>
     }
     if let Some(expected) = job.sha512.as_deref() {
         crate::verify_file_sha512(path, expected)?;
-    } else if let Some(expected) = job.sha1.as_deref() {
+    }
+    if let Some(expected) = job.sha1.as_deref() {
         let actual = crate::compute_sha1_hex(path)?;
         if !actual.eq_ignore_ascii_case(expected.trim()) {
             return Err(format!("sha1 mismatch: expected {expected}, got {actual}"));
@@ -886,6 +971,32 @@ fn verify_job_checksums(path: &Path, job: &ModpackFileJob) -> Result<(), String>
 // ---------------------------------------------------------------------------
 // Instance creation
 // ---------------------------------------------------------------------------
+
+struct IncompleteInstanceGuard {
+    root: PathBuf,
+    committed: bool,
+}
+
+impl IncompleteInstanceGuard {
+    fn new(root: PathBuf) -> Self {
+        Self {
+            root,
+            committed: false,
+        }
+    }
+
+    fn commit(&mut self) {
+        self.committed = true;
+    }
+}
+
+impl Drop for IncompleteInstanceGuard {
+    fn drop(&mut self) {
+        if !self.committed {
+            let _ = fs::remove_dir_all(&self.root);
+        }
+    }
+}
 
 fn allocate_instance_version_id(versions_dir: &Path, desired: &str) -> Result<String, String> {
     let base = crate::normalize_version_identifier(desired)
@@ -950,7 +1061,10 @@ fn install_loader_profile(
                     "The modpack manifest does not specify a Forge version".to_string()
                 })?;
             // Forge versions are addressed as "<mc>-<forge>" by the installer.
-            let full_forge_version = if forge_version.starts_with(minecraft_version) {
+            let full_forge_version = if forge_version
+                .strip_prefix(minecraft_version)
+                .is_some_and(|suffix| suffix.starts_with('-'))
+            {
                 forge_version.to_string()
             } else {
                 format!("{minecraft_version}-{forge_version}")
@@ -988,8 +1102,10 @@ fn install_loader_profile(
 }
 
 /// Copy the freshly installed loader profile into a dedicated instance
-/// directory. The shared loader/vanilla profile stays in place: other
-/// instances may reference it and re-installs reuse it as a cache.
+/// directory. Only the version profile artifacts belong to the new instance:
+/// copying the whole source directory would also copy an existing instance's
+/// mods, saves, config, and other runtime state. The shared loader/vanilla
+/// profile stays in place so other instances can still reference it.
 fn create_instance_from_profile(
     versions_dir: &Path,
     source_version_id: &str,
@@ -997,7 +1113,32 @@ fn create_instance_from_profile(
 ) -> Result<(), String> {
     let source_dir = versions_dir.join(source_version_id);
     let target_dir = versions_dir.join(instance_id);
-    crate::copy_directory_contents(&source_dir, &target_dir)?;
+    fs::create_dir_all(&target_dir).map_err(|e| {
+        format!(
+            "Failed to create modpack instance directory {}: {e}",
+            target_dir.display()
+        )
+    })?;
+    let source_json = source_dir.join(format!("{source_version_id}.json"));
+    let staged_json = target_dir.join(format!("{source_version_id}.json"));
+    fs::copy(&source_json, &staged_json).map_err(|e| {
+        format!(
+            "Failed to copy loader profile from {} to {}: {e}",
+            source_json.display(),
+            staged_json.display()
+        )
+    })?;
+    let source_jar = source_dir.join(format!("{source_version_id}.jar"));
+    if source_jar.is_file() {
+        let staged_jar = target_dir.join(format!("{source_version_id}.jar"));
+        fs::copy(&source_jar, &staged_jar).map_err(|e| {
+            format!(
+                "Failed to copy loader runtime from {} to {}: {e}",
+                source_jar.display(),
+                staged_jar.display()
+            )
+        })?;
+    }
     crate::retarget_version_runtime(&target_dir, source_version_id, instance_id)
 }
 
@@ -1118,7 +1259,8 @@ pub(crate) fn install_modpack_blocking(
                 format!("Modpack archive checksum mismatch: {err}"),
             ));
         }
-    } else if let Some(expected) = pack_download.sha1.as_deref() {
+    }
+    if let Some(expected) = pack_download.sha1.as_deref() {
         match crate::compute_sha1_hex(&archive_path) {
             Ok(actual) if actual.eq_ignore_ascii_case(expected.trim()) => {}
             Ok(actual) => {
@@ -1169,17 +1311,22 @@ pub(crate) fn install_modpack_blocking(
     }
 
     let pack_kind = (|| -> Result<PackKind, String> {
-        if let Some(raw) = read_archive_text_entry(&mut archive, "modrinth.index.json")? {
+        if normalized_source == "modrinth" {
+            let raw = read_archive_text_entry(&mut archive, "modrinth.index.json")?.ok_or_else(
+                || {
+                    "The Modrinth archive is missing modrinth.index.json; \
+                     it is not a supported mrpack"
+                        .to_string()
+                },
+            )?;
             return Ok(PackKind::Mrpack(parse_mrpack_index(&raw)?));
         }
-        if let Some(raw) = read_archive_text_entry(&mut archive, "manifest.json")? {
-            return Ok(PackKind::CurseForge(parse_curseforge_manifest(&raw)?));
-        }
-        Err(
-            "The downloaded archive contains neither modrinth.index.json nor manifest.json; \
-             it does not look like a supported modpack"
-                .to_string(),
-        )
+        let raw = read_archive_text_entry(&mut archive, "manifest.json")?.ok_or_else(|| {
+            "The CurseForge archive is missing manifest.json; \
+             it is not a supported CurseForge modpack"
+                .to_string()
+        })?;
+        Ok(PackKind::CurseForge(parse_curseforge_manifest(&raw)?))
     })()
     .map_err(|err| {
         cleanup_archive();
@@ -1203,9 +1350,7 @@ pub(crate) fn install_modpack_blocking(
                 } else {
                     index.version_id.trim().to_string()
                 },
-                minecraft_version: index
-                    .dependencies
-                    .get("minecraft")
+                minecraft_version: dependency_value(&index.dependencies, "minecraft")
                     .map(|value| value.trim().to_string())
                     .unwrap_or_default(),
                 loader,
@@ -1290,13 +1435,14 @@ pub(crate) fn install_modpack_blocking(
         cleanup_archive();
         stage_err(STAGE_LOADER, err)
     })?;
+    let instance_root = versions_dir.join(&instance_id);
+    let mut instance_guard = IncompleteInstanceGuard::new(instance_root.clone());
     create_instance_from_profile(&versions_dir, &source_version_id, &instance_id).map_err(
         |err| {
             cleanup_archive();
             stage_err(STAGE_LOADER, err)
         },
     )?;
-    let instance_root = versions_dir.join(&instance_id);
 
     // Stage: files ------------------------------------------------------------
     let jobs = match &pack_kind {
@@ -1393,6 +1539,7 @@ pub(crate) fn install_modpack_blocking(
             format!("Failed to write modpack metadata {}: {e}", metadata_path.display()),
         )
     })?;
+    instance_guard.commit();
 
     emit_modpack_progress(
         Some(&window),
@@ -1430,8 +1577,35 @@ pub(crate) fn install_modpack_blocking(
     })
 }
 
+fn required_mrpack_hash(
+    entry: &MrpackFileEntry,
+    algorithm: &str,
+    expected_length: usize,
+) -> Result<String, String> {
+    let value = entry
+        .hashes
+        .iter()
+        .find(|(key, _)| key.trim().eq_ignore_ascii_case(algorithm))
+        .map(|(_, value)| value.trim())
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            format!(
+                "Modpack index entry {} is missing its required {algorithm} hash",
+                entry.path
+            )
+        })?;
+    if value.len() != expected_length || !value.chars().all(|ch| ch.is_ascii_hexdigit()) {
+        return Err(format!(
+            "Modpack index entry {} has an invalid {algorithm} hash",
+            entry.path
+        ));
+    }
+    Ok(value.to_ascii_lowercase())
+}
+
 fn build_mrpack_jobs(index: &MrpackIndex) -> Result<Vec<ModpackFileJob>, String> {
     let mut jobs = Vec::new();
+    let mut target_paths = HashSet::new();
     for entry in &index.files {
         let client_env = entry
             .env
@@ -1442,7 +1616,21 @@ fn build_mrpack_jobs(index: &MrpackIndex) -> Result<Vec<ModpackFileJob>, String>
             continue;
         }
         // Validate the path up front so a malicious index fails before any download.
-        safe_relative_path(&entry.path)?;
+        let target_path = safe_relative_path(&entry.path)?;
+        if !target_paths.insert(target_path) {
+            return Err(format!(
+                "Modpack index contains duplicate target path {}",
+                entry.path
+            ));
+        }
+        let sha512 = required_mrpack_hash(entry, "sha512", 128)?;
+        let sha1 = required_mrpack_hash(entry, "sha1", 40)?;
+        let file_size = entry.file_size.ok_or_else(|| {
+            format!(
+                "Modpack index entry {} is missing its required fileSize",
+                entry.path
+            )
+        })?;
         if entry.downloads.is_empty() {
             return Err(format!(
                 "Modpack index entry {} has no download URLs",
@@ -1463,9 +1651,9 @@ fn build_mrpack_jobs(index: &MrpackIndex) -> Result<Vec<ModpackFileJob>, String>
         jobs.push(ModpackFileJob {
             relative_path: entry.path.clone(),
             urls: entry.downloads.clone(),
-            sha512: entry.hashes.get("sha512").cloned(),
-            sha1: entry.hashes.get("sha1").cloned(),
-            size: entry.file_size,
+            sha512: Some(sha512),
+            sha1: Some(sha1),
+            size: Some(file_size),
         });
     }
     Ok(jobs)
@@ -1493,6 +1681,7 @@ fn build_curseforge_jobs(
     let mod_map: HashMap<u64, &CurseForgeBatchMod> = mods.iter().map(|row| (row.id, row)).collect();
 
     let mut jobs = Vec::new();
+    let mut target_paths = HashSet::new();
     let mut blocked: Vec<String> = Vec::new();
     let mut missing: Vec<String> = Vec::new();
     for entry in &manifest.files {
@@ -1512,6 +1701,15 @@ fn build_curseforge_jobs(
             }
             continue;
         };
+        if file.mod_id != entry.project_id {
+            if entry.required {
+                missing.push(describe(&format!(
+                    "project {} file {}",
+                    entry.project_id, entry.file_id
+                )));
+            }
+            continue;
+        }
         let download_url = match file
             .download_url
             .clone()
@@ -1519,13 +1717,21 @@ fn build_curseforge_jobs(
             .filter(|value| !value.is_empty())
         {
             Some(value) => Some(value),
-            None => crate::fetch_curseforge_file_download_url(
+            None => match crate::fetch_curseforge_file_download_url(
                 client,
                 api_key,
                 &entry.project_id.to_string(),
                 entry.file_id,
-            )
-            .ok(),
+            ) {
+                Ok(value) => Some(value),
+                Err(err) if is_curseforge_distribution_blocked_error(&err) => None,
+                Err(err) => {
+                    return Err(format!(
+                        "Failed to resolve a download URL for CurseForge project {} file {}: {err}",
+                        entry.project_id, entry.file_id
+                    ))
+                }
+            },
         };
         let Some(download_url) = download_url else {
             if entry.required {
@@ -1536,9 +1742,21 @@ fn build_curseforge_jobs(
         let target_dir = curseforge_class_target_dir(
             mod_map.get(&entry.project_id).and_then(|row| row.class_id),
         );
+        if file.file_name.trim().is_empty() {
+            return Err(format!(
+                "CurseForge returned an empty filename for project {} file {}",
+                entry.project_id, entry.file_id
+            ));
+        }
         let file_name = crate::sanitize_file_name(&file.file_name);
+        let relative_path = format!("{target_dir}/{file_name}");
+        if !target_paths.insert(relative_path.clone()) {
+            return Err(format!(
+                "CurseForge modpack contains duplicate target filename {relative_path}"
+            ));
+        }
         jobs.push(ModpackFileJob {
-            relative_path: format!("{target_dir}/{file_name}"),
+            relative_path,
             urls: vec![download_url],
             sha512: None,
             sha1: file
@@ -1606,6 +1824,9 @@ mod tests {
         assert!(safe_relative_path("/etc/passwd").is_err());
         assert!(safe_relative_path("C:\\Windows\\evil.dll").is_err());
         assert!(safe_relative_path("C:/Windows/evil.dll").is_err());
+        assert!(safe_relative_path("C:drive-relative.dll").is_err());
+        assert!(safe_relative_path("\\\\server\\share\\evil.dll").is_err());
+        assert!(safe_relative_path("\\\\?\\C:\\Windows\\evil.dll").is_err());
         assert!(safe_relative_path("").is_err());
         assert!(safe_relative_path("..").is_err());
     }
@@ -1671,7 +1892,17 @@ mod tests {
 
     #[test]
     fn mrpack_index_requires_minecraft_dependency() {
-        let raw = r#"{"formatVersion": 1, "name": "x", "dependencies": {}}"#;
+        let raw =
+            r#"{"formatVersion": 1, "game": "minecraft", "name": "x", "dependencies": {}}"#;
+        assert!(parse_mrpack_index(raw).is_err());
+    }
+
+    #[test]
+    fn mrpack_index_requires_v1_minecraft_format() {
+        let raw = r#"{"formatVersion": 0, "game": "minecraft", "dependencies": {"minecraft": "1.20.1"}}"#;
+        assert!(parse_mrpack_index(raw).is_err());
+
+        let raw = r#"{"formatVersion": 1, "game": "other", "dependencies": {"minecraft": "1.20.1"}}"#;
         assert!(parse_mrpack_index(raw).is_err());
     }
 
@@ -1679,10 +1910,20 @@ mod tests {
     fn mrpack_unsupported_client_files_are_skipped() {
         let raw = r#"{
             "formatVersion": 1,
+            "game": "minecraft",
             "name": "x",
             "files": [
                 {"path": "mods/server-only.jar", "env": {"client": "unsupported"}, "downloads": ["https://example.com/a.jar"]},
-                {"path": "mods/client.jar", "env": {"client": "required"}, "downloads": ["https://example.com/b.jar"]}
+                {
+                    "path": "mods/client.jar",
+                    "hashes": {
+                        "sha1": "0000000000000000000000000000000000000000",
+                        "sha512": "00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+                    },
+                    "env": {"client": "required"},
+                    "downloads": ["https://example.com/b.jar"],
+                    "fileSize": 1
+                }
             ],
             "dependencies": {"minecraft": "1.20.1"}
         }"#;
@@ -1696,6 +1937,7 @@ mod tests {
     fn mrpack_jobs_reject_traversal_paths() {
         let raw = r#"{
             "formatVersion": 1,
+            "game": "minecraft",
             "name": "x",
             "files": [
                 {"path": "../outside.jar", "downloads": ["https://example.com/a.jar"]}
@@ -1704,6 +1946,58 @@ mod tests {
         }"#;
         let index = parse_mrpack_index(raw).unwrap();
         assert!(build_mrpack_jobs(&index).is_err());
+    }
+
+    #[test]
+    fn mrpack_jobs_require_sha512_sha1_and_size() {
+        let raw = r#"{
+            "formatVersion": 1,
+            "game": "minecraft",
+            "files": [{
+                "path": "mods/incomplete.jar",
+                "hashes": {
+                    "sha512": "00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+                },
+                "downloads": ["https://example.com/incomplete.jar"],
+                "fileSize": 1
+            }],
+            "dependencies": {"minecraft": "1.20.1"}
+        }"#;
+        let mut index = parse_mrpack_index(raw).unwrap();
+        let err = build_mrpack_jobs(&index).unwrap_err();
+        assert!(err.contains("sha1"), "unexpected error: {err}");
+
+        index.files[0].hashes.insert(
+            "sha1".to_string(),
+            "0000000000000000000000000000000000000000".to_string(),
+        );
+        index.files[0].file_size = None;
+        let err = build_mrpack_jobs(&index).unwrap_err();
+        assert!(err.contains("fileSize"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn mrpack_verification_checks_both_hashes_and_size() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("file");
+        fs::write(&path, b"abc").unwrap();
+        let mut job = ModpackFileJob {
+            relative_path: "mods/file".to_string(),
+            urls: vec![],
+            sha512: Some(
+                "ddaf35a193617abacc417349ae20413112e6fa4e89a97ea20a9eeee64b55d39a2192992a274fc1a836ba3c23a3feebbd454d4423643ce80e2a9ac94fa54ca49f"
+                    .to_string(),
+            ),
+            sha1: Some("0000000000000000000000000000000000000000".to_string()),
+            size: Some(3),
+        };
+        let err = verify_job_checksums(&path, &job).unwrap_err();
+        assert!(err.contains("sha1 mismatch"), "unexpected error: {err}");
+
+        job.sha1 = Some("a9993e364706816aba3e25717850c26c9cd0d89d".to_string());
+        job.size = Some(4);
+        let err = verify_job_checksums(&path, &job).unwrap_err();
+        assert!(err.contains("size mismatch"), "unexpected error: {err}");
     }
 
     #[test]
@@ -1734,6 +2028,23 @@ mod tests {
     }
 
     #[test]
+    fn curseforge_manifest_requires_standard_type_and_version() {
+        let raw = r#"{
+            "manifestType": "other",
+            "manifestVersion": 1,
+            "minecraft": {"version": "1.20.1", "modLoaders": []}
+        }"#;
+        assert!(parse_curseforge_manifest(raw).is_err());
+
+        let raw = r#"{
+            "manifestType": "minecraftModpack",
+            "manifestVersion": 2,
+            "minecraft": {"version": "1.20.1", "modLoaders": []}
+        }"#;
+        assert!(parse_curseforge_manifest(raw).is_err());
+    }
+
+    #[test]
     fn curseforge_manifest_fabric_loader_is_parsed() {
         let loaders = vec![CurseForgeManifestModLoader {
             id: "fabric-0.15.11".to_string(),
@@ -1752,6 +2063,29 @@ mod tests {
         }];
         let err = resolve_curseforge_manifest_loader(&loaders).unwrap_err();
         assert!(err.contains("Quilt"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn curseforge_manifest_neoforge_is_rejected() {
+        let loaders = vec![CurseForgeManifestModLoader {
+            id: "neoforge-20.4.237".to_string(),
+            primary: true,
+        }];
+        let err = resolve_curseforge_manifest_loader(&loaders).unwrap_err();
+        assert!(err.contains("NeoForge"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn curseforge_distribution_blocking_is_not_confused_with_transport_errors() {
+        assert!(is_curseforge_distribution_blocked_error(
+            "CurseForge download URL lookup failed with HTTP 403"
+        ));
+        assert!(!is_curseforge_distribution_blocked_error(
+            "CurseForge download URL request failed: connection timed out"
+        ));
+        assert!(!is_curseforge_distribution_blocked_error(
+            "CurseForge download URL lookup failed with HTTP 500"
+        ));
     }
 
     #[test]
@@ -1836,6 +2170,18 @@ mod tests {
     }
 
     #[test]
+    fn override_extraction_blocks_windows_drive_prefixes() {
+        let zip_bytes = build_test_zip(&[("overrides/C:/Windows/evil.dll", b"evil")]);
+        let temp = tempfile::tempdir().unwrap();
+        let instance_root = temp.path().join("instance");
+        fs::create_dir_all(&instance_root).unwrap();
+        let mut archive = zip::ZipArchive::new(std::io::Cursor::new(zip_bytes)).unwrap();
+        let result = extract_override_entries(&mut archive, "overrides", &instance_root);
+        assert!(result.is_err(), "drive-prefixed override path must fail");
+        assert!(!instance_root.join("C:/Windows/evil.dll").exists());
+    }
+
+    #[test]
     fn allocate_instance_id_deduplicates() {
         let temp = tempfile::tempdir().unwrap();
         let versions_dir = temp.path();
@@ -1848,6 +2194,34 @@ mod tests {
             allocate_instance_version_id(versions_dir, "My Pack!").unwrap(),
             "My-Pack-2"
         );
+    }
+
+    #[test]
+    fn creating_instance_does_not_copy_existing_runtime_content() {
+        let temp = tempfile::tempdir().unwrap();
+        let versions_dir = temp.path();
+        let source_dir = versions_dir.join("fabric-source");
+        fs::create_dir_all(source_dir.join("mods")).unwrap();
+        fs::write(
+            source_dir.join("fabric-source.json"),
+            r#"{"id":"fabric-source","mainClass":"example.Main"}"#,
+        )
+        .unwrap();
+        fs::write(source_dir.join("fabric-source.jar"), b"runtime").unwrap();
+        fs::write(source_dir.join("mods/unrelated.jar"), b"unrelated").unwrap();
+        fs::write(source_dir.join("options.txt"), b"unrelated").unwrap();
+
+        create_instance_from_profile(versions_dir, "fabric-source", "pack-instance").unwrap();
+
+        let target_dir = versions_dir.join("pack-instance");
+        assert!(target_dir.join("pack-instance.json").is_file());
+        assert!(target_dir.join("pack-instance.jar").is_file());
+        assert!(!target_dir.join("mods/unrelated.jar").exists());
+        assert!(!target_dir.join("options.txt").exists());
+        let profile: serde_json::Value =
+            serde_json::from_slice(&fs::read(target_dir.join("pack-instance.json")).unwrap())
+                .unwrap();
+        assert_eq!(profile.get("id").and_then(|value| value.as_str()), Some("pack-instance"));
     }
 
     #[test]
