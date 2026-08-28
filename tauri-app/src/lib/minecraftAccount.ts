@@ -16,6 +16,24 @@ export function createMicrosoftAccountId(uuid: string): string {
   return `microsoft-${uuid.trim().toLowerCase()}`;
 }
 
+function normalizeMinecraftSkinUrl(raw: unknown): string | null {
+  if (typeof raw !== "string" || !raw.trim()) {
+    return null;
+  }
+  try {
+    const parsed = new URL(raw.trim());
+    if (
+      parsed.protocol === "http:" &&
+      parsed.hostname.toLowerCase() === "textures.minecraft.net"
+    ) {
+      parsed.protocol = "https:";
+    }
+    return parsed.protocol === "https:" ? parsed.toString() : null;
+  } catch {
+    return null;
+  }
+}
+
 export function normalizeMinecraftAccount(raw: unknown): MinecraftAccount | null {
   if (!raw || typeof raw !== "object") {
     return null;
@@ -49,8 +67,11 @@ export function normalizeMinecraftAccount(raw: unknown): MinecraftAccount | null
         ? value.refreshToken
         : null,
     xuid: typeof value.xuid === "string" && value.xuid.trim() ? value.xuid : null,
-    skinUrl: typeof value.skinUrl === "string" && value.skinUrl.trim() ? value.skinUrl : null,
-    expiresAt: typeof value.expiresAt === "number" ? value.expiresAt : null,
+    skinUrl: normalizeMinecraftSkinUrl(value.skinUrl),
+    expiresAt:
+      typeof value.expiresAt === "number" && Number.isFinite(value.expiresAt)
+        ? value.expiresAt
+        : null,
     addedAt: typeof value.addedAt === "number" ? value.addedAt : Date.now(),
     needsRelogin: type === "microsoft" && value.needsRelogin === true
   };
@@ -186,7 +207,8 @@ function skinLookupParams(
   const lookupUuid =
     identity.type === "microsoft" && uuid && uuid !== NIL_MINECRAFT_UUID ? uuid : null;
   if (lookupUuid) {
-    return { key: `uuid:${lookupUuid.toLowerCase()}`, uuid: lookupUuid, username: null };
+    const normalizedUuid = lookupUuid.replaceAll("-", "").toLowerCase();
+    return { key: `uuid:${normalizedUuid}`, uuid: normalizedUuid, username: null };
   }
   if (username) {
     return { key: `name:${username.toLowerCase()}`, uuid: null, username };
@@ -214,7 +236,7 @@ export async function lookupMinecraftSkinUrl(
     username: params.username
   })
     .then((url) => {
-      const normalized = typeof url === "string" && url.trim() ? url : null;
+      const normalized = normalizeMinecraftSkinUrl(url);
       skinLookupCache.set(params.key, {
         url: normalized,
         expiresAt: Date.now() + (normalized ? SKIN_LOOKUP_HIT_TTL_MS : SKIN_LOOKUP_MISS_TTL_MS)

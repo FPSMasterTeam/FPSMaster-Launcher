@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::env;
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
-use std::net::TcpListener;
+use std::net::{IpAddr, TcpListener};
 use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -279,7 +279,12 @@ fn start_minecraft_device_login_blocking() -> Result<MinecraftDeviceLoginStart, 
             ("scope", MINECRAFT_MICROSOFT_SCOPE),
         ])
         .send()
-        .map_err(|e| format!("Failed to start Microsoft device login: {}", describe_http_error(&e)))?;
+        .map_err(|e| {
+            format!(
+                "Failed to start Microsoft device login: {}",
+                describe_http_error(&e)
+            )
+        })?;
     let status = response.status();
     let text = response
         .text()
@@ -353,7 +358,12 @@ fn start_minecraft_browser_login_blocking(
             ("scope", MINECRAFT_MICROSOFT_SCOPE),
         ])
         .send()
-        .map_err(|e| format!("Failed to exchange Microsoft authorization code: {}", describe_http_error(&e)))?;
+        .map_err(|e| {
+            format!(
+                "Failed to exchange Microsoft authorization code: {}",
+                describe_http_error(&e)
+            )
+        })?;
     let status = response.status();
     let text = response
         .text()
@@ -395,7 +405,12 @@ fn poll_minecraft_device_login_blocking(
             ("device_code", trimmed_device_code.as_str()),
         ])
         .send()
-        .map_err(|e| format!("Failed to poll Microsoft device login: {}", describe_http_error(&e)))?;
+        .map_err(|e| {
+            format!(
+                "Failed to poll Microsoft device login: {}",
+                describe_http_error(&e)
+            )
+        })?;
     let status = response.status();
     let text = response
         .text()
@@ -498,7 +513,12 @@ fn refresh_minecraft_account_blocking(
             ("scope", MINECRAFT_MICROSOFT_SCOPE),
         ])
         .send()
-        .map_err(|e| format!("Failed to refresh Microsoft login: {}", describe_http_error(&e)))?;
+        .map_err(|e| {
+            format!(
+                "Failed to refresh Microsoft login: {}",
+                describe_http_error(&e)
+            )
+        })?;
     let status = response.status();
     let text = response
         .text()
@@ -511,12 +531,15 @@ fn refresh_minecraft_account_blocking(
                 normalize_microsoft_error_description(value.error_description.as_deref(), fallback)
             })
             .unwrap_or_else(|| parse_microsoft_error_response(status, &text, fallback));
-        // Diagnostic only carries the HTTP status and Microsoft's error description
-        // (AADSTS...): no tokens, account names or auth URLs may enter the log store.
+        // Microsoft's free-form description can include an account identifier,
+        // correlation URL, or other user data. Keep diagnostics structural only.
         push_ui_log(
             "auth",
             "warn",
-            &format!("Microsoft token refresh rejected (HTTP {status}): {error}"),
+            &format!(
+                "Microsoft token refresh rejected (HTTP {}); interactive sign-in may be required",
+                status.as_u16()
+            ),
         );
         return Err(error);
     }
@@ -558,7 +581,12 @@ fn complete_minecraft_microsoft_account(
             "TokenType": "JWT",
         }))
         .send()
-        .map_err(|e| format!("Failed to authenticate with Xbox Live: {}", describe_http_error(&e)))?;
+        .map_err(|e| {
+            format!(
+                "Failed to authenticate with Xbox Live: {}",
+                describe_http_error(&e)
+            )
+        })?;
     let xbox_status = xbox_response.status();
     let xbox_text = xbox_response
         .text()
@@ -608,7 +636,12 @@ fn complete_minecraft_microsoft_account(
             "TokenType": "JWT",
         }))
         .send()
-        .map_err(|e| format!("Failed to authorize XSTS token: {}", describe_http_error(&e)))?;
+        .map_err(|e| {
+            format!(
+                "Failed to authorize XSTS token: {}",
+                describe_http_error(&e)
+            )
+        })?;
     let xsts_status = xsts_response.status();
     let xsts_text = xsts_response
         .text()
@@ -648,7 +681,12 @@ fn complete_minecraft_microsoft_account(
             "identityToken": format!("XBL3.0 x={};{}", user_hash, xsts_payload.token),
         }))
         .send()
-        .map_err(|e| format!("Failed to sign in to Minecraft Services: {}", describe_http_error(&e)))?;
+        .map_err(|e| {
+            format!(
+                "Failed to sign in to Minecraft Services: {}",
+                describe_http_error(&e)
+            )
+        })?;
     let minecraft_login_status = minecraft_login_response.status();
     let minecraft_login_text = minecraft_login_response
         .text()
@@ -668,7 +706,12 @@ fn complete_minecraft_microsoft_account(
         .get("https://api.minecraftservices.com/entitlements/mcstore")
         .bearer_auth(&minecraft_login_payload.access_token)
         .send()
-        .map_err(|e| format!("Failed to fetch Minecraft entitlements: {}", describe_http_error(&e)))?;
+        .map_err(|e| {
+            format!(
+                "Failed to fetch Minecraft entitlements: {}",
+                describe_http_error(&e)
+            )
+        })?;
     let entitlements_status = entitlements_response.status();
     let entitlements_text = entitlements_response
         .text()
@@ -714,7 +757,12 @@ fn complete_minecraft_microsoft_account(
         .get("https://api.minecraftservices.com/minecraft/profile")
         .bearer_auth(&minecraft_login_payload.access_token)
         .send()
-        .map_err(|e| format!("Failed to fetch Minecraft profile: {}", describe_http_error(&e)))?;
+        .map_err(|e| {
+            format!(
+                "Failed to fetch Minecraft profile: {}",
+                describe_http_error(&e)
+            )
+        })?;
     let profile_status = profile_response.status();
     let profile_text = profile_response
         .text()
@@ -791,9 +839,8 @@ fn active_profile_skin_url(skins: &[MinecraftProfileSkin]) -> Option<String> {
                 .is_some_and(|state| state.eq_ignore_ascii_case("ACTIVE"))
         })
         .or_else(|| skins.first())
-        .and_then(|skin| skin.url.clone())
-        .map(|url| url.trim().to_string())
-        .filter(|url| !url.is_empty())
+        .and_then(|skin| skin.url.as_deref())
+        .and_then(normalize_minecraft_skin_url)
 }
 
 fn lookup_minecraft_skin_url_blocking(
@@ -876,7 +923,12 @@ fn fetch_minecraft_skin_url(
             "https://sessionserver.mojang.com/session/minecraft/profile/{normalized_uuid}"
         ))
         .send()
-        .map_err(|e| format!("Failed to fetch Minecraft session profile: {}", describe_http_error(&e)))?;
+        .map_err(|e| {
+            format!(
+                "Failed to fetch Minecraft session profile: {}",
+                describe_http_error(&e)
+            )
+        })?;
     let status = response.status();
     let text = response
         .text()
@@ -914,8 +966,22 @@ fn fetch_minecraft_skin_url(
     Ok(textures_payload
         .textures
         .skin
-        .map(|skin| skin.url)
-        .filter(|url| !url.trim().is_empty()))
+        .and_then(|skin| normalize_minecraft_skin_url(&skin.url)))
+}
+
+/// Texture payloads historically use `http://textures.minecraft.net/...`, while
+/// the launcher CSP intentionally permits remote images over HTTPS only. Upgrade
+/// that trusted host and reject every other non-HTTPS skin URL.
+fn normalize_minecraft_skin_url(raw: &str) -> Option<String> {
+    let mut parsed = reqwest::Url::parse(raw.trim()).ok()?;
+    if parsed.scheme() == "http"
+        && parsed
+            .host_str()
+            .is_some_and(|host| host.eq_ignore_ascii_case("textures.minecraft.net"))
+    {
+        parsed.set_scheme("https").ok()?;
+    }
+    (parsed.scheme() == "https").then(|| parsed.to_string())
 }
 
 fn resolve_minecraft_redirect_url() -> Result<String, String> {
@@ -967,9 +1033,9 @@ fn bind_minecraft_redirect_listener(redirect_url: &str) -> Result<(TcpListener, 
     let port = parsed
         .port_or_known_default()
         .ok_or_else(|| "Minecraft redirect URL is missing port".to_string())?;
-    let is_loopback_host =
-        host.eq_ignore_ascii_case("localhost") || host == "127.0.0.1" || host == "[::1]";
-    let bind_target = format!("{host}:{port}");
+    let is_loopback_host = is_loopback_redirect_host(&host);
+    let listener_host = format_listener_host(&host);
+    let bind_target = format!("{listener_host}:{port}");
     let listener = match TcpListener::bind(&bind_target) {
         Ok(listener) => listener,
         Err(e)
@@ -979,12 +1045,13 @@ fn bind_minecraft_redirect_listener(redirect_url: &str) -> Result<(TcpListener, 
                     std::io::ErrorKind::AddrInUse | std::io::ErrorKind::PermissionDenied
                 ) =>
         {
-            let fallback = TcpListener::bind(format!("{host}:0")).map_err(|fallback_err| {
-                format!(
+            let fallback =
+                TcpListener::bind(format!("{listener_host}:0")).map_err(|fallback_err| {
+                    format!(
                     "Cannot bind the Microsoft OAuth callback listener on {bind_target} ({e}), \
                      and no fallback loopback port was available either ({fallback_err})."
                 )
-            })?;
+                })?;
             let actual_port = fallback
                 .local_addr()
                 .map_err(|e| format!("Failed to read Minecraft OAuth fallback listener port: {e}"))?
@@ -1004,6 +1071,23 @@ fn bind_minecraft_redirect_listener(redirect_url: &str) -> Result<(TcpListener, 
         .set_nonblocking(true)
         .map_err(|e| format!("Failed to configure Minecraft OAuth redirect listener: {e}"))?;
     Ok((listener, parsed.to_string()))
+}
+
+fn is_loopback_redirect_host(host: &str) -> bool {
+    let unbracketed = host.trim_matches(|character| character == '[' || character == ']');
+    host.eq_ignore_ascii_case("localhost")
+        || unbracketed
+            .parse::<IpAddr>()
+            .is_ok_and(|address| address.is_loopback())
+}
+
+fn format_listener_host(host: &str) -> String {
+    let unbracketed = host.trim_matches(|character| character == '[' || character == ']');
+    if unbracketed.contains(':') {
+        format!("[{unbracketed}]")
+    } else {
+        unbracketed.to_string()
+    }
 }
 
 fn build_minecraft_authorize_url(
@@ -1309,4 +1393,29 @@ fn unix_timestamp_millis() -> i64 {
         .as_millis()
         .try_into()
         .unwrap_or(i64::MAX)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{format_listener_host, is_loopback_redirect_host, normalize_minecraft_skin_url};
+
+    #[test]
+    fn normalizes_legacy_minecraft_texture_urls_to_https() {
+        assert_eq!(
+            normalize_minecraft_skin_url("http://textures.minecraft.net/texture/abc"),
+            Some("https://textures.minecraft.net/texture/abc".to_string())
+        );
+        assert_eq!(
+            normalize_minecraft_skin_url("http://example.com/skin.png"),
+            None
+        );
+    }
+
+    #[test]
+    fn recognizes_and_formats_ipv6_loopback() {
+        assert!(is_loopback_redirect_host("::1"));
+        assert!(is_loopback_redirect_host("[::1]"));
+        assert_eq!(format_listener_host("::1"), "[::1]");
+        assert_eq!(format_listener_host("[::1]"), "[::1]");
+    }
 }

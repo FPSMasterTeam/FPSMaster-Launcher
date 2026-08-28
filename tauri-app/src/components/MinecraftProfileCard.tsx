@@ -387,26 +387,29 @@ function useResolvedMinecraftSkinUrl(account: MinecraftAccount | null | undefine
   const accountType = account?.type ?? null;
   const accountUuid = account?.uuid ?? "";
   const accountUsername = account?.username ?? "";
-  const [lookedUpSkinUrl, setLookedUpSkinUrl] = useState<string | null>(null);
+  const identityKey = accountType ? `${accountType}:${accountUuid}:${accountUsername}` : "";
+  const [lookupResult, setLookupResult] = useState<{
+    identityKey: string;
+    url: string | null;
+  }>({ identityKey: "", url: null });
 
   useEffect(() => {
-    setLookedUpSkinUrl(null);
     if (storedSkinUrl || !accountType) {
       return;
     }
     let disposed = false;
     void lookupMinecraftSkinUrl({ type: accountType, uuid: accountUuid, username: accountUsername })
       .then((url) => {
-        if (!disposed && url) {
-          setLookedUpSkinUrl(url);
+        if (!disposed) {
+          setLookupResult({ identityKey, url });
         }
       });
     return () => {
       disposed = true;
     };
-  }, [storedSkinUrl, accountType, accountUuid, accountUsername]);
+  }, [storedSkinUrl, accountType, accountUuid, accountUsername, identityKey]);
 
-  return storedSkinUrl ?? lookedUpSkinUrl;
+  return storedSkinUrl ?? (lookupResult.identityKey === identityKey ? lookupResult.url : null);
 }
 
 function MinecraftAvatar({

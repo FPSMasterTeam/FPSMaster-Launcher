@@ -211,32 +211,45 @@ export function useMinecraftAccounts(deps: UseMinecraftAccountsDeps): MinecraftA
     [applyRefreshedAccount, markNeedsRelogin]
   );
 
-  // One background refresh sweep. `includeFlagged` re-tries accounts already
-  // marked needs-relogin (used at startup: the failure may have been transient,
-  // e.g. no network on the previous run).
+  // One refresh sweep. `includeFlagged` re-tries accounts already marked
+  // needs-relogin; `onlyAccountId` scopes account-switch checks to the account
+  // the user actually selected.
   const runAutoRefreshSweep = useCallback(
-    (includeFlagged: boolean) => {
+    (includeFlagged: boolean, onlyAccountId?: string) => {
       if (!depsRef.current.secureStorageReady) {
         return;
       }
       const now = Date.now();
       for (const account of accountsRef.current) {
         if (account.type !== "microsoft") continue;
-        if (!shouldRefreshMicrosoftAccount(account, MICROSOFT_REFRESH_MARGIN_MS, now)) continue;
-        if (!account.refreshToken?.trim()) continue;
+        if (onlyAccountId && account.id !== onlyAccountId) continue;
+        if (
+          !account.needsRelogin &&
+          !shouldRefreshMicrosoftAccount(account, MICROSOFT_REFRESH_MARGIN_MS, now)
+        ) {
+          continue;
+        }
+        if (!account.refreshToken?.trim()) {
+          markNeedsRelogin(account.id);
+          continue;
+        }
         if (!includeFlagged && account.needsRelogin) continue;
         const failedAt = lastRefreshFailureAtRef.current.get(account.id);
-        if (failedAt !== undefined && now - failedAt < AUTO_REFRESH_FAILURE_COOLDOWN_MS) continue;
+        if (
+          !includeFlagged &&
+          failedAt !== undefined &&
+          now - failedAt < AUTO_REFRESH_FAILURE_COOLDOWN_MS
+        ) {
+          continue;
+        }
         void refreshMicrosoftAccount(account.id).catch(() => {
-          // Detail stays in the backend diagnostic log; the toast is the
-          // user-facing "please sign in again" signal.
           notifyWarning(
             depsRef.current.t("minecraftAccount.refreshFailed", { name: account.username })
           );
         });
       }
     },
-    [refreshMicrosoftAccount]
+    [markNeedsRelogin, refreshMicrosoftAccount]
   );
 
   // Validate + refresh Microsoft sessions once accounts land from secure storage.
@@ -264,11 +277,19 @@ export function useMinecraftAccounts(deps: UseMinecraftAccountsDeps): MinecraftA
   // Refresh when the user switches to a Microsoft account that needs it, so the
   // picked account is ready before launch instead of failing at launch time.
   const currentAccountId = currentAccount?.id ?? null;
+  const accountSwitchReadyRef = useRef(false);
   useEffect(() => {
     if (!deps.secureStorageReady || !currentAccountId) {
       return;
     }
-    runAutoRefreshSweep(false);
+    // The startup sweep already covers the initially restored selection. Waiting
+    // for the next id change also avoids attaching duplicate failure toasts to the
+    // same shared refresh promise during initialization.
+    if (!accountSwitchReadyRef.current) {
+      accountSwitchReadyRef.current = true;
+      return;
+    }
+    runAutoRefreshSweep(true, currentAccountId);
   }, [deps.secureStorageReady, currentAccountId, runAutoRefreshSweep]);
 
   // Persist accounts (secure) + selected id (local).

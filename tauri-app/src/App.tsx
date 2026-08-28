@@ -2629,10 +2629,6 @@ function Launcher() {
       return account;
     }
 
-    if (!account.refreshToken?.trim()) {
-      throw new Error(t("minecraftAccount.microsoftRefreshRequired"));
-    }
-
     try {
       return await mcAccounts.refreshMicrosoftAccount(account.id, ipcSession);
     } catch (error) {
