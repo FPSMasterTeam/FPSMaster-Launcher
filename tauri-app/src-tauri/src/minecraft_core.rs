@@ -4,7 +4,7 @@ use crate::{
 };
 use base64::Engine;
 use regex::Regex;
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value};
 use std::collections::{HashMap, HashSet};
 use std::ffi::{OsStr, OsString};
 use std::fs;
@@ -794,7 +794,7 @@ pub(crate) fn install_fabric(
         "Fabric loader metadata ready",
     );
     let profile_id = format!("fabric-loader-{loader_version}-{game_version}");
-    let mut version_json = row
+    let version_json = row
         .as_object()
         .cloned()
         .ok_or_else(|| "Fabric generated profile is not an object".to_string())?;
