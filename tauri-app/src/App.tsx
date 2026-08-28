@@ -115,10 +115,12 @@ import {
   createLaunchPrepareDialogState,
   createSessionId,
   applyTheme,
+  applyVisualSettings,
   loadInstances,
   loadSettings,
   parseInstallIpc,
   resolveBackgroundAssetUrl,
+  resolveBackgroundVideoUrl,
   resolveInstallVersion
 } from "./utils/launcher";
 import { loadSecureRaw, persistSecureJson } from "./utils/secureStorage";
@@ -177,6 +179,12 @@ export function App() {
   useEffect(() => {
     const settings = loadSettings();
     applyTheme(settings.themeMode, settings.themeAccent, settings.customAccentHex);
+    applyVisualSettings(
+      settings.blurMode,
+      settings.cornerRadiusScale,
+      settings.glowAmount,
+      resolveBackgroundVideoUrl(settings) !== ""
+    );
   }, []);
 
   // The runtime monitor opens as its own webview window pointed at
@@ -296,6 +304,7 @@ function Launcher() {
   }, [instances, selected, selectedNovaGameVersion]);
   const activeBackgroundUrl =
     resolveBackgroundAssetUrl(settings);
+  const activeBackgroundVideoUrl = resolveBackgroundVideoUrl(settings);
   const authenticated = Boolean(launcherAuth?.token?.trim());
   const launching = busy && launchingInstanceId !== null;
   const loaderDisplayName = (value: Loader) => t(loaderLabelKey(value));
@@ -479,6 +488,15 @@ function Launcher() {
   useEffect(() => {
     applyTheme(settings.themeMode, settings.themeAccent, settings.customAccentHex);
   }, [settings.themeMode, settings.themeAccent, settings.customAccentHex]);
+
+  useEffect(() => {
+    applyVisualSettings(
+      settings.blurMode,
+      settings.cornerRadiusScale,
+      settings.glowAmount,
+      activeBackgroundVideoUrl !== ""
+    );
+  }, [settings.blurMode, settings.cornerRadiusScale, settings.glowAmount, activeBackgroundVideoUrl]);
 
   useEffect(() => {
     if (current) localStorage.setItem(STORAGE_KEYS.selected, current.id);
@@ -2851,11 +2869,14 @@ function Launcher() {
       <div className="launcher-shell relative flex h-screen w-screen overflow-hidden bg-[var(--bg-primary)] text-[var(--text-primary)] select-none pixel-pattern">
         {/* Drop the blurred full-window background while the monitor window is open:
             the game hogs the GPU, and a live-blurred compositor layer is the single
-            most expensive thing this window paints. */}
+            most expensive thing this window paints. The video pauses (not just
+            hides) whenever the window itself is hidden. */}
         <AppBackground
           url={monitorWindowOpen ? null : activeBackgroundUrl}
+          videoUrl={monitorWindowOpen ? null : activeBackgroundVideoUrl || null}
           opacity={settings.backgroundOpacity}
-          blur={settings.backgroundBlur}
+          blur={settings.blurMode === "background" ? settings.backgroundBlur : 0}
+          paused={!windowVisible}
         />
         <WindowTitleBar version={currentLauncherVersion} onClose={stableCloseWindow} />
 

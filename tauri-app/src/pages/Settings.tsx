@@ -1,6 +1,7 @@
 import {
   Cpu,
   Download,
+  Film,
   FolderOpen,
   Globe,
   ImagePlus,
@@ -8,7 +9,9 @@ import {
   Monitor,
   MoonStar,
   Palette,
+  Play,
   RefreshCw,
+  SlidersHorizontal,
   SunMedium,
   Trash2,
   User
@@ -28,9 +31,11 @@ import {
 import Button from "../components/Button";
 import ChangelogNotes from "../components/ChangelogNotes";
 import Select from "../components/Select";
+import { VISUAL_PROFILE_PRESETS, resolveVisualProfile } from "../constants";
 import { LOCALE_OPTIONS, useI18n } from "../i18n";
 import type {
   BackgroundSource,
+  BlurMode,
   DownloadSource,
   DownloadedLauncherUpdate,
   LauncherAppUpdateChannel,
@@ -38,15 +43,16 @@ import type {
   LauncherUser,
   Settings,
   ThemeAccent,
-  ThemeMode
+  ThemeMode,
+  VisualProfile
 } from "../types";
 import { IS_WINDOWS } from "../utils/platform";
-import { resolveBackgroundAssetUrl } from "../utils/launcher";
+import { resolveBackgroundAssetUrl, resolveBackgroundVideoUrl } from "../utils/launcher";
 
 type SettingsTab =
   | "account"
   | "runtime"
-  | "general"
+  | "behavior"
   | "appearance"
   | "background"
   | "updates";
@@ -96,6 +102,7 @@ function SettingsPage({
   const [customAccentDraft, setCustomAccentDraft] = useState(settings.customAccentHex);
   const [showLauncherUpdateNotes, setShowLauncherUpdateNotes] = useState(false);
   const backgroundInputRef = useRef<HTMLInputElement>(null);
+  const backgroundVideoInputRef = useRef<HTMLInputElement>(null);
   const backgroundAccentRequestRef = useRef(0);
 
   function isAbsolutePath(path: string): boolean {
@@ -180,7 +187,9 @@ function SettingsPage({
   );
 
   const activeBackgroundUrl = resolveBackgroundAssetUrl(settings);
-  const hasBackground = activeBackgroundUrl.trim() !== "";
+  const activeBackgroundVideoUrl = resolveBackgroundVideoUrl(settings);
+  const hasBackgroundImage = activeBackgroundUrl.trim() !== "";
+  const hasBackground = hasBackgroundImage || activeBackgroundVideoUrl !== "";
 
   async function requestBackgroundAccent(
     targetSettings: Settings,
@@ -219,7 +228,8 @@ function SettingsPage({
 
   function applyBackgroundSettings(nextSettings: Settings) {
     onChange(nextSettings);
-    if (nextSettings.themeAccent === "background") {
+    // Accent extraction reads pixels from an image; a video source has none.
+    if (nextSettings.themeAccent === "background" && nextSettings.backgroundSource !== "video") {
       void requestBackgroundAccent(nextSettings, false);
     }
   }
@@ -245,8 +255,44 @@ function SettingsPage({
     }
   }
 
+  // Prefers the native file dialog (returns a persistent absolute path); when
+  // Tauri is unavailable (browser dev), falls back to a hidden <input type=file>
+  // whose object URL lives until the window closes.
+  async function handlePickBackgroundVideo() {
+    try {
+      const selected = await open({
+        multiple: false,
+        title: t("settings.backgroundVideoPick"),
+        filters: [{ name: "Video", extensions: ["mp4", "webm"] }]
+      });
+      if (selected && typeof selected === "string") {
+        onChange({ ...settings, backgroundSource: "video", backgroundVideo: selected });
+        setBackgroundError("");
+      }
+    } catch {
+      backgroundVideoInputRef.current?.click();
+    }
+  }
+
+  function handleBackgroundVideoFile(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+    if (file.type !== "video/mp4" && file.type !== "video/webm") {
+      setBackgroundError(t("settings.backgroundVideoTypeError"));
+      return;
+    }
+    onChange({ ...settings, backgroundSource: "video", backgroundVideo: URL.createObjectURL(file) });
+    setBackgroundError("");
+  }
+
   async function switchBackgroundSource(source: BackgroundSource) {
     if (source === "system" && !IS_WINDOWS) return;
+    if (source === "video") {
+      onChange({ ...settings, backgroundSource: "video" });
+      setBackgroundError("");
+      return;
+    }
     if (source === "web-random") {
       applyBackgroundSettings({
         ...settings,
@@ -344,11 +390,31 @@ function SettingsPage({
   }
 
   function activateBackgroundAccent() {
-    if (!hasBackground) {
+    if (!hasBackgroundImage) {
       setAccentError(t("settings.backgroundNoImage"));
       return;
     }
     void requestBackgroundAccent(settings, true);
+  }
+
+  function applyVisualProfile(profile: Exclude<VisualProfile, "custom">) {
+    const preset = VISUAL_PROFILE_PRESETS[profile];
+    onChange({
+      ...settings,
+      visualProfile: profile,
+      blurMode: preset.blurMode,
+      cornerRadiusScale: preset.cornerRadiusScale,
+      glowAmount: preset.glowAmount
+    });
+  }
+
+  // Manual knob moves demote the stored profile to "custom" unless the values
+  // happen to land exactly on a preset again.
+  function updateVisualKnobs(
+    partial: Partial<Pick<Settings, "blurMode" | "cornerRadiusScale" | "glowAmount">>
+  ) {
+    const next = { ...settings, ...partial };
+    onChange({ ...next, visualProfile: resolveVisualProfile(next) });
   }
 
   const launcherUpdatePublishedAt = launcherUpdate
@@ -379,8 +445,8 @@ function SettingsPage({
       });
     }
     items.push({ id: "runtime", label: t("settings.runtimeConfig"), icon: <Cpu size={15} /> });
-    items.push({ id: "general", label: t("settings.general"), icon: <Monitor size={15} /> });
-    items.push({ id: "appearance", label: t("settings.themeMode"), icon: <Palette size={15} /> });
+    items.push({ id: "behavior", label: t("settings.behavior"), icon: <SlidersHorizontal size={15} /> });
+    items.push({ id: "appearance", label: t("settings.appearance"), icon: <Palette size={15} /> });
     items.push({ id: "background", label: t("settings.background"), icon: <ImagePlus size={15} /> });
     items.push({ id: "updates", label: t("settings.launcherUpdates"), icon: <Download size={15} /> });
     return items;
@@ -425,6 +491,7 @@ function SettingsPage({
             <h2 className="section-title">{activeLabel}</h2>
           </div>
 
+          <div key={activeTab} className="panel-transition grid gap-5">
           {activeTab === "account" && launcherUser && (
             <div className="settings-group">
               <div className="settings-row">
@@ -500,10 +567,58 @@ function SettingsPage({
                   <span>16 GB</span>
                 </div>
               </div>
+
+              <div className="settings-row">
+                <div className="settings-row-main">
+                  <p className="settings-row-title">{t("settings.downloadSource")}</p>
+                </div>
+                <div className="settings-row-control w-56">
+                  <Select
+                    value={settings.downloadSource}
+                    onValueChange={(value) =>
+                      onChange({ ...settings, downloadSource: value as DownloadSource })
+                    }
+                  >
+                    <Select.Trigger className="ui-select-trigger w-full">
+                      <Select.Value />
+                    </Select.Trigger>
+                    <Select.Content>
+                      {downloadSources.map((source) => (
+                        <Select.Item key={source} value={source}>
+                          {t(`settings.downloadSource.${source}` as const)}
+                        </Select.Item>
+                      ))}
+                    </Select.Content>
+                  </Select>
+                </div>
+              </div>
+
+              <div className="settings-row">
+                <div className="settings-row-main">
+                  <p className="settings-row-title">{t("settings.downloadThreads")}</p>
+                  <p className="settings-row-hint">{t("settings.downloadThreadsHint")}</p>
+                </div>
+                <div className="settings-row-control">
+                  <input
+                    className="ui-input w-24 text-center"
+                    type="number"
+                    min={1}
+                    max={32}
+                    step={1}
+                    value={settings.downloadThreads}
+                    onChange={(event) =>
+                      onChange({
+                        ...settings,
+                        downloadThreads: Math.max(1, Math.min(32, Number(event.target.value) || 1))
+                      })
+                    }
+                  />
+                </div>
+              </div>
             </div>
           )}
 
-          {activeTab === "general" && (
+          {activeTab === "behavior" && (
             <>
               <div className="settings-group">
                 <div className="settings-row">
@@ -526,54 +641,6 @@ function SettingsPage({
                         ))}
                       </Select.Content>
                     </Select>
-                  </div>
-                </div>
-
-                <div className="settings-row">
-                  <div className="settings-row-main">
-                    <p className="settings-row-title">{t("settings.downloadSource")}</p>
-                  </div>
-                  <div className="settings-row-control w-56">
-                    <Select
-                      value={settings.downloadSource}
-                      onValueChange={(value) =>
-                        onChange({ ...settings, downloadSource: value as DownloadSource })
-                      }
-                    >
-                      <Select.Trigger className="ui-select-trigger w-full">
-                        <Select.Value />
-                      </Select.Trigger>
-                      <Select.Content>
-                        {downloadSources.map((source) => (
-                          <Select.Item key={source} value={source}>
-                            {t(`settings.downloadSource.${source}` as const)}
-                          </Select.Item>
-                        ))}
-                      </Select.Content>
-                    </Select>
-                  </div>
-                </div>
-
-                <div className="settings-row">
-                  <div className="settings-row-main">
-                    <p className="settings-row-title">{t("settings.downloadThreads")}</p>
-                    <p className="settings-row-hint">{t("settings.downloadThreadsHint")}</p>
-                  </div>
-                  <div className="settings-row-control">
-                    <input
-                      className="ui-input w-24 text-center"
-                      type="number"
-                      min={1}
-                      max={32}
-                      step={1}
-                      value={settings.downloadThreads}
-                      onChange={(event) =>
-                        onChange({
-                          ...settings,
-                          downloadThreads: Math.max(1, Math.min(32, Number(event.target.value) || 1))
-                        })
-                      }
-                    />
                   </div>
                 </div>
               </div>
@@ -713,6 +780,132 @@ function SettingsPage({
                 </div>
               </div>
               {accentError && <p className="settings-error">{accentError}</p>}
+
+              <div className="settings-group">
+                <div className="settings-row is-stacked">
+                  <div className="settings-row-main">
+                    <p className="settings-row-title">{t("settings.visualProfile")}</p>
+                    <p className="settings-row-hint">{t("settings.visualProfileHint")}</p>
+                  </div>
+                  <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                    <button
+                      type="button"
+                      className={`profile-option ${settings.visualProfile === "standard" ? "is-active" : ""}`}
+                      onClick={() => applyVisualProfile("standard")}
+                    >
+                      <p className="profile-option-title">{t("settings.profile.standard")}</p>
+                      <p className="profile-option-hint">{t("settings.profile.standardDesc")}</p>
+                    </button>
+                    <button
+                      type="button"
+                      className={`profile-option ${settings.visualProfile === "glass" ? "is-active" : ""}`}
+                      onClick={() => applyVisualProfile("glass")}
+                    >
+                      <p className="profile-option-title">{t("settings.profile.glass")}</p>
+                      <p className="profile-option-hint">{t("settings.profile.glassDesc")}</p>
+                    </button>
+                  </div>
+                  {settings.visualProfile === "custom" && (
+                    <p className="settings-row-hint">{t("settings.profile.customNote")}</p>
+                  )}
+                </div>
+
+                <div className="settings-row">
+                  <div className="settings-row-main">
+                    <p className="settings-row-title">{t("settings.blurMode")}</p>
+                    <p className="settings-row-hint">
+                      {t(`settings.blurMode.${settings.blurMode}Hint` as const)}
+                    </p>
+                  </div>
+                  <div className="settings-row-control">
+                    <div className="segment-control !p-1">
+                      {(["off", "background", "frost"] as BlurMode[]).map((mode) => (
+                        <button
+                          key={mode}
+                          type="button"
+                          onClick={() => updateVisualKnobs({ blurMode: mode })}
+                          className={`segment-chip !min-h-8 px-3 ${settings.blurMode === mode ? "is-active" : ""}`}
+                        >
+                          {t(`settings.blurMode.${mode}` as const)}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="settings-row is-stacked">
+                  <div className="flex items-center justify-between gap-4">
+                    <p className="settings-row-title">{t("settings.cornerRadius")}</p>
+                    <span className="text-data text-xs font-semibold text-[var(--text-secondary)]">
+                      {settings.cornerRadiusScale}%
+                    </span>
+                  </div>
+                  <input
+                    type="range"
+                    min="75"
+                    max="150"
+                    step="5"
+                    value={settings.cornerRadiusScale}
+                    onChange={(event) =>
+                      updateVisualKnobs({
+                        cornerRadiusScale: Math.max(75, Math.min(150, Number(event.target.value) || 100))
+                      })
+                    }
+                    className="h-2 w-full cursor-pointer appearance-none rounded-lg bg-[var(--bg-secondary)] accent-[var(--mc-grass)]"
+                  />
+                </div>
+
+                <div className="settings-row is-stacked">
+                  <div className="flex items-center justify-between gap-4">
+                    <div className="settings-row-main">
+                      <p className="settings-row-title">{t("settings.glowAmount")}</p>
+                      <p className="settings-row-hint">{t("settings.glowAmountHint")}</p>
+                    </div>
+                    <span className="text-data text-xs font-semibold text-[var(--text-secondary)]">
+                      {settings.glowAmount}
+                    </span>
+                  </div>
+                  <input
+                    type="range"
+                    min="0"
+                    max="100"
+                    step="5"
+                    value={settings.glowAmount}
+                    onChange={(event) =>
+                      updateVisualKnobs({
+                        glowAmount: Math.max(0, Math.min(100, Number(event.target.value) || 0))
+                      })
+                    }
+                    className="h-2 w-full cursor-pointer appearance-none rounded-lg bg-[var(--bg-secondary)] accent-[var(--mc-grass)]"
+                  />
+                </div>
+
+                <div className="settings-row is-stacked">
+                  <div className="settings-row-main">
+                    <p className="settings-row-title">{t("settings.visualPreview")}</p>
+                    <p className="settings-row-hint">{t("settings.visualPreviewHint")}</p>
+                  </div>
+                  <div className="appearance-preview">
+                    <div className="appearance-preview-main">
+                      <p className="truncate text-sm font-semibold text-[var(--text-primary)]">
+                        {t("settings.visualPreviewCardTitle")}
+                      </p>
+                      <p className="mt-1 text-xs text-[var(--text-muted)]">
+                        {t("settings.visualPreviewCardHint")}
+                      </p>
+                    </div>
+                    <div className="flex flex-wrap items-center gap-2.5">
+                      <span className="badge badge-accent normal-case tracking-normal">
+                        {t("settings.visualPreviewBadge")}
+                      </span>
+                      <Button variant="primary" size="sm" className="cta-glow gap-2">
+                        <Play fill="currentColor" size={12} />
+                        {t("home.launch")}
+                      </Button>
+                    </div>
+                  </div>
+                </div>
+              </div>
             </>
           )}
 
@@ -727,7 +920,9 @@ function SettingsPage({
                         ? t("settings.backgroundWebHint")
                         : settings.backgroundSource === "system"
                           ? t("settings.backgroundSystemHint")
-                          : t("settings.backgroundHint")}
+                          : settings.backgroundSource === "video"
+                            ? t("settings.backgroundVideoHint")
+                            : t("settings.backgroundHint")}
                     </p>
                   </div>
                   <div className="settings-row-control">
@@ -738,6 +933,13 @@ function SettingsPage({
                         className={`segment-chip !min-h-8 px-3 ${settings.backgroundSource === "local" ? "is-active" : ""}`}
                       >
                         {t("settings.backgroundMode.local")}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void switchBackgroundSource("video")}
+                        className={`segment-chip !min-h-8 px-3 ${settings.backgroundSource === "video" ? "is-active" : ""}`}
+                      >
+                        {t("settings.backgroundMode.video")}
                       </button>
                       <button
                         type="button"
@@ -761,7 +963,22 @@ function SettingsPage({
 
                 <div className="settings-row is-stacked">
                   <div className="settings-preview">
-                    {hasBackground ? (
+                    {settings.backgroundSource === "video" ? (
+                      activeBackgroundVideoUrl ? (
+                        <video
+                          src={activeBackgroundVideoUrl}
+                          muted
+                          loop
+                          autoPlay
+                          playsInline
+                          disablePictureInPicture
+                        />
+                      ) : (
+                        <div className="flex h-32 items-center justify-center text-sm text-[var(--text-muted)]">
+                          {t("settings.backgroundNoVideo")}
+                        </div>
+                      )
+                    ) : hasBackgroundImage ? (
                       <div
                         className="h-32 w-full bg-cover bg-center bg-no-repeat"
                         style={{ backgroundImage: `url("${activeBackgroundUrl}")` }}
@@ -779,6 +996,13 @@ function SettingsPage({
                     className="hidden"
                     onChange={(event) => void handleBackgroundFile(event)}
                   />
+                  <input
+                    ref={backgroundVideoInputRef}
+                    type="file"
+                    accept="video/mp4,video/webm"
+                    className="hidden"
+                    onChange={handleBackgroundVideoFile}
+                  />
                   <div className="flex gap-2">
                     {settings.backgroundSource === "local" ? (
                       <Button
@@ -789,6 +1013,16 @@ function SettingsPage({
                       >
                         <ImagePlus size={14} />
                         {t("settings.backgroundUpload")}
+                      </Button>
+                    ) : settings.backgroundSource === "video" ? (
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        className="flex-1 gap-2"
+                        onClick={() => void handlePickBackgroundVideo()}
+                      >
+                        <Film size={14} />
+                        {t("settings.backgroundVideoPick")}
                       </Button>
                     ) : settings.backgroundSource === "web-random" ? (
                       <Button
@@ -820,7 +1054,9 @@ function SettingsPage({
                         onChange(
                           settings.backgroundSource === "web-random"
                             ? { ...settings, backgroundWebUrl: "" }
-                            : { ...settings, backgroundImage: "" }
+                            : settings.backgroundSource === "video"
+                              ? { ...settings, backgroundVideo: "" }
+                              : { ...settings, backgroundImage: "" }
                         )
                       }
                     >
@@ -874,7 +1110,14 @@ function SettingsPage({
 
                 <div className="settings-row is-stacked">
                   <div className="flex items-center justify-between gap-4">
-                    <p className="settings-row-title">{t("settings.backgroundBlur")}</p>
+                    <div className="settings-row-main">
+                      <p className="settings-row-title">{t("settings.backgroundBlur")}</p>
+                      {settings.backgroundSource === "video" ? (
+                        <p className="settings-row-hint">{t("settings.backgroundBlurVideoNote")}</p>
+                      ) : settings.blurMode !== "background" ? (
+                        <p className="settings-row-hint">{t("settings.backgroundBlurModeNote")}</p>
+                      ) : null}
+                    </div>
                     <span className="text-data text-xs font-semibold text-[var(--text-secondary)]">
                       {settings.backgroundBlur}px
                     </span>
@@ -885,7 +1128,11 @@ function SettingsPage({
                     max="32"
                     step="1"
                     value={settings.backgroundBlur}
-                    disabled={!hasBackground}
+                    disabled={
+                      !hasBackgroundImage ||
+                      settings.blurMode !== "background" ||
+                      settings.backgroundSource === "video"
+                    }
                     onChange={(event) =>
                       onChange({
                         ...settings,
@@ -1048,6 +1295,7 @@ function SettingsPage({
               </div>
             </>
           )}
+          </div>
         </div>
       </div>
 

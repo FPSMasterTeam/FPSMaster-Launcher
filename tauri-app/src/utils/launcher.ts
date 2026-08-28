@@ -7,6 +7,7 @@ import grassIcon from "../assets/icons/grass.png";
 import { detectLocaleFromEnvironment } from "../i18n";
 import type {
   BackgroundSource,
+  BlurMode,
   DownloadSource,
   InstallIpcEvent,
   InstallPhaseState,
@@ -20,7 +21,8 @@ import type {
   Settings,
   ThemeAccent,
   ThemeMode,
-  UiLogEntry
+  UiLogEntry,
+  VisualProfile
 } from "../types";
 
 export function createPhaseState(
@@ -199,6 +201,10 @@ export function loadSettings(): Settings {
       backgroundSource,
       backgroundImage:
         typeof parsed.backgroundImage === "string" ? parsed.backgroundImage : DEFAULT_SETTINGS.backgroundImage,
+      backgroundVideo:
+        typeof parsed.backgroundVideo === "string"
+          ? parsed.backgroundVideo
+          : DEFAULT_SETTINGS.backgroundVideo,
       backgroundWebUrl:
         typeof parsed.backgroundWebUrl === "string"
           ? parsed.backgroundWebUrl
@@ -211,6 +217,16 @@ export function loadSettings(): Settings {
         typeof parsed.backgroundBlur === "number"
           ? clamp(parsed.backgroundBlur, 0, 32)
           : DEFAULT_SETTINGS.backgroundBlur,
+      blurMode: parseBlurMode(parsed.blurMode),
+      cornerRadiusScale:
+        typeof parsed.cornerRadiusScale === "number"
+          ? clamp(Math.round(parsed.cornerRadiusScale), 75, 150)
+          : DEFAULT_SETTINGS.cornerRadiusScale,
+      glowAmount:
+        typeof parsed.glowAmount === "number"
+          ? clamp(Math.round(parsed.glowAmount), 0, 100)
+          : DEFAULT_SETTINGS.glowAmount,
+      visualProfile: parseVisualProfile(parsed.visualProfile),
       curseforgeApiKey:
         typeof parsed.curseforgeApiKey === "string"
           ? parsed.curseforgeApiKey
@@ -335,13 +351,30 @@ function parseCustomAccentHex(input: unknown): string {
 }
 
 function parseBackgroundSource(input: unknown): BackgroundSource {
-  if (input === "local" || input === "web-random" || input === "system") {
+  if (input === "local" || input === "video" || input === "web-random" || input === "system") {
     return input;
   }
   return DEFAULT_SETTINGS.backgroundSource;
 }
 
+function parseBlurMode(input: unknown): BlurMode {
+  if (input === "off" || input === "background" || input === "frost") {
+    return input;
+  }
+  return DEFAULT_SETTINGS.blurMode;
+}
+
+function parseVisualProfile(input: unknown): VisualProfile {
+  if (input === "standard" || input === "glass" || input === "custom") {
+    return input;
+  }
+  return DEFAULT_SETTINGS.visualProfile;
+}
+
 export function resolveBackgroundAssetUrl(settings: Settings): string {
+  if (settings.backgroundSource === "video") {
+    return "";
+  }
   if (settings.backgroundSource === "web-random") {
     return settings.backgroundWebUrl;
   }
@@ -353,6 +386,44 @@ export function resolveBackgroundAssetUrl(settings: Settings): string {
     return value.startsWith("data:") ? value : convertFileSrc(value);
   }
   return settings.backgroundImage;
+}
+
+// Playable URL for the local background video. Absolute paths go through the
+// Tauri asset protocol; blob/data URLs (browser dev fallback) pass through.
+export function resolveBackgroundVideoUrl(settings: Settings): string {
+  if (settings.backgroundSource !== "video") {
+    return "";
+  }
+  const value = settings.backgroundVideo.trim();
+  if (!value) {
+    return "";
+  }
+  if (value.startsWith("blob:") || value.startsWith("data:") || value.startsWith("http")) {
+    return value;
+  }
+  try {
+    return convertFileSrc(value);
+  } catch {
+    return "";
+  }
+}
+
+// Pushes the visual knobs onto :root so styles.css can react without any
+// component-level style plumbing. `videoActive` lets the CSS cap frost blur
+// while a video background is playing (blur + video compositing is the most
+// expensive thing this window can paint on low-end GPUs).
+export function applyVisualSettings(
+  blurMode: BlurMode,
+  cornerRadiusScale: number,
+  glowAmount: number,
+  videoActive: boolean
+) {
+  if (typeof document === "undefined") return;
+  const root = document.documentElement;
+  root.setAttribute("data-blur-mode", blurMode);
+  root.setAttribute("data-bg-video", videoActive ? "true" : "false");
+  root.style.setProperty("--radius-scale", `${clamp(cornerRadiusScale, 75, 150) / 100}`);
+  root.style.setProperty("--glow", `${clamp(glowAmount, 0, 100) / 100}`);
 }
 
 export function applyTheme(mode: ThemeMode, accent: ThemeAccent, customAccentHex: string) {

@@ -1,4 +1,11 @@
-import type { Instance, LauncherLoginPrefs, NewsItem, Settings } from "./types";
+import type {
+  BlurMode,
+  Instance,
+  LauncherLoginPrefs,
+  NewsItem,
+  Settings,
+  VisualProfile
+} from "./types";
 
 export const DEFAULT_LOGIN_PREFS: LauncherLoginPrefs = {
   usernameOrEmail: "",
@@ -54,11 +61,44 @@ export const DEFAULT_SETTINGS: Settings = {
   customAccentHex: "#25b87a",
   backgroundSource: "local",
   backgroundImage: "",
+  backgroundVideo: "",
   backgroundWebUrl: "",
   backgroundOpacity: 32,
   backgroundBlur: 0,
+  blurMode: "background",
+  cornerRadiusScale: 100,
+  glowAmount: 20,
+  visualProfile: "standard",
   curseforgeApiKey: ""
 };
+
+// Named visual presets. Picking one sets these three knobs; moving a knob off
+// a preset flips the stored profile to "custom" (see resolveVisualProfile).
+export type VisualProfilePreset = {
+  blurMode: BlurMode;
+  cornerRadiusScale: number;
+  glowAmount: number;
+};
+
+export const VISUAL_PROFILE_PRESETS: Record<Exclude<VisualProfile, "custom">, VisualProfilePreset> = {
+  // Refined dark default: flat matte surfaces, blur reserved for the wallpaper.
+  standard: { blurMode: "background", cornerRadiusScale: 100, glowAmount: 20 },
+  // Restrained liquid glass: frosted panels, slightly softer corners.
+  glass: { blurMode: "frost", cornerRadiusScale: 115, glowAmount: 35 }
+};
+
+export function resolveVisualProfile(settings: Pick<Settings, "blurMode" | "cornerRadiusScale" | "glowAmount">): VisualProfile {
+  for (const [name, preset] of Object.entries(VISUAL_PROFILE_PRESETS) as Array<[Exclude<VisualProfile, "custom">, VisualProfilePreset]>) {
+    if (
+      preset.blurMode === settings.blurMode &&
+      preset.cornerRadiusScale === settings.cornerRadiusScale &&
+      preset.glowAmount === settings.glowAmount
+    ) {
+      return name;
+    }
+  }
+  return "custom";
+}
 
 export const PRESET_INSTANCES: readonly Instance[] = [
   {

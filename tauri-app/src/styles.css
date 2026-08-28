@@ -32,10 +32,19 @@
   --danger-soft: rgba(255, 107, 143, 0.16);
   --success: #35d497;
   --warning-text: #f4c15b;
-  --radius-xl: 12px;
-  --radius-lg: 10px;
-  --radius-md: 7px;
-  --radius-sm: 5px;
+  /* Radius tokens scale together from Settings → Appearance → Corner radius.
+     --radius-scale is set on :root by applyVisualSettings (0.75–1.5). */
+  --radius-scale: 1;
+  --radius-xl: calc(12px * var(--radius-scale));
+  --radius-lg: calc(10px * var(--radius-scale));
+  --radius-md: calc(7px * var(--radius-scale));
+  --radius-sm: calc(5px * var(--radius-scale));
+  --radius-control: calc(8px * var(--radius-scale));
+  /* Accent glow strength 0–1, set by applyVisualSettings. Glow stays peripheral:
+     it only feeds the launch CTA and a few active states, never full surfaces. */
+  --glow: 0.2;
+  /* Backdrop blur radius for frosted surfaces (data-blur-mode="frost"). */
+  --frost-blur: 16px;
   --titlebar-h: 40px;
   --duration-fast: 140ms;
   --duration-normal: 220ms;
@@ -231,6 +240,50 @@
   --mc-emerald: var(--custom-emerald, #30b985);
   --mc-gold: var(--custom-gold, #7dddb7);
   --accent-rgb: var(--custom-accent-rgb, 37, 184, 122);
+}
+
+/* ===================== Blur modes / frosted surfaces ===================== */
+/* data-blur-mode="frost" turns the main opaque surfaces translucent and lets
+   the wallpaper bleed through a backdrop blur. Restricted to top-level panels
+   so the compositor never stacks nested backdrop filters. */
+
+:root[data-blur-mode="frost"] {
+  --linear-card-bg-soft: rgba(17, 20, 27, 0.52);
+  --linear-card-bg: rgba(20, 24, 31, 0.55);
+  --linear-card-bg-strong: rgba(24, 29, 39, 0.6);
+  --linear-card-edge: rgba(255, 255, 255, 0.09);
+  --linear-card-edge-hover: rgba(255, 255, 255, 0.16);
+}
+
+:root[data-theme="light"][data-blur-mode="frost"] {
+  --linear-card-bg-soft: rgba(237, 240, 244, 0.6);
+  --linear-card-bg: rgba(244, 246, 249, 0.62);
+  --linear-card-bg-strong: rgba(248, 249, 252, 0.68);
+  --linear-card-edge: rgba(52, 72, 108, 0.16);
+  --linear-card-edge-hover: rgba(52, 72, 108, 0.24);
+}
+
+:root[data-blur-mode="frost"] .ui-card,
+:root[data-blur-mode="frost"] .panel,
+:root[data-blur-mode="frost"] .settings-group,
+:root[data-blur-mode="frost"] .home-launch-card,
+:root[data-blur-mode="frost"] .minecraft-profile-card {
+  -webkit-backdrop-filter: blur(var(--frost-blur)) saturate(1.12);
+  backdrop-filter: blur(var(--frost-blur)) saturate(1.12);
+}
+
+/* A playing video plus heavy backdrop blur is the most expensive combination
+   this window can paint — halve the frost radius while a video is active. */
+:root[data-blur-mode="frost"][data-bg-video="true"] {
+  --frost-blur: 8px;
+}
+
+.app-background-video {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
 }
 
 * {
@@ -4134,24 +4187,41 @@ button:disabled {
   gap: 10px;
 }
 
+/* Page switches: opacity + a small vertical settle, nothing else. No filter
+   blur here — animating blur invalidates the whole layer every frame and stutters
+   on weak GPUs. */
 .page-transition {
-  will-change: opacity, transform, filter;
+  will-change: opacity, transform;
   contain: paint;
   transform: translate3d(0, 0, 0);
   backface-visibility: hidden;
-  animation: page-fade-in 240ms var(--ease-standard);
+  animation: page-fade-in var(--duration-normal) var(--ease-standard);
 }
 
 @keyframes page-fade-in {
   from {
-    opacity: 0.82;
-    transform: translateY(6px) scale(0.992);
-    filter: blur(1px);
+    opacity: 0;
+    transform: translateY(5px);
   }
   to {
     opacity: 1;
     transform: translateY(0);
-    filter: blur(0);
+  }
+}
+
+/* Settings tab switches reuse the same idea at the fast token. */
+.panel-transition {
+  animation: panel-fade-in var(--duration-fast) var(--ease-standard);
+}
+
+@keyframes panel-fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(3px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
   }
 }
 
@@ -4212,8 +4282,16 @@ button:disabled {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .page-transition {
+  .page-transition,
+  .panel-transition,
+  .modal-animate,
+  .modal-backdrop-animate {
     animation: none;
+  }
+
+  .accent-swatch:hover,
+  .home-server-icon:hover:not(:disabled) {
+    transform: none;
   }
 }
 
@@ -4993,17 +5071,50 @@ button:disabled {
   color: #ffd6dd;
 }
 
-/* ===================== Home: compact loadout + server strip ===================== */
+/* ===================== Home: launch pad + server strip ===================== */
 
-.home-instance-card {
+/* The launch pad is the page's center of gravity: current instance, key specs,
+   current account, and the launch action all live here — no floating button
+   overlapping the news list below. Wraps to two rows when bilingual labels or
+   narrow windows need the room. */
+.home-launch-card {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 18px;
+  gap: 16px 20px;
   padding: 22px 26px;
   border-radius: var(--radius-xl);
   border: 1px solid var(--linear-card-edge);
   background: var(--linear-card-bg-strong);
   box-shadow: var(--card-shadow);
+}
+
+.home-launch-main {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  flex: 1 1 320px;
+  min-width: 0;
+}
+
+.home-launch-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-left: auto;
+  flex-shrink: 0;
+}
+
+/* Primary CTAs carry the app's only standing glow; strength follows the
+   Appearance → Glow knob and disappears entirely at 0. */
+.cta-glow {
+  box-shadow:
+    0 1px 2px rgba(0, 0, 0, 0.2),
+    0 0 calc(30px * var(--glow)) rgba(var(--accent-rgb), calc(0.5 * var(--glow)));
+}
+
+.cta-glow:disabled {
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
 }
 
 .home-strip-label {
@@ -5131,27 +5242,6 @@ button:disabled {
   color: var(--text-primary);
 }
 
-/* Floating launch action — overlays the scrollable page, no reserved band. */
-.home-footer {
-  position: absolute;
-  right: 24px;
-  bottom: 22px;
-  z-index: 20;
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-
-.home-footer .ui-button,
-.home-footer button {
-  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
-}
-
-:root[data-theme="light"] .home-footer .ui-button,
-:root[data-theme="light"] .home-footer button {
-  box-shadow: 0 12px 28px rgba(40, 55, 80, 0.28);
-}
-
 /* ===================== Settings: tabbed panels with flat rows ===================== */
 
 .settings-panel {
@@ -5265,6 +5355,81 @@ button:disabled {
   overflow: hidden;
 }
 
+.settings-preview video {
+  display: block;
+  width: 100%;
+  height: 128px;
+  object-fit: cover;
+}
+
+/* Live sample for Settings → Appearance: built from the same tokens the rest
+   of the app uses, so radius / glow / frost changes read instantly. */
+.appearance-preview {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px 18px;
+  padding: 16px 18px;
+  border-radius: var(--radius-xl);
+  border: 1px solid var(--linear-card-edge);
+  background: var(--linear-card-bg-strong);
+  box-shadow: var(--card-shadow);
+}
+
+:root[data-blur-mode="frost"] .appearance-preview {
+  -webkit-backdrop-filter: blur(var(--frost-blur)) saturate(1.12);
+  backdrop-filter: blur(var(--frost-blur)) saturate(1.12);
+}
+
+.appearance-preview-main {
+  min-width: 0;
+}
+
+.profile-option {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  padding: 12px 14px;
+  min-width: 0;
+  text-align: left;
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--linear-card-edge);
+  background: var(--linear-card-bg);
+  cursor: pointer;
+  transition:
+    border-color var(--duration-fast) var(--ease-standard),
+    background-color var(--duration-fast) var(--ease-standard);
+}
+
+.profile-option:hover {
+  border-color: var(--linear-card-edge-hover);
+}
+
+.profile-option.is-active {
+  border-color: rgba(var(--accent-rgb), 0.55);
+  background: rgba(var(--accent-rgb), 0.07);
+}
+
+.profile-option-title {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 650;
+  color: var(--text-primary);
+}
+
+.profile-option.is-active .profile-option-title {
+  color: var(--mc-grass);
+}
+
+.profile-option-hint {
+  margin: 0;
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--text-muted);
+}
+
 /* ===================== Light theme: dim + de-glare pass ===================== */
 /* Hardcoded white-alpha overlays read as invisible or glaring on light
    backgrounds; swap them for slate tints, and give accent-tinted active chips
@@ -5332,8 +5497,14 @@ button:disabled {
   box-shadow: 0 4px 14px rgba(40, 55, 80, 0.16);
 }
 
-:root[data-theme="light"] .home-instance-card {
+:root[data-theme="light"] .home-launch-card {
   box-shadow: 0 1px 3px rgba(40, 55, 80, 0.09);
+}
+
+:root[data-theme="light"] .cta-glow {
+  box-shadow:
+    0 1px 2px rgba(40, 55, 80, 0.14),
+    0 0 calc(26px * var(--glow)) rgba(var(--accent-rgb), calc(0.4 * var(--glow)));
 }
 
 /* Status badge text needs darker shades to stay readable on light tints */
