@@ -610,6 +610,7 @@ const zhCN: EnUSTranslations = {
   "settings.backgroundVideoHint": "支持 MP4 / WebM，静音循环播放；窗口隐藏时自动暂停。建议使用较短的 1080p 片段。",
   "settings.backgroundNoVideo": "未选择背景视频",
   "settings.backgroundVideoTypeError": "请选择 MP4 或 WebM 文件。",
+  "settings.backgroundVideoPlaybackError": "无法播放该视频，请尝试 H.264 编码的 MP4 或 VP9 编码的 WebM。",
   "settings.backgroundBlurVideoNote": "视频不参与模糊——对视频实时模糊在低配机器上开销过大。",
   "settings.backgroundBlurModeNote": "仅当「外观 → 模糊」设为「仅壁纸」时生效。",
   "settings.behavior": "行为",

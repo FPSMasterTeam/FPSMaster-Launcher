@@ -834,6 +834,7 @@ fn hide_main_window_internal(app: &AppHandle) -> Result<(), String> {
     window
         .hide()
         .map_err(|e| format!("Failed to hide main window: {e}"))?;
+    let _ = app.emit("fpsmaster://main-window-visibility", false);
     Ok(())
 }
 
@@ -853,6 +854,7 @@ fn show_main_window_internal(app: &AppHandle) -> Result<(), String> {
     window
         .set_focus()
         .map_err(|e| format!("Failed to focus main window: {e}"))?;
+    let _ = app.emit("fpsmaster://main-window-visibility", true);
     Ok(())
 }
 

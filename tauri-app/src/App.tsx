@@ -450,8 +450,7 @@ function Launcher() {
 
   useEffect(() => {
     let disposed = false;
-    let unlistenVisible: (() => void) | undefined;
-    let unlistenHidden: (() => void) | undefined;
+    let unlistenVisibility: (() => void) | undefined;
 
     const bind = async () => {
       try {
@@ -460,8 +459,10 @@ function Launcher() {
         if (!disposed) {
           setWindowVisible(visible);
         }
-        unlistenVisible = await listen("tauri://window-shown", () => setWindowVisible(true));
-        unlistenHidden = await listen("tauri://window-hidden", () => setWindowVisible(false));
+        unlistenVisibility = await listen<boolean>(
+          "fpsmaster://main-window-visibility",
+          ({ payload }) => setWindowVisible(payload)
+        );
       } catch {
       }
     };
@@ -469,11 +470,8 @@ function Launcher() {
     void bind();
     return () => {
       disposed = true;
-      if (unlistenVisible) {
-        unlistenVisible();
-      }
-      if (unlistenHidden) {
-        unlistenHidden();
+      if (unlistenVisibility) {
+        unlistenVisibility();
       }
     };
   }, []);
@@ -1129,7 +1127,7 @@ function Launcher() {
         setMonitorWindowOpen(false);
       });
       if (settings.hideMainOnLaunch) {
-        await getCurrentWindow().hide();
+        await invoke("hide_main_window");
       }
       setActiveGamePid(pid);
       setStatus(t("app.status.gameStarted", { pid }));
@@ -2873,10 +2871,11 @@ function Launcher() {
             hides) whenever the window itself is hidden. */}
         <AppBackground
           url={monitorWindowOpen ? null : activeBackgroundUrl}
-          videoUrl={monitorWindowOpen ? null : activeBackgroundVideoUrl || null}
+          videoUrl={activeBackgroundVideoUrl || null}
           opacity={settings.backgroundOpacity}
           blur={settings.blurMode === "background" ? settings.backgroundBlur : 0}
-          paused={!windowVisible}
+          paused={!windowVisible || monitorWindowOpen}
+          hidden={monitorWindowOpen}
         />
         <WindowTitleBar version={currentLauncherVersion} onClose={stableCloseWindow} />
 

@@ -613,6 +613,7 @@ const enUS = {
   "settings.backgroundVideoHint": "MP4 or WebM, played muted on loop. It pauses while the window is hidden. Short 1080p clips work best.",
   "settings.backgroundNoVideo": "No background video selected",
   "settings.backgroundVideoTypeError": "Please choose an MP4 or WebM file.",
+  "settings.backgroundVideoPlaybackError": "This video can't be played. Try an H.264 MP4 or VP9 WebM.",
   "settings.backgroundBlurVideoNote": "Videos are never blurred — live blur on video is too heavy for weaker machines.",
   "settings.backgroundBlurModeNote": "Only applies when Blur is set to Wallpaper in Appearance.",
   "settings.behavior": "Behavior",

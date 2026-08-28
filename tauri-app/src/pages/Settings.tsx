@@ -28,6 +28,7 @@ import {
   useRef,
   useState
 } from "react";
+import { BackgroundVideo } from "../components/AppBackground";
 import Button from "../components/Button";
 import ChangelogNotes from "../components/ChangelogNotes";
 import Select from "../components/Select";
@@ -965,13 +966,11 @@ function SettingsPage({
                   <div className="settings-preview">
                     {settings.backgroundSource === "video" ? (
                       activeBackgroundVideoUrl ? (
-                        <video
+                        <BackgroundVideo
                           src={activeBackgroundVideoUrl}
-                          muted
-                          loop
-                          autoPlay
-                          playsInline
-                          disablePictureInPicture
+                          onPlaybackError={() =>
+                            setBackgroundError(t("settings.backgroundVideoPlaybackError"))
+                          }
                         />
                       ) : (
                         <div className="flex h-32 items-center justify-center text-sm text-[var(--text-muted)]">

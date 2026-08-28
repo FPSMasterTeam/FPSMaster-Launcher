@@ -22,7 +22,11 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self' tauri: ipc: http://ipc.localhost; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' data: https://fonts.gstatic.com; img-src 'self' data: blob: https: tauri: asset:; media-src 'self' blob: data:; connect-src 'self' ipc: http://ipc.localhost https://api.fpsmaster.top https://picsum.photos https://textures.minecraft.net https://crafatar.com; object-src 'none'; base-uri 'self'; frame-ancestors 'none'"
+      "assetProtocol": {
+        "enable": true,
+        "scope": ["$HOME/**", "$PICTURE/**", "$VIDEO/**", "$DOWNLOAD/**", "$DESKTOP/**"]
+      },
+      "csp": "default-src 'self' tauri: ipc: http://ipc.localhost; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' data: https://fonts.gstatic.com; img-src 'self' data: blob: https: tauri: asset: http://asset.localhost; media-src 'self' blob: data: asset: http://asset.localhost; connect-src 'self' ipc: http://ipc.localhost https://api.fpsmaster.top https://picsum.photos https://textures.minecraft.net https://crafatar.com; object-src 'none'; base-uri 'self'; frame-ancestors 'none'"
     }
   },
   "bundle": {
