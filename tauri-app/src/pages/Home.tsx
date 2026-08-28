@@ -175,13 +175,9 @@ function HomePage({
     }
     return [];
   }, [filteredNovaVersions, pickerQuery, novaPreset, selectedNovaGameVersion]);
-  const launcherUpdateDate = useMemo(
-    () =>
-      launcherUpdate?.publishedAt
-        ? new Date(launcherUpdate.publishedAt).toLocaleDateString()
-        : null,
-    [launcherUpdate?.publishedAt]
-  );
+  const launcherUpdateDate = launcherUpdate?.publishedAt
+    ? new Date(launcherUpdate.publishedAt).toLocaleDateString()
+    : null;
   const selectedLoaderLabel = selectedInstance ? loaderLabel(selectedInstance.loader, t) : null;
   // Nova shows the picked game version rather than the preset's fixed default baseVersion.
   const selectedBaseVersion = selectedInstance
@@ -572,7 +568,6 @@ function HomePage({
                           instance={instance}
                           active={selectedInstance?.id === instance.id}
                           selectable={canAccessInstance(instance, user)}
-                          user={user}
                           t={t}
                           onSelect={() => {
                             onSelect(instance.id);
@@ -635,7 +630,6 @@ function HomePage({
                             instance={instance}
                             active={selectedInstance?.id === instance.id}
                             selectable={canAccessInstance(instance, user)}
-                            user={user}
                             compact
                             t={t}
                             onSelect={() => {
@@ -728,7 +722,6 @@ function InstanceSelectRow({
   instance,
   active,
   selectable,
-  user,
   compact = false,
   t,
   onSelect
@@ -736,7 +729,6 @@ function InstanceSelectRow({
   instance: Instance;
   active: boolean;
   selectable: boolean;
-  user: LauncherUser | null;
   compact?: boolean;
   t: ReturnType<typeof useI18n>["t"];
   onSelect: () => void;
