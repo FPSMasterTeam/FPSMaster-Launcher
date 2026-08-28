@@ -1062,6 +1062,8 @@ function Launcher() {
         playerName: launchIdentity.playerName,
         uuid: launchIdentity.uuid,
         accessToken: launchIdentity.accessToken,
+        userType: launchIdentity.userType,
+        authXuid: launchIdentity.xuid,
         maxMemoryMb: settings.maxMemoryMb,
         javaPath: jdk.javaPath,
         downloadSource: settings.downloadSource,
@@ -1069,7 +1071,10 @@ function Launcher() {
         serverAddress: serverAddress,
         fpsmasterToken: launcherAuth?.token ?? null,
         useForge: prepared.launcherVersionType === "EDGE" ? prepared.useForge !== false : undefined,
-        useOptiFine: prepared.launcherVersionType === "EDGE" ? prepared.useOptiFine !== false : undefined
+        useOptiFine:
+          prepared.launcherVersionType === "EDGE"
+            ? prepared.useOptiFine !== false
+            : Boolean(prepared.optiFineVersion)
       });
       setLaunchProgressPercent(100);
       setLaunchProgressText(t("launch.progress.startingGame"));
@@ -1974,13 +1979,18 @@ function Launcher() {
         playerName: launchIdentity.playerName,
         uuid: launchIdentity.uuid,
         accessToken: launchIdentity.accessToken,
+        userType: launchIdentity.userType,
+        authXuid: launchIdentity.xuid,
         maxMemoryMb: settings.maxMemoryMb,
         javaPath: jdk.javaPath,
         downloadSource: settings.downloadSource,
         waitForExit: false,
         fpsmasterToken: launcherAuth?.token ?? null,
         useForge: prepared.launcherVersionType === "EDGE" ? prepared.useForge !== false : undefined,
-        useOptiFine: prepared.launcherVersionType === "EDGE" ? prepared.useOptiFine !== false : undefined
+        useOptiFine:
+          prepared.launcherVersionType === "EDGE"
+            ? prepared.useOptiFine !== false
+            : Boolean(prepared.optiFineVersion)
       });
       setLaunchProgressPercent(100);
       setLaunchProgressText(t("launch.progress.startingGame"));
