@@ -6241,6 +6241,9 @@ async fn build_vanilla_launch_plan(
     max_memory_mb: i32,
     java_path: Option<String>,
     download_source: Option<String>,
+    user_type: Option<String>,
+    auth_xuid: Option<String>,
+    use_optifine: Option<bool>,
 ) -> Result<LaunchPlan, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let game_dir_path = resolve_game_dir_path(&game_dir)?;
@@ -6259,6 +6262,8 @@ async fn build_vanilla_launch_plan(
             player_name,
             uuid,
             access_token,
+            user_type,
+            auth_xuid,
             java_path: java_executable,
             max_memory_mb,
             server_address: None,
@@ -6268,6 +6273,7 @@ async fn build_vanilla_launch_plan(
             Some(&window),
             &request,
             download_source.as_deref(),
+            use_optifine,
         )
         .map(|value| value.plan)
     })
@@ -6293,6 +6299,8 @@ async fn launch_vanilla(
     fpsmaster_token: Option<String>,
     use_forge: Option<bool>,
     use_optifine: Option<bool>,
+    user_type: Option<String>,
+    auth_xuid: Option<String>,
 ) -> Result<LaunchExecutionResult, String> {
     tauri::async_runtime::spawn_blocking(move || {
         launch_vanilla_blocking(
@@ -6310,6 +6318,8 @@ async fn launch_vanilla(
             fpsmaster_token,
             use_forge,
             use_optifine,
+            user_type,
+            auth_xuid,
         )
     })
     .await
@@ -6333,6 +6343,8 @@ fn launch_vanilla_blocking(
     fpsmaster_token: Option<String>,
     use_forge: Option<bool>,
     use_optifine: Option<bool>,
+    user_type: Option<String>,
+    auth_xuid: Option<String>,
 ) -> Result<LaunchExecutionResult, String> {
     if let Some(pid) = detect_active_game_pid() {
         return Err(format!(
@@ -6347,6 +6359,8 @@ fn launch_vanilla_blocking(
         player_name: player_name.clone(),
         uuid: uuid.clone(),
         access_token: access_token.clone(),
+        user_type,
+        auth_xuid,
         java_path: java_path.as_deref().map(PathBuf::from).unwrap_or_else(|| {
             game_dir_path
                 .join("runtime")
@@ -6373,6 +6387,7 @@ fn launch_vanilla_blocking(
             Some(&window),
             &vanilla_request,
             download_source.as_deref(),
+            use_optifine,
         )?
     };
     let plan = resolved_plan.plan;
@@ -7334,6 +7349,7 @@ fn format_quoted_command(executable: &str, args: &[String]) -> String {
             normalized.as_str(),
             "--accesstoken"
                 | "--access-token"
+                | "--session"
                 | "--username"
                 | "--uuid"
                 | "--xuid"
@@ -9927,6 +9943,8 @@ mod tests {
                 "PrivatePlayer".to_string(),
                 "--accessToken".to_string(),
                 "minecraft-token".to_string(),
+                "--session".to_string(),
+                "legacy-session-token".to_string(),
                 "--server".to_string(),
                 "private.example:25565".to_string(),
             ],
@@ -9934,6 +9952,7 @@ mod tests {
 
         assert!(!rendered.contains("secret-token"));
         assert!(!rendered.contains("minecraft-token"));
+        assert!(!rendered.contains("legacy-session-token"));
         assert!(!rendered.contains("PrivatePlayer"));
         assert!(!rendered.contains("private.example"));
         assert!(!rendered.contains("/home/private"));

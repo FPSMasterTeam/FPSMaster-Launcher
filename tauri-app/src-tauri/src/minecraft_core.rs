@@ -214,6 +214,11 @@ pub(crate) struct VanillaLaunchRequest {
     pub(crate) player_name: String,
     pub(crate) uuid: String,
     pub(crate) access_token: String,
+    /// Account kind for `${user_type}` ("msa" for Microsoft, "legacy" for offline).
+    /// When absent it is inferred from the access token.
+    pub(crate) user_type: Option<String>,
+    /// Xbox user id for `${auth_xuid}`; only meaningful for Microsoft accounts.
+    pub(crate) auth_xuid: Option<String>,
     pub(crate) java_path: PathBuf,
     pub(crate) max_memory_mb: i32,
     pub(crate) server_address: Option<String>,
@@ -276,10 +281,7 @@ struct StandaloneOptiFineOverlay {
 
 impl MavenCoordinates {
     fn parse(descriptor: &str) -> Result<Self, String> {
-        let (coordinates, extension) = descriptor
-            .rsplit_once('@')
-            .map(|(coordinates, extension)| (coordinates, extension))
-            .unwrap_or((descriptor, "jar"));
+        let (coordinates, extension) = descriptor.rsplit_once('@').unwrap_or((descriptor, "jar"));
         let parts: Vec<&str> = coordinates.split(':').collect();
         if !(3..=4).contains(&parts.len())
             || parts[..3].iter().any(|part| part.trim().is_empty())
@@ -1655,47 +1657,70 @@ fn install_standalone_optifine(
     .map_err(|error| format!("OptiFine installer download stage failed: {error}"))?;
     install_cancel_error(ipc_session)?;
 
-    let base_jar = game_dir
-        .join("versions")
-        .join(game_version)
-        .join(format!("{game_version}.jar"));
-    if !base_jar.is_file() {
-        return Err(format!(
-            "OptiFine patch stage cannot find the vanilla client jar for {game_version}"
-        ));
+    if optifine_installer_has_patcher(&installer_path)? {
+        // Modern OptiFine downloads are diff-based installers: run the bundled
+        // patcher against the vanilla client jar to produce the OptiFine library.
+        let base_jar = game_dir
+            .join("versions")
+            .join(game_version)
+            .join(format!("{game_version}.jar"));
+        if !base_jar.is_file() {
+            return Err(format!(
+                "OptiFine patch stage cannot find the vanilla client jar for {game_version}"
+            ));
+        }
+
+        emit_install_phase_start(
+            window,
+            ipc_session,
+            "optifine",
+            "patch",
+            "Patching vanilla client for standalone OptiFine",
+        );
+        let patch_output = patched_path.with_extension("patching");
+        let _ = fs::remove_file(&patch_output);
+        run_optifine_patcher(
+            game_dir,
+            java_executable,
+            &base_jar,
+            &installer_path,
+            &patch_output,
+        )?;
+        if !patch_output.is_file()
+            || fs::metadata(&patch_output)
+                .map(|metadata| metadata.len() == 0)
+                .unwrap_or(true)
+        {
+            return Err(
+                "OptiFine patch stage completed without producing a usable jar".to_string()
+            );
+        }
+        replace_file(&patch_output, &patched_path).map_err(|error| {
+            format!(
+                "Failed to store patched OptiFine jar {}: {error}",
+                patched_path.display()
+            )
+        })?;
+    } else {
+        // Older OptiFine downloads (1.12.2 and earlier) already are the complete
+        // mod jar; the download itself goes onto the classpath unchanged.
+        let staged = patched_path.with_extension("staging");
+        fs::copy(&installer_path, &staged).map_err(|error| {
+            format!(
+                "Failed to stage OptiFine jar {}: {error}",
+                staged.display()
+            )
+        })?;
+        replace_file(&staged, &patched_path).map_err(|error| {
+            format!(
+                "Failed to store OptiFine jar {}: {error}",
+                patched_path.display()
+            )
+        })?;
     }
 
-    emit_install_phase_start(
-        window,
-        ipc_session,
-        "optifine",
-        "patch",
-        "Patching vanilla client for standalone OptiFine",
-    );
-    let patch_output = patched_path.with_extension("patching");
-    let _ = fs::remove_file(&patch_output);
-    run_optifine_patcher(
-        game_dir,
-        java_executable,
-        &base_jar,
-        &installer_path,
-        &patch_output,
-    )?;
-    if !patch_output.is_file()
-        || fs::metadata(&patch_output)
-            .map(|metadata| metadata.len() == 0)
-            .unwrap_or(true)
-    {
-        return Err("OptiFine patch stage completed without producing a usable jar".to_string());
-    }
-    replace_file(&patch_output, &patched_path).map_err(|error| {
-        format!(
-            "Failed to store patched OptiFine jar {}: {error}",
-            patched_path.display()
-        )
-    })?;
-
-    let launchwrapper_path = extract_optifine_launchwrapper(&installer_path, &overlay_dir)?;
+    let launchwrapper_path =
+        resolve_optifine_launchwrapper(window, &installer_path, &overlay_dir, source)?;
     let launchwrapper_file_name = launchwrapper_path
         .file_name()
         .and_then(OsStr::to_str)
@@ -1765,9 +1790,28 @@ fn read_standalone_optifine_overlay(
     Ok(Some(marker))
 }
 
-fn extract_optifine_launchwrapper(
+fn optifine_installer_has_patcher(installer_path: &Path) -> Result<bool, String> {
+    let file = fs::File::open(installer_path).map_err(|error| {
+        format!(
+            "Failed to open OptiFine installer {}: {error}",
+            installer_path.display()
+        )
+    })?;
+    let mut archive = zip::ZipArchive::new(file)
+        .map_err(|error| format!("Invalid OptiFine installer archive: {error}"))?;
+    let has_patcher = archive.by_name("optifine/Patcher.class").is_ok();
+    Ok(has_patcher)
+}
+
+/// Provides the LaunchWrapper jar for a standalone OptiFine profile. Modern
+/// installers bundle their own fork (declared in `launchwrapper-of.txt`); older
+/// OptiFine builds rely on Mojang's `net.minecraft:launchwrapper:1.12`, which is
+/// fetched from the library repository instead.
+fn resolve_optifine_launchwrapper(
+    window: Option<&tauri::Window>,
     installer_path: &Path,
     overlay_dir: &Path,
+    source: DownloadSource,
 ) -> Result<PathBuf, String> {
     let file = fs::File::open(installer_path).map_err(|error| {
         format!(
@@ -1777,15 +1821,19 @@ fn extract_optifine_launchwrapper(
     })?;
     let mut archive = zip::ZipArchive::new(file)
         .map_err(|error| format!("Invalid OptiFine installer archive: {error}"))?;
-    let launchwrapper_version = {
-        let mut entry = archive.by_name("launchwrapper-of.txt").map_err(|error| {
-            format!("OptiFine installer is missing launchwrapper metadata: {error}")
-        })?;
-        let mut version = String::new();
-        entry
-            .read_to_string(&mut version)
-            .map_err(|error| format!("Failed to read OptiFine launchwrapper metadata: {error}"))?;
-        version.trim().to_string()
+    let bundled_version = match archive.by_name("launchwrapper-of.txt") {
+        Ok(mut entry) => {
+            let mut version = String::new();
+            entry.read_to_string(&mut version).map_err(|error| {
+                format!("Failed to read OptiFine launchwrapper metadata: {error}")
+            })?;
+            Some(version.trim().to_string())
+        }
+        Err(_) => None,
+    };
+    let Some(launchwrapper_version) = bundled_version else {
+        drop(archive);
+        return download_standard_launchwrapper(window, overlay_dir, source);
     };
     if launchwrapper_version.is_empty()
         || !launchwrapper_version
@@ -1820,6 +1868,31 @@ fn extract_optifine_launchwrapper(
             target.display()
         )
     })?;
+    Ok(target)
+}
+
+fn download_standard_launchwrapper(
+    window: Option<&tauri::Window>,
+    overlay_dir: &Path,
+    source: DownloadSource,
+) -> Result<PathBuf, String> {
+    let coordinates = MavenCoordinates::parse(EDGE_AOT_LAUNCHWRAPPER_MAVEN)?;
+    let relative_path = coordinates.to_path();
+    let file_name = relative_path
+        .rsplit('/')
+        .next()
+        .ok_or_else(|| "Invalid launchwrapper maven path".to_string())?;
+    let target = overlay_dir.join(file_name);
+    if target.is_file() {
+        return Ok(target);
+    }
+    let urls = source.candidate_urls(&format!(
+        "{}{}",
+        normalize_base_url(source.default_library_repo()),
+        relative_path
+    ));
+    download_file(window, &urls, &target, None, "optifine-launchwrapper")
+        .map_err(|error| format!("OptiFine launchwrapper download stage failed: {error}"))?;
     Ok(target)
 }
 
@@ -1924,6 +1997,7 @@ pub(crate) fn build_vanilla_launch_plan(
     window: Option<&tauri::Window>,
     request: &VanillaLaunchRequest,
     download_source_id: Option<&str>,
+    use_optifine: Option<bool>,
 ) -> Result<VanillaResolvedLaunchPlan, String> {
     let source = DownloadSource::from_id(download_source_id)?;
     let descriptor = resolve_version_descriptor(&request.game_dir, &request.version_id, 0)?;
@@ -1934,7 +2008,14 @@ pub(crate) fn build_vanilla_launch_plan(
         .game_dir
         .join("versions")
         .join(request.version_id.trim());
-    let optifine_overlay = read_standalone_optifine_overlay(&version_dir)?;
+    // The standalone OptiFine overlay lives under the shared versions/<id>/ directory,
+    // so an instance that explicitly disabled OptiFine must be able to opt out even
+    // when a sibling instance of the same version installed the overlay.
+    let optifine_overlay = if use_optifine == Some(false) {
+        None
+    } else {
+        read_standalone_optifine_overlay(&version_dir)?
+    };
     let natives_base_dir = version_dir.join("natives");
     fs::create_dir_all(&natives_base_dir).map_err(|e| {
         format!(
@@ -1983,7 +2064,13 @@ pub(crate) fn build_vanilla_launch_plan(
     classpath_entries.push(client_jar);
 
     let classpath = build_classpath(&classpath_entries);
-    let variables = build_variables(request, &version_json, &natives_dir, &classpath)?;
+    let variables = build_variables(
+        request,
+        &version_json,
+        &natives_dir,
+        &classpath,
+        &jar_version_id,
+    )?;
     let mut jvm_args = vec![
         request.java_path.to_string_lossy().to_string(),
         format!("-Xmx{}M", request.max_memory_mb),
@@ -1996,21 +2083,7 @@ pub(crate) fn build_vanilla_launch_plan(
     {
         jvm_args.extend(resolve_argument_array(args, &variables, &rule_features));
     }
-    if let Some(logging_argument) = ensure_logging_config(
-        window,
-        &version_json,
-        &request.game_dir,
-        "launch",
-        None,
-        source,
-    )? {
-        if !jvm_args
-            .iter()
-            .any(|argument| argument.starts_with("-Dlog4j.configurationFile="))
-        {
-            jvm_args.push(logging_argument);
-        }
-    }
+    append_launch_logging_argument(window, &version_json, request, source, &mut jvm_args);
     jvm_args = normalize_jvm_arguments(jvm_args);
 
     // Inject the FPSMaster platform auth token only for preset Edge/Nova instances so the
@@ -2373,7 +2446,13 @@ pub(crate) fn build_edge_aot_launch_plan(
     tweak_classes.push(full_tweaker);
 
     let classpath = build_classpath(&classpath_entries);
-    let variables = build_variables(request, &version_json, &natives_dir, &classpath)?;
+    let variables = build_variables(
+        request,
+        &version_json,
+        &natives_dir,
+        &classpath,
+        &jar_version_id,
+    )?;
 
     let mut jvm_args = vec![
         request.java_path.to_string_lossy().to_string(),
@@ -2387,21 +2466,7 @@ pub(crate) fn build_edge_aot_launch_plan(
     {
         jvm_args.extend(resolve_argument_array(args, &variables, &rule_features));
     }
-    if let Some(logging_argument) = ensure_logging_config(
-        window,
-        &version_json,
-        &request.game_dir,
-        "launch",
-        None,
-        source,
-    )? {
-        if !jvm_args
-            .iter()
-            .any(|argument| argument.starts_with("-Dlog4j.configurationFile="))
-        {
-            jvm_args.push(logging_argument);
-        }
-    }
+    append_launch_logging_argument(window, &version_json, request, source, &mut jvm_args);
     jvm_args = normalize_jvm_arguments(jvm_args);
     jvm_args.extend(jvm_extra);
 
@@ -2803,7 +2868,11 @@ fn resolve_libraries(
             continue;
         }
 
-        if downloads.and_then(|value| value.get("artifact")).is_none() {
+        // Only maven-style entries without any download metadata fall back to a
+        // plain artifact. Natives carriers (entries declaring `natives`) publish
+        // classified jars only — synthesizing an unclassified artifact for them
+        // yields a nonexistent download that aborts launch preparation.
+        if native_key.is_none() && downloads.and_then(|value| value.get("artifact")).is_none() {
             let coordinates = MavenCoordinates::parse(name)?;
             let path = coordinates.to_path();
             let target = game_dir.join("libraries").join(&path);
@@ -2855,7 +2924,7 @@ fn rules_match(rules: Option<&Vec<Value>>, features: &HashMap<String, bool>) -> 
             }
             if matches {
                 if let Some(version_pattern) = os_rule.get("version").and_then(Value::as_str) {
-                    matches = sysinfo::System::os_version()
+                    matches = minecraft_os_version()
                         .as_deref()
                         .and_then(|version| {
                             Regex::new(version_pattern)
@@ -2935,6 +3004,7 @@ fn build_variables(
     version_json: &Value,
     natives_dir: &Path,
     classpath: &str,
+    jar_version_id: &str,
 ) -> Result<HashMap<String, String>, String> {
     let asset_index_name = version_json
         .get("assetIndex")
@@ -2987,11 +3057,34 @@ fn build_variables(
         "FPSMasterLauncher".to_string(),
     );
     variables.insert("${launcher_version}".to_string(), "0.1.0".to_string());
-    variables.insert("${user_type}".to_string(), "msa".to_string());
-    variables.insert("${auth_xuid}".to_string(), "0".to_string());
+    // Offline sessions must not claim to be Microsoft accounts: `${user_type}`
+    // switches auth-dependent client behaviour, and `${auth_xuid}`/`${clientid}`
+    // resolving to empty makes the argument resolver drop those pairs entirely.
+    let trimmed_token = request.access_token.trim();
+    let offline_session =
+        trimmed_token.is_empty() || trimmed_token.eq_ignore_ascii_case("offline");
+    let user_type = request
+        .user_type
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(if offline_session { "legacy" } else { "msa" });
+    let auth_xuid = request
+        .auth_xuid
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .filter(|_| !offline_session)
+        .unwrap_or("");
+    variables.insert("${user_type}".to_string(), user_type.to_string());
+    variables.insert("${auth_xuid}".to_string(), auth_xuid.to_string());
     variables.insert(
         "${clientid}".to_string(),
-        "057064c6-d180-43df-b010-834b4571532f".to_string(),
+        if offline_session {
+            String::new()
+        } else {
+            "057064c6-d180-43df-b010-834b4571532f".to_string()
+        },
     );
     variables.insert("${user_properties}".to_string(), "{}".to_string());
     variables.insert("${profile_properties}".to_string(), "{}".to_string());
@@ -3020,13 +3113,16 @@ fn build_variables(
         "${classpath_separator}".to_string(),
         classpath_separator().to_string(),
     );
+    // Loader profiles (Forge/Fabric) inherit the vanilla client jar; the merged
+    // descriptor's jar id points at it, while `versions/<profile>/<profile>.jar`
+    // usually does not exist.
     variables.insert(
         "${primary_jar}".to_string(),
         request
             .game_dir
             .join("versions")
-            .join(&request.version_id)
-            .join(format!("{}.jar", request.version_id))
+            .join(jar_version_id)
+            .join(format!("{jar_version_id}.jar"))
             .to_string_lossy()
             .to_string(),
     );
@@ -3806,7 +3902,16 @@ fn extract_native_jar(native_jar: &Path, natives_dir: &Path) -> Result<(), Strin
         if name.starts_with("META-INF") || entry.is_dir() {
             continue;
         }
-        let target = natives_dir.join(&name);
+        // Zip entry names are attacker-controlled: reject absolute paths and any
+        // `..` traversal so a hostile jar cannot write outside the natives dir.
+        let relative = entry.enclosed_name().ok_or_else(|| {
+            format!(
+                "Native jar {} contains an unsafe entry path: {}",
+                native_jar.display(),
+                entry.name()
+            )
+        })?;
+        let target = natives_dir.join(relative);
         if let Some(parent) = target.parent() {
             fs::create_dir_all(parent).map_err(|e| {
                 format!(
@@ -3980,6 +4085,40 @@ fn minecraft_arch_name() -> &'static str {
         "aarch64" => "arm64",
         "arm" => "arm",
         other => other,
+    }
+}
+
+/// OS version string for version-JSON `os.version` rules. Mojang's patterns (e.g.
+/// `^10\.`) match against the dotted version Java exposes via `os.version`, so the
+/// Windows value reported by sysinfo needs to be rebuilt into that form.
+fn minecraft_os_version() -> Option<String> {
+    let raw = sysinfo::System::os_version()?;
+    if cfg!(target_os = "windows") {
+        Some(normalize_windows_os_version(&raw))
+    } else {
+        Some(raw)
+    }
+}
+
+/// Rebuilds sysinfo's Windows report (`"<major> (<build>)"`) into the NT version
+/// form (`"10.0.<build>"`). Windows 11 still runs NT 10, which is also what Java's
+/// `os.version` reports there, so majors above 10 are clamped to keep Mojang's
+/// `^10\.` rules matching. Values that already look dotted pass through unchanged.
+fn normalize_windows_os_version(raw: &str) -> String {
+    let trimmed = raw.trim();
+    if trimmed.contains('.') {
+        return trimmed.to_string();
+    }
+    let mut numbers = trimmed
+        .split(|character: char| !character.is_ascii_digit())
+        .filter(|part| !part.is_empty());
+    let Some(major) = numbers.next().and_then(|value| value.parse::<u64>().ok()) else {
+        return trimmed.to_string();
+    };
+    let nt_major = major.min(10);
+    match numbers.next() {
+        Some(build) => format!("{nt_major}.0.{build}"),
+        None => format!("{nt_major}.0"),
     }
 }
 
@@ -4390,6 +4529,35 @@ fn ensure_logging_config(
         .get("argument")
         .and_then(Value::as_str)
         .map(|argument| argument.replace("${path}", &target.to_string_lossy())))
+}
+
+/// Launch-time wrapper around `ensure_logging_config`. The log4j configuration is
+/// cosmetic for gameplay, so a download failure (for example launching offline with
+/// a cold cache) must degrade to a warning instead of aborting the launch; install
+/// and verify runs keep treating it as a hard error.
+fn append_launch_logging_argument(
+    window: Option<&tauri::Window>,
+    version_json: &Value,
+    request: &VanillaLaunchRequest,
+    source: DownloadSource,
+    jvm_args: &mut Vec<String>,
+) {
+    match ensure_logging_config(window, version_json, &request.game_dir, "launch", None, source) {
+        Ok(Some(logging_argument)) => {
+            if !jvm_args
+                .iter()
+                .any(|argument| argument.starts_with("-Dlog4j.configurationFile="))
+            {
+                jvm_args.push(logging_argument);
+            }
+        }
+        Ok(None) => {}
+        Err(error) => emit_log(
+            window,
+            "warn",
+            &format!("Launching without log4j configuration: {error}"),
+        ),
+    }
 }
 
 fn download_client(
@@ -5397,15 +5565,16 @@ fn emit_install_item_ipc(
 #[cfg(test)]
 mod tests {
     use super::{
-        build_classpath, build_rule_features, build_vanilla_launch_plan, classpath_separator,
-        forge_profile_id_candidates, minecraft_arch_name, parse_legacy_arguments,
-        resolve_java_runtime_requirement, resolve_optifine_compatibility, rules_match,
-        should_omit_resolved_arg, DownloadSource, MavenCoordinates, StandaloneOptiFineOverlay,
-        VanillaLaunchRequest,
+        build_classpath, build_rule_features, build_vanilla_launch_plan, build_variables,
+        classpath_separator, extract_native_jar, forge_profile_id_candidates,
+        minecraft_arch_name, minecraft_os_name, normalize_windows_os_version,
+        parse_legacy_arguments, resolve_java_runtime_requirement, resolve_libraries,
+        resolve_optifine_compatibility, rules_match, should_omit_resolved_arg, DownloadSource,
+        MavenCoordinates, StandaloneOptiFineOverlay, VanillaLaunchRequest,
     };
     use serde_json::json;
     use std::fs;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn make_temp_dir(name: &str) -> PathBuf {
@@ -5532,13 +5701,15 @@ mod tests {
             player_name: "Player".to_string(),
             uuid: "00000000-0000-0000-0000-000000000000".to_string(),
             access_token: "offline".to_string(),
+            user_type: None,
+            auth_xuid: None,
             java_path: PathBuf::from("java"),
             max_memory_mb: 1024,
             server_address: None,
             fpsmaster_token: None,
         };
         let plan =
-            build_vanilla_launch_plan(None, &request, None).expect("launch plan should be built");
+            build_vanilla_launch_plan(None, &request, None, None).expect("launch plan should be built");
 
         assert!(!plan.plan.command.contains(&"--demo".to_string()));
         assert!(plan.plan.command.contains(&"--username".to_string()));
@@ -5584,15 +5755,17 @@ mod tests {
             player_name: "Player".to_string(),
             uuid: "00000000-0000-0000-0000-000000000000".to_string(),
             access_token: "offline".to_string(),
+            user_type: None,
+            auth_xuid: None,
             java_path: PathBuf::from("java"),
             max_memory_mb: 512,
             server_address: None,
             fpsmaster_token: None,
         };
 
-        let first = build_vanilla_launch_plan(None, &request, None)
+        let first = build_vanilla_launch_plan(None, &request, None, None)
             .expect("first launch plan should build");
-        let second = build_vanilla_launch_plan(None, &request, None)
+        let second = build_vanilla_launch_plan(None, &request, None, None)
             .expect("second launch plan should build");
 
         assert_ne!(first.natives_dir, second.natives_dir);
@@ -5674,6 +5847,140 @@ mod tests {
     }
 
     #[test]
+    fn windows_os_version_normalizes_to_nt_dotted_form() {
+        assert_eq!(normalize_windows_os_version("10 (19045)"), "10.0.19045");
+        // Windows 11 still runs NT 10; Mojang's `^10\.` rules must keep matching.
+        assert_eq!(normalize_windows_os_version("11 (22631)"), "10.0.22631");
+        assert_eq!(normalize_windows_os_version("10"), "10.0");
+        assert_eq!(normalize_windows_os_version("10.0.19045"), "10.0.19045");
+    }
+
+    #[test]
+    fn build_variables_reflect_account_kind_and_inherited_jar() {
+        let request = VanillaLaunchRequest {
+            game_dir: PathBuf::from("game"),
+            version_id: "1.20.1-forge-47.2.0".to_string(),
+            player_name: "Player".to_string(),
+            uuid: "00000000-0000-0000-0000-000000000000".to_string(),
+            access_token: "offline".to_string(),
+            user_type: None,
+            auth_xuid: None,
+            java_path: PathBuf::from("java"),
+            max_memory_mb: 1024,
+            server_address: None,
+            fpsmaster_token: None,
+        };
+        let version_json = json!({ "assetIndex": { "id": "5" } });
+
+        let offline = build_variables(
+            &request,
+            &version_json,
+            Path::new("natives"),
+            "cp",
+            "1.20.1",
+        )
+        .expect("offline variables should build");
+        assert_eq!(
+            offline.get("${user_type}").map(String::as_str),
+            Some("legacy")
+        );
+        assert_eq!(offline.get("${auth_xuid}").map(String::as_str), Some(""));
+        assert_eq!(offline.get("${clientid}").map(String::as_str), Some(""));
+        let primary_jar = offline
+            .get("${primary_jar}")
+            .expect("primary jar variable should exist");
+        assert!(
+            primary_jar.ends_with("1.20.1.jar") && !primary_jar.contains("forge"),
+            "primary jar must point at the inherited vanilla jar, got {primary_jar}"
+        );
+
+        let microsoft = VanillaLaunchRequest {
+            access_token: "real-session-token".to_string(),
+            user_type: Some("msa".to_string()),
+            auth_xuid: Some("2535412345678901".to_string()),
+            ..request
+        };
+        let premium = build_variables(
+            &microsoft,
+            &version_json,
+            Path::new("natives"),
+            "cp",
+            "1.20.1",
+        )
+        .expect("microsoft variables should build");
+        assert_eq!(premium.get("${user_type}").map(String::as_str), Some("msa"));
+        assert_eq!(
+            premium.get("${auth_xuid}").map(String::as_str),
+            Some("2535412345678901")
+        );
+        assert!(!premium
+            .get("${clientid}")
+            .map(String::as_str)
+            .unwrap_or("")
+            .is_empty());
+    }
+
+    #[test]
+    fn native_extraction_rejects_zip_slip_entries() {
+        let dir = make_temp_dir("zip-slip");
+        let natives_dir = dir.join("natives");
+        fs::create_dir_all(&natives_dir).expect("natives dir should exist");
+        let jar_path = dir.join("evil.jar");
+        {
+            use std::io::Write as _;
+            let file = fs::File::create(&jar_path).expect("jar file should be created");
+            let mut writer = zip::ZipWriter::new(file);
+            let options = zip::write::SimpleFileOptions::default()
+                .compression_method(zip::CompressionMethod::Stored);
+            writer
+                .start_file("../escape.txt", options)
+                .expect("traversal entry should be written");
+            writer.write_all(b"payload").expect("payload written");
+            writer.finish().expect("archive finished");
+        }
+
+        let result = extract_native_jar(&jar_path, &natives_dir);
+        assert!(result.is_err(), "zip-slip entry must be rejected");
+        assert!(
+            !dir.join("escape.txt").exists(),
+            "no file may be written outside the natives directory"
+        );
+    }
+
+    #[test]
+    fn natives_only_libraries_do_not_gain_plain_artifacts() {
+        let game_dir = make_temp_dir("natives-only");
+        let version_json = json!({
+            "libraries": [{
+                "name": "org.lwjgl.lwjgl:lwjgl-platform:2.9.4-nightly-20150209",
+                "natives": {
+                    "linux": "natives-linux",
+                    "osx": "natives-osx",
+                    "windows": "natives-windows"
+                }
+            }]
+        });
+        let resolved = resolve_libraries(
+            &version_json,
+            &game_dir,
+            &build_rule_features(),
+            DownloadSource::OfficialOnly,
+        )
+        .expect("libraries should resolve");
+        assert_eq!(
+            resolved.len(),
+            1,
+            "natives-only entry must resolve to exactly the classified jar"
+        );
+        assert!(resolved[0].native_entry);
+        assert!(!resolved[0].classpath_entry);
+        assert!(resolved[0]
+            .path
+            .to_string_lossy()
+            .contains(&format!("natives-{}", minecraft_os_name())));
+    }
+
+    #[test]
     fn standalone_optifine_overlay_switches_to_launchwrapper() {
         let game_dir = make_temp_dir("optifine-overlay");
         let version_dir = game_dir.join("versions").join("1.20.1");
@@ -5714,13 +6021,15 @@ mod tests {
             player_name: "Player".to_string(),
             uuid: "00000000-0000-0000-0000-000000000000".to_string(),
             access_token: "offline".to_string(),
+            user_type: None,
+            auth_xuid: None,
             java_path: PathBuf::from("java"),
             max_memory_mb: 1024,
             server_address: None,
             fpsmaster_token: None,
         };
 
-        let plan = build_vanilla_launch_plan(None, &request, None)
+        let plan = build_vanilla_launch_plan(None, &request, None, None)
             .expect("OptiFine launch plan should build");
         assert_eq!(plan.plan.main_class, "net.minecraft.launchwrapper.Launch");
         assert!(plan
