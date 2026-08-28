@@ -138,7 +138,12 @@ export function classifyApiError(error: unknown): ClassifiedApiError {
   const raw = formatLaunchError(error);
   const normalized = raw.toLowerCase();
 
-  const statusMatch = normalized.match(/http\s*(\d{3})/);
+  // The backend reports HTTP failures in two shapes: "... HTTP 404" (downloads,
+  // API calls) and "Request failed url=... status=404 Not Found" (metadata /
+  // catalog fetches). Recognize both so 404s classify as notFound instead of
+  // falling through as opaque business errors.
+  const statusMatch =
+    normalized.match(/http\s*(\d{3})\b/) ?? normalized.match(/\bstatus[=:]\s*(\d{3})\b/);
   const status = statusMatch ? Number.parseInt(statusMatch[1], 10) : null;
 
   // A `spawn_blocking` join failure means the backend task died, not a network
