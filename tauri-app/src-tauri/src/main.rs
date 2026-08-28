@@ -7093,7 +7093,7 @@ fn cleanup_launch_natives_dir(natives_dir: &Path) {
 /// empty values, `.`/`..`, absolute paths, and anything containing a path
 /// separator on any platform. The value must round-trip as exactly one normal
 /// path component.
-fn ensure_safe_child_name(raw: &str, label: &str) -> Result<(), String> {
+pub(crate) fn ensure_safe_child_name(raw: &str, label: &str) -> Result<(), String> {
     if raw.trim().is_empty() {
         return Err(format!("{label} cannot be empty"));
     }
@@ -10140,6 +10140,7 @@ mod tests {
         for valid in [
             "sodium.jar",
             "my mod 1.2.jar",
+            "高清材质 包.zip",
             "..hidden.jar",
             "1.20.1-fabric",
         ] {
@@ -10171,7 +10172,8 @@ mod tests {
         let game_dir = temp.path().join("game");
         let mods_dir = game_dir.join("versions").join("test-1.0").join("mods");
         fs::create_dir_all(&mods_dir).expect("mods dir should be created");
-        fs::write(mods_dir.join("ok.jar"), "mod").expect("mod file should be written");
+        let valid_name = "高清 模组.jar";
+        fs::write(mods_dir.join(valid_name), "mod").expect("mod file should be written");
         let victim = temp.path().join("victim.txt");
         fs::write(&victim, "keep me").expect("victim file should be written");
 
@@ -10192,10 +10194,10 @@ mod tests {
             game_dir.to_string_lossy().to_string(),
             "test-1.0".to_string(),
             "mods".to_string(),
-            "ok.jar".to_string(),
+            valid_name.to_string(),
         )
-        .expect("plain entry name should still be deletable");
-        assert!(!mods_dir.join("ok.jar").exists());
+        .expect("unicode entry name containing a space should still be deletable");
+        assert!(!mods_dir.join(valid_name).exists());
     }
 
     #[test]
@@ -10221,6 +10223,26 @@ mod tests {
             outside.exists(),
             "file outside the mods dir must not be renamed"
         );
+
+        let valid_name = "性能 模组.jar";
+        fs::write(mods_dir.join(valid_name), "mod").expect("mod file should be written");
+        toggle_mod_disabled(
+            game_dir.to_string_lossy().to_string(),
+            "test-1.0".to_string(),
+            valid_name.to_string(),
+            true,
+        )
+        .expect("unicode mod name containing a space should be disabled");
+        let disabled_name = format!("{valid_name}.disabled");
+        assert!(mods_dir.join(&disabled_name).exists());
+        toggle_mod_disabled(
+            game_dir.to_string_lossy().to_string(),
+            "test-1.0".to_string(),
+            disabled_name,
+            false,
+        )
+        .expect("unicode mod name containing a space should be enabled");
+        assert!(mods_dir.join(valid_name).exists());
     }
 
     #[test]
