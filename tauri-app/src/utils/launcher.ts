@@ -430,6 +430,13 @@ export function applyVisualSettings(
   const root = document.documentElement;
   root.setAttribute("data-blur-mode", blurMode);
   root.setAttribute("data-bg-video", videoActive ? "true" : "false");
+  // Derived from the knobs (not the stored profile) so CSS keyed off
+  // data-visual-profile="liquid" only ever fires when the knobs exactly match
+  // the liquid preset — moving any knob demotes the look to "custom".
+  root.setAttribute(
+    "data-visual-profile",
+    resolveVisualProfile({ blurMode, cornerRadiusScale, glowAmount })
+  );
   root.style.setProperty("--radius-scale", `${clamp(cornerRadiusScale, 75, 150) / 100}`);
   root.style.setProperty("--glow", `${clamp(glowAmount, 0, 100) / 100}`);
 }

@@ -25,7 +25,8 @@ export type BackgroundSource = "local" | "video" | "web-random" | "system";
 // UI surfaces (translucent panels with backdrop blur).
 export type BlurMode = "off" | "background" | "frost";
 // Named visual presets. "custom" means the user moved a knob away from a preset.
-export type VisualProfile = "standard" | "glass" | "custom";
+// "liquid" is the Apple-style lensed-glass look, reserved for navigation chrome.
+export type VisualProfile = "standard" | "glass" | "liquid" | "custom";
 export type LauncherVersionType = "EDGE" | "NOVA" | "EXTREME";
 export type MinecraftAccountType = "offline" | "microsoft";
 export type ContentSource = "modrinth" | "curseforge" | "local";
