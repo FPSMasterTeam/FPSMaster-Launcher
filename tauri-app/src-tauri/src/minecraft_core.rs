@@ -1154,6 +1154,7 @@ fn resolve_version_runtime_dir(game_dir: &Path, version_id: &str) -> Result<Path
     if version.is_empty() {
         return Err("Version id is empty".to_string());
     }
+    crate::ensure_safe_child_name(version, "Version id")?;
     let runtime_dir = game_dir.join("versions").join(version);
     fs::create_dir_all(&runtime_dir).map_err(|e| {
         format!(
@@ -4822,8 +4823,8 @@ mod tests {
     use super::{
         build_classpath, build_rule_features, build_vanilla_launch_plan, classpath_separator,
         forge_profile_id_candidates, resolve_java_runtime_requirement,
-        resolve_optifine_compatibility, should_omit_resolved_arg, DownloadSource,
-        VanillaLaunchRequest,
+        resolve_optifine_compatibility, resolve_version_runtime_dir, should_omit_resolved_arg,
+        DownloadSource, VanillaLaunchRequest,
     };
     use serde_json::json;
     use std::fs;
@@ -4838,6 +4839,23 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("fpsmaster-launcher-{name}-{unique}"));
         fs::create_dir_all(&dir).expect("temp dir should be created");
         dir
+    }
+
+    #[test]
+    fn optifine_runtime_dir_rejects_traversal_and_keeps_unicode_names() {
+        let game_dir = make_temp_dir("optifine-runtime-path");
+
+        for invalid in ["..", "../outside", r"..\outside", "/tmp/outside"] {
+            assert!(
+                resolve_version_runtime_dir(&game_dir, invalid).is_err(),
+                "should reject {invalid:?}"
+            );
+        }
+
+        let valid_name = "自定义 实例";
+        let runtime = resolve_version_runtime_dir(&game_dir, valid_name)
+            .expect("unicode version id containing a space should resolve");
+        assert_eq!(runtime, game_dir.join("versions").join(valid_name));
     }
 
     #[test]

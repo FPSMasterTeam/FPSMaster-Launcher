@@ -13,8 +13,8 @@ use launcher_api::{
     open_downloaded_file, parse_api_envelope,
 };
 use microsoft_auth::{
-    get_minecraft_auth_config, poll_minecraft_device_login, refresh_minecraft_account,
-    start_minecraft_browser_login, start_minecraft_device_login,
+    get_minecraft_auth_config, lookup_minecraft_skin_url, poll_minecraft_device_login,
+    refresh_minecraft_account, start_minecraft_browser_login, start_minecraft_device_login,
 };
 use secure_storage::{secure_storage_delete, secure_storage_get, secure_storage_set};
 
@@ -770,7 +770,7 @@ fn sample_game_runtime_cache() {
     }
 }
 
-fn push_ui_log(source: &str, level: &str, message: &str) {
+pub(crate) fn push_ui_log(source: &str, level: &str, message: &str) {
     if let Ok(mut store) = ui_log_store().lock() {
         let entry = UiLogEntry {
             seq: store.next_seq,
@@ -1498,12 +1498,11 @@ fn export_instance_archive(
 fn import_instance_archive_blocking(
     game_dir: String,
     archive_name: String,
-    archive_data: Vec<u8>,
+    archive_data: Option<Vec<u8>>,
+    archive_path: Option<String>,
     target_version_id: Option<String>,
 ) -> Result<InstanceImportResult, String> {
-    if archive_data.is_empty() {
-        return Err("Instance archive cannot be empty".to_string());
-    }
+    let archive_data = resolve_archive_payload(archive_data, archive_path.as_deref(), "Instance")?;
 
     let game_dir_path = resolve_game_dir_path(&game_dir)?;
     let versions_dir = game_dir_path.join("versions");
@@ -1719,11 +1718,18 @@ fn repair_instance_runtime_blocking(
 async fn import_instance_archive(
     game_dir: String,
     archive_name: String,
-    archive_data: Vec<u8>,
+    archive_data: Option<Vec<u8>>,
+    archive_path: Option<String>,
     target_version_id: Option<String>,
 ) -> Result<InstanceImportResult, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        import_instance_archive_blocking(game_dir, archive_name, archive_data, target_version_id)
+        import_instance_archive_blocking(
+            game_dir,
+            archive_name,
+            archive_data,
+            archive_path,
+            target_version_id,
+        )
     })
     .await
     .map_err(|e| format!("Failed to join instance import task: {e}"))
@@ -2228,11 +2234,19 @@ async fn import_world_archive(
     game_dir: String,
     version_id: String,
     archive_name: String,
-    archive_data: Vec<u8>,
+    archive_data: Option<Vec<u8>>,
+    archive_path: Option<String>,
     world_name: Option<String>,
 ) -> Result<WorldInstallResult, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        import_world_archive_blocking(game_dir, version_id, archive_name, archive_data, world_name)
+        import_world_archive_blocking(
+            game_dir,
+            version_id,
+            archive_name,
+            archive_data,
+            archive_path,
+            world_name,
+        )
     })
     .await
     .map_err(|e| format!("Failed to join world import task: {e}"))
@@ -2772,9 +2786,11 @@ fn import_world_archive_blocking(
     game_dir: String,
     version_id: String,
     archive_name: String,
-    archive_data: Vec<u8>,
+    archive_data: Option<Vec<u8>>,
+    archive_path: Option<String>,
     world_name: Option<String>,
 ) -> Result<WorldInstallResult, String> {
+    let archive_data = resolve_archive_payload(archive_data, archive_path.as_deref(), "World")?;
     install_world_archive_with_metadata(
         game_dir,
         version_id,
@@ -5271,6 +5287,29 @@ impl Drop for StagingDirectoryCleanup {
     }
 }
 
+/// Resolve the ZIP payload for an import command. Callers may pass either the
+/// raw bytes (legacy IPC shape) or a filesystem path picked through the native
+/// dialog; the path form avoids serializing whole archives across IPC.
+fn resolve_archive_payload(
+    archive_data: Option<Vec<u8>>,
+    archive_path: Option<&str>,
+    archive_label: &str,
+) -> Result<Vec<u8>, String> {
+    if let Some(path_raw) = archive_path
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        let path = Path::new(path_raw);
+        if !path.is_file() {
+            return Err(format!("{archive_label} archive path is not a file"));
+        }
+        return fs::read(path).map_err(|e| format!("Failed to read {archive_label} archive: {e}"));
+    }
+    archive_data
+        .filter(|data| !data.is_empty())
+        .ok_or_else(|| format!("{archive_label} archive cannot be empty"))
+}
+
 fn extract_archive_to_stage(
     archive_data: &[u8],
     stage_root: &Path,
@@ -6750,6 +6789,7 @@ async fn prepare_extreme_assets(game_dir: String, version_id: String) -> Result<
 }
 
 fn prepare_extreme_assets_blocking(game_dir: String, version_id: String) -> Result<String, String> {
+    ensure_safe_child_name(version_id.trim(), "Version id")?;
     let game_dir_path = resolve_game_dir_path(&game_dir)?;
     let install_dir = native_app_install_dir(&game_dir_path, &version_id);
     let assets_root = install_dir.join("local_assets").join("minecraft-1.8.9");
@@ -6782,11 +6822,31 @@ fn prepare_extreme_assets_blocking(game_dir: String, version_id: String) -> Resu
             .by_index(i)
             .map_err(|e| format!("Failed reading jar entry: {e}"))?;
         let name = entry.name().to_string();
-        // Only the resource tree; skip .class files and META-INF.
-        if !name.starts_with("assets/") || name.ends_with('/') {
+        if name.ends_with('/') {
             continue;
         }
-        let out_path = assets_root.join(&name);
+        // enclosed_name() rejects absolute paths, drive prefixes and escaping
+        // `..` sequences, but still allows non-escaping ones (e.g.
+        // `assets/../minecraft/x`), so additionally require every component to
+        // be a plain name and the first one to be `assets`. Entries like
+        // `assets/../../evil` can then never leave the assets root, and only
+        // the resource tree is kept (.class files and META-INF are skipped).
+        let Some(relative_path) = entry.enclosed_name().map(|value| value.to_path_buf()) else {
+            continue;
+        };
+        let mut components = relative_path.components();
+        if components.next() != Some(std::path::Component::Normal(std::ffi::OsStr::new("assets"))) {
+            continue;
+        }
+        let mut remaining = 0usize;
+        let all_normal = components.all(|component| {
+            remaining += 1;
+            matches!(component, std::path::Component::Normal(_))
+        });
+        if !all_normal || remaining == 0 {
+            continue;
+        }
+        let out_path = assets_root.join(&relative_path);
         if let Some(parent) = out_path.parent() {
             fs::create_dir_all(parent)
                 .map_err(|e| format!("Failed to create {}: {e}", parent.display()))?;
@@ -7054,11 +7114,34 @@ fn cleanup_launch_natives_dir(natives_dir: &Path) {
     }
 }
 
+/// Reject names that could escape their parent directory when joined onto it:
+/// empty values, `.`/`..`, absolute paths, and anything containing a path
+/// separator on any platform. The value must round-trip as exactly one normal
+/// path component.
+pub(crate) fn ensure_safe_child_name(raw: &str, label: &str) -> Result<(), String> {
+    if raw.trim().is_empty() {
+        return Err(format!("{label} cannot be empty"));
+    }
+    if raw == "." || raw == ".." || raw.contains('/') || raw.contains('\\') || raw.contains('\0') {
+        return Err(format!("{label} contains an invalid path segment"));
+    }
+    let mut components = Path::new(raw).components();
+    match (components.next(), components.next()) {
+        (Some(std::path::Component::Normal(component)), None)
+            if component == std::ffi::OsStr::new(raw) =>
+        {
+            Ok(())
+        }
+        _ => Err(format!("{label} contains an invalid path segment")),
+    }
+}
+
 fn resolve_version_runtime_dir(game_dir: &Path, version_id: &str) -> Result<PathBuf, String> {
     let version = version_id.trim();
     if version.is_empty() {
         return Err("Version id is empty".to_string());
     }
+    ensure_safe_child_name(version, "Version id")?;
     let runtime_dir = game_dir.join("versions").join(version);
     fs::create_dir_all(&runtime_dir).map_err(|e| {
         format!(
@@ -7171,6 +7254,7 @@ fn delete_instance_section_entry(
     section: String,
     entry_name: String,
 ) -> Result<(), String> {
+    ensure_safe_child_name(&entry_name, "Entry name")?;
     let game_dir_path = resolve_game_dir_path(&game_dir)?;
     let section_dir = resolve_instance_section_dir(&game_dir_path, &version_id, &section)?;
     let entry_path = section_dir.join(&entry_name);
@@ -7197,6 +7281,7 @@ fn toggle_mod_disabled(
     mod_name: String,
     disable: bool,
 ) -> Result<(), String> {
+    ensure_safe_child_name(&mod_name, "Mod name")?;
     let game_dir_path = resolve_game_dir_path(&game_dir)?;
     let mods_dir = resolve_instance_section_dir(&game_dir_path, &version_id, "mods")?;
     let mod_path = mods_dir.join(&mod_name);
@@ -9859,11 +9944,13 @@ fn trim_to_mods_relative_path(path: &Path) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::{
-        cleanup_launch_natives_dir, fabric_mod_uses_named_namespace,
-        is_nested_launcher_mod_jar_path, is_unsupported_launcher_runtime_mod_name,
-        launcher_package_has_unsupported_runtime_mods, process_mojang_runtime_entry,
-        preserve_native_app_user_data, FabricInstallResult, ForgeInstallResult,
-        LauncherInstalledFileRecord, LauncherModsInstallMarker, MojangJavaRemoteEntry,
+        cleanup_launch_natives_dir, delete_instance_section_entry, ensure_safe_child_name,
+        extract_archive_to_stage, fabric_mod_uses_named_namespace, is_nested_launcher_mod_jar_path,
+        is_unsupported_launcher_runtime_mod_name, launcher_package_has_unsupported_runtime_mods,
+        prepare_extreme_assets_blocking, preserve_native_app_user_data,
+        process_mojang_runtime_entry, resolve_archive_payload, resolve_version_runtime_dir,
+        toggle_mod_disabled, FabricInstallResult, ForgeInstallResult, LauncherInstalledFileRecord,
+        LauncherModsInstallMarker, MojangJavaRemoteEntry,
     };
     use std::fs;
     use std::io::Write;
@@ -10106,6 +10193,271 @@ mod tests {
             .write_all(b"accessWidener v1 named\n")
             .expect("spare access widener should be written");
         writer.finish().expect("test jar should be finalized");
+    }
+
+    fn write_zip_with_entries(path: &Path, entries: &[(&str, &[u8])]) {
+        let file = fs::File::create(path).expect("test zip should be created");
+        let mut writer = zip::ZipWriter::new(file);
+        let options = zip::write::SimpleFileOptions::default();
+        for (name, contents) in entries {
+            writer
+                .start_file(*name, options)
+                .expect("zip entry should be added");
+            writer
+                .write_all(contents)
+                .expect("zip entry should be written");
+        }
+        writer.finish().expect("test zip should be finalized");
+    }
+
+    #[test]
+    fn ensure_safe_child_name_rejects_traversal_segments() {
+        for invalid in [
+            "",
+            "   ",
+            ".",
+            "..",
+            "../evil.jar",
+            "..\\evil.jar",
+            "nested/evil.jar",
+            "nested\\evil.jar",
+            "/etc/passwd",
+            "name\0.jar",
+        ] {
+            assert!(
+                ensure_safe_child_name(invalid, "Entry name").is_err(),
+                "should reject {invalid:?}"
+            );
+        }
+        for valid in [
+            "sodium.jar",
+            "my mod 1.2.jar",
+            "高清材质 包.zip",
+            "..hidden.jar",
+            "1.20.1-fabric",
+        ] {
+            assert!(
+                ensure_safe_child_name(valid, "Entry name").is_ok(),
+                "should accept {valid:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn resolve_version_runtime_dir_rejects_traversal() {
+        let temp = tempfile::tempdir().expect("temp dir should be created");
+        let game_dir = temp.path().join("game");
+        fs::create_dir_all(&game_dir).expect("game dir should be created");
+
+        assert!(resolve_version_runtime_dir(&game_dir, "..").is_err());
+        assert!(resolve_version_runtime_dir(&game_dir, "../outside").is_err());
+        assert!(resolve_version_runtime_dir(&game_dir, "a/b").is_err());
+
+        let runtime = resolve_version_runtime_dir(&game_dir, "1.20.1-fabric")
+            .expect("normal version id should resolve");
+        assert_eq!(runtime, game_dir.join("versions").join("1.20.1-fabric"));
+    }
+
+    #[test]
+    fn delete_instance_section_entry_rejects_path_traversal() {
+        let temp = tempfile::tempdir().expect("temp dir should be created");
+        let game_dir = temp.path().join("game");
+        let mods_dir = game_dir.join("versions").join("test-1.0").join("mods");
+        fs::create_dir_all(&mods_dir).expect("mods dir should be created");
+        let valid_name = "高清 模组.jar";
+        fs::write(mods_dir.join(valid_name), "mod").expect("mod file should be written");
+        let victim = temp.path().join("victim.txt");
+        fs::write(&victim, "keep me").expect("victim file should be written");
+
+        let result = delete_instance_section_entry(
+            game_dir.to_string_lossy().to_string(),
+            "test-1.0".to_string(),
+            "mods".to_string(),
+            "../../../../victim.txt".to_string(),
+        );
+        assert!(result.is_err(), "traversal entry name must be rejected");
+        assert!(
+            result.unwrap_err().contains("invalid path segment"),
+            "rejection should happen before any filesystem access"
+        );
+        assert!(victim.exists(), "file outside the section must survive");
+
+        delete_instance_section_entry(
+            game_dir.to_string_lossy().to_string(),
+            "test-1.0".to_string(),
+            "mods".to_string(),
+            valid_name.to_string(),
+        )
+        .expect("unicode entry name containing a space should still be deletable");
+        assert!(!mods_dir.join(valid_name).exists());
+    }
+
+    #[test]
+    fn toggle_mod_disabled_rejects_path_traversal() {
+        let temp = tempfile::tempdir().expect("temp dir should be created");
+        let game_dir = temp.path().join("game");
+        let mods_dir = game_dir.join("versions").join("test-1.0").join("mods");
+        fs::create_dir_all(&mods_dir).expect("mods dir should be created");
+        let outside = game_dir
+            .join("versions")
+            .join("test-1.0")
+            .join("escape.jar");
+        fs::write(&outside, "outside").expect("outside file should be written");
+
+        let result = toggle_mod_disabled(
+            game_dir.to_string_lossy().to_string(),
+            "test-1.0".to_string(),
+            "../escape.jar".to_string(),
+            true,
+        );
+        assert!(result.is_err(), "traversal mod name must be rejected");
+        assert!(
+            outside.exists(),
+            "file outside the mods dir must not be renamed"
+        );
+
+        let valid_name = "性能 模组.jar";
+        fs::write(mods_dir.join(valid_name), "mod").expect("mod file should be written");
+        toggle_mod_disabled(
+            game_dir.to_string_lossy().to_string(),
+            "test-1.0".to_string(),
+            valid_name.to_string(),
+            true,
+        )
+        .expect("unicode mod name containing a space should be disabled");
+        let disabled_name = format!("{valid_name}.disabled");
+        assert!(mods_dir.join(&disabled_name).exists());
+        toggle_mod_disabled(
+            game_dir.to_string_lossy().to_string(),
+            "test-1.0".to_string(),
+            disabled_name,
+            false,
+        )
+        .expect("unicode mod name containing a space should be enabled");
+        assert!(mods_dir.join(valid_name).exists());
+    }
+
+    #[test]
+    fn extract_archive_to_stage_skips_zip_slip_entries() {
+        let temp = tempfile::tempdir().expect("temp dir should be created");
+        let stage_root = temp.path().join("stage");
+        fs::create_dir_all(&stage_root).expect("stage dir should be created");
+
+        let mut buffer = Vec::new();
+        {
+            let mut writer = zip::ZipWriter::new(std::io::Cursor::new(&mut buffer));
+            let options = zip::write::SimpleFileOptions::default();
+            for (name, contents) in [
+                ("../evil.txt", b"escaped".as_slice()),
+                ("nested/../../evil2.txt", b"escaped".as_slice()),
+                ("ok/file.txt", b"safe".as_slice()),
+            ] {
+                writer
+                    .start_file(name, options)
+                    .expect("zip entry should be added");
+                writer
+                    .write_all(contents)
+                    .expect("zip entry should be written");
+            }
+            writer.finish().expect("zip should be finalized");
+        }
+
+        let extracted = extract_archive_to_stage(&buffer, &stage_root, "instance")
+            .expect("extraction should succeed");
+        assert_eq!(extracted, 1, "only the safe entry should be extracted");
+        assert_eq!(
+            fs::read_to_string(stage_root.join("ok/file.txt")).unwrap(),
+            "safe"
+        );
+        assert!(!temp.path().join("evil.txt").exists());
+        assert!(!temp.path().join("evil2.txt").exists());
+    }
+
+    #[test]
+    fn prepare_extreme_assets_skips_entries_escaping_assets_root() {
+        let temp = tempfile::tempdir().expect("temp dir should be created");
+        let game_dir = temp.path().join("game");
+        let version_dir = game_dir.join("versions").join("1.8.9");
+        fs::create_dir_all(&version_dir).expect("version dir should be created");
+        write_zip_with_entries(
+            &version_dir.join("1.8.9.jar"),
+            &[
+                ("assets/minecraft/lang/en_US.lang", b"key=value".as_slice()),
+                ("assets/../../../evil.txt", b"escaped".as_slice()),
+                ("assets/../minecraft/evil2.txt", b"escaped".as_slice()),
+                ("outside.txt", b"not assets".as_slice()),
+                ("META-INF/MANIFEST.MF", b"Manifest-Version: 1.0".as_slice()),
+            ],
+        );
+
+        let resolved = prepare_extreme_assets_blocking(
+            game_dir.to_string_lossy().to_string(),
+            "extreme-test".to_string(),
+        )
+        .expect("asset extraction should succeed");
+
+        let assets_root = game_dir
+            .join("apps")
+            .join("extreme-test")
+            .join("local_assets")
+            .join("minecraft-1.8.9");
+        assert_eq!(
+            Path::new(&resolved),
+            assets_root.join("assets").join("minecraft")
+        );
+        assert_eq!(
+            fs::read_to_string(
+                assets_root
+                    .join("assets")
+                    .join("minecraft")
+                    .join("lang")
+                    .join("en_US.lang")
+            )
+            .unwrap(),
+            "key=value"
+        );
+        // Pre-fix, `assets/../../../evil.txt` would land here after the join.
+        assert!(!game_dir
+            .join("apps")
+            .join("extreme-test")
+            .join("evil.txt")
+            .exists());
+        assert!(!temp.path().join("evil.txt").exists());
+        assert!(!game_dir.join("evil.txt").exists());
+        assert!(!assets_root.join("minecraft").join("evil2.txt").exists());
+        assert!(!assets_root.join("outside.txt").exists());
+        assert!(!assets_root.join("META-INF").exists());
+
+        assert!(prepare_extreme_assets_blocking(
+            game_dir.to_string_lossy().to_string(),
+            "../escape".to_string(),
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn resolve_archive_payload_prefers_path_and_rejects_empty_input() {
+        let temp = tempfile::tempdir().expect("temp dir should be created");
+        let archive = temp.path().join("world.zip");
+        fs::write(&archive, b"zip bytes").expect("archive should be written");
+
+        let from_path =
+            resolve_archive_payload(None, Some(archive.to_string_lossy().as_ref()), "World")
+                .expect("path payload should be read");
+        assert_eq!(from_path, b"zip bytes");
+
+        let from_data = resolve_archive_payload(Some(vec![1, 2, 3]), None, "World")
+            .expect("byte payload should pass through");
+        assert_eq!(from_data, vec![1, 2, 3]);
+
+        assert!(resolve_archive_payload(None, None, "World").is_err());
+        assert!(resolve_archive_payload(Some(Vec::new()), None, "World").is_err());
+        assert!(resolve_archive_payload(
+            None,
+            Some(temp.path().join("missing.zip").to_string_lossy().as_ref()),
+            "World"
+        )
+        .is_err());
     }
 }
 
@@ -10584,6 +10936,7 @@ fn main() {
             start_minecraft_browser_login,
             poll_minecraft_device_login,
             refresh_minecraft_account,
+            lookup_minecraft_skin_url,
             open_external_link,
             quit_launcher_app,
             destroy_current_window,

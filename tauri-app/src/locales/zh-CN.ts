@@ -186,6 +186,8 @@ const zhCN: EnUSTranslations = {
   "minecraftAccount.microsoftUnconfigured": "当前还没有配置 Microsoft 正版登录的 client id，请先设置 FPSMASTER_MINECRAFT_CLIENT_ID。",
   "minecraftAccount.microsoftLoginFailed": "Microsoft 登录失败，请稍后重试。",
   "minecraftAccount.microsoftRefreshRequired": "当前正版账号需要重新登录后才能启动游戏。",
+  "minecraftAccount.reloginRequired": "登录已过期，请重新登录",
+  "minecraftAccount.refreshFailed": "无法刷新 {name} 的 Microsoft 登录状态。账号已保留，重新进行 Microsoft 登录即可恢复。",
   "minecraftAccount.confirmAddOffline": "添加离线账号",
   "minecraftAccount.deleteConfirm": "确定删除 Minecraft 账号“{name}”吗？",
   "minecraftAccount.uuidPending": "正版登录接入后会自动补全 UUID",

@@ -1,7 +1,8 @@
 import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
+import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import { Archive, Box, Download, File, Globe, HardDriveDownload, PackageCheck, PackageOpen, Palette, Search, Trash2, X } from "lucide-react";
-import { memo, type ChangeEvent, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useEffect, useMemo, useState } from "react";
 import Button from "../components/Button";
 import Card from "../components/Card";
 import Select from "../components/Select";
@@ -97,8 +98,6 @@ function ContentPage({
   const [installedUpdates, setInstalledUpdates] = useState<InstalledContentUpdate[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [contentInstallProgress, setContentInstallProgress] = useState<ContentInstallProgressEvent | null>(null);
-  const worldFileInputRef = useRef<HTMLInputElement | null>(null);
-
   const novaPreset = useMemo(
     () => instances.find((item) => item.preset && item.launcherVersionType === "NOVA") ?? null,
     [instances]
@@ -405,28 +404,31 @@ function ContentPage({
     }
   }
 
-  async function handleWorldImport(event: ChangeEvent<HTMLInputElement>) {
+  async function handleWorldImport() {
     if (!currentInstance) {
       setError(t("content.noInstance"));
       return;
     }
-    const file = event.target.files?.[0];
-    event.target.value = "";
-    if (!file) return;
-    if (!file.name.toLowerCase().endsWith(".zip")) {
+    const selected = await openFileDialog({
+      multiple: false,
+      filters: [{ name: "ZIP", extensions: ["zip"] }]
+    });
+    if (typeof selected !== "string" || !selected) return;
+    if (!selected.toLowerCase().endsWith(".zip")) {
       setError(t("content.worldZipRequired"));
       return;
     }
+    const archiveName = selected.split(/[\\/]/).pop() ?? "world.zip";
     setImportingWorld(true);
     setError(null);
     onStatusChange(t("content.importingWorld"));
     try {
-      const bytes = Array.from(new Uint8Array(await file.arrayBuffer()));
+      // Pass the picked path instead of streaming the whole ZIP over IPC.
       const result = await invoke<WorldInstallResult>("import_world_archive", {
         gameDir,
         versionId: currentInstance.versionId,
-        archiveName: file.name,
-        archiveData: bytes
+        archiveName,
+        archivePath: selected
       });
       await refreshInstalledState(currentInstance);
       onStatusChange(t("content.worldImportDone", { title: result.projectTitle }));
@@ -687,12 +689,10 @@ function ContentPage({
             </div>
           </Card>
 
-          <input ref={worldFileInputRef} type="file" accept=".zip,application/zip" className="hidden" onChange={(event) => void handleWorldImport(event)} />
-
           {(worldImportMode || filteredUpdatableItems.length > 0) && (
             <div className="mb-5 flex flex-wrap justify-end gap-2">
               {worldImportMode && (
-                <Button variant="primary" size="md" className="!rounded-[10px] gap-2" disabled={busy || importingWorld || !currentInstance} onClick={() => worldFileInputRef.current?.click()}>
+                <Button variant="primary" size="md" className="!rounded-[10px] gap-2" disabled={busy || importingWorld || !currentInstance} onClick={() => void handleWorldImport()}>
                   <Download size={16} />
                   {importingWorld ? t("content.importingWorld") : t("content.selectZipFile")}
                 </Button>
