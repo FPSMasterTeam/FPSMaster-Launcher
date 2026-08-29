@@ -200,7 +200,7 @@ export type LiquidGlassLayersProps = {
   interactive?: boolean;
   /**
    * Mouse-following stretch. Small controls only (buttons, chips, tiles) —
-   * large surfaces (sidebar, titlebar, dialogs) must never warp.
+   * large surfaces (dialog cards, the launch pad) must never warp.
    */
   elastic?: boolean;
   overLight?: boolean;
@@ -412,6 +412,10 @@ export function LiquidGlassLayers({
   }
 
   const lensReady = glass.lensed && map !== null;
+  // Shine budget by physical size: at panel scale even a soft border light
+  // reads as a drawn outline on dark wallpapers, so plates run the rim
+  // layers near-off while small controls keep the livelier glint.
+  const plateScale = map !== null && (map.width > 420 || map.height > 240);
   // Split exactly like the reference: backdrop-filter carries only the plain
   // blur/saturate chain, while the displacement graph goes into the regular
   // `filter` property of the same span. Chromium folds the backdrop-filter
@@ -466,6 +470,7 @@ export function LiquidGlassLayers({
         className="lg-layers"
         aria-hidden="true"
         data-lg-lens={lensReady ? "on" : "off"}
+        data-lg-scale={plateScale ? "plate" : "control"}
         data-lg-tint={tint}
         data-lg-overlight={glass.overLight ? "true" : "false"}
       >
@@ -507,10 +512,11 @@ export type LiquidGlassProps = LiquidGlassLayersProps & {
   [key: string]: unknown;
 };
 
-// Fill-parent host wrapper: renders the chrome element itself (sidebar panel,
-// titlebar, dialog card, …) and slips the material layers behind its
-// children. In Standard / Glass profiles it renders the exact same element
-// with no extra DOM.
+// Fill-parent host wrapper: renders the interactive element itself (launch
+// pad, chip, picker tile, dialog card, …) and slips the material layers
+// behind its children. In Standard / Glass profiles it renders the exact
+// same element with no extra DOM. Structural chrome (sidebar, titlebar)
+// must NOT use this — quiet CSS frost only (see styles.css).
 export default function LiquidGlass({
   as,
   mode,

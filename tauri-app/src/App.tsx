@@ -2950,7 +2950,7 @@ function Launcher() {
               setPage={stableNavigate}
             />
 
-            <main className="relative flex-1 overflow-hidden border-l border-white/5 bg-[var(--bg-secondary)]/34">
+            <main className="app-content-panel relative flex-1 overflow-hidden border-l border-white/5 bg-[var(--bg-secondary)]/34">
               <div key={page} className="relative z-10 h-full page-transition">
                 <Suspense fallback={<PageFallback />}>
                   <PageRouter ctx={routerContext} />

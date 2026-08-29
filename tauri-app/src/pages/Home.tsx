@@ -19,6 +19,7 @@ import { createPortal } from "react-dom";
 import { memo, useMemo, useState } from "react";
 import Button from "../components/Button";
 import Card from "../components/Card";
+import LiquidGlass from "../components/LiquidGlass";
 import { NOVA_DEFAULT_GAME_VERSION } from "../constants";
 import MinecraftProfileCard from "../components/MinecraftProfileCard";
 import ServerDialog from "../components/ServerDialog";
@@ -310,7 +311,15 @@ function HomePage({
         )}
 
         <section className="mb-6">
-          <div className="home-launch-card">
+          {/* The launch pad is the page's primary interactive surface: lensed
+              Liquid Glass under the liquid profile (large plate — no warp). */}
+          <LiquidGlass
+            as="div"
+            mode="standard"
+            displacementScale={52}
+            aberrationIntensity={1.8}
+            className="home-launch-card"
+          >
             <div className="home-launch-main">
               <div className="icon-tile relative h-16 w-16 rounded-[12px]">
                 {selectedInstanceIcon ? (
@@ -360,8 +369,8 @@ function HomePage({
             </div>
             <div className="home-launch-actions">
               <button
-                className="segment-chip !min-h-9 shrink-0 px-4"
                 type="button"
+                className="home-launch-change segment-chip !min-h-9 shrink-0 px-4"
                 onClick={() => setPickerOpen(true)}
               >
                 {t("home.loadout.change")}
@@ -384,7 +393,7 @@ function HomePage({
                 </span>
               </Button>
             </div>
-          </div>
+          </LiquidGlass>
         </section>
 
         {quickServers.length > 0 && (
@@ -471,14 +480,21 @@ function HomePage({
               <p className="section-subtitle">{t("home.news.source")}</p>
             </div>
             <div className="section-toolbar">
-              <button
-                className="segment-chip !min-h-9 px-4"
+              <LiquidGlass
+                as="button"
                 type="button"
+                mode="standard"
+                displacementScale={22}
+                aberrationIntensity={1.4}
+                blur={6}
+                interactive
+                elastic
+                className="segment-chip !min-h-9 px-4"
                 disabled={launcherNews.length === 0}
                 onClick={() => setActiveNews(launcherNews[0] ?? null)}
               >
                 {t("home.viewAll")}
-              </button>
+              </LiquidGlass>
             </div>
           </div>
           {launcherNews.length > 0 ? (
@@ -508,10 +524,21 @@ function HomePage({
           ) : (
             <div className="home-news-empty">
               <p className="text-sm text-[var(--text-secondary)]">{t("home.news.emptyTitle")}</p>
-              <button type="button" className="home-news-empty-action" onClick={onOpenServers}>
+              <LiquidGlass
+                as="button"
+                type="button"
+                mode="standard"
+                displacementScale={20}
+                aberrationIntensity={1.4}
+                blur={6}
+                interactive
+                elastic
+                className="home-news-empty-action"
+                onClick={onOpenServers}
+              >
                 {t("home.news.emptyAction")}
                 <ArrowRight size={14} />
-              </button>
+              </LiquidGlass>
             </div>
           )}
         </section>
