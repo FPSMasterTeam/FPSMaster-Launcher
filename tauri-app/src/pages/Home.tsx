@@ -373,6 +373,7 @@ function HomePage({
                 disabled={busy || !selectedInstance || !instanceLaunchable}
                 launchProgress={launching}
                 launchProgressPercent={launchProgressPercent}
+                liquidGlass
                 onClick={onLaunch}
               >
                 <span className="flex items-center justify-center gap-2">
@@ -524,6 +525,7 @@ function HomePage({
               variant="strong"
               className={`${pickerClosing ? "modal-animate-out" : "modal-animate"} modal-card page-card w-full max-w-4xl`}
               interactive={false}
+              liquidGlass
             >
               <div className="modal-header">
                 <div>
@@ -665,6 +667,7 @@ function HomePage({
               variant="strong"
               className={`${newsClosing ? "modal-animate-out" : "modal-animate"} modal-card page-card w-full max-w-3xl`}
               interactive={false}
+              liquidGlass
               onClick={(e) => e.stopPropagation()}
             >
               <div className="modal-header">

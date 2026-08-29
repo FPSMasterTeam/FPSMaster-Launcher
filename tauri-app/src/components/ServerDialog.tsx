@@ -64,6 +64,7 @@ export default function ServerDialog({
         variant="strong"
         className={`${closing ? "modal-animate-out" : "modal-animate"} modal-card page-card w-full max-w-2xl`}
         interactive={false}
+        liquidGlass
         onClick={(e: React.MouseEvent) => e.stopPropagation()}
       >
         <div className="modal-header">

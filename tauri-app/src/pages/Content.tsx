@@ -175,6 +175,7 @@ function UninstallConfirmDialog({
         variant="strong"
         className={`${closing ? "modal-animate-out" : "modal-animate"} modal-card page-card w-full max-w-md`}
         interactive={false}
+        liquidGlass
         onClick={(event: React.MouseEvent) => event.stopPropagation()}
       >
         <div className="modal-header">

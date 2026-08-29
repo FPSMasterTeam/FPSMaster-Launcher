@@ -2,8 +2,11 @@ import {
   type ComponentPropsWithoutRef,
   type CSSProperties,
   type ElementType,
-  type MouseEvent
+  type MouseEvent,
+  type ReactNode
 } from "react";
+import { LiquidGlassLayers } from "./LiquidGlass";
+import { useLiquidGlass } from "../hooks/useLiquidGlass";
 
 type CardVariant = "soft" | "strong" | "frost";
 
@@ -12,21 +15,32 @@ type CardProps<T extends ElementType = "div"> = {
   variant?: CardVariant;
   interactive?: boolean;
   className?: string;
-} & Omit<ComponentPropsWithoutRef<T>, "as" | "className">;
+  /**
+   * Dialog-card Liquid Glass: under the liquid visual profile the card gets
+   * the layered lens material (LiquidGlass component). No-op otherwise.
+   */
+  liquidGlass?: boolean;
+  children?: ReactNode;
+} & Omit<ComponentPropsWithoutRef<T>, "as" | "className" | "children">;
 
 export default function Card<T extends ElementType = "div">({
   as,
   variant = "soft",
   interactive = true,
   className = "",
+  liquidGlass = false,
+  children,
   style,
   onMouseMove,
   onMouseLeave,
   ...rest
 }: CardProps<T>) {
   const Component = (as ?? "div") as ElementType;
+  const glass = useLiquidGlass();
+  const glassActive = liquidGlass && glass.active;
 
-  const baseClass = `ui-card ui-card-${variant} ${interactive ? "ui-card-interactive" : ""} ${className}`.trim();
+  const baseClass =
+    `ui-card ui-card-${variant} ${interactive ? "ui-card-interactive" : ""} ${className} ${glassActive ? glass.hostClassName : ""}`.trim();
   const mergedStyle = style as CSSProperties | undefined;
 
   function handleMouseMove(event: MouseEvent<HTMLElement>) {
@@ -55,6 +69,11 @@ export default function Card<T extends ElementType = "div">({
       onMouseMove={handleMouseMove}
       onMouseLeave={handleMouseLeave}
       {...rest}
-    />
+    >
+      {glassActive && (
+        <LiquidGlassLayers mode="standard" displacementScale={64} aberrationIntensity={2} />
+      )}
+      {children}
+    </Component>
   );
 }

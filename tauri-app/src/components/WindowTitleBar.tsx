@@ -2,6 +2,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { Minus, Square, X } from "lucide-react";
 import { memo, useState } from "react";
 import AppLogo from "./AppLogo";
+import LiquidGlass from "./LiquidGlass";
 import { useI18n } from "../i18n";
 import { IS_MAC, MAC_TRAFFIC_LIGHT_INSET } from "../utils/platform";
 
@@ -34,7 +35,16 @@ function WindowTitleBar({ version, onClose }: WindowTitleBarProps) {
   }
 
   return (
-    <div className="app-titlebar" data-tauri-drag-region>
+    // Persistent floating chrome: Liquid Glass under the liquid profile. The
+    // material layers are pointer-events: none, so drag regions keep working.
+    <LiquidGlass
+      as="div"
+      mode="standard"
+      displacementScale={44}
+      aberrationIntensity={1.4}
+      className="app-titlebar"
+      data-tauri-drag-region
+    >
       <div
         className="app-titlebar-main"
         data-tauri-drag-region
@@ -81,7 +91,7 @@ function WindowTitleBar({ version, onClose }: WindowTitleBarProps) {
           </button>
         </div>
       )}
-    </div>
+    </LiquidGlass>
   );
 }
 

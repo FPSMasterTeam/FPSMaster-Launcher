@@ -33,6 +33,7 @@ import {
 import { BackgroundVideo } from "../components/AppBackground";
 import Button from "../components/Button";
 import ChangelogNotes from "../components/ChangelogNotes";
+import LiquidGlass from "../components/LiquidGlass";
 import Select from "../components/Select";
 import { VISUAL_PROFILE_PRESETS, resolveVisualProfile } from "../constants";
 import { LOCALE_OPTIONS, useI18n } from "../i18n";
@@ -587,7 +588,16 @@ function SettingsPage({
       </header>
 
       <div className="settings-layout">
-        <nav className="settings-nav" aria-label={t("settings.title")}>
+        {/* Sticky jump list floats over scrolling content — Liquid Glass
+            chrome under the liquid profile (large-ish surface, no warp). */}
+        <LiquidGlass
+          as="nav"
+          mode="standard"
+          displacementScale={56}
+          aberrationIntensity={2}
+          className="settings-nav"
+          aria-label={t("settings.title")}
+        >
           {navSections.map((section) => (
             <button
               key={section.id}
@@ -600,7 +610,7 @@ function SettingsPage({
               <span>{section.label}</span>
             </button>
           ))}
-        </nav>
+        </LiquidGlass>
 
         <div className="settings-content">
           {launcherUser && (
@@ -1066,7 +1076,17 @@ function SettingsPage({
                     <p className="settings-row-title">{t("settings.visualPreview")}</p>
                     <p className="settings-row-hint">{t("settings.visualPreviewHint")}</p>
                   </div>
-                  <div className="appearance-preview">
+                  {/* Live sample card: hero chrome, so it may use the shader
+                      map (the most Apple-accurate refraction profile). The
+                      CTA inside stays an unfiltered accent layer to avoid
+                      nesting a second glass surface inside the preview. */}
+                  <LiquidGlass
+                    as="div"
+                    mode="shader"
+                    displacementScale={76}
+                    aberrationIntensity={2.4}
+                    className="appearance-preview"
+                  >
                     <div className="appearance-preview-main">
                       <p className="truncate text-sm font-semibold text-[var(--text-primary)]">
                         {t("settings.visualPreviewCardTitle")}
@@ -1084,7 +1104,7 @@ function SettingsPage({
                         {t("home.launch")}
                       </span>
                     </div>
-                  </div>
+                  </LiquidGlass>
                 </div>
               </div>
             </div>
