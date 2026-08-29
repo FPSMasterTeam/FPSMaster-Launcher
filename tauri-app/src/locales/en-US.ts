@@ -191,6 +191,8 @@ const enUS = {
   "minecraftAccount.microsoftUnconfigured": "Microsoft premium login is not configured yet. Set FPSMASTER_MINECRAFT_CLIENT_ID first.",
   "minecraftAccount.microsoftLoginFailed": "Microsoft login failed. Please try again.",
   "minecraftAccount.microsoftRefreshRequired": "This premium account needs to sign in again before launch.",
+  "minecraftAccount.reloginRequired": "Sign-in expired — log in again",
+  "minecraftAccount.refreshFailed": "Couldn't refresh the Microsoft sign-in for {name}. The account is kept — sign in with Microsoft again to fix it.",
   "minecraftAccount.confirmAddOffline": "Add Offline Account",
   "minecraftAccount.deleteConfirm": "Delete the Minecraft account “{name}”?",
   "minecraftAccount.uuidPending": "UUID will be completed when premium login is connected",
