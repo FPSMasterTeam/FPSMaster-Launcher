@@ -5682,3 +5682,354 @@ button:disabled {
 .toastRow-info .toastIcon {
   color: var(--mc-grass);
 }
+
+/* ===================== Liquid Glass (visual profile "liquid") ===================== */
+/* Apple-style lensed glass, reserved for the navigation layer. Two tiers:
+   1. CSS-only material (tint, rim, specular, sheen, plain blur) on chrome
+      surfaces: sidebar, titlebar, settings groups + nav, dialogs, the Home
+      launch card, and floating toolbars (.liquid-chrome).
+   2. Shape-aware edge refraction (SVG bezel displacement, Chromium only) on a
+      tiny subset of persistent/floating chrome — see the lens rule below.
+   Content cards and list rows deliberately return to the matte Standard
+   surfaces so hierarchy stays readable — no glass-on-glass. The CSS-only
+   material must read as its own third look even when the optional SVG lens
+   filter (see LiquidGlassDefs) is unavailable. */
+
+.liquid-glass-defs {
+  position: absolute;
+  width: 0;
+  height: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+:root[data-visual-profile="liquid"] {
+  /* Content layer: back to matte opaque panels (Standard values). */
+  --linear-card-bg-soft: #11141b;
+  --linear-card-bg: #14181f;
+  --linear-card-bg-strong: #181d27;
+  --linear-card-edge: rgba(255, 255, 255, 0.06);
+  --linear-card-edge-hover: rgba(255, 255, 255, 0.11);
+  /* Chrome material tokens ("Regular" variant: adaptive, always legible). */
+  --liquid-tint: rgba(15, 19, 27, 0.42);
+  --liquid-rim: rgba(255, 255, 255, 0.17);
+  --liquid-specular: rgba(255, 255, 255, 0.3);
+  --liquid-sheen: linear-gradient(
+    118deg,
+    rgba(255, 255, 255, 0.09),
+    rgba(255, 255, 255, 0.028) 32%,
+    rgba(255, 255, 255, 0) 55%,
+    rgba(255, 255, 255, 0.04) 86%
+  );
+  --liquid-shadow:
+    0 18px 44px rgba(2, 6, 14, 0.4),
+    0 2px 8px rgba(2, 6, 14, 0.26);
+  --liquid-filter: blur(var(--frost-blur)) saturate(1.4) brightness(1.06);
+}
+
+:root[data-theme="light"][data-visual-profile="liquid"] {
+  --linear-card-bg-soft: #edf0f4;
+  --linear-card-bg: #f4f6f9;
+  --linear-card-bg-strong: #f8f9fc;
+  --linear-card-edge: rgba(52, 72, 108, 0.12);
+  --linear-card-edge-hover: rgba(52, 72, 108, 0.2);
+  --liquid-tint: rgba(244, 247, 251, 0.44);
+  --liquid-rim: rgba(255, 255, 255, 0.62);
+  --liquid-specular: rgba(255, 255, 255, 0.85);
+  --liquid-sheen: linear-gradient(
+    118deg,
+    rgba(255, 255, 255, 0.5),
+    rgba(255, 255, 255, 0.16) 32%,
+    rgba(255, 255, 255, 0) 55%,
+    rgba(255, 255, 255, 0.24) 86%
+  );
+  --liquid-shadow:
+    0 18px 40px rgba(40, 55, 80, 0.16),
+    0 2px 8px rgba(40, 55, 80, 0.1);
+  --liquid-filter: blur(var(--frost-blur)) saturate(1.35) brightness(1.03);
+}
+
+/* Strip the blanket frost treatment first (liquid runs with blurMode "frost",
+   which would otherwise frost every card); chrome surfaces re-add the
+   material right below. Blur budget goes to the navigation layer only. */
+:root[data-visual-profile="liquid"] .ui-card,
+:root[data-visual-profile="liquid"] .panel,
+:root[data-visual-profile="liquid"] .appearance-preview {
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+
+/* The liquid material: layered tint + sheen, 1px rim, inset specular on the
+   top and side edges, an inner edge glow that reads as light bending at the
+   border, and a slightly deeper drop shadow. */
+:root[data-visual-profile="liquid"] .liquid-chrome,
+:root[data-visual-profile="liquid"] .settings-group,
+:root[data-visual-profile="liquid"] .modal-card,
+:root[data-visual-profile="liquid"] .home-launch-card,
+:root[data-visual-profile="liquid"] .minecraft-profile-card {
+  border: 1px solid var(--liquid-rim);
+  background: var(--liquid-sheen), var(--liquid-tint);
+  box-shadow:
+    inset 0 1px 0 var(--liquid-specular),
+    inset 1px 0 0 rgba(255, 255, 255, 0.1),
+    inset -1px 0 0 rgba(255, 255, 255, 0.07),
+    inset 0 0 22px -14px rgba(255, 255, 255, 0.38),
+    var(--liquid-shadow);
+  -webkit-backdrop-filter: var(--liquid-filter);
+  backdrop-filter: var(--liquid-filter);
+}
+
+:root[data-theme="light"][data-visual-profile="liquid"] .liquid-chrome,
+:root[data-theme="light"][data-visual-profile="liquid"] .settings-group,
+:root[data-theme="light"][data-visual-profile="liquid"] .modal-card,
+:root[data-theme="light"][data-visual-profile="liquid"] .home-launch-card,
+:root[data-theme="light"][data-visual-profile="liquid"] .minecraft-profile-card {
+  box-shadow:
+    inset 0 1px 0 var(--liquid-specular),
+    inset 1px 0 0 rgba(255, 255, 255, 0.4),
+    inset -1px 0 0 rgba(255, 255, 255, 0.3),
+    inset 0 0 22px -14px rgba(255, 255, 255, 0.7),
+    var(--liquid-shadow);
+}
+
+/* Sidebar is chrome too, but keeps only its right rim so the window edge
+   stays clean. */
+:root[data-visual-profile="liquid"] .app-sidebar-panel {
+  border-right-color: var(--liquid-rim);
+  background: var(--liquid-sheen), var(--liquid-tint);
+  box-shadow: inset -1px 0 0 rgba(255, 255, 255, 0.06);
+  -webkit-backdrop-filter: var(--liquid-filter);
+  backdrop-filter: var(--liquid-filter);
+}
+
+/* The window titlebar is persistent floating chrome. */
+:root[data-visual-profile="liquid"] .app-titlebar {
+  border-bottom-color: var(--liquid-rim);
+  background: var(--liquid-sheen), var(--liquid-tint);
+  -webkit-backdrop-filter: var(--liquid-filter);
+  backdrop-filter: var(--liquid-filter);
+}
+
+/* The sticky Settings jump list becomes a small floating chrome panel under
+   liquid (it is transparent in the other profiles). Individual settings
+   groups stay on the CSS-only material above — the nav is the one piece of
+   chrome on that page that floats over scrolling content. */
+:root[data-visual-profile="liquid"] .settings-nav {
+  padding: 8px;
+  border-radius: calc(14px * var(--radius-scale));
+  border: 1px solid var(--liquid-rim);
+  background: var(--liquid-sheen), var(--liquid-tint);
+  box-shadow:
+    inset 0 1px 0 var(--liquid-specular),
+    var(--liquid-shadow);
+  -webkit-backdrop-filter: var(--liquid-filter);
+  backdrop-filter: var(--liquid-filter);
+}
+
+/* Optional lens enhancement (Chromium/WebView2 only, detected at runtime):
+   materialize by modulating lensing — displace the backdrop through the
+   shape-aware bezel map first, then a lighter blur so the refraction stays
+   visible. Refraction is deliberately restricted to a handful of persistent /
+   floating chrome surfaces (sidebar, titlebar, dialogs, the sticky Settings
+   nav): a one-page Settings can mount ~11 groups at once, and Win7-era
+   WebView2 109 is Chromium and passes the runtime gate, so the displacement
+   surface count must stay tiny. Everything else keeps the plain CSS material
+   (blur/tint/rim) above. Video wallpaper keeps the cheap frost everywhere:
+   displacement over a playing video is the most expensive thing this window
+   could paint. */
+:root[data-visual-profile="liquid"][data-liquid-lens="on"]:not([data-bg-video="true"]) .app-sidebar-panel,
+:root[data-visual-profile="liquid"][data-liquid-lens="on"]:not([data-bg-video="true"]) .app-titlebar,
+:root[data-visual-profile="liquid"][data-liquid-lens="on"]:not([data-bg-video="true"]) .modal-card,
+:root[data-visual-profile="liquid"][data-liquid-lens="on"]:not([data-bg-video="true"]) .settings-nav {
+  -webkit-backdrop-filter: url(#liquid-lens) blur(calc(var(--frost-blur) * 0.45)) saturate(1.4) brightness(1.05);
+  backdrop-filter: url(#liquid-lens) blur(calc(var(--frost-blur) * 0.45)) saturate(1.4) brightness(1.05);
+}
+
+/* Primary CTAs become colored glass: a translucent accent layer whose hue
+   shifts with whatever sits behind it, instead of an opaque paint that would
+   kill the material. Sits on liquid chrome, so no extra backdrop blur here
+   (no glass-on-glass) — fills and highlights only. */
+:root[data-visual-profile="liquid"] .cta-glow {
+  border-color: rgba(var(--accent-rgb), 0.55);
+  background:
+    linear-gradient(160deg, rgba(255, 255, 255, 0.24), rgba(255, 255, 255, 0.05) 46%, rgba(255, 255, 255, 0.12)),
+    rgba(var(--accent-rgb), 0.6);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.34),
+    0 1px 2px rgba(0, 0, 0, 0.2),
+    0 0 calc(30px * var(--glow)) rgba(var(--accent-rgb), calc(0.5 * var(--glow)));
+}
+
+:root[data-theme="light"][data-visual-profile="liquid"] .cta-glow {
+  background:
+    linear-gradient(160deg, rgba(255, 255, 255, 0.3), rgba(255, 255, 255, 0.08) 46%, rgba(255, 255, 255, 0.16)),
+    rgba(var(--accent-rgb), 0.78);
+}
+
+/* Gel-like flex + inner illumination on hover/press. */
+:root[data-visual-profile="liquid"] .cta-glow:hover:not(:disabled) {
+  background:
+    linear-gradient(160deg, rgba(255, 255, 255, 0.3), rgba(255, 255, 255, 0.08) 46%, rgba(255, 255, 255, 0.16)),
+    rgba(var(--accent-rgb), 0.74);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.4),
+    inset 0 0 18px rgba(255, 255, 255, 0.14),
+    0 1px 2px rgba(0, 0, 0, 0.2),
+    0 0 calc(34px * var(--glow)) rgba(var(--accent-rgb), calc(0.55 * var(--glow)));
+}
+
+:root[data-visual-profile="liquid"] .cta-glow:disabled {
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  :root[data-visual-profile="liquid"] .cta-glow {
+    transition:
+      transform var(--duration-fast) var(--ease-spring),
+      background-color var(--duration-fast) var(--ease-standard),
+      box-shadow var(--duration-fast) var(--ease-standard);
+  }
+
+  :root[data-visual-profile="liquid"] .cta-glow:hover:not(:disabled) {
+    transform: translateY(-0.5px) scale(1.012);
+  }
+
+  :root[data-visual-profile="liquid"] .cta-glow:active:not(:disabled) {
+    transform: scale(0.985);
+  }
+}
+
+/* Accessibility: these come last so they beat every liquid rule above.
+   Reduced transparency → frostier, near-opaque, no refraction. */
+@media (prefers-reduced-transparency: reduce) {
+  :root[data-visual-profile="liquid"] {
+    --liquid-tint: rgba(17, 21, 29, 0.96);
+  }
+
+  :root[data-theme="light"][data-visual-profile="liquid"] {
+    --liquid-tint: rgba(244, 247, 251, 0.97);
+  }
+
+  :root[data-visual-profile="liquid"] .liquid-chrome,
+  :root[data-visual-profile="liquid"] .settings-group,
+  :root[data-visual-profile="liquid"] .settings-nav,
+  :root[data-visual-profile="liquid"] .modal-card,
+  :root[data-visual-profile="liquid"] .home-launch-card,
+  :root[data-visual-profile="liquid"] .minecraft-profile-card,
+  :root[data-visual-profile="liquid"] .app-sidebar-panel,
+  :root[data-visual-profile="liquid"] .app-titlebar {
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+
+  :root[data-visual-profile="liquid"] .cta-glow {
+    background: var(--mc-grass);
+  }
+}
+
+/* High contrast / forced colors → strong border, drop the fancy filter. */
+@media (prefers-contrast: more) {
+  :root[data-visual-profile="liquid"] .liquid-chrome,
+  :root[data-visual-profile="liquid"] .settings-group,
+  :root[data-visual-profile="liquid"] .settings-nav,
+  :root[data-visual-profile="liquid"] .modal-card,
+  :root[data-visual-profile="liquid"] .home-launch-card,
+  :root[data-visual-profile="liquid"] .minecraft-profile-card,
+  :root[data-visual-profile="liquid"] .app-sidebar-panel,
+  :root[data-visual-profile="liquid"] .app-titlebar {
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+    background: var(--linear-card-bg);
+    border-color: var(--border-strong);
+    box-shadow: none;
+  }
+
+  :root[data-visual-profile="liquid"] .cta-glow {
+    background: var(--mc-grass);
+  }
+}
+
+@media (forced-colors: active) {
+  :root[data-visual-profile="liquid"] .liquid-chrome,
+  :root[data-visual-profile="liquid"] .settings-group,
+  :root[data-visual-profile="liquid"] .settings-nav,
+  :root[data-visual-profile="liquid"] .modal-card,
+  :root[data-visual-profile="liquid"] .home-launch-card,
+  :root[data-visual-profile="liquid"] .minecraft-profile-card,
+  :root[data-visual-profile="liquid"] .app-sidebar-panel,
+  :root[data-visual-profile="liquid"] .app-titlebar {
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+    background: Canvas;
+    border: 1px solid CanvasText;
+    box-shadow: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root[data-visual-profile="liquid"] .cta-glow,
+  :root[data-visual-profile="liquid"] .cta-glow:hover:not(:disabled),
+  :root[data-visual-profile="liquid"] .cta-glow:active:not(:disabled) {
+    transform: none;
+    transition: none;
+  }
+}
+
+/* ===================== Loading skeletons ===================== */
+
+.skeleton-list {
+  display: grid;
+  gap: 10px;
+}
+
+.skeleton-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 16px;
+  border-radius: 10px;
+  border: 1px solid var(--border-subtle);
+  background: var(--linear-card-bg);
+}
+
+.skeleton-block {
+  border-radius: 6px;
+  background: linear-gradient(
+    90deg,
+    rgba(255, 255, 255, 0.05) 25%,
+    rgba(255, 255, 255, 0.1) 50%,
+    rgba(255, 255, 255, 0.05) 75%
+  );
+  background-size: 200% 100%;
+  animation: skeleton-shimmer 1.4s ease infinite;
+}
+
+:root[data-theme="light"] .skeleton-block {
+  background: linear-gradient(
+    90deg,
+    rgba(31, 45, 70, 0.07) 25%,
+    rgba(31, 45, 70, 0.13) 50%,
+    rgba(31, 45, 70, 0.07) 75%
+  );
+  background-size: 200% 100%;
+}
+
+@keyframes skeleton-shimmer {
+  from {
+    background-position: 200% 0;
+  }
+  to {
+    background-position: -200% 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .skeleton-block {
+    animation: none;
+    background: rgba(255, 255, 255, 0.07);
+  }
+
+  :root[data-theme="light"] .skeleton-block {
+    background: rgba(31, 45, 70, 0.09);
+  }
+}

@@ -1,6 +1,8 @@
 import {
   Cpu,
   Download,
+  Eye,
+  EyeOff,
   Film,
   FolderOpen,
   Globe,
@@ -50,13 +52,19 @@ import type {
 import { IS_WINDOWS } from "../utils/platform";
 import { resolveBackgroundAssetUrl, resolveBackgroundVideoUrl } from "../utils/launcher";
 
-type SettingsTab =
+// One scrolling page: the left nav no longer swaps panels, it scrolls to the
+// matching section anchor (id="settings-<id>") and follows scroll position.
+type SettingsSectionId =
   | "account"
   | "runtime"
   | "behavior"
   | "appearance"
   | "background"
   | "updates";
+
+// How far below the scrollport top a section header may sit and still count
+// as the "current" section for the scroll-spy nav.
+const SCROLL_SPY_TOP_BAND_PX = 96;
 
 type SettingsPageProps = {
   settings: Settings;
@@ -102,10 +110,13 @@ function SettingsPage({
   const [backgroundAccentLoading, setBackgroundAccentLoading] = useState(false);
   const [customAccentDraft, setCustomAccentDraft] = useState(settings.customAccentHex);
   const [showLauncherUpdateNotes, setShowLauncherUpdateNotes] = useState(false);
+  const [curseforgeKeyVisible, setCurseforgeKeyVisible] = useState(false);
   const backgroundInputRef = useRef<HTMLInputElement>(null);
   const backgroundVideoInputRef = useRef<HTMLInputElement>(null);
   const backgroundAccentRequestRef = useRef(0);
   const browserVideoUrlRef = useRef("");
+  const shellRef = useRef<HTMLDivElement>(null);
+  const hashScrollDoneRef = useRef(false);
 
   function releaseBrowserVideoUrl() {
     if (!browserVideoUrlRef.current) return;
@@ -470,7 +481,7 @@ function SettingsPage({
   }, [settings.launcherUpdateChannel, launcherUpdateChannels]);
 
   const navSections = useMemo(() => {
-    const items: { id: SettingsTab; label: string; icon: ReactNode }[] = [];
+    const items: { id: SettingsSectionId; label: string; icon: ReactNode }[] = [];
     if (launcherUser) {
       items.push({
         id: "account",
@@ -486,17 +497,87 @@ function SettingsPage({
     return items;
   }, [launcherUser, t]);
 
-  const [selectedTab, setSelectedTab] = useState<SettingsTab>("runtime");
-  // If the account tab disappears (logout) while selected, fall back to the first tab
-  // at render time — no effect needed.
-  const activeTab: SettingsTab = navSections.some((section) => section.id === selectedTab)
-    ? selectedTab
-    : (navSections[0]?.id ?? "runtime");
+  const sectionIds = useMemo(() => navSections.map((section) => section.id), [navSections]);
 
-  const activeLabel = navSections.find((section) => section.id === activeTab)?.label ?? "";
+  const [scrolledSection, setScrolledSection] = useState<SettingsSectionId>("runtime");
+  // If the account section disappears (logout) while highlighted, fall back to
+  // the first section at render time — no effect needed.
+  const activeSection: SettingsSectionId = sectionIds.includes(scrolledSection)
+    ? scrolledSection
+    : (sectionIds[0] ?? "runtime");
+
+  // Scroll-spy: highlight the last section whose header has entered the top
+  // band of the scrollport; at the very bottom, highlight the last section
+  // (it may be too short to ever reach the band).
+  useEffect(() => {
+    const shell = shellRef.current;
+    if (!shell) return;
+    let frame = 0;
+    const computeActive = () => {
+      frame = 0;
+      if (shell.scrollTop + shell.clientHeight >= shell.scrollHeight - 4) {
+        const last = sectionIds[sectionIds.length - 1];
+        if (last) setScrolledSection(last);
+        return;
+      }
+      const shellTop = shell.getBoundingClientRect().top;
+      let next = sectionIds[0] ?? "runtime";
+      for (const id of sectionIds) {
+        const element = document.getElementById(`settings-${id}`);
+        if (!element) continue;
+        if (element.getBoundingClientRect().top - shellTop <= SCROLL_SPY_TOP_BAND_PX) {
+          next = id;
+        }
+      }
+      setScrolledSection(next);
+    };
+    const onScroll = () => {
+      if (frame) return;
+      frame = requestAnimationFrame(computeActive);
+    };
+    computeActive();
+    shell.addEventListener("scroll", onScroll, { passive: true });
+    return () => {
+      if (frame) cancelAnimationFrame(frame);
+      shell.removeEventListener("scroll", onScroll);
+    };
+  }, [sectionIds]);
+
+  function scrollToSection(id: SettingsSectionId, behavior?: ScrollBehavior) {
+    const element = document.getElementById(`settings-${id}`);
+    if (!element) return;
+    const reduceMotion =
+      typeof window.matchMedia === "function" &&
+      window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    element.scrollIntoView({
+      behavior: behavior ?? (reduceMotion ? "auto" : "smooth"),
+      block: "start"
+    });
+  }
+
+  // Deep link: `#settings-appearance` style hashes jump straight to a section
+  // on first mount without touching the app's page router.
+  useEffect(() => {
+    if (hashScrollDoneRef.current) return;
+    const match = /^#settings-([a-z]+)$/.exec(window.location.hash);
+    if (!match) return;
+    const id = match[1] as SettingsSectionId;
+    if (!sectionIds.includes(id)) return;
+    hashScrollDoneRef.current = true;
+    scrollToSection(id, "auto");
+  }, [sectionIds]);
+
+  function handleNavClick(id: SettingsSectionId) {
+    scrollToSection(id);
+    try {
+      window.history.replaceState(null, "", `#settings-${id}`);
+    } catch {
+      // Hash updates are cosmetic; ignore environments that reject them.
+    }
+  }
 
   return (
-    <div className="page-shell">
+    <div className="page-shell" ref={shellRef}>
       <header className="page-header mb-6">
         <div className="page-header-main">
           <p className="page-eyebrow">{t("nav.settings")}</p>
@@ -511,8 +592,9 @@ function SettingsPage({
             <button
               key={section.id}
               type="button"
-              onClick={() => setSelectedTab(section.id)}
-              className={`settings-nav-item ${activeTab === section.id ? "is-active" : ""}`}
+              onClick={() => handleNavClick(section.id)}
+              className={`settings-nav-item ${activeSection === section.id ? "is-active" : ""}`}
+              aria-current={activeSection === section.id ? "true" : undefined}
             >
               {section.icon}
               <span>{section.label}</span>
@@ -520,14 +602,11 @@ function SettingsPage({
           ))}
         </nav>
 
-        <div className="settings-panel">
-          <div>
-            <h2 className="section-title">{activeLabel}</h2>
-          </div>
-
-          <div key={activeTab} className="panel-transition grid gap-5">
-          {activeTab === "account" && launcherUser && (
-            <div className="settings-group">
+        <div className="settings-content">
+          {launcherUser && (
+            <section id="settings-account" className="settings-section">
+              <h2 className="section-title mb-4">{t("settings.launcherAuth.title")}</h2>
+              <div className="settings-group">
               <div className="settings-row">
                 <div className="settings-row-main">
                   <p className="settings-row-title">{t("settings.launcherAuth.loggedInAs")}</p>
@@ -550,11 +629,31 @@ function SettingsPage({
                   </Button>
                 </div>
               </div>
-            </div>
+              </div>
+            </section>
           )}
 
-          {activeTab === "runtime" && (
+          <section id="settings-runtime" className="settings-section">
+            <h2 className="section-title mb-4">{t("settings.runtimeConfig")}</h2>
+            <div className="grid gap-5">
             <div className="settings-group">
+              <div className="settings-row">
+                <div className="settings-row-main">
+                  <p className="settings-row-title">{t("settings.playerName")}</p>
+                  <p className="settings-row-hint">{t("settings.playerNameHint")}</p>
+                </div>
+                <div className="settings-row-control w-64">
+                  <input
+                    type="text"
+                    value={settings.playerName}
+                    placeholder={t("settings.playerNamePlaceholder")}
+                    onChange={(event) => onChange({ ...settings, playerName: event.target.value })}
+                    className="ui-input"
+                    aria-label={t("settings.playerName")}
+                  />
+                </div>
+              </div>
+
               <div className="settings-row is-stacked">
                 <div className="settings-row-main">
                   <p className="settings-row-title">{t("settings.gameDirectory")}</p>
@@ -650,10 +749,49 @@ function SettingsPage({
                 </div>
               </div>
             </div>
-          )}
 
-          {activeTab === "behavior" && (
-            <>
+            <div>
+              <p className="settings-group-label">{t("settings.contentSources")}</p>
+              <div className="settings-group">
+                <div className="settings-row is-stacked">
+                  <div className="settings-row-main">
+                    <p className="settings-row-title">{t("settings.curseforgeApiKey")}</p>
+                    <p className="settings-row-hint">{t("settings.curseforgeApiKeyHint")}</p>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <input
+                      type={curseforgeKeyVisible ? "text" : "password"}
+                      value={settings.curseforgeApiKey}
+                      placeholder={t("settings.curseforgeApiKeyPlaceholder")}
+                      onChange={(event) =>
+                        onChange({ ...settings, curseforgeApiKey: event.target.value })
+                      }
+                      className="ui-input"
+                      autoComplete="off"
+                      spellCheck={false}
+                      aria-label={t("settings.curseforgeApiKey")}
+                    />
+                    <button
+                      type="button"
+                      className="icon-button shrink-0"
+                      onClick={() => setCurseforgeKeyVisible((prev) => !prev)}
+                      aria-label={
+                        curseforgeKeyVisible ? t("login.hidePassword") : t("login.showPassword")
+                      }
+                      title={curseforgeKeyVisible ? t("login.hidePassword") : t("login.showPassword")}
+                    >
+                      {curseforgeKeyVisible ? <EyeOff size={15} /> : <Eye size={15} />}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+            </div>
+          </section>
+
+          <section id="settings-behavior" className="settings-section">
+            <h2 className="section-title mb-4">{t("settings.behavior")}</h2>
+            <div className="grid gap-5">
               <div className="settings-group">
                 <div className="settings-row">
                   <div className="settings-row-main">
@@ -705,11 +843,12 @@ function SettingsPage({
                   }
                 />
               </div>
-            </>
-          )}
+            </div>
+          </section>
 
-          {activeTab === "appearance" && (
-            <>
+          <section id="settings-appearance" className="settings-section">
+            <h2 className="section-title mb-4">{t("settings.appearance")}</h2>
+            <div className="grid gap-5">
               <div className="settings-group">
                 <div className="settings-row">
                   <div className="settings-row-main">
@@ -821,7 +960,7 @@ function SettingsPage({
                     <p className="settings-row-title">{t("settings.visualProfile")}</p>
                     <p className="settings-row-hint">{t("settings.visualProfileHint")}</p>
                   </div>
-                  <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                  <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
                     <button
                       type="button"
                       className={`profile-option ${settings.visualProfile === "standard" ? "is-active" : ""}`}
@@ -837,6 +976,14 @@ function SettingsPage({
                     >
                       <p className="profile-option-title">{t("settings.profile.glass")}</p>
                       <p className="profile-option-hint">{t("settings.profile.glassDesc")}</p>
+                    </button>
+                    <button
+                      type="button"
+                      className={`profile-option ${settings.visualProfile === "liquid" ? "is-active" : ""}`}
+                      onClick={() => applyVisualProfile("liquid")}
+                    >
+                      <p className="profile-option-title">{t("settings.profile.liquid")}</p>
+                      <p className="profile-option-hint">{t("settings.profile.liquidDesc")}</p>
                     </button>
                   </div>
                   {settings.visualProfile === "custom" && (
@@ -940,11 +1087,12 @@ function SettingsPage({
                   </div>
                 </div>
               </div>
-            </>
-          )}
+            </div>
+          </section>
 
-          {activeTab === "background" && (
-            <>
+          <section id="settings-background" className="settings-section">
+            <h2 className="section-title mb-4">{t("settings.background")}</h2>
+            <div className="grid gap-5">
               <div className="settings-group">
                 <div className="settings-row">
                   <div className="settings-row-main">
@@ -1168,11 +1316,12 @@ function SettingsPage({
                 </div>
               </div>
               {backgroundError && <p className="settings-error">{backgroundError}</p>}
-            </>
-          )}
+            </div>
+          </section>
 
-          {activeTab === "updates" && (
-            <>
+          <section id="settings-updates" className="settings-section">
+            <h2 className="section-title mb-4">{t("settings.launcherUpdates")}</h2>
+            <div className="grid gap-5">
               <div className="settings-group">
                 <div className="settings-row">
                   <div className="settings-row-main">
@@ -1317,9 +1466,8 @@ function SettingsPage({
                   </button>
                 )}
               </div>
-            </>
-          )}
-          </div>
+            </div>
+          </section>
         </div>
       </div>
 

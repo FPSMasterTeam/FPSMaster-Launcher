@@ -83,8 +83,12 @@ export type VisualProfilePreset = {
 export const VISUAL_PROFILE_PRESETS: Record<Exclude<VisualProfile, "custom">, VisualProfilePreset> = {
   // Refined dark default: flat matte surfaces, blur reserved for the wallpaper.
   standard: { blurMode: "background", cornerRadiusScale: 100, glowAmount: 20 },
-  // Restrained liquid glass: frosted panels, slightly softer corners.
-  glass: { blurMode: "frost", cornerRadiusScale: 115, glowAmount: 35 }
+  // Restrained frosted glass: frosted panels, slightly softer corners.
+  glass: { blurMode: "frost", cornerRadiusScale: 115, glowAmount: 35 },
+  // Apple-style lensed glass. The knobs intentionally sit off the 5-step slider
+  // grid so resolveVisualProfile can always tell liquid apart from glass; the
+  // real material work happens in CSS keyed off data-visual-profile="liquid".
+  liquid: { blurMode: "frost", cornerRadiusScale: 128, glowAmount: 48 }
 };
 
 export function resolveVisualProfile(settings: Pick<Settings, "blurMode" | "cornerRadiusScale" | "glowAmount">): VisualProfile {

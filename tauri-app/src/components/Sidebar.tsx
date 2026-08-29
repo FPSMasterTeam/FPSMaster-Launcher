@@ -44,7 +44,7 @@ function Sidebar({ currentPage, user, setPage }: SidebarProps) {
     // absolute overlay that expands on hover/focus without reflowing the content.
     <aside className={`relative z-30 h-full shrink-0 ${RAIL}`}>
       <div
-        className={`absolute inset-y-0 left-0 flex h-full flex-col overflow-hidden border-r border-white/8 bg-[var(--bg-secondary)] transition-[width] duration-200 ease-[var(--ease-standard)] ${
+        className={`app-sidebar-panel absolute inset-y-0 left-0 flex h-full flex-col overflow-hidden border-r border-white/8 bg-[var(--bg-secondary)] transition-[width] duration-200 ease-[var(--ease-standard)] ${
           expanded ? `${PANEL} shadow-[10px_0_30px_rgba(0,0,0,0.32)]` : RAIL
         }`}
         onMouseEnter={() => setExpanded(true)}

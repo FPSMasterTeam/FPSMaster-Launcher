@@ -180,7 +180,6 @@ export default function PageRouter({ ctx }: { ctx: PageRouterContext }) {
           launching={ctx.launching}
           launchProgressPercent={ctx.launchProgressPercent}
           launchProgressText={ctx.launchProgressText}
-          user={ctx.user}
           onLaunch={ctx.onLaunchToServer}
           onRefreshServers={ctx.onRefreshServers}
         />

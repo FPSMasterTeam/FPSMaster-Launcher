@@ -2,7 +2,8 @@ import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import { Archive, Box, Download, File, Globe, HardDriveDownload, Layers, PackageCheck, PackageOpen, Palette, Search, Trash2, X } from "lucide-react";
-import { memo, useEffect, useMemo, useState } from "react";
+import { memo, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import Button from "../components/Button";
 import Card from "../components/Card";
 import Select from "../components/Select";
@@ -95,6 +96,143 @@ function contentSourceLabel(value: ContentSource, t: ReturnType<typeof useI18n>[
   return t("content.source.local");
 }
 
+function formatCompactCount(value: number): string {
+  if (!Number.isFinite(value) || value <= 0) return "0";
+  if (value >= 1_000_000) {
+    return `${(value / 1_000_000).toFixed(value >= 10_000_000 ? 0 : 1)}M`;
+  }
+  if (value >= 1_000) {
+    return `${(value / 1_000).toFixed(value >= 10_000 ? 0 : 1)}K`;
+  }
+  return String(value);
+}
+
+function formatInstalledDate(installedAtEpochSec: number): string | null {
+  if (!Number.isFinite(installedAtEpochSec) || installedAtEpochSec <= 0) return null;
+  const parsed = new Date(installedAtEpochSec * 1000);
+  if (Number.isNaN(parsed.getTime())) return null;
+  return parsed.toLocaleDateString();
+}
+
+// Small in-page confirm dialog reusing the app's modal pattern — the raw
+// window.confirm it replaces looked foreign and could not be styled/localized.
+function UninstallConfirmDialog({
+  item,
+  closing,
+  busy,
+  onCancel,
+  onConfirm
+}: {
+  item: InstalledContentItem | null;
+  closing: boolean;
+  busy: boolean;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  const { t } = useI18n();
+  const closeButtonRef = useRef<HTMLButtonElement | null>(null);
+  const onCancelRef = useRef(onCancel);
+
+  useEffect(() => {
+    onCancelRef.current = onCancel;
+  }, [onCancel]);
+
+  useEffect(() => {
+    if (!item) return;
+    const previouslyFocused = document.activeElement as HTMLElement | null;
+    closeButtonRef.current?.focus();
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onCancelRef.current();
+    };
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.removeEventListener("keydown", handleKeyDown);
+      if (previouslyFocused?.isConnected && !previouslyFocused.matches(":disabled")) {
+        previouslyFocused.focus();
+        if (document.activeElement === previouslyFocused) return;
+      }
+      // The trigger row is gone after a confirmed uninstall — fall back to
+      // the installed tab (or the search field) instead of dropping focus.
+      const fallback =
+        document.querySelector<HTMLElement>(".content-primary-tab.is-active") ??
+        document.querySelector<HTMLElement>(".content-topbar-search input");
+      fallback?.focus();
+    };
+  }, [item]);
+
+  if (!item || typeof document === "undefined") return null;
+
+  return createPortal(
+    <div
+      className={`modal-shell ${closing ? "modal-backdrop-animate-out" : "modal-backdrop-animate"}`}
+      onClick={onCancel}
+      role="presentation"
+    >
+      <Card
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="content-uninstall-title"
+        variant="strong"
+        className={`${closing ? "modal-animate-out" : "modal-animate"} modal-card page-card w-full max-w-md`}
+        interactive={false}
+        onClick={(event: React.MouseEvent) => event.stopPropagation()}
+      >
+        <div className="modal-header">
+          <div className="min-w-0">
+            <p className="page-eyebrow">{t("content.uninstall")}</p>
+            <h3 id="content-uninstall-title" className="section-title mt-2">
+              {t("content.uninstallDialogTitle")}
+            </h3>
+          </div>
+          <button
+            ref={closeButtonRef}
+            className="modal-close"
+            onClick={onCancel}
+            type="button"
+            aria-label={t("common.cancel")}
+          >
+            <X size={16} />
+          </button>
+        </div>
+        <div className="modal-body">
+          <p className="text-sm leading-6 text-[var(--text-secondary)]">
+            {t("content.uninstallConfirm", { title: item.projectTitle })}
+          </p>
+          <div className="mt-5 flex flex-wrap justify-end gap-2">
+            <Button variant="secondary" size="sm" onClick={onCancel}>
+              {t("common.cancel")}
+            </Button>
+            <Button variant="danger" size="sm" className="gap-2" disabled={busy} onClick={onConfirm}>
+              <Trash2 size={14} />
+              {t("content.uninstall")}
+            </Button>
+          </div>
+        </div>
+      </Card>
+    </div>,
+    document.body
+  );
+}
+
+// Skeleton placeholders shown while a search or trending load is in flight.
+function ResultSkeletonList() {
+  return (
+    <div className="skeleton-list" aria-hidden="true">
+      {Array.from({ length: 5 }, (_, index) => (
+        <div key={index} className="skeleton-row">
+          <div className="skeleton-block h-14 w-14 shrink-0" />
+          <div className="min-w-0 flex-1">
+            <div className="skeleton-block h-4 w-2/5" />
+            <div className="skeleton-block mt-2 h-3 w-1/4" />
+            <div className="skeleton-block mt-3 h-3 w-4/5" />
+          </div>
+          <div className="skeleton-block h-9 w-28 shrink-0" />
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function ContentPage({
   instances,
   current,
@@ -128,6 +266,8 @@ function ContentPage({
   const [error, setError] = useState<string | null>(null);
   const [contentInstallProgress, setContentInstallProgress] = useState<ContentInstallProgressEvent | null>(null);
   const [modpackProgress, setModpackProgress] = useState<ModpackInstallProgressEvent | null>(null);
+  const [pendingUninstall, setPendingUninstall] = useState<InstalledContentItem | null>(null);
+  const [uninstallDialogClosing, setUninstallDialogClosing] = useState(false);
   const novaPreset = useMemo(
     () => instances.find((item) => item.preset && item.launcherVersionType === "NOVA") ?? null,
     [instances]
@@ -236,6 +376,18 @@ function ContentPage({
       ),
     [filteredInstalledItems, updateMap]
   );
+
+  // Library view: items with a pending update float to the top, the rest sort
+  // alphabetically so a long list stays scannable.
+  const sortedInstalledItems = useMemo(() => {
+    const hasUpdate = (item: InstalledContentItem) =>
+      updateMap.get(`${item.source}:${item.contentType}:${item.projectId}`)?.status === "update-available";
+    return [...filteredInstalledItems].sort((a, b) => {
+      const updateDelta = Number(hasUpdate(b)) - Number(hasUpdate(a));
+      if (updateDelta !== 0) return updateDelta;
+      return a.projectTitle.localeCompare(b.projectTitle);
+    });
+  }, [filteredInstalledItems, updateMap]);
 
   async function fetchProjects(queryValue: string): Promise<ModrinthSearchResult[]> {
     if (!currentInstance && !modpackMode) return [];
@@ -428,12 +580,25 @@ function ContentPage({
     }
   }
 
+  function closeUninstallDialog() {
+    setUninstallDialogClosing(true);
+    window.setTimeout(() => {
+      setPendingUninstall(null);
+      setUninstallDialogClosing(false);
+    }, 150);
+  }
+
+  function confirmUninstall() {
+    const item = pendingUninstall;
+    closeUninstallDialog();
+    if (item) void uninstallProject(item);
+  }
+
   async function uninstallProject(item: InstalledContentItem) {
     if (!currentInstance) {
       setError(t("content.noInstance"));
       return;
     }
-    if (!window.confirm(t("content.uninstallConfirm", { title: item.projectTitle }))) return;
     setUninstallingProjectId(`${item.source}:${item.contentType}:${item.projectId}`);
     setError(null);
     onStatusChange(t("content.uninstalling", { title: item.projectTitle }));
@@ -626,7 +791,7 @@ function ContentPage({
 
       <section className="content-layout">
         <aside className="content-sidebar">
-          <Card variant="frost" className="page-card rounded-[10px]" interactive={false}>
+          <Card variant="frost" className="liquid-chrome page-card rounded-[10px]" interactive={false}>
             <div className="content-nav-group">
               <p className="content-nav-label">{t("content.downloadResources")}</p>
               <div className="content-primary-tabs content-primary-tabs-vertical">
@@ -720,7 +885,7 @@ function ContentPage({
         </aside>
 
         <div className="content-main">
-          <Card variant="frost" className="page-card page-card-compact mb-4 rounded-[10px]" interactive={false}>
+          <Card variant="frost" className="liquid-chrome page-card page-card-compact mb-4 rounded-[10px]" interactive={false}>
             <div className="content-topbar-card">
               <div className="content-topbar-instance">
                 <Select value={selectedOptionValue} onValueChange={handleSelectInstance}>
@@ -768,8 +933,8 @@ function ContentPage({
               </div>
 
               {!worldImportMode ? (
-                <div className="content-topbar-search">
-                  <label className="search-field">
+                <div className="content-topbar-search gap-2">
+                  <label className="search-field min-w-0 flex-1">
                     <Search className="search-field-icon" size={16} />
                     <input
                       value={query}
@@ -782,9 +947,20 @@ function ContentPage({
                       }}
                       type="text"
                       placeholder={searchPlaceholder}
+                      aria-label={searchPlaceholder}
                       className="ui-input"
                     />
                   </label>
+                  <Button
+                    variant="secondary"
+                    size="md"
+                    className="shrink-0 gap-2 !rounded-[8px]"
+                    disabled={loading}
+                    onClick={() => void searchProjects()}
+                  >
+                    <Search size={15} />
+                    {t("content.search")}
+                  </Button>
                 </div>
               ) : (
                 <div className="content-topbar-search">
@@ -860,11 +1036,13 @@ function ContentPage({
           )}
 
           {rightTab === "search" ? (
-            !hasSearched || loading ? (
+            loading ? (
+              <ResultSkeletonList />
+            ) : !hasSearched ? (
               <div className="empty-state">
                 <PackageOpen size={40} className="empty-state-icon" />
-                <p className="empty-state-title">{loading && !query.trim() ? t("content.loadingTrending") : t("content.searchResults")}</p>
-                <p className="empty-state-text">{loading && !query.trim() ? t("content.loadingTrending") : t("content.searchHint")}</p>
+                <p className="empty-state-title">{t("content.searchResults")}</p>
+                <p className="empty-state-text">{t("content.searchHint")}</p>
               </div>
             ) : results.length === 0 ? (
               <div className="empty-state">
@@ -897,6 +1075,17 @@ function ContentPage({
                           <div className="mt-3 flex flex-wrap gap-2">
                             <span className="badge badge-muted normal-case tracking-normal">{contentSourceLabel(item.source, t)}</span>
                             <span className="badge badge-muted normal-case tracking-normal">{contentTypeLabel(item.projectType, t)}</span>
+                            {item.downloads > 0 && (
+                              <span className="badge badge-muted normal-case tracking-normal" title={t("content.downloads")}>
+                                <Download size={11} />
+                                <span className="text-data">{formatCompactCount(item.downloads)}</span>
+                              </span>
+                            )}
+                            {item.latestGameVersion && (
+                              <span className="badge badge-muted normal-case tracking-normal" title={t("content.latestGameVersion")}>
+                                <span className="text-data">{item.latestGameVersion}</span>
+                              </span>
+                            )}
                           </div>
                         </div>
                         <div className="flex shrink-0 items-center">
@@ -926,49 +1115,84 @@ function ContentPage({
               </div>
             )
           ) : filteredInstalledItems.length > 0 ? (
-            <div className="surface-list">
-              {filteredInstalledItems.map((item) => {
-                const updateState = updateMap.get(`${item.source}:${item.contentType}:${item.projectId}`);
-                const canUpdate = updateState?.status === "update-available";
-                const supportsOnlineUpdate = item.source !== "local";
-                const itemKey = `${item.source}:${item.contentType}:${item.projectId}`;
-                const isItemBusy = busy || Boolean(installingProjectId) || Boolean(uninstallingProjectId);
-                const installProgress = contentInstallProgress?.projectKey === itemKey ? contentInstallProgress : null;
-                return (
-                  <div key={itemKey} className={`surface-list-item ${canUpdate ? "is-warning" : ""}`}>
-                    <div className="min-w-0 flex-1">
-                      <div className="flex flex-wrap items-center gap-2">
-                        <p className="truncate text-sm font-semibold text-[var(--text-primary)]">{item.projectTitle}</p>
-                        {canUpdate && <span className="badge badge-warning normal-case tracking-normal">{t("content.update")}</span>}
+            <div>
+              <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                <p className="section-subtitle !mt-0">
+                  {t("content.installedSectionTitle")}
+                  {" · "}
+                  <span className="text-data">{t("content.installedCount", { count: filteredInstalledItems.length })}</span>
+                </p>
+                {checkingUpdates && (
+                  <span className="badge badge-muted normal-case tracking-normal">{t("content.checkingUpdates")}</span>
+                )}
+              </div>
+              <div className="surface-list">
+                {sortedInstalledItems.map((item) => {
+                  const updateState = updateMap.get(`${item.source}:${item.contentType}:${item.projectId}`);
+                  const canUpdate = updateState?.status === "update-available";
+                  const supportsOnlineUpdate = item.source !== "local";
+                  const itemKey = `${item.source}:${item.contentType}:${item.projectId}`;
+                  const isItemBusy = busy || Boolean(installingProjectId) || Boolean(uninstallingProjectId);
+                  const installProgress = contentInstallProgress?.projectKey === itemKey ? contentInstallProgress : null;
+                  const installedDate = formatInstalledDate(item.installedAtEpochSec);
+                  const typeIcon = CONTENT_TYPES.find((entry) => entry.id === item.contentType)?.icon ?? <Archive size={16} />;
+                  return (
+                    <div key={itemKey} className={`surface-list-item ${canUpdate ? "is-warning" : ""}`}>
+                      <div className="icon-tile h-11 w-11 rounded-[8px]">{typeIcon}</div>
+                      <div className="min-w-0 flex-1">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <p className="truncate text-sm font-semibold text-[var(--text-primary)]">{item.projectTitle}</p>
+                          {canUpdate ? (
+                            <span className="badge badge-warning normal-case tracking-normal">{t("content.updateAvailableBadge")}</span>
+                          ) : (
+                            supportsOnlineUpdate &&
+                            updateState?.status === "up-to-date" && (
+                              <span className="badge badge-success normal-case tracking-normal">{t("content.upToDateBadge")}</span>
+                            )
+                          )}
+                        </div>
+                        <div className="mt-1.5 flex flex-wrap items-center gap-2 text-xs text-[var(--text-muted)]">
+                          <span className="text-data">{item.versionNumber}</span>
+                          {canUpdate && updateState?.latestVersionNumber && (
+                            <>
+                              <span aria-hidden="true">→</span>
+                              <span className="badge badge-warning normal-case tracking-normal">
+                                <span className="text-data">{updateState.latestVersionNumber}</span>
+                              </span>
+                            </>
+                          )}
+                          <span className="badge badge-muted normal-case tracking-normal">
+                            {item.source === "local" ? t("content.source.imported") : contentSourceLabel(item.source, t)}
+                          </span>
+                          {installedDate && <span>{t("content.installedAt", { date: installedDate })}</span>}
+                        </div>
+                        <p className="text-data mt-1 truncate text-[11px] text-[var(--text-muted)]" title={item.fileName}>
+                          {item.fileName}
+                        </p>
                       </div>
-                      <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-[var(--text-muted)]">
-                        <span className="text-data">{item.versionNumber}</span>
-                        {canUpdate && updateState?.latestVersionNumber && <span className="badge badge-warning normal-case tracking-normal"><span className="text-data">{updateState.latestVersionNumber}</span></span>}
-                        <span className="badge badge-muted normal-case tracking-normal">{contentSourceLabel(item.source, t)}</span>
+                      <div className="flex shrink-0 items-center gap-2">
+                        {supportsOnlineUpdate && canUpdate && (
+                          <Button
+                            variant="secondary"
+                            size="sm"
+                            className="content-download-button !rounded-[10px] gap-2"
+                            disabled={isItemBusy}
+                            launchProgress={Boolean(installProgress)}
+                            launchProgressPercent={installProgress?.percent ?? null}
+                            onClick={() => void installProject({ source: item.source as OnlineContentSource, projectId: item.projectId, projectType: item.contentType, title: item.projectTitle })}
+                          >
+                            <Download size={12} />
+                            {installProgress ? `${installProgress.percent ?? 0}%` : t("content.update")}
+                          </Button>
+                        )}
+                        <button type="button" className="icon-button icon-button-danger" disabled={isItemBusy} onClick={() => setPendingUninstall(item)} aria-label={t("content.uninstall")} title={t("content.uninstall")}>
+                          <Trash2 size={14} />
+                        </button>
                       </div>
                     </div>
-                    <div className="flex shrink-0 items-center gap-2">
-                      {supportsOnlineUpdate && (
-                        <Button
-                          variant="secondary"
-                          size="sm"
-                          className="content-download-button !rounded-[10px] gap-2"
-                          disabled={isItemBusy}
-                          launchProgress={Boolean(installProgress)}
-                          launchProgressPercent={installProgress?.percent ?? null}
-                          onClick={() => void installProject({ source: item.source as OnlineContentSource, projectId: item.projectId, projectType: item.contentType, title: item.projectTitle })}
-                        >
-                          <Download size={12} />
-                          {installProgress ? `${installProgress.percent ?? 0}%` : t("content.update")}
-                        </Button>
-                      )}
-                      <button type="button" className="icon-button icon-button-danger" disabled={isItemBusy} onClick={() => void uninstallProject(item)} aria-label={t("content.uninstall")} title={t("content.uninstall")}>
-                        <Trash2 size={14} />
-                      </button>
-                    </div>
-                  </div>
-                );
-              })}
+                  );
+                })}
+              </div>
             </div>
           ) : (
             <div className="empty-state">
@@ -981,6 +1205,14 @@ function ContentPage({
           )}
         </div>
       </section>
+
+      <UninstallConfirmDialog
+        item={pendingUninstall}
+        closing={uninstallDialogClosing}
+        busy={busy || Boolean(uninstallingProjectId)}
+        onCancel={closeUninstallDialog}
+        onConfirm={confirmUninstall}
+      />
     </div>
   );
 }
