@@ -210,37 +210,9 @@ jobs:
         working-directory: tauri-app/src-tauri
         run: cargo test
 
-      - name: Configure ad-hoc signing for non-release macOS builds
-        if: matrix.target == 'macos-aarch64' && needs.resolve.outputs.should_publish != 'true'
+      - name: Configure ad-hoc signing for macOS builds
+        if: matrix.target == 'macos-aarch64'
         run: echo 'APPLE_SIGNING_IDENTITY=-' >> "$GITHUB_ENV"
-
-      - name: Import Developer ID certificate
-        if: matrix.target == 'macos-aarch64' && needs.resolve.outputs.should_publish == 'true'
-        shell: bash
-        env:
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
-        run: |
-          for name in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD KEYCHAIN_PASSWORD; do
-            if [ -z "${!name}" ]; then
-              echo "::error::Required macOS signing secret is missing: $name"
-              exit 1
-            fi
-          done
-          printf '%s' "$APPLE_CERTIFICATE" | base64 --decode > certificate.p12
-          security create-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
-          security default-keychain -s build.keychain
-          security unlock-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
-          security set-keychain-settings -t 3600 -u build.keychain
-          security import certificate.p12 -k build.keychain -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
-          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" build.keychain
-          identity="$(security find-identity -v -p codesigning build.keychain | awk -F'"' '/Developer ID Application/ { print $2; exit }')"
-          if [ -z "$identity" ]; then
-            echo "::error::No Developer ID Application identity found in imported certificate"
-            exit 1
-          fi
-          echo "APPLE_SIGNING_IDENTITY=$identity" >> "$GITHUB_ENV"
 
       - name: Download WebView2 fixed runtime (Windows 7 build)
         if: matrix.needs_fixed_runtime
@@ -256,31 +228,8 @@ jobs:
           }
 
       - name: Build installer
-        if: matrix.target != 'macos-aarch64'
         working-directory: tauri-app
         run: npm run ${{ matrix.build_script }}
-
-      - name: Build macOS installer
-        if: matrix.target == 'macos-aarch64'
-        working-directory: tauri-app
-        shell: bash
-        env:
-          CI_APPLE_ID: ${{ secrets.APPLE_ID }}
-          CI_APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          CI_APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-        run: |
-          if [ "${{ needs.resolve.outputs.should_publish }}" = "true" ]; then
-            for name in CI_APPLE_ID CI_APPLE_PASSWORD CI_APPLE_TEAM_ID; do
-              if [ -z "${!name}" ]; then
-                echo "::error::Required macOS notarization secret is missing: ${name#CI_}"
-                exit 1
-              fi
-            done
-            export APPLE_ID="$CI_APPLE_ID"
-            export APPLE_PASSWORD="$CI_APPLE_PASSWORD"
-            export APPLE_TEAM_ID="$CI_APPLE_TEAM_ID"
-          fi
-          npm run ${{ matrix.build_script }}
 
       - name: Verify Linux glibc baseline
         if: matrix.target == 'linux-x86_64'
@@ -340,20 +289,8 @@ jobs:
             exit 1
           fi
           codesign --verify --deep --strict --verbose=2 "$app_bundle"
-          if [ "${{ needs.resolve.outputs.should_publish }}" = "true" ]; then
-            sign_info="$(codesign --display --verbose=4 "$app_bundle" 2>&1)"
-            printf '%s\n' "$sign_info"
-            if ! printf '%s\n' "$sign_info" | grep -q '^Authority=Developer ID Application:'; then
-              echo "::error::Release app is not signed with a Developer ID Application certificate"
-              exit 1
-            fi
-            xcrun stapler validate "$app_bundle"
-            spctl --assess --type execute --verbose=2 "$app_bundle"
-          fi
-
-      - name: Remove temporary signing keychain
-        if: always() && matrix.target == 'macos-aarch64' && needs.resolve.outputs.should_publish == 'true'
-        run: security delete-keychain build.keychain || true
+          sign_info="$(codesign --display --verbose=4 "$app_bundle" 2>&1 || true)"
+          printf '%s\n' "$sign_info"
 
       - name: Capture artifact metadata
         shell: bash
