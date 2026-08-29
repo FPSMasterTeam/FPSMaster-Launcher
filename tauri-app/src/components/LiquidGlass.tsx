@@ -21,7 +21,8 @@ import { buildLiquidGlassMap, type LiquidGlassMode } from "../lib/liquidGlass";
 //     backdrop is composited back into the center (edge-only lensing),
 //   - dual gradient border layers (screen + overlay) + inset specular that
 //     pick up the light of whatever sits behind the glass,
-//   - hover / press inner illumination, optional elastic stretch on small
+//   - hover / press inner illumination that follows the pointer (Apple:
+//     light starts under the cursor), optional elastic stretch on small
 //     controls only (large surfaces never warp).
 // Unlike the reference, layout is fill-parent (no centered translate) and the
 // material renders as plain children of the host element, so existing chrome
@@ -48,7 +49,8 @@ import { buildLiquidGlassMap, type LiquidGlassMode } from "../lib/liquidGlass";
 //   - video wallpaper: cheap frost only, no displacement.
 //   - prefers-reduced-transparency / prefers-contrast / forced-colors: the
 //     component renders nothing and the CSS-only fallback rules own the look.
-//   - prefers-reduced-motion: no elasticity, no animated illumination.
+//   - prefers-reduced-motion: no elasticity, no pointer-tracking illumination
+//     (the hover fade stays at the static top-center rest pose).
 
 // Refractive surfaces are deliberately scarce (Apple reserves the material
 // for floating chrome, and each lens costs three displacement passes on the
@@ -196,7 +198,7 @@ export type LiquidGlassLayersProps = {
   blur?: number;
   /** "chrome" = neutral material, "accent" = colored glass for primary CTAs. */
   tint?: "chrome" | "accent";
-  /** Hover / press inner illumination (Apple: the material energizes). */
+  /** Hover / press inner illumination that follows the pointer. */
   interactive?: boolean;
   /**
    * Mouse-following stretch. Small controls only (buttons, chips, tiles) —
@@ -322,11 +324,13 @@ export function LiquidGlassLayers({
     };
   }, [glass.lensed, mode]);
 
-  // Elasticity: subtle mouse-following stretch, opt-in for small controls.
-  // Direct style writes on the host (rAF-throttled) so React never re-renders
-  // on mousemove.
+  // Pointer tracking: hover illumination follows the cursor (Apple: light
+  // starts under the pointer), plus optional elastic stretch on small
+  // controls. Direct style writes on the host (rAF-throttled) so React never
+  // re-renders on mousemove. Coarse pointers and prefers-reduced-motion keep
+  // the static top-center fade from CSS.
   useEffect(() => {
-    if (!glass.active || !elastic || glass.reducedMotion) {
+    if (!glass.active || glass.reducedMotion || (!interactive && !elastic)) {
       return;
     }
     if (
@@ -340,7 +344,9 @@ export function LiquidGlassLayers({
     if (!host) {
       return;
     }
-    host.classList.add("lg-elastic");
+    if (elastic) {
+      host.classList.add("lg-elastic");
+    }
     let raf = 0;
     let hovered = false;
     let pressed = false;
@@ -348,8 +354,25 @@ export function LiquidGlassLayers({
     let ty = 0;
     let sx = 1;
     let sy = 1;
+    let glintX = 50;
+    let glintY = 0;
+    const resetGlint = () => {
+      host.style.removeProperty("--lg-glint-x");
+      host.style.removeProperty("--lg-glint-y");
+    };
     const apply = () => {
       raf = 0;
+      if (interactive) {
+        if (!hovered && !pressed) {
+          resetGlint();
+        } else {
+          host.style.setProperty("--lg-glint-x", `${glintX.toFixed(1)}%`);
+          host.style.setProperty("--lg-glint-y", `${glintY.toFixed(1)}%`);
+        }
+      }
+      if (!elastic) {
+        return;
+      }
       if (!hovered && !pressed) {
         host.style.transform = "";
         return;
@@ -363,17 +386,26 @@ export function LiquidGlassLayers({
       }
     };
     const onMove = (event: MouseEvent) => {
+      if (host instanceof HTMLButtonElement && host.disabled) {
+        return;
+      }
       const rect = host.getBoundingClientRect();
       if (rect.width <= 0 || rect.height <= 0) {
         return;
       }
-      // Normalized offset from center, [-0.5, 0.5] while inside the control.
-      const nx = (event.clientX - (rect.left + rect.width / 2)) / rect.width;
-      const ny = (event.clientY - (rect.top + rect.height / 2)) / rect.height;
-      tx = Math.max(-4, Math.min(4, nx * 7));
-      ty = Math.max(-3, Math.min(3, ny * 7));
-      sx = 1 + Math.min(0.03, Math.abs(nx) * 0.05);
-      sy = 1 + Math.min(0.04, Math.abs(ny) * 0.08);
+      if (elastic) {
+        // Normalized offset from center, [-0.5, 0.5] while inside the control.
+        const nx = (event.clientX - (rect.left + rect.width / 2)) / rect.width;
+        const ny = (event.clientY - (rect.top + rect.height / 2)) / rect.height;
+        tx = Math.max(-4, Math.min(4, nx * 7));
+        ty = Math.max(-3, Math.min(3, ny * 7));
+        sx = 1 + Math.min(0.03, Math.abs(nx) * 0.05);
+        sy = 1 + Math.min(0.04, Math.abs(ny) * 0.08);
+      }
+      if (interactive) {
+        glintX = Math.max(0, Math.min(100, ((event.clientX - rect.left) / rect.width) * 100));
+        glintY = Math.max(0, Math.min(100, ((event.clientY - rect.top) / rect.height) * 100));
+      }
       hovered = true;
       schedule();
     };
@@ -403,9 +435,10 @@ export function LiquidGlassLayers({
         cancelAnimationFrame(raf);
       }
       host.style.transform = "";
+      resetGlint();
       host.classList.remove("lg-elastic");
     };
-  }, [glass.active, glass.reducedMotion, elastic]);
+  }, [glass.active, glass.reducedMotion, elastic, interactive]);
 
   if (!glass.active) {
     return null;

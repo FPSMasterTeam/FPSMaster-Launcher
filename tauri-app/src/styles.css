@@ -6015,12 +6015,14 @@ button:disabled {
 }
 
 /* Hover / press inner illumination — the material energizes under the
-   pointer (rendered only for interactive hosts). */
+   pointer (rendered only for interactive hosts). Position is written by
+   LiquidGlassLayers as --lg-glint-x / --lg-glint-y; the rest pose is the
+   Apple-style top-center catch light. */
 .lg-glint {
   opacity: 0;
   mix-blend-mode: overlay;
   background: radial-gradient(
-    circle at 50% 0%,
+    circle at var(--lg-glint-x, 50%) var(--lg-glint-y, 0%),
     rgba(255, 255, 255, 0.65) 0%,
     rgba(255, 255, 255, 0) 62%
   );
