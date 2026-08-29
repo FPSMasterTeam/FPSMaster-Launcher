@@ -543,18 +543,6 @@ function SettingsPage({
     };
   }, [sectionIds]);
 
-  // Deep link: `#settings-appearance` style hashes jump straight to a section
-  // on first mount without touching the app's page router.
-  useEffect(() => {
-    if (hashScrollDoneRef.current) return;
-    const match = /^#settings-([a-z]+)$/.exec(window.location.hash);
-    if (!match) return;
-    const id = match[1] as SettingsSectionId;
-    if (!sectionIds.includes(id)) return;
-    hashScrollDoneRef.current = true;
-    scrollToSection(id, "auto");
-  }, [sectionIds]);
-
   function scrollToSection(id: SettingsSectionId, behavior?: ScrollBehavior) {
     const element = document.getElementById(`settings-${id}`);
     if (!element) return;
@@ -566,6 +554,18 @@ function SettingsPage({
       block: "start"
     });
   }
+
+  // Deep link: `#settings-appearance` style hashes jump straight to a section
+  // on first mount without touching the app's page router.
+  useEffect(() => {
+    if (hashScrollDoneRef.current) return;
+    const match = /^#settings-([a-z]+)$/.exec(window.location.hash);
+    if (!match) return;
+    const id = match[1] as SettingsSectionId;
+    if (!sectionIds.includes(id)) return;
+    hashScrollDoneRef.current = true;
+    scrollToSection(id, "auto");
+  }, [sectionIds]);
 
   function handleNavClick(id: SettingsSectionId) {
     scrollToSection(id);
