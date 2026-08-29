@@ -5799,18 +5799,24 @@ button:disabled {
    The sidebar rail, window titlebar and the Settings sticky nav plate are
    persistent, non-interactive chrome. They get a translucent frost only —
    never the lensed material, shine rims or a --liquid-rim stroke. The
-   Tailwind border-white/8 sidebar hairline stays exactly as subtle as in
-   the Standard profile. */
+   Standard-profile separator hairlines are transparent under liquid so they
+   cannot recreate the bright white frame at the chrome/content seams. */
 :root[data-visual-profile="liquid"] .app-sidebar-panel {
+  border-right-color: transparent;
   background: var(--liquid-tint);
   -webkit-backdrop-filter: var(--liquid-filter);
   backdrop-filter: var(--liquid-filter);
 }
 
 :root[data-visual-profile="liquid"] .app-titlebar {
+  border-bottom-color: transparent;
   background: var(--liquid-tint);
   -webkit-backdrop-filter: var(--liquid-filter);
   backdrop-filter: var(--liquid-filter);
+}
+
+:root[data-visual-profile="liquid"] .app-content-panel {
+  border-left-color: transparent;
 }
 
 /* The sticky Settings jump list keeps a quiet frost plate under liquid (it
@@ -6277,6 +6283,10 @@ button:disabled {
   :root[data-visual-profile="liquid"] .cta-glow {
     background: var(--mc-grass);
   }
+
+  :root[data-visual-profile="liquid"] .app-content-panel {
+    border-left-color: var(--border-strong);
+  }
 }
 
 @media (forced-colors: active) {
@@ -6300,6 +6310,10 @@ button:disabled {
     background: Canvas;
     border: 1px solid CanvasText;
     box-shadow: none;
+  }
+
+  :root[data-visual-profile="liquid"] .app-content-panel {
+    border-left-color: CanvasText;
   }
 }
 
