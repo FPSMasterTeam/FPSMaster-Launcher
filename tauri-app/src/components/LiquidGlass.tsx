@@ -327,24 +327,26 @@ export function LiquidGlassLayers({
   // Pointer tracking: hover illumination follows the cursor (Apple: light
   // starts under the pointer), plus optional elastic stretch on small
   // controls. Direct style writes on the host (rAF-throttled) so React never
-  // re-renders on mousemove. Coarse pointers and prefers-reduced-motion keep
-  // the static top-center fade from CSS.
+  // re-renders on mousemove. Stretch stays pointer:fine-only so a tap does
+  // not warp the control; the glint follows any mousemove. Reduced motion
+  // keeps the static top-center fade from CSS.
   useEffect(() => {
     if (!glass.active || glass.reducedMotion || (!interactive && !elastic)) {
       return;
     }
-    if (
-      typeof window === "undefined" ||
-      typeof window.matchMedia !== "function" ||
-      !window.matchMedia("(pointer: fine)").matches
-    ) {
+    const finePointer =
+      typeof window !== "undefined" &&
+      typeof window.matchMedia === "function" &&
+      window.matchMedia("(pointer: fine)").matches;
+    if (!interactive && !finePointer) {
       return;
     }
     const host = anchorRef.current?.parentElement as HTMLElement | null;
     if (!host) {
       return;
     }
-    if (elastic) {
+    const stretch = elastic && finePointer;
+    if (stretch) {
       host.classList.add("lg-elastic");
     }
     let raf = 0;
@@ -359,6 +361,8 @@ export function LiquidGlassLayers({
     const resetGlint = () => {
       host.style.removeProperty("--lg-glint-x");
       host.style.removeProperty("--lg-glint-y");
+      host.style.removeProperty("--lg-shine-angle");
+      host.classList.remove("lg-hot");
     };
     const apply = () => {
       raf = 0;
@@ -368,9 +372,11 @@ export function LiquidGlassLayers({
         } else {
           host.style.setProperty("--lg-glint-x", `${glintX.toFixed(1)}%`);
           host.style.setProperty("--lg-glint-y", `${glintY.toFixed(1)}%`);
+          host.style.setProperty("--lg-shine-angle", `${(180 + (glintX - 50) * 0.72).toFixed(1)}deg`);
+          host.classList.add("lg-hot");
         }
       }
-      if (!elastic) {
+      if (!stretch) {
         return;
       }
       if (!hovered && !pressed) {
@@ -393,7 +399,7 @@ export function LiquidGlassLayers({
       if (rect.width <= 0 || rect.height <= 0) {
         return;
       }
-      if (elastic) {
+      if (stretch) {
         // Normalized offset from center, [-0.5, 0.5] while inside the control.
         const nx = (event.clientX - (rect.left + rect.width / 2)) / rect.width;
         const ny = (event.clientY - (rect.top + rect.height / 2)) / rect.height;

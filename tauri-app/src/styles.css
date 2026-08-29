@@ -5986,7 +5986,7 @@ button:disabled {
     linear-gradient(#000 0 0);
   mask-composite: exclude;
   background: linear-gradient(
-    180deg,
+    var(--lg-shine-angle, 180deg),
     rgba(255, 255, 255, 0.5) 0%,
     rgba(255, 255, 255, 0.14) 34%,
     rgba(255, 255, 255, 0) 62%
@@ -5997,7 +5997,7 @@ button:disabled {
   mix-blend-mode: overlay;
   opacity: 0.55;
   background: linear-gradient(
-    180deg,
+    var(--lg-shine-angle, 180deg),
     rgba(255, 255, 255, 0.42) 0%,
     rgba(255, 255, 255, 0.1) 36%,
     rgba(255, 255, 255, 0) 64%
@@ -6017,19 +6017,23 @@ button:disabled {
 /* Hover / press inner illumination — the material energizes under the
    pointer (rendered only for interactive hosts). Position is written by
    LiquidGlassLayers as --lg-glint-x / --lg-glint-y; the rest pose is the
-   Apple-style top-center catch light. */
+   Apple-style top-center catch light. The radius stays compact so the
+   hotspot actually travels with the cursor instead of washing the whole
+   control. */
 .lg-glint {
   opacity: 0;
-  mix-blend-mode: overlay;
+  mix-blend-mode: normal;
   background: radial-gradient(
-    circle at var(--lg-glint-x, 50%) var(--lg-glint-y, 0%),
-    rgba(255, 255, 255, 0.65) 0%,
-    rgba(255, 255, 255, 0) 62%
+    circle 70px at var(--lg-glint-x, 50%) var(--lg-glint-y, 0%),
+    rgba(255, 255, 255, 0.42) 0%,
+    rgba(255, 255, 255, 0.1) 38%,
+    rgba(255, 255, 255, 0) 68%
   );
 }
 
-.lg-on:hover > .lg-layers .lg-glint {
-  opacity: 0.6;
+.lg-on:hover > .lg-layers .lg-glint,
+.lg-on.lg-hot > .lg-layers .lg-glint {
+  opacity: 1;
 }
 
 .lg-on:active > .lg-layers .lg-glint {
