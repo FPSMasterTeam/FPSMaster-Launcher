@@ -5697,12 +5697,11 @@ button:disabled {
       while the host's own content stays sharp above them. Used on the
       sidebar, titlebar, settings sticky nav, dialog cards, the appearance
       preview, and the primary launch CTAs.
-   2. CSS-only material (tint, rim, specular, sheen, plain blur) on the
-      remaining chrome surfaces (settings groups, launch card, floating
-      toolbars via .liquid-chrome) and as the fallback for component hosts
-      when accessibility settings disable the layered material.
-   Content cards and list rows deliberately return to the matte Standard
-   surfaces so hierarchy stays readable — no glass-on-glass. */
+   2. CSS-only material (tint, rim, specular, sheen, plain blur) as the
+      fallback for component hosts when accessibility settings disable the
+      layered material.
+   Content panels, cards and list rows deliberately return to the matte
+   Standard surfaces so hierarchy stays readable — no glass-on-glass. */
 
 :root[data-visual-profile="liquid"] {
   /* Content layer: back to matte opaque panels (Standard values). */
@@ -5762,6 +5761,10 @@ button:disabled {
    material right below. Blur budget goes to the navigation layer only. */
 :root[data-visual-profile="liquid"] .ui-card,
 :root[data-visual-profile="liquid"] .panel,
+:root[data-visual-profile="liquid"] .liquid-chrome,
+:root[data-visual-profile="liquid"] .settings-group,
+:root[data-visual-profile="liquid"] .home-launch-card,
+:root[data-visual-profile="liquid"] .minecraft-profile-card,
 :root[data-visual-profile="liquid"] .appearance-preview {
   -webkit-backdrop-filter: none;
   backdrop-filter: none;
@@ -5771,11 +5774,7 @@ button:disabled {
    on the top and side edges, an inner edge glow that reads as light bending
    at the border, and a slightly deeper drop shadow. Component hosts (.lg-on)
    are excluded — their material lives in the .lg-* layers below. */
-:root[data-visual-profile="liquid"] .liquid-chrome,
-:root[data-visual-profile="liquid"] .settings-group,
-:root[data-visual-profile="liquid"] .modal-card:not(.lg-on),
-:root[data-visual-profile="liquid"] .home-launch-card,
-:root[data-visual-profile="liquid"] .minecraft-profile-card {
+:root[data-visual-profile="liquid"] .modal-card:not(.lg-on) {
   border: 1px solid var(--liquid-rim);
   background: var(--liquid-sheen), var(--liquid-tint);
   box-shadow:
@@ -5788,11 +5787,7 @@ button:disabled {
   backdrop-filter: var(--liquid-filter);
 }
 
-:root[data-theme="light"][data-visual-profile="liquid"] .liquid-chrome,
-:root[data-theme="light"][data-visual-profile="liquid"] .settings-group,
-:root[data-theme="light"][data-visual-profile="liquid"] .modal-card:not(.lg-on),
-:root[data-theme="light"][data-visual-profile="liquid"] .home-launch-card,
-:root[data-theme="light"][data-visual-profile="liquid"] .minecraft-profile-card {
+:root[data-theme="light"][data-visual-profile="liquid"] .modal-card:not(.lg-on) {
   box-shadow:
     inset 0 1px 0 var(--liquid-specular),
     inset 1px 0 0 rgba(255, 255, 255, 0.4),
@@ -5821,8 +5816,8 @@ button:disabled {
 
 /* The sticky Settings jump list becomes a small floating chrome panel under
    liquid (it is transparent in the other profiles). Individual settings
-   groups stay on the CSS-only material above — the nav is the one piece of
-   chrome on that page that floats over scrolling content. */
+   groups remain matte content — the nav is the one piece of glass chrome on
+   that page that floats over scrolling content. */
 :root[data-visual-profile="liquid"] .settings-nav {
   padding: 8px;
   border-radius: calc(14px * var(--radius-scale));

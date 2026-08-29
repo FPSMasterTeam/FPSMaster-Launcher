@@ -1078,7 +1078,8 @@ function SettingsPage({
                   </div>
                   {/* Live sample card: hero chrome, so it may use the shader
                       map (the most Apple-accurate refraction profile). The
-                      sample CTA inside is a small control — elastic glass. */}
+                      CTA inside stays an unfiltered accent layer to avoid
+                      nesting a second glass surface inside the preview. */}
                   <LiquidGlass
                     as="div"
                     mode="shader"
@@ -1098,20 +1099,10 @@ function SettingsPage({
                       <span className="badge badge-accent normal-case tracking-normal">
                         {t("settings.visualPreviewBadge")}
                       </span>
-                      <LiquidGlass
-                        as="span"
-                        mode="standard"
-                        displacementScale={34}
-                        aberrationIntensity={2}
-                        blur={6}
-                        tint="accent"
-                        interactive
-                        elastic
-                        className="appearance-preview-cta cta-glow"
-                      >
+                      <span className="appearance-preview-cta cta-glow">
                         <Play fill="currentColor" size={12} />
                         {t("home.launch")}
-                      </LiquidGlass>
+                      </span>
                     </div>
                   </LiquidGlass>
                 </div>
