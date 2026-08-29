@@ -6160,6 +6160,17 @@ button:disabled {
   background: var(--liquid-sheen), rgba(var(--accent-rgb), 0.16);
 }
 
+/* The launch pad already owns the glass backdrop. Its secondary action stays
+   a simple tinted control so the launch CTA is the only intentional nested
+   glass surface. */
+:root[data-visual-profile="liquid"] .home-launch-change {
+  border-color: var(--linear-card-edge);
+  background: var(--surface-soft);
+  box-shadow: none;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+
 /* News list: glassy rows (clickable) and a quiet translucent empty block. */
 :root[data-visual-profile="liquid"] .home-news-row {
   border-color: var(--liquid-edge);

@@ -368,20 +368,13 @@ function HomePage({
               </div>
             </div>
             <div className="home-launch-actions">
-              <LiquidGlass
-                as="button"
+              <button
                 type="button"
-                mode="standard"
-                displacementScale={22}
-                aberrationIntensity={1.4}
-                blur={6}
-                interactive
-                elastic
-                className="segment-chip !min-h-9 shrink-0 px-4"
+                className="home-launch-change segment-chip !min-h-9 shrink-0 px-4"
                 onClick={() => setPickerOpen(true)}
               >
                 {t("home.loadout.change")}
-              </LiquidGlass>
+              </button>
               <Button
                 variant="primary"
                 size="md"
