@@ -5,6 +5,7 @@ mod microsoft_auth;
 mod minecraft_core;
 mod modpack;
 mod secure_storage;
+mod zip_budget;
 
 use launcher_api::{
     download_launcher_app_update, launcher_get_app_update, launcher_get_dashboard,
@@ -13,8 +14,8 @@ use launcher_api::{
     open_downloaded_file, parse_api_envelope,
 };
 use microsoft_auth::{
-    get_minecraft_auth_config, poll_minecraft_device_login, refresh_minecraft_account,
-    start_minecraft_browser_login, start_minecraft_device_login,
+    get_minecraft_auth_config, lookup_minecraft_skin_url, poll_minecraft_device_login,
+    refresh_minecraft_account, start_minecraft_browser_login, start_minecraft_device_login,
 };
 use secure_storage::{secure_storage_delete, secure_storage_get, secure_storage_set};
 
@@ -770,7 +771,7 @@ fn sample_game_runtime_cache() {
     }
 }
 
-fn push_ui_log(source: &str, level: &str, message: &str) {
+pub(crate) fn push_ui_log(source: &str, level: &str, message: &str) {
     if let Ok(mut store) = ui_log_store().lock() {
         let entry = UiLogEntry {
             seq: store.next_seq,
@@ -1245,12 +1246,11 @@ fn get_version_profile_base_version(
     if !profile_json.is_file() {
         return Ok(None);
     }
-    let raw = fs::read_to_string(&profile_json).map_err(|e| {
-        format!(
-            "Failed to read version profile {}: {e}",
-            profile_json.display()
-        )
-    })?;
+    let raw = zip_budget::read_text_file_bounded(
+        &profile_json,
+        zip_budget::MAX_TEXT_ENTRY_BYTES,
+        "version profile",
+    )?;
     let parsed: serde_json::Value = serde_json::from_str(&raw).map_err(|e| {
         format!(
             "Failed to parse version profile {}: {e}",
@@ -1499,12 +1499,11 @@ fn export_instance_archive(
 fn import_instance_archive_blocking(
     game_dir: String,
     archive_name: String,
-    archive_data: Vec<u8>,
+    archive_data: Option<Vec<u8>>,
+    archive_path: Option<String>,
     target_version_id: Option<String>,
 ) -> Result<InstanceImportResult, String> {
-    if archive_data.is_empty() {
-        return Err("Instance archive cannot be empty".to_string());
-    }
+    let archive_data = resolve_archive_payload(archive_data, archive_path.as_deref(), "Instance")?;
 
     let game_dir_path = resolve_game_dir_path(&game_dir)?;
     let versions_dir = game_dir_path.join("versions");
@@ -1534,6 +1533,7 @@ fn import_instance_archive_blocking(
             stage_root.display()
         )
     })?;
+    let _stage_cleanup = StagingDirectoryCleanup(stage_root.clone());
 
     let extracted_entries = extract_archive_to_stage(&archive_data, &stage_root, "instance")?;
     if extracted_entries == 0 {
@@ -1719,11 +1719,18 @@ fn repair_instance_runtime_blocking(
 async fn import_instance_archive(
     game_dir: String,
     archive_name: String,
-    archive_data: Vec<u8>,
+    archive_data: Option<Vec<u8>>,
+    archive_path: Option<String>,
     target_version_id: Option<String>,
 ) -> Result<InstanceImportResult, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        import_instance_archive_blocking(game_dir, archive_name, archive_data, target_version_id)
+        import_instance_archive_blocking(
+            game_dir,
+            archive_name,
+            archive_data,
+            archive_path,
+            target_version_id,
+        )
     })
     .await
     .map_err(|e| format!("Failed to join instance import task: {e}"))
@@ -1757,8 +1764,11 @@ async fn repair_instance_runtime(
 }
 
 fn rewrite_version_profile_id(json_path: &Path, version_id: &str) -> Result<(), String> {
-    let profile_json_text = fs::read_to_string(json_path)
-        .map_err(|e| format!("Failed to read profile json {}: {e}", json_path.display()))?;
+    let profile_json_text = zip_budget::read_text_file_bounded(
+        json_path,
+        zip_budget::MAX_TEXT_ENTRY_BYTES,
+        "profile json",
+    )?;
     let mut profile_json: serde_json::Value = serde_json::from_str(&profile_json_text)
         .map_err(|e| format!("Failed to parse profile json {}: {e}", json_path.display()))?;
     if let Some(object) = profile_json.as_object_mut() {
@@ -2254,11 +2264,19 @@ async fn import_world_archive(
     game_dir: String,
     version_id: String,
     archive_name: String,
-    archive_data: Vec<u8>,
+    archive_data: Option<Vec<u8>>,
+    archive_path: Option<String>,
     world_name: Option<String>,
 ) -> Result<WorldInstallResult, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        import_world_archive_blocking(game_dir, version_id, archive_name, archive_data, world_name)
+        import_world_archive_blocking(
+            game_dir,
+            version_id,
+            archive_name,
+            archive_data,
+            archive_path,
+            world_name,
+        )
     })
     .await
     .map_err(|e| format!("Failed to join world import task: {e}"))
@@ -2810,9 +2828,11 @@ fn import_world_archive_blocking(
     game_dir: String,
     version_id: String,
     archive_name: String,
-    archive_data: Vec<u8>,
+    archive_data: Option<Vec<u8>>,
+    archive_path: Option<String>,
     world_name: Option<String>,
 ) -> Result<WorldInstallResult, String> {
+    let archive_data = resolve_archive_payload(archive_data, archive_path.as_deref(), "World")?;
     install_world_archive_with_metadata(
         game_dir,
         version_id,
@@ -2871,6 +2891,7 @@ fn install_world_archive_with_metadata(
             stage_root.display()
         )
     })?;
+    let _stage_cleanup = StagingDirectoryCleanup(stage_root.clone());
 
     let extracted_entries = extract_world_archive_to_stage(&archive_data, &stage_root)?;
     if extracted_entries == 0 {
@@ -2999,12 +3020,11 @@ fn read_edge_aot_marker(marker_path: &Path) -> Result<Option<EdgeAotInstallMarke
     if !marker_path.exists() {
         return Ok(None);
     }
-    let content = fs::read_to_string(marker_path).map_err(|e| {
-        format!(
-            "Failed to read Edge AOT marker {}: {e}",
-            marker_path.display()
-        )
-    })?;
+    let content = zip_budget::read_text_file_bounded(
+        marker_path,
+        zip_budget::MAX_TEXT_ENTRY_BYTES,
+        "Edge AOT marker",
+    )?;
     if content.trim().is_empty() {
         return Ok(None);
     }
@@ -3380,12 +3400,11 @@ fn read_fabric_api_marker(marker_path: &Path) -> Result<Option<FabricApiInstallM
     if !marker_path.exists() {
         return Ok(None);
     }
-    let content = fs::read_to_string(marker_path).map_err(|e| {
-        format!(
-            "Failed to read Fabric API marker {}: {e}",
-            marker_path.display()
-        )
-    })?;
+    let content = zip_budget::read_text_file_bounded(
+        marker_path,
+        zip_budget::MAX_TEXT_ENTRY_BYTES,
+        "Fabric API marker",
+    )?;
     if content.trim().is_empty() {
         return Ok(None);
     }
@@ -3981,7 +4000,10 @@ fn install_launcher_manifest_package(
         return Err(err);
     }
     let mut installed_files = install_result?;
-    sanitize_launcher_mod_package(&stage_dir, &mut installed_files)?;
+    if let Err(err) = sanitize_launcher_mod_package(&stage_dir, &mut installed_files) {
+        let _ = fs::remove_dir_all(&stage_dir);
+        return Err(err);
+    }
 
     if let Err(err) = apply_staged_launcher_package(
         mods_dir,
@@ -5084,12 +5106,11 @@ fn read_installed_content_index(runtime_root: &Path) -> Result<Vec<InstalledCont
     if !index_path.exists() {
         return Ok(Vec::new());
     }
-    let content = fs::read_to_string(&index_path).map_err(|e| {
-        format!(
-            "Failed to read installed content index {}: {e}",
-            index_path.display()
-        )
-    })?;
+    let content = zip_budget::read_text_file_bounded(
+        &index_path,
+        zip_budget::MAX_TEXT_ENTRY_BYTES,
+        "installed content index",
+    )?;
     serde_json::from_str::<Vec<InstalledContentItem>>(&content).map_err(|e| {
         format!(
             "Invalid installed content index {}: {e}",
@@ -5304,14 +5325,47 @@ fn archive_file_stem(raw: &str) -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
+struct StagingDirectoryCleanup(PathBuf);
+
+impl Drop for StagingDirectoryCleanup {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
+}
+
+/// Resolve the ZIP payload for an import command. Callers may pass either the
+/// raw bytes (legacy IPC shape) or a filesystem path picked through the native
+/// dialog; the path form avoids serializing whole archives across IPC.
+fn resolve_archive_payload(
+    archive_data: Option<Vec<u8>>,
+    archive_path: Option<&str>,
+    archive_label: &str,
+) -> Result<Vec<u8>, String> {
+    if let Some(path_raw) = archive_path
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        let path = Path::new(path_raw);
+        if !path.is_file() {
+            return Err(format!("{archive_label} archive path is not a file"));
+        }
+        return fs::read(path).map_err(|e| format!("Failed to read {archive_label} archive: {e}"));
+    }
+    archive_data
+        .filter(|data| !data.is_empty())
+        .ok_or_else(|| format!("{archive_label} archive cannot be empty"))
+}
+
 fn extract_archive_to_stage(
     archive_data: &[u8],
     stage_root: &Path,
     archive_label: &str,
 ) -> Result<usize, String> {
-    let cursor = Cursor::new(archive_data.to_vec());
+    let cursor = Cursor::new(archive_data);
     let mut archive = zip::ZipArchive::new(cursor)
         .map_err(|e| format!("Invalid {archive_label} archive ZIP: {e}"))?;
+    zip_budget::IMPORT_ARCHIVE_BUDGET.check_archive(&mut archive, archive_label)?;
+    let mut budget = zip_budget::IMPORT_ARCHIVE_BUDGET.tracker();
     let mut extracted_entries = 0usize;
 
     for index in 0..archive.len() {
@@ -5356,12 +5410,11 @@ fn extract_archive_to_stage(
                 out_path.display()
             )
         })?;
-        std::io::copy(&mut entry, &mut output).map_err(|e| {
-            format!(
-                "Failed to extract {archive_label} file {}: {e}",
-                out_path.display()
-            )
-        })?;
+        budget.copy_entry(
+            &mut entry,
+            &mut output,
+            &format!("{archive_label} file {}", out_path.display()),
+        )?;
         output.flush().map_err(|e| {
             format!(
                 "Failed to flush extracted {archive_label} file {}: {e}",
@@ -5446,12 +5499,11 @@ fn find_instance_profile_json(root_dir: &Path) -> Result<PathBuf, String> {
 }
 
 fn parse_instance_profile_metadata(json_path: &Path) -> Result<InstanceProfileMetadata, String> {
-    let profile_json_text = fs::read_to_string(json_path).map_err(|e| {
-        format!(
-            "Failed to read instance profile {}: {e}",
-            json_path.display()
-        )
-    })?;
+    let profile_json_text = zip_budget::read_text_file_bounded(
+        json_path,
+        zip_budget::MAX_TEXT_ENTRY_BYTES,
+        "instance profile",
+    )?;
     let profile_json: serde_json::Value =
         serde_json::from_str(&profile_json_text).map_err(|e| {
             format!(
@@ -5576,9 +5628,11 @@ fn detect_loader_version_from_profile_id(
 }
 
 fn extract_world_archive_to_stage(archive_data: &[u8], stage_root: &Path) -> Result<usize, String> {
-    let cursor = Cursor::new(archive_data.to_vec());
+    let cursor = Cursor::new(archive_data);
     let mut archive =
         zip::ZipArchive::new(cursor).map_err(|e| format!("Invalid world archive ZIP: {e}"))?;
+    zip_budget::IMPORT_ARCHIVE_BUDGET.check_archive(&mut archive, "world")?;
+    let mut budget = zip_budget::IMPORT_ARCHIVE_BUDGET.tracker();
     let mut extracted_entries = 0usize;
 
     for index in 0..archive.len() {
@@ -5623,8 +5677,11 @@ fn extract_world_archive_to_stage(archive_data: &[u8], stage_root: &Path) -> Res
                 out_path.display()
             )
         })?;
-        std::io::copy(&mut entry, &mut output)
-            .map_err(|e| format!("Failed to extract world file {}: {e}", out_path.display()))?;
+        budget.copy_entry(
+            &mut entry,
+            &mut output,
+            &format!("world file {}", out_path.display()),
+        )?;
         output.flush().map_err(|e| {
             format!(
                 "Failed to flush extracted world file {}: {e}",
@@ -6287,6 +6344,9 @@ async fn build_vanilla_launch_plan(
     max_memory_mb: i32,
     java_path: Option<String>,
     download_source: Option<String>,
+    user_type: Option<String>,
+    auth_xuid: Option<String>,
+    use_optifine: Option<bool>,
 ) -> Result<LaunchPlan, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let game_dir_path = resolve_game_dir_path(&game_dir)?;
@@ -6305,6 +6365,8 @@ async fn build_vanilla_launch_plan(
             player_name,
             uuid,
             access_token,
+            user_type,
+            auth_xuid,
             java_path: java_executable,
             max_memory_mb,
             server_address: None,
@@ -6314,6 +6376,7 @@ async fn build_vanilla_launch_plan(
             Some(&window),
             &request,
             download_source.as_deref(),
+            use_optifine,
         )
         .map(|value| value.plan)
     })
@@ -6339,6 +6402,8 @@ async fn launch_vanilla(
     fpsmaster_token: Option<String>,
     use_forge: Option<bool>,
     use_optifine: Option<bool>,
+    user_type: Option<String>,
+    auth_xuid: Option<String>,
 ) -> Result<LaunchExecutionResult, String> {
     tauri::async_runtime::spawn_blocking(move || {
         launch_vanilla_blocking(
@@ -6356,6 +6421,8 @@ async fn launch_vanilla(
             fpsmaster_token,
             use_forge,
             use_optifine,
+            user_type,
+            auth_xuid,
         )
     })
     .await
@@ -6379,6 +6446,8 @@ fn launch_vanilla_blocking(
     fpsmaster_token: Option<String>,
     use_forge: Option<bool>,
     use_optifine: Option<bool>,
+    user_type: Option<String>,
+    auth_xuid: Option<String>,
 ) -> Result<LaunchExecutionResult, String> {
     if let Some(pid) = detect_active_game_pid() {
         return Err(format!(
@@ -6393,6 +6462,8 @@ fn launch_vanilla_blocking(
         player_name: player_name.clone(),
         uuid: uuid.clone(),
         access_token: access_token.clone(),
+        user_type,
+        auth_xuid,
         java_path: java_path.as_deref().map(PathBuf::from).unwrap_or_else(|| {
             game_dir_path
                 .join("runtime")
@@ -6419,6 +6490,7 @@ fn launch_vanilla_blocking(
             Some(&window),
             &vanilla_request,
             download_source.as_deref(),
+            use_optifine,
         )?
     };
     let plan = resolved_plan.plan;
@@ -6778,6 +6850,7 @@ async fn prepare_extreme_assets(game_dir: String, version_id: String) -> Result<
 }
 
 fn prepare_extreme_assets_blocking(game_dir: String, version_id: String) -> Result<String, String> {
+    ensure_safe_child_name(version_id.trim(), "Version id")?;
     let game_dir_path = resolve_game_dir_path(&game_dir)?;
     let install_dir = native_app_install_dir(&game_dir_path, &version_id);
     let assets_root = install_dir.join("local_assets").join("minecraft-1.8.9");
@@ -6802,25 +6875,52 @@ fn prepare_extreme_assets_blocking(game_dir: String, version_id: String) -> Resu
         .map_err(|e| format!("Failed opening client jar {}: {e}", jar_path.display()))?;
     let mut zip = zip::ZipArchive::new(BufReader::new(file))
         .map_err(|e| format!("Invalid client jar: {e}"))?;
+    zip_budget::CLIENT_JAR_BUDGET.check_archive(&mut zip, "client jar")?;
+    let mut budget = zip_budget::CLIENT_JAR_BUDGET.tracker();
     let mut extracted = 0usize;
     for i in 0..zip.len() {
         let mut entry = zip
             .by_index(i)
             .map_err(|e| format!("Failed reading jar entry: {e}"))?;
         let name = entry.name().to_string();
-        // Only the resource tree; skip .class files and META-INF.
-        if !name.starts_with("assets/") || name.ends_with('/') {
+        if name.ends_with('/') {
             continue;
         }
-        let out_path = assets_root.join(&name);
+        // enclosed_name() rejects absolute paths, drive prefixes and escaping
+        // `..` sequences, but still allows non-escaping ones (e.g.
+        // `assets/../minecraft/x`), so additionally require every component to
+        // be a plain name and the first one to be `assets`. Entries like
+        // `assets/../../evil` can then never leave the assets root, and only
+        // the resource tree is kept (.class files and META-INF are skipped).
+        let Some(relative_path) = entry.enclosed_name().map(|value| value.to_path_buf()) else {
+            continue;
+        };
+        let mut components = relative_path.components();
+        if components.next() != Some(std::path::Component::Normal(std::ffi::OsStr::new("assets"))) {
+            continue;
+        }
+        let mut remaining = 0usize;
+        let all_normal = components.all(|component| {
+            remaining += 1;
+            matches!(component, std::path::Component::Normal(_))
+        });
+        if !all_normal || remaining == 0 {
+            continue;
+        }
+        let out_path = assets_root.join(&relative_path);
         if let Some(parent) = out_path.parent() {
             fs::create_dir_all(parent)
                 .map_err(|e| format!("Failed to create {}: {e}", parent.display()))?;
         }
         let mut out = fs::File::create(&out_path)
             .map_err(|e| format!("Failed to write {}: {e}", out_path.display()))?;
-        std::io::copy(&mut entry, &mut out)
-            .map_err(|e| format!("Failed extracting {name}: {e}"))?;
+        if let Err(error) =
+            budget.copy_entry(&mut entry, &mut out, &format!("client jar asset {name}"))
+        {
+            drop(out);
+            let _ = fs::remove_dir_all(&assets_root);
+            return Err(error);
+        }
         extracted += 1;
     }
     if extracted == 0 || !assets_minecraft.is_dir() {
@@ -7075,11 +7175,34 @@ fn cleanup_launch_natives_dir(natives_dir: &Path) {
     }
 }
 
+/// Reject names that could escape their parent directory when joined onto it:
+/// empty values, `.`/`..`, absolute paths, and anything containing a path
+/// separator on any platform. The value must round-trip as exactly one normal
+/// path component.
+pub(crate) fn ensure_safe_child_name(raw: &str, label: &str) -> Result<(), String> {
+    if raw.trim().is_empty() {
+        return Err(format!("{label} cannot be empty"));
+    }
+    if raw == "." || raw == ".." || raw.contains('/') || raw.contains('\\') || raw.contains('\0') {
+        return Err(format!("{label} contains an invalid path segment"));
+    }
+    let mut components = Path::new(raw).components();
+    match (components.next(), components.next()) {
+        (Some(std::path::Component::Normal(component)), None)
+            if component == std::ffi::OsStr::new(raw) =>
+        {
+            Ok(())
+        }
+        _ => Err(format!("{label} contains an invalid path segment")),
+    }
+}
+
 fn resolve_version_runtime_dir(game_dir: &Path, version_id: &str) -> Result<PathBuf, String> {
     let version = version_id.trim();
     if version.is_empty() {
         return Err("Version id is empty".to_string());
     }
+    ensure_safe_child_name(version, "Version id")?;
     let runtime_dir = game_dir.join("versions").join(version);
     fs::create_dir_all(&runtime_dir).map_err(|e| {
         format!(
@@ -7192,6 +7315,7 @@ fn delete_instance_section_entry(
     section: String,
     entry_name: String,
 ) -> Result<(), String> {
+    ensure_safe_child_name(&entry_name, "Entry name")?;
     let game_dir_path = resolve_game_dir_path(&game_dir)?;
     let section_dir = resolve_instance_section_dir(&game_dir_path, &version_id, &section)?;
     let entry_path = section_dir.join(&entry_name);
@@ -7218,6 +7342,7 @@ fn toggle_mod_disabled(
     mod_name: String,
     disable: bool,
 ) -> Result<(), String> {
+    ensure_safe_child_name(&mod_name, "Mod name")?;
     let game_dir_path = resolve_game_dir_path(&game_dir)?;
     let mods_dir = resolve_instance_section_dir(&game_dir_path, &version_id, "mods")?;
     let mod_path = mods_dir.join(&mod_name);
@@ -7369,11 +7494,69 @@ fn rewrite_launch_game_dir_argument(command: &mut Vec<String>, runtime_dir: &Pat
 
 fn format_quoted_command(executable: &str, args: &[String]) -> String {
     let mut parts = Vec::with_capacity(args.len() + 1);
-    parts.push(quote_arg(executable));
+    parts.push(quote_arg(&redact_path_for_log(Path::new(executable))));
+    let mut redact_next = false;
     for arg in args {
-        parts.push(quote_arg(arg));
+        let normalized = arg.to_ascii_lowercase();
+        let rendered = if redact_next {
+            redact_next = false;
+            "<redacted>".to_string()
+        } else if matches!(
+            normalized.as_str(),
+            "--accesstoken"
+                | "--access-token"
+                | "--session"
+                | "--username"
+                | "--uuid"
+                | "--xuid"
+                | "--clientid"
+                | "--server"
+                | "--connect"
+                | "--gamedir"
+                | "--game-dir"
+                | "--assets"
+                | "-cp"
+                | "-classpath"
+        ) {
+            redact_next = true;
+            arg.clone()
+        } else if normalized.starts_with("-dfpsmaster.auth.token=")
+            || normalized.starts_with("--accesstoken=")
+            || normalized.starts_with("--access-token=")
+            || normalized.starts_with("--server=")
+            || normalized.starts_with("--connect=")
+            || normalized.starts_with("--gamedir=")
+            || normalized.starts_with("--game-dir=")
+            || normalized.starts_with("-djava.library.path=")
+            || normalized.starts_with("-djava.class.path=")
+        {
+            format!(
+                "{}=<redacted>",
+                arg.split_once('=').map(|(key, _)| key).unwrap_or(arg)
+            )
+        } else if Path::new(arg).is_absolute() {
+            redact_path_for_log(Path::new(arg))
+        } else {
+            arg.clone()
+        };
+        parts.push(quote_arg(&rendered));
     }
     parts.join(" ")
+}
+
+fn redact_path_for_log(path: &Path) -> String {
+    let components = path
+        .components()
+        .filter_map(|component| match component {
+            std::path::Component::Normal(value) => Some(value.to_string_lossy().to_string()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    if components.is_empty() {
+        return "<path>".to_string();
+    }
+    let keep_from = components.len().saturating_sub(2);
+    format!("…/{}", components[keep_from..].join("/"))
 }
 
 fn quote_arg(arg: &str) -> String {
@@ -7421,17 +7604,21 @@ fn describe_spawn_failure(
 ) -> String {
     use std::fmt::Write as _;
     let mut detail = format!("启动进程失败: {err}");
+    let safe_executable = redact_path_for_log(Path::new(executable));
     match fs::metadata(Path::new(executable)) {
         Ok(meta) => {
             let kind = if meta.is_dir() { "目录" } else { "文件" };
             let _ = write!(
                 detail,
-                "\n  目标程序: {executable}  (存在, {kind}, {} 字节)",
+                "\n  目标程序: {safe_executable}  (存在, {kind}, {} 字节)",
                 meta.len()
             );
         }
         Err(meta_err) => {
-            let _ = write!(detail, "\n  目标程序: {executable}  (无法访问: {meta_err})");
+            let _ = write!(
+                detail,
+                "\n  目标程序: {safe_executable}  (无法访问: {meta_err})"
+            );
         }
     }
     let dir_state = if game_dir.is_dir() {
@@ -7442,7 +7629,7 @@ fn describe_spawn_failure(
     let _ = write!(
         detail,
         "\n  工作目录: {}  ({dir_state})",
-        game_dir.display()
+        redact_path_for_log(game_dir)
     );
     let _ = write!(detail, "\n  参数个数: {}", args.len());
     let _ = write!(
@@ -7979,16 +8166,37 @@ async fn install_optifine(
         let session = ipc_session.clone();
         let game_dir_path = resolve_game_dir_path(&game_dir)?;
         let normalized_loader = normalize_loader_kind(&loader)?;
+        let normalized_version_id = version_id.trim();
+        let normalized_game_version = game_version.trim();
+        let java_executable =
+            if normalized_loader == "vanilla" && normalized_version_id == normalized_game_version {
+                let requirement = minecraft_core::resolve_java_runtime_requirement(
+                    Some(&game_dir_path),
+                    normalized_game_version,
+                    download_source.as_deref(),
+                )?;
+                let java_major = requirement.major_version.max(8);
+                Some(ensure_managed_jdk_runtime(
+                    Some(&window),
+                    &managed_jdk_runtime_root(&game_dir_path, java_major, false),
+                    java_major,
+                    Some(DEFAULT_DOWNLOAD_THREADS),
+                    false,
+                )?)
+            } else {
+                None
+            };
         let result = minecraft_core::install_optifine(
             Some(&window),
             &game_dir_path,
-            version_id.trim(),
-            game_version.trim(),
+            normalized_version_id,
+            normalized_game_version,
             &normalized_loader,
             loader_version.as_deref(),
             optifine_version.trim(),
             download_source.as_deref(),
             ipc_session.as_deref(),
+            java_executable.as_deref(),
         );
         clear_install_cancel(session.as_deref());
         result
@@ -8018,15 +8226,29 @@ async fn install_forge(
             .filter(|value| !value.is_empty())
         {
             Some(value) => value,
-            None => ensure_managed_jdk_runtime(
-                Some(&window),
-                &managed_jdk_runtime_root(&game_dir_path, 17, false),
-                17,
-                Some(normalized_download_threads as i32),
-                false,
-            )?
-            .to_string_lossy()
-            .to_string(),
+            None => {
+                let game_version = forge_version
+                    .trim()
+                    .split('-')
+                    .next()
+                    .filter(|value| !value.is_empty())
+                    .ok_or_else(|| format!("Invalid Forge version: {forge_version}"))?;
+                let requirement = minecraft_core::resolve_java_runtime_requirement(
+                    Some(&game_dir_path),
+                    game_version,
+                    download_source.as_deref(),
+                )?;
+                let java_major = requirement.major_version.max(8);
+                ensure_managed_jdk_runtime(
+                    Some(&window),
+                    &managed_jdk_runtime_root(&game_dir_path, java_major, false),
+                    java_major,
+                    Some(normalized_download_threads as i32),
+                    false,
+                )?
+                .to_string_lossy()
+                .to_string()
+            }
         };
         let result = minecraft_core::install_forge(
             Some(&window),
@@ -8403,20 +8625,68 @@ fn install_zulu_jre_archive(
         extract_tar_gz_into(&archive_path, runtime_root)
     };
     let _ = fs::remove_file(&archive_path);
-    extract_result?;
+    if let Err(error) = extract_result {
+        // A capped extraction may have written files before it reaches the
+        // limit. Never let a later runtime probe mistake that partial tree for
+        // a complete JRE.
+        let _ = fs::remove_dir_all(runtime_root);
+        return Err(error);
+    }
     Ok(())
 }
 
 fn extract_tar_gz_into(archive_path: &Path, dest: &Path) -> Result<(), String> {
     let file = fs::File::open(archive_path)
         .map_err(|e| format!("Failed opening archive {}: {e}", archive_path.display()))?;
-    let decoder = flate2::read::GzDecoder::new(BufReader::new(file));
+    // Tar entries cannot be pre-flighted without decompressing the stream, so
+    // the budget is enforced on the decompressed byte count instead.
+    let decoder = zip_budget::BudgetedReader::new(
+        flate2::read::GzDecoder::new(BufReader::new(file)),
+        zip_budget::JRE_ARCHIVE_BUDGET.max_total_uncompressed_bytes,
+        "JRE archive",
+    );
     let mut archive = tar::Archive::new(decoder);
     archive.set_preserve_permissions(true);
     archive.set_overwrite(true);
-    archive
-        .unpack(dest)
-        .map_err(|e| format!("Failed extracting JRE archive: {e}"))?;
+
+    if dest.symlink_metadata().is_err() {
+        fs::create_dir_all(dest).map_err(|e| {
+            format!(
+                "Failed to create JRE extraction directory {}: {e}",
+                dest.display()
+            )
+        })?;
+    }
+    let destination = dest.canonicalize().unwrap_or_else(|_| dest.to_path_buf());
+    let mut directories = Vec::new();
+    let mut entry_count = 0usize;
+    let entries = archive
+        .entries()
+        .map_err(|e| format!("Failed reading JRE archive entries: {e}"))?;
+    for entry in entries {
+        entry_count = entry_count.saturating_add(1);
+        if entry_count > zip_budget::JRE_ARCHIVE_BUDGET.max_entries {
+            return Err(format!(
+                "Refusing to extract JRE archive: {entry_count} entries exceed the limit of {}",
+                zip_budget::JRE_ARCHIVE_BUDGET.max_entries
+            ));
+        }
+        let mut entry =
+            entry.map_err(|e| format!("Failed reading JRE archive entry {entry_count}: {e}"))?;
+        if entry.header().entry_type() == tar::EntryType::Directory {
+            directories.push(entry);
+        } else {
+            entry
+                .unpack_in(&destination)
+                .map_err(|e| format!("Failed extracting JRE archive entry {entry_count}: {e}"))?;
+        }
+    }
+    directories.sort_by(|left, right| right.path_bytes().cmp(&left.path_bytes()));
+    for mut directory in directories {
+        directory
+            .unpack_in(&destination)
+            .map_err(|e| format!("Failed extracting JRE archive directory: {e}"))?;
+    }
     Ok(())
 }
 
@@ -8425,6 +8695,11 @@ fn extract_zip_into(archive_path: &Path, dest: &Path) -> Result<(), String> {
         .map_err(|e| format!("Failed opening archive {}: {e}", archive_path.display()))?;
     let mut archive =
         zip::ZipArchive::new(file).map_err(|e| format!("Invalid JRE archive: {e}"))?;
+    // Pre-flight on declared sizes only; `extract` keeps the crate's own path
+    // sanitization and permission handling. The archive's checksum is verified
+    // against trusted metadata before this point, which bounds the residual
+    // risk of a header that understates its real size.
+    zip_budget::JRE_ARCHIVE_BUDGET.check_archive(&mut archive, "JRE")?;
     archive
         .extract(dest)
         .map_err(|e| format!("Failed extracting JRE archive: {e}"))?;
@@ -9262,7 +9537,11 @@ fn read_mods_marker(marker_path: &Path) -> Result<Option<LauncherModsInstallMark
     if !marker_path.exists() {
         return Ok(None);
     }
-    let content = match fs::read_to_string(marker_path) {
+    let content = match zip_budget::read_text_file_bounded(
+        marker_path,
+        zip_budget::MAX_TEXT_ENTRY_BYTES,
+        "launcher mods marker",
+    ) {
         Ok(text) => text,
         Err(_) => return Ok(None),
     };
@@ -9421,6 +9700,8 @@ fn extract_launcher_mod_archive(
         .map_err(|e| format!("Failed to open launcher archive {}: {e}", archive.display()))?;
     let mut zip_archive = zip::ZipArchive::new(file)
         .map_err(|e| format!("Invalid launcher zip archive {}: {e}", archive.display()))?;
+    zip_budget::MOD_ARCHIVE_BUDGET.check_archive(&mut zip_archive, "launcher mod")?;
+    let mut budget = zip_budget::MOD_ARCHIVE_BUDGET.tracker();
 
     let mut has_mods_paths = false;
     for i in 0..zip_archive.len() {
@@ -9479,12 +9760,11 @@ fn extract_launcher_mod_archive(
                 out_path.to_string_lossy()
             )
         })?;
-        std::io::copy(&mut entry, &mut out_file).map_err(|e| {
-            format!(
-                "Failed to write mod output file {}: {e}",
-                out_path.to_string_lossy()
-            )
-        })?;
+        budget.copy_entry(
+            &mut entry,
+            &mut out_file,
+            &format!("mod output file {}", out_path.to_string_lossy()),
+        )?;
         installed_files.push(build_launcher_installed_file_record(
             &out_path,
             &relative_path,
@@ -9516,6 +9796,9 @@ fn extract_nested_launcher_mod_jars(
         .map(|file| file.path.to_ascii_lowercase())
         .collect();
     let mut nested_files = Vec::new();
+    // One operation-level tracker covers every containing jar. Resetting the
+    // allowance per jar would let a package multiply the extraction ceiling.
+    let mut nested_budget = zip_budget::MOD_ARCHIVE_BUDGET.tracker();
 
     for file in package_files {
         let relative_path = normalize_manifest_relative_path(&file.path)?;
@@ -9536,6 +9819,7 @@ fn extract_nested_launcher_mod_jars(
                 package_path.display()
             )
         })?;
+        zip_budget::MOD_ARCHIVE_BUDGET.check_archive(&mut archive, "launcher mod")?;
 
         for index in 0..archive.len() {
             let mut entry = archive.by_index(index).map_err(|e| e.to_string())?;
@@ -9568,12 +9852,11 @@ fn extract_nested_launcher_mod_jars(
                     out_path.display()
                 )
             })?;
-            std::io::copy(&mut entry, &mut out_file).map_err(|e| {
-                format!(
-                    "Failed to write nested launcher mod {}: {e}",
-                    out_path.display()
-                )
-            })?;
+            nested_budget.copy_entry(
+                &mut entry,
+                &mut out_file,
+                &format!("nested launcher mod {}", out_path.display()),
+            )?;
             nested_files.push(build_launcher_installed_file_record(
                 &out_path,
                 &nested_relative_path,
@@ -9687,6 +9970,7 @@ fn fabric_mod_uses_named_namespace(path: &Path) -> Result<bool, String> {
         .map_err(|e| format!("Failed to open Fabric module {}: {e}", path.display()))?;
     let mut archive = zip::ZipArchive::new(file)
         .map_err(|e| format!("Invalid Fabric module archive {}: {e}", path.display()))?;
+    zip_budget::MOD_ARCHIVE_BUDGET.check_archive(&mut archive, "Fabric module")?;
 
     // Multi-version single-jar builds (e.g. Nova) bundle spare access wideners for
     // other game targets, and those spares may use the `named` namespace. Fabric
@@ -9696,9 +9980,12 @@ fn fabric_mod_uses_named_namespace(path: &Path) -> Result<bool, String> {
     // declares no widener -> nothing is loaded, the jar is fine.
     let declared_widener: Option<Option<String>> = match archive.by_name("fabric.mod.json") {
         Ok(mut entry) => {
-            let mut content = String::new();
-            match entry.read_to_string(&mut content) {
-                Ok(_) => match serde_json::from_str::<serde_json::Value>(&content) {
+            match zip_budget::read_text_entry_bounded(
+                &mut entry,
+                zip_budget::MAX_TEXT_ENTRY_BYTES,
+                "fabric.mod.json",
+            ) {
+                Ok(content) => match serde_json::from_str::<serde_json::Value>(&content) {
                     Ok(value) => Some(
                         value
                             .get("accessWidener")
@@ -9718,10 +10005,11 @@ fn fabric_mod_uses_named_namespace(path: &Path) -> Result<bool, String> {
             let Ok(mut entry) = archive.by_name(&widener_path) else {
                 return Ok(false);
             };
-            let mut content = String::new();
-            entry
-                .read_to_string(&mut content)
-                .map_err(|e| format!("Failed to read access widener {}: {e}", path.display()))?;
+            let content = zip_budget::read_text_entry_bounded(
+                &mut entry,
+                zip_budget::MAX_TEXT_ENTRY_BYTES,
+                &format!("access widener {}", path.display()),
+            )?;
             Ok(access_widener_first_line_is_named(&content))
         }
         Some(None) => Ok(false),
@@ -9740,10 +10028,11 @@ fn fabric_mod_uses_named_namespace(path: &Path) -> Result<bool, String> {
                 if !file_name.ends_with(".accesswidener") {
                     continue;
                 }
-                let mut content = String::new();
-                entry
-                    .read_to_string(&mut content)
-                    .map_err(|e| format!("Failed to read access widener {}: {e}", path.display()))?;
+                let content = zip_budget::read_text_entry_bounded(
+                    &mut entry,
+                    zip_budget::MAX_TEXT_ENTRY_BYTES,
+                    &format!("access widener {}", path.display()),
+                )?;
                 if access_widener_first_line_is_named(&content) {
                     return Ok(true);
                 }
@@ -9813,10 +10102,12 @@ fn trim_to_mods_relative_path(path: &Path) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::{
-        cleanup_launch_natives_dir, fabric_mod_uses_named_namespace,
+        cleanup_launch_natives_dir, delete_instance_section_entry, ensure_safe_child_name,
+        extract_archive_to_stage, fabric_mod_uses_named_namespace, format_quoted_command,
         is_nested_launcher_mod_jar_path, is_unsupported_launcher_runtime_mod_name,
-        launcher_package_has_unsupported_runtime_mods, process_mojang_runtime_entry,
-        preserve_native_app_user_data, FabricInstallResult, ForgeInstallResult,
+        launcher_package_has_unsupported_runtime_mods, prepare_extreme_assets_blocking,
+        preserve_native_app_user_data, process_mojang_runtime_entry, resolve_archive_payload,
+        resolve_version_runtime_dir, toggle_mod_disabled, FabricInstallResult, ForgeInstallResult,
         LauncherInstalledFileRecord, LauncherModsInstallMarker, MojangJavaRemoteEntry,
     };
     use std::fs;
@@ -9861,6 +10152,35 @@ mod tests {
             result.profile_json_path,
             r"E:\test\1.20.1-forge-47.4.18.json"
         );
+    }
+
+    #[test]
+    fn launch_command_logs_redact_identity_tokens_and_paths() {
+        let rendered = format_quoted_command(
+            "/home/private/runtime/bin/java",
+            &[
+                "-Dfpsmaster.auth.token=secret-token".to_string(),
+                "-cp".to_string(),
+                "/home/private/a.jar:/home/private/b.jar".to_string(),
+                "net.minecraft.client.main.Main".to_string(),
+                "--username".to_string(),
+                "PrivatePlayer".to_string(),
+                "--accessToken".to_string(),
+                "minecraft-token".to_string(),
+                "--session".to_string(),
+                "legacy-session-token".to_string(),
+                "--server".to_string(),
+                "private.example:25565".to_string(),
+            ],
+        );
+
+        assert!(!rendered.contains("secret-token"));
+        assert!(!rendered.contains("minecraft-token"));
+        assert!(!rendered.contains("legacy-session-token"));
+        assert!(!rendered.contains("PrivatePlayer"));
+        assert!(!rendered.contains("private.example"));
+        assert!(!rendered.contains("/home/private"));
+        assert!(rendered.contains("net.minecraft.client.main.Main"));
     }
 
     #[test]
@@ -10060,6 +10380,271 @@ mod tests {
             .write_all(b"accessWidener v1 named\n")
             .expect("spare access widener should be written");
         writer.finish().expect("test jar should be finalized");
+    }
+
+    fn write_zip_with_entries(path: &Path, entries: &[(&str, &[u8])]) {
+        let file = fs::File::create(path).expect("test zip should be created");
+        let mut writer = zip::ZipWriter::new(file);
+        let options = zip::write::SimpleFileOptions::default();
+        for (name, contents) in entries {
+            writer
+                .start_file(*name, options)
+                .expect("zip entry should be added");
+            writer
+                .write_all(contents)
+                .expect("zip entry should be written");
+        }
+        writer.finish().expect("test zip should be finalized");
+    }
+
+    #[test]
+    fn ensure_safe_child_name_rejects_traversal_segments() {
+        for invalid in [
+            "",
+            "   ",
+            ".",
+            "..",
+            "../evil.jar",
+            "..\\evil.jar",
+            "nested/evil.jar",
+            "nested\\evil.jar",
+            "/etc/passwd",
+            "name\0.jar",
+        ] {
+            assert!(
+                ensure_safe_child_name(invalid, "Entry name").is_err(),
+                "should reject {invalid:?}"
+            );
+        }
+        for valid in [
+            "sodium.jar",
+            "my mod 1.2.jar",
+            "高清材质 包.zip",
+            "..hidden.jar",
+            "1.20.1-fabric",
+        ] {
+            assert!(
+                ensure_safe_child_name(valid, "Entry name").is_ok(),
+                "should accept {valid:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn resolve_version_runtime_dir_rejects_traversal() {
+        let temp = tempfile::tempdir().expect("temp dir should be created");
+        let game_dir = temp.path().join("game");
+        fs::create_dir_all(&game_dir).expect("game dir should be created");
+
+        assert!(resolve_version_runtime_dir(&game_dir, "..").is_err());
+        assert!(resolve_version_runtime_dir(&game_dir, "../outside").is_err());
+        assert!(resolve_version_runtime_dir(&game_dir, "a/b").is_err());
+
+        let runtime = resolve_version_runtime_dir(&game_dir, "1.20.1-fabric")
+            .expect("normal version id should resolve");
+        assert_eq!(runtime, game_dir.join("versions").join("1.20.1-fabric"));
+    }
+
+    #[test]
+    fn delete_instance_section_entry_rejects_path_traversal() {
+        let temp = tempfile::tempdir().expect("temp dir should be created");
+        let game_dir = temp.path().join("game");
+        let mods_dir = game_dir.join("versions").join("test-1.0").join("mods");
+        fs::create_dir_all(&mods_dir).expect("mods dir should be created");
+        let valid_name = "高清 模组.jar";
+        fs::write(mods_dir.join(valid_name), "mod").expect("mod file should be written");
+        let victim = temp.path().join("victim.txt");
+        fs::write(&victim, "keep me").expect("victim file should be written");
+
+        let result = delete_instance_section_entry(
+            game_dir.to_string_lossy().to_string(),
+            "test-1.0".to_string(),
+            "mods".to_string(),
+            "../../../../victim.txt".to_string(),
+        );
+        assert!(result.is_err(), "traversal entry name must be rejected");
+        assert!(
+            result.unwrap_err().contains("invalid path segment"),
+            "rejection should happen before any filesystem access"
+        );
+        assert!(victim.exists(), "file outside the section must survive");
+
+        delete_instance_section_entry(
+            game_dir.to_string_lossy().to_string(),
+            "test-1.0".to_string(),
+            "mods".to_string(),
+            valid_name.to_string(),
+        )
+        .expect("unicode entry name containing a space should still be deletable");
+        assert!(!mods_dir.join(valid_name).exists());
+    }
+
+    #[test]
+    fn toggle_mod_disabled_rejects_path_traversal() {
+        let temp = tempfile::tempdir().expect("temp dir should be created");
+        let game_dir = temp.path().join("game");
+        let mods_dir = game_dir.join("versions").join("test-1.0").join("mods");
+        fs::create_dir_all(&mods_dir).expect("mods dir should be created");
+        let outside = game_dir
+            .join("versions")
+            .join("test-1.0")
+            .join("escape.jar");
+        fs::write(&outside, "outside").expect("outside file should be written");
+
+        let result = toggle_mod_disabled(
+            game_dir.to_string_lossy().to_string(),
+            "test-1.0".to_string(),
+            "../escape.jar".to_string(),
+            true,
+        );
+        assert!(result.is_err(), "traversal mod name must be rejected");
+        assert!(
+            outside.exists(),
+            "file outside the mods dir must not be renamed"
+        );
+
+        let valid_name = "性能 模组.jar";
+        fs::write(mods_dir.join(valid_name), "mod").expect("mod file should be written");
+        toggle_mod_disabled(
+            game_dir.to_string_lossy().to_string(),
+            "test-1.0".to_string(),
+            valid_name.to_string(),
+            true,
+        )
+        .expect("unicode mod name containing a space should be disabled");
+        let disabled_name = format!("{valid_name}.disabled");
+        assert!(mods_dir.join(&disabled_name).exists());
+        toggle_mod_disabled(
+            game_dir.to_string_lossy().to_string(),
+            "test-1.0".to_string(),
+            disabled_name,
+            false,
+        )
+        .expect("unicode mod name containing a space should be enabled");
+        assert!(mods_dir.join(valid_name).exists());
+    }
+
+    #[test]
+    fn extract_archive_to_stage_skips_zip_slip_entries() {
+        let temp = tempfile::tempdir().expect("temp dir should be created");
+        let stage_root = temp.path().join("stage");
+        fs::create_dir_all(&stage_root).expect("stage dir should be created");
+
+        let mut buffer = Vec::new();
+        {
+            let mut writer = zip::ZipWriter::new(std::io::Cursor::new(&mut buffer));
+            let options = zip::write::SimpleFileOptions::default();
+            for (name, contents) in [
+                ("../evil.txt", b"escaped".as_slice()),
+                ("nested/../../evil2.txt", b"escaped".as_slice()),
+                ("ok/file.txt", b"safe".as_slice()),
+            ] {
+                writer
+                    .start_file(name, options)
+                    .expect("zip entry should be added");
+                writer
+                    .write_all(contents)
+                    .expect("zip entry should be written");
+            }
+            writer.finish().expect("zip should be finalized");
+        }
+
+        let extracted = extract_archive_to_stage(&buffer, &stage_root, "instance")
+            .expect("extraction should succeed");
+        assert_eq!(extracted, 1, "only the safe entry should be extracted");
+        assert_eq!(
+            fs::read_to_string(stage_root.join("ok/file.txt")).unwrap(),
+            "safe"
+        );
+        assert!(!temp.path().join("evil.txt").exists());
+        assert!(!temp.path().join("evil2.txt").exists());
+    }
+
+    #[test]
+    fn prepare_extreme_assets_skips_entries_escaping_assets_root() {
+        let temp = tempfile::tempdir().expect("temp dir should be created");
+        let game_dir = temp.path().join("game");
+        let version_dir = game_dir.join("versions").join("1.8.9");
+        fs::create_dir_all(&version_dir).expect("version dir should be created");
+        write_zip_with_entries(
+            &version_dir.join("1.8.9.jar"),
+            &[
+                ("assets/minecraft/lang/en_US.lang", b"key=value".as_slice()),
+                ("assets/../../../evil.txt", b"escaped".as_slice()),
+                ("assets/../minecraft/evil2.txt", b"escaped".as_slice()),
+                ("outside.txt", b"not assets".as_slice()),
+                ("META-INF/MANIFEST.MF", b"Manifest-Version: 1.0".as_slice()),
+            ],
+        );
+
+        let resolved = prepare_extreme_assets_blocking(
+            game_dir.to_string_lossy().to_string(),
+            "extreme-test".to_string(),
+        )
+        .expect("asset extraction should succeed");
+
+        let assets_root = game_dir
+            .join("apps")
+            .join("extreme-test")
+            .join("local_assets")
+            .join("minecraft-1.8.9");
+        assert_eq!(
+            Path::new(&resolved),
+            assets_root.join("assets").join("minecraft")
+        );
+        assert_eq!(
+            fs::read_to_string(
+                assets_root
+                    .join("assets")
+                    .join("minecraft")
+                    .join("lang")
+                    .join("en_US.lang")
+            )
+            .unwrap(),
+            "key=value"
+        );
+        // Pre-fix, `assets/../../../evil.txt` would land here after the join.
+        assert!(!game_dir
+            .join("apps")
+            .join("extreme-test")
+            .join("evil.txt")
+            .exists());
+        assert!(!temp.path().join("evil.txt").exists());
+        assert!(!game_dir.join("evil.txt").exists());
+        assert!(!assets_root.join("minecraft").join("evil2.txt").exists());
+        assert!(!assets_root.join("outside.txt").exists());
+        assert!(!assets_root.join("META-INF").exists());
+
+        assert!(prepare_extreme_assets_blocking(
+            game_dir.to_string_lossy().to_string(),
+            "../escape".to_string(),
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn resolve_archive_payload_prefers_path_and_rejects_empty_input() {
+        let temp = tempfile::tempdir().expect("temp dir should be created");
+        let archive = temp.path().join("world.zip");
+        fs::write(&archive, b"zip bytes").expect("archive should be written");
+
+        let from_path =
+            resolve_archive_payload(None, Some(archive.to_string_lossy().as_ref()), "World")
+                .expect("path payload should be read");
+        assert_eq!(from_path, b"zip bytes");
+
+        let from_data = resolve_archive_payload(Some(vec![1, 2, 3]), None, "World")
+            .expect("byte payload should pass through");
+        assert_eq!(from_data, vec![1, 2, 3]);
+
+        assert!(resolve_archive_payload(None, None, "World").is_err());
+        assert!(resolve_archive_payload(Some(Vec::new()), None, "World").is_err());
+        assert!(resolve_archive_payload(
+            None,
+            Some(temp.path().join("missing.zip").to_string_lossy().as_ref()),
+            "World"
+        )
+        .is_err());
     }
 }
 
@@ -10538,6 +11123,7 @@ fn main() {
             start_minecraft_browser_login,
             poll_minecraft_device_login,
             refresh_minecraft_account,
+            lookup_minecraft_skin_url,
             open_external_link,
             quit_launcher_app,
             destroy_current_window,
