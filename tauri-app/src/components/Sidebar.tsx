@@ -1,7 +1,6 @@
 import { memo, useState } from "react";
 import { Compass, Crown, Gamepad2, Home, Server, Settings } from "lucide-react";
 import AppLogo from "./AppLogo";
-import LiquidGlass from "./LiquidGlass";
 import { useI18n } from "../i18n";
 import type { LauncherUser, Page } from "../types";
 
@@ -44,13 +43,11 @@ function Sidebar({ currentPage, user, setPage }: SidebarProps) {
     // The <aside> reserves a fixed 60px rail in the layout; the inner panel is an
     // absolute overlay that expands on hover/focus without reflowing the content.
     <aside className={`relative z-30 h-full shrink-0 ${RAIL}`}>
-      {/* Persistent navigation chrome: Liquid Glass material under the liquid
-          profile (large surface — no elasticity), untouched otherwise. */}
-      <LiquidGlass
-        as="div"
-        mode="standard"
-        displacementScale={56}
-        aberrationIntensity={1.6}
+      {/* Structural chrome stays quiet on purpose: under the liquid profile it
+          gets only a translucent frost (see styles.css) — never the lensed
+          LiquidGlass material, whose rim/shine layers read as a bright outline
+          on a large flush panel. */}
+      <div
         className={`app-sidebar-panel absolute inset-y-0 left-0 flex h-full flex-col overflow-hidden border-r border-white/8 bg-[var(--bg-secondary)] transition-[width] duration-200 ease-[var(--ease-standard)] ${
           expanded ? `${PANEL} shadow-[10px_0_30px_rgba(0,0,0,0.32)]` : RAIL
         }`}
@@ -142,7 +139,7 @@ function Sidebar({ currentPage, user, setPage }: SidebarProps) {
             </div>
           </button>
         </div>
-      </LiquidGlass>
+      </div>
     </aside>
   );
 }

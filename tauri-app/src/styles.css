@@ -5689,19 +5689,24 @@ button:disabled {
 }
 
 /* ===================== Liquid Glass (visual profile "liquid") ===================== */
-/* Apple-style lensed glass, reserved for the navigation layer. Two tiers:
+/* Apple-style lensed glass, reserved for INTERACTIVE surfaces. Two tiers:
    1. The LiquidGlass component (components/LiquidGlass.tsx): hosts marked
       .lg-on carry layered material — a filtered backdrop layer (edge
       refraction + chromatic aberration on Chromium, plain frost elsewhere),
-      tint/sheen, dual light-reactive border layers, and hover illumination —
+      tint/sheen, a directional top border light, and hover illumination —
       while the host's own content stays sharp above them. Used on the
-      sidebar, titlebar, settings sticky nav, dialog cards, the appearance
-      preview, and the primary launch CTAs.
-   2. CSS-only material (tint, rim, specular, sheen, plain blur) as the
+      things the user clicks: the Home launch pad, the Minecraft profile
+      card, segment chips, the profile picker tiles, dialog cards and the
+      primary launch CTAs.
+   2. CSS-only material (tint, soft top specular, plain blur) for small
+      repeated controls (quick-join chips, news rows, filters) and as the
       fallback for component hosts when accessibility settings disable the
       layered material.
-   Content panels, cards and list rows deliberately return to the matte
-   Standard surfaces so hierarchy stays readable — no glass-on-glass. */
+   Structural chrome (window titlebar, sidebar rail, the Settings sticky
+   nav plate) is deliberately QUIET: translucent frost only, no lens, no
+   shine rims — a lensed border on a large flush panel reads as a bright
+   white outline on dark wallpapers. Content shells and static panels stay
+   matte so hierarchy stays readable — no glass-on-glass. */
 
 :root[data-visual-profile="liquid"] {
   /* Content layer: back to matte opaque panels (Standard values). */
@@ -5710,10 +5715,13 @@ button:disabled {
   --linear-card-bg-strong: #181d27;
   --linear-card-edge: rgba(255, 255, 255, 0.06);
   --linear-card-edge-hover: rgba(255, 255, 255, 0.11);
-  /* Chrome material tokens ("Regular" variant: adaptive, always legible). */
+  /* Chrome material tokens ("Regular" variant: adaptive, always legible).
+     --liquid-edge is the host border: near-invisible on purpose — the glass
+     reads through refraction and frost, never through a drawn outline. */
   --liquid-tint: rgba(15, 19, 27, 0.42);
-  --liquid-rim: rgba(255, 255, 255, 0.17);
-  --liquid-specular: rgba(255, 255, 255, 0.3);
+  --liquid-rim: rgba(255, 255, 255, 0.09);
+  --liquid-edge: rgba(255, 255, 255, 0.07);
+  --liquid-specular: rgba(255, 255, 255, 0.22);
   --liquid-sheen: linear-gradient(
     118deg,
     rgba(255, 255, 255, 0.09),
@@ -5724,6 +5732,7 @@ button:disabled {
   --liquid-shadow:
     0 18px 44px rgba(2, 6, 14, 0.4),
     0 2px 8px rgba(2, 6, 14, 0.26);
+  --liquid-shadow-control: 0 2px 10px rgba(2, 6, 14, 0.28);
   --liquid-filter: blur(var(--frost-blur)) saturate(1.4) brightness(1.06);
   /* Component tokens: the layered material keeps a lighter blur so the edge
      refraction stays visible through the frost. */
@@ -5739,8 +5748,9 @@ button:disabled {
   --linear-card-edge: rgba(52, 72, 108, 0.12);
   --linear-card-edge-hover: rgba(52, 72, 108, 0.2);
   --liquid-tint: rgba(244, 247, 251, 0.44);
-  --liquid-rim: rgba(255, 255, 255, 0.62);
-  --liquid-specular: rgba(255, 255, 255, 0.85);
+  --liquid-rim: rgba(255, 255, 255, 0.42);
+  --liquid-edge: rgba(255, 255, 255, 0.38);
+  --liquid-specular: rgba(255, 255, 255, 0.7);
   --liquid-sheen: linear-gradient(
     118deg,
     rgba(255, 255, 255, 0.5),
@@ -5751,6 +5761,7 @@ button:disabled {
   --liquid-shadow:
     0 18px 40px rgba(40, 55, 80, 0.16),
     0 2px 8px rgba(40, 55, 80, 0.1);
+  --liquid-shadow-control: 0 2px 10px rgba(40, 55, 80, 0.12);
   --liquid-filter: blur(var(--frost-blur)) saturate(1.35) brightness(1.03);
   --lg-saturate: 1.35;
   --lg-brightness: 1.03;
@@ -5770,67 +5781,67 @@ button:disabled {
   backdrop-filter: none;
 }
 
-/* The CSS-only liquid material: layered tint + sheen, 1px rim, inset specular
-   on the top and side edges, an inner edge glow that reads as light bending
-   at the border, and a slightly deeper drop shadow. Component hosts (.lg-on)
-   are excluded — their material lives in the .lg-* layers below. */
+/* The CSS-only liquid material fallback for dialog cards (used when the
+   accessibility settings disable the layered component material): tint +
+   sheen, a soft rim, a top-only specular — no side hairlines, no all-around
+   inner glow (those read as a drawn outline on dark wallpapers). */
 :root[data-visual-profile="liquid"] .modal-card:not(.lg-on) {
   border: 1px solid var(--liquid-rim);
   background: var(--liquid-sheen), var(--liquid-tint);
   box-shadow:
     inset 0 1px 0 var(--liquid-specular),
-    inset 1px 0 0 rgba(255, 255, 255, 0.1),
-    inset -1px 0 0 rgba(255, 255, 255, 0.07),
-    inset 0 0 22px -14px rgba(255, 255, 255, 0.38),
     var(--liquid-shadow);
   -webkit-backdrop-filter: var(--liquid-filter);
   backdrop-filter: var(--liquid-filter);
 }
 
-:root[data-theme="light"][data-visual-profile="liquid"] .modal-card:not(.lg-on) {
-  box-shadow:
-    inset 0 1px 0 var(--liquid-specular),
-    inset 1px 0 0 rgba(255, 255, 255, 0.4),
-    inset -1px 0 0 rgba(255, 255, 255, 0.3),
-    inset 0 0 22px -14px rgba(255, 255, 255, 0.7),
-    var(--liquid-shadow);
-}
-
-/* Sidebar is chrome too, but keeps only its right rim so the window edge
-   stays clean. */
-:root[data-visual-profile="liquid"] .app-sidebar-panel:not(.lg-on) {
-  border-right-color: var(--liquid-rim);
-  background: var(--liquid-sheen), var(--liquid-tint);
-  box-shadow: inset -1px 0 0 rgba(255, 255, 255, 0.06);
+/* ---------- Structural chrome: quiet on purpose ----------
+   The sidebar rail, window titlebar and the Settings sticky nav plate are
+   persistent, non-interactive chrome. They get a translucent frost only —
+   never the lensed material, shine rims or a --liquid-rim stroke. The
+   Tailwind border-white/8 sidebar hairline stays exactly as subtle as in
+   the Standard profile. */
+:root[data-visual-profile="liquid"] .app-sidebar-panel {
+  background: var(--liquid-tint);
   -webkit-backdrop-filter: var(--liquid-filter);
   backdrop-filter: var(--liquid-filter);
 }
 
-/* The window titlebar is persistent floating chrome. */
-:root[data-visual-profile="liquid"] .app-titlebar:not(.lg-on) {
-  border-bottom-color: var(--liquid-rim);
-  background: var(--liquid-sheen), var(--liquid-tint);
+:root[data-visual-profile="liquid"] .app-titlebar {
+  background: var(--liquid-tint);
   -webkit-backdrop-filter: var(--liquid-filter);
   backdrop-filter: var(--liquid-filter);
 }
 
-/* The sticky Settings jump list becomes a small floating chrome panel under
-   liquid (it is transparent in the other profiles). Individual settings
-   groups remain matte content — the nav is the one piece of glass chrome on
-   that page that floats over scrolling content. */
+/* The sticky Settings jump list keeps a quiet frost plate under liquid (it
+   is transparent in the other profiles); the individual nav buttons carry
+   the glassy pill look instead (see .settings-nav-item below). */
 :root[data-visual-profile="liquid"] .settings-nav {
   padding: 8px;
   border-radius: calc(14px * var(--radius-scale));
-  border: 1px solid var(--liquid-rim);
-}
-
-:root[data-visual-profile="liquid"] .settings-nav:not(.lg-on) {
-  background: var(--liquid-sheen), var(--liquid-tint);
-  box-shadow:
-    inset 0 1px 0 var(--liquid-specular),
-    var(--liquid-shadow);
+  border: 1px solid var(--liquid-edge);
+  background: var(--liquid-tint);
+  box-shadow: 0 10px 28px rgba(2, 6, 14, 0.22);
   -webkit-backdrop-filter: var(--liquid-filter);
   backdrop-filter: var(--liquid-filter);
+}
+
+/* Interactive nav buttons inside the quiet plate: small glass pills. */
+:root[data-visual-profile="liquid"] .settings-nav-item:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+:root[data-visual-profile="liquid"] .settings-nav-item.is-active {
+  background: var(--liquid-sheen), rgba(255, 255, 255, 0.08);
+  box-shadow: inset 0 1px 0 var(--liquid-specular);
+}
+
+:root[data-theme="light"][data-visual-profile="liquid"] .settings-nav-item:hover {
+  background: rgba(31, 45, 70, 0.06);
+}
+
+:root[data-theme="light"][data-visual-profile="liquid"] .settings-nav-item.is-active {
+  background: var(--liquid-sheen), rgba(31, 45, 70, 0.08);
 }
 
 /* ---------- LiquidGlass component (components/LiquidGlass.tsx) ----------
@@ -5851,18 +5862,23 @@ button:disabled {
    rule here — even :where() — would sit outside Tailwind's cascade layers
    and override utility classes like `absolute` on the sidebar panel. */
 
+/* Host border stays near-invisible (--liquid-edge): the material reads
+   through refraction, frost and the directional top light — a visible
+   1px stroke around the whole rect is exactly the "outlined card" look
+   this profile must avoid. */
 :root[data-visual-profile="liquid"] .lg-on {
-  border-color: var(--liquid-rim);
+  border-color: var(--liquid-edge);
   background: transparent;
-  box-shadow: var(--liquid-shadow);
+  box-shadow: var(--liquid-shadow-control);
   -webkit-backdrop-filter: none;
   backdrop-filter: none;
 }
 
-/* Edge-flush chrome carries no drop shadow (it is not floating). */
-:root[data-visual-profile="liquid"] .app-titlebar.lg-on,
-:root[data-visual-profile="liquid"] .app-sidebar-panel.lg-on {
-  box-shadow: none;
+/* Floating plates keep the deep ambient shadow; small controls stay light. */
+:root[data-visual-profile="liquid"] .modal-card.lg-on,
+:root[data-visual-profile="liquid"] .home-launch-card.lg-on,
+:root[data-visual-profile="liquid"] .appearance-preview.lg-on {
+  box-shadow: var(--liquid-shadow);
 }
 
 .lg-backdrop {
@@ -5907,22 +5923,20 @@ button:disabled {
   border-radius: inherit;
 }
 
-/* Adaptive tint + top/side specular: the "Regular" always-legible variant. */
+/* Adaptive tint + a soft TOP specular: the "Regular" always-legible variant.
+   No side hairlines and no all-around inner glow — light lands on the top
+   edge of glass, it does not trace the whole perimeter. */
 .lg-tint {
   background: var(--liquid-sheen), var(--liquid-tint);
   box-shadow:
     inset 0 1px 0 var(--liquid-specular),
-    inset 1px 0 0 rgba(255, 255, 255, 0.1),
-    inset -1px 0 0 rgba(255, 255, 255, 0.07),
-    inset 0 0 22px -14px rgba(255, 255, 255, 0.38);
+    inset 0 14px 28px -22px rgba(255, 255, 255, 0.3);
 }
 
 :root[data-theme="light"] .lg-tint {
   box-shadow:
     inset 0 1px 0 var(--liquid-specular),
-    inset 1px 0 0 rgba(255, 255, 255, 0.4),
-    inset -1px 0 0 rgba(255, 255, 255, 0.3),
-    inset 0 0 22px -14px rgba(255, 255, 255, 0.7);
+    inset 0 14px 28px -22px rgba(255, 255, 255, 0.6);
 }
 
 /* overLight: slightly frostier over light themes / wallpapers so text keeps
@@ -5948,12 +5962,15 @@ button:disabled {
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.38);
 }
 
-/* Dual border layers (screen + overlay) — the rim picks up whatever light
-   sits behind the glass, like the reference's border layers. */
+/* Dual border-light layers (screen + overlay), masked to a 1px ring.
+   Directional on purpose: the highlight hugs the TOP edge and is gone by
+   the middle of the sides — never a uniform white ring around the whole
+   rect, and no inset box-shadow stroke (the old 0.5px rgba(255,255,255,0.5)
+   ring is what read as the "mysterious white border" on dark wallpapers). */
 .lg-shine {
-  padding: 1.2px;
+  padding: 1px;
   mix-blend-mode: screen;
-  opacity: 0.3;
+  opacity: 0.45;
   -webkit-mask:
     linear-gradient(#000 0 0) content-box,
     linear-gradient(#000 0 0);
@@ -5962,28 +5979,33 @@ button:disabled {
     linear-gradient(#000 0 0) content-box,
     linear-gradient(#000 0 0);
   mask-composite: exclude;
-  box-shadow:
-    inset 0 0 0 0.5px rgba(255, 255, 255, 0.5),
-    inset 0 1px 3px rgba(255, 255, 255, 0.25);
   background: linear-gradient(
-    135deg,
-    rgba(255, 255, 255, 0) 0%,
-    rgba(255, 255, 255, 0.12) 33%,
-    rgba(255, 255, 255, 0.4) 66%,
-    rgba(255, 255, 255, 0) 100%
+    180deg,
+    rgba(255, 255, 255, 0.5) 0%,
+    rgba(255, 255, 255, 0.14) 34%,
+    rgba(255, 255, 255, 0) 62%
   );
 }
 
 .lg-shine-overlay {
   mix-blend-mode: overlay;
-  opacity: 1;
+  opacity: 0.55;
   background: linear-gradient(
-    135deg,
-    rgba(255, 255, 255, 0) 0%,
-    rgba(255, 255, 255, 0.32) 33%,
-    rgba(255, 255, 255, 0.6) 66%,
-    rgba(255, 255, 255, 0) 100%
+    180deg,
+    rgba(255, 255, 255, 0.42) 0%,
+    rgba(255, 255, 255, 0.1) 36%,
+    rgba(255, 255, 255, 0) 64%
   );
+}
+
+/* Large plates (dialog cards, the launch pad): rim light nearly off — at
+   panel scale even a soft directional ring starts reading as an outline. */
+.lg-layers[data-lg-scale="plate"] .lg-shine {
+  opacity: 0.22;
+}
+
+.lg-layers[data-lg-scale="plate"] .lg-shine-overlay {
+  opacity: 0.28;
 }
 
 /* Hover / press inner illumination — the material energizes under the
@@ -6097,6 +6119,91 @@ button:disabled {
   }
 }
 
+/* ---------- CSS-only glass for small repeated controls ----------
+   Quick-join chips, news rows, filter chips and icon buttons are interactive
+   but numerous — they get the cheap material (tint + frost + top specular)
+   instead of spending the scarce lens budget. Component hosts (.lg-on) are
+   excluded where the two can meet. */
+:root[data-visual-profile="liquid"] .home-server-icon,
+:root[data-visual-profile="liquid"] .home-server-more,
+:root[data-visual-profile="liquid"] .icon-button {
+  background: var(--liquid-sheen), var(--liquid-tint);
+  box-shadow: inset 0 1px 0 var(--liquid-specular);
+  -webkit-backdrop-filter: var(--liquid-filter);
+  backdrop-filter: var(--liquid-filter);
+}
+
+:root[data-visual-profile="liquid"] .home-server-icon:hover:not(:disabled) {
+  box-shadow:
+    inset 0 1px 0 var(--liquid-specular),
+    0 4px 14px rgba(0, 0, 0, 0.28);
+}
+
+:root[data-visual-profile="liquid"] .home-server-more:hover {
+  background: var(--liquid-sheen), rgba(var(--accent-rgb), 0.1);
+}
+
+:root[data-visual-profile="liquid"] .icon-button:hover {
+  background: var(--liquid-sheen), rgba(255, 255, 255, 0.07);
+}
+
+:root[data-visual-profile="liquid"] .segment-chip:not(.lg-on) {
+  border-color: var(--liquid-edge);
+  background: var(--liquid-sheen), var(--liquid-tint);
+  box-shadow: inset 0 1px 0 var(--liquid-specular);
+  -webkit-backdrop-filter: var(--liquid-filter);
+  backdrop-filter: var(--liquid-filter);
+}
+
+:root[data-visual-profile="liquid"] .segment-chip.is-active:not(.lg-on) {
+  border-color: rgba(var(--accent-rgb), 0.4);
+  background: var(--liquid-sheen), rgba(var(--accent-rgb), 0.16);
+}
+
+/* News list: glassy rows (clickable) and a quiet translucent empty block. */
+:root[data-visual-profile="liquid"] .home-news-row {
+  border-color: var(--liquid-edge);
+  background: var(--liquid-tint);
+  -webkit-backdrop-filter: var(--liquid-filter);
+  backdrop-filter: var(--liquid-filter);
+}
+
+:root[data-visual-profile="liquid"] .home-news-row:hover {
+  border-color: var(--linear-card-edge-hover);
+  background: var(--liquid-sheen), var(--liquid-tint);
+}
+
+:root[data-visual-profile="liquid"] .home-news-empty {
+  border-color: var(--liquid-edge);
+  background: var(--liquid-tint);
+  -webkit-backdrop-filter: var(--liquid-filter);
+  backdrop-filter: var(--liquid-filter);
+}
+
+/* The empty-state action becomes a compact glass chip under liquid (a bare
+   text link would give the lens layers nothing to hold on to). */
+:root[data-visual-profile="liquid"] .home-news-empty-action {
+  min-height: 34px;
+  padding: 0 14px;
+  border: 1px solid var(--liquid-edge);
+  border-radius: var(--radius-control);
+}
+
+:root[data-visual-profile="liquid"] .home-news-empty-action:not(.lg-on) {
+  background: var(--liquid-tint);
+}
+
+:root[data-visual-profile="liquid"] .home-news-empty-action:hover {
+  text-decoration: none;
+}
+
+/* Profile picker tiles are component hosts; re-add the accent active state
+   the transparent .lg-on background would otherwise swallow. */
+:root[data-visual-profile="liquid"] .profile-option.lg-on.is-active {
+  border-color: rgba(var(--accent-rgb), 0.5);
+  background: rgba(var(--accent-rgb), 0.08);
+}
+
 /* Accessibility: these come last so they beat every liquid rule above.
    Reduced transparency → frostier, near-opaque, no refraction. */
 @media (prefers-reduced-transparency: reduce) {
@@ -6114,6 +6221,13 @@ button:disabled {
   :root[data-visual-profile="liquid"] .modal-card,
   :root[data-visual-profile="liquid"] .home-launch-card,
   :root[data-visual-profile="liquid"] .minecraft-profile-card,
+  :root[data-visual-profile="liquid"] .segment-chip,
+  :root[data-visual-profile="liquid"] .icon-button,
+  :root[data-visual-profile="liquid"] .home-server-icon,
+  :root[data-visual-profile="liquid"] .home-server-more,
+  :root[data-visual-profile="liquid"] .home-news-row,
+  :root[data-visual-profile="liquid"] .home-news-empty,
+  :root[data-visual-profile="liquid"] .home-news-empty-action,
   :root[data-visual-profile="liquid"] .app-sidebar-panel,
   :root[data-visual-profile="liquid"] .app-titlebar {
     -webkit-backdrop-filter: none;
@@ -6133,6 +6247,13 @@ button:disabled {
   :root[data-visual-profile="liquid"] .modal-card,
   :root[data-visual-profile="liquid"] .home-launch-card,
   :root[data-visual-profile="liquid"] .minecraft-profile-card,
+  :root[data-visual-profile="liquid"] .segment-chip,
+  :root[data-visual-profile="liquid"] .icon-button,
+  :root[data-visual-profile="liquid"] .home-server-icon,
+  :root[data-visual-profile="liquid"] .home-server-more,
+  :root[data-visual-profile="liquid"] .home-news-row,
+  :root[data-visual-profile="liquid"] .home-news-empty,
+  :root[data-visual-profile="liquid"] .home-news-empty-action,
   :root[data-visual-profile="liquid"] .app-sidebar-panel,
   :root[data-visual-profile="liquid"] .app-titlebar {
     -webkit-backdrop-filter: none;
@@ -6154,6 +6275,13 @@ button:disabled {
   :root[data-visual-profile="liquid"] .modal-card,
   :root[data-visual-profile="liquid"] .home-launch-card,
   :root[data-visual-profile="liquid"] .minecraft-profile-card,
+  :root[data-visual-profile="liquid"] .segment-chip,
+  :root[data-visual-profile="liquid"] .icon-button,
+  :root[data-visual-profile="liquid"] .home-server-icon,
+  :root[data-visual-profile="liquid"] .home-server-more,
+  :root[data-visual-profile="liquid"] .home-news-row,
+  :root[data-visual-profile="liquid"] .home-news-empty,
+  :root[data-visual-profile="liquid"] .home-news-empty-action,
   :root[data-visual-profile="liquid"] .app-sidebar-panel,
   :root[data-visual-profile="liquid"] .app-titlebar {
     -webkit-backdrop-filter: none;

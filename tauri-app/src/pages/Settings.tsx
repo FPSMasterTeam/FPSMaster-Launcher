@@ -588,16 +588,10 @@ function SettingsPage({
       </header>
 
       <div className="settings-layout">
-        {/* Sticky jump list floats over scrolling content — Liquid Glass
-            chrome under the liquid profile (large-ish surface, no warp). */}
-        <LiquidGlass
-          as="nav"
-          mode="standard"
-          displacementScale={56}
-          aberrationIntensity={2}
-          className="settings-nav"
-          aria-label={t("settings.title")}
-        >
+        {/* Sticky jump list is structural chrome: under liquid it keeps a
+            quiet frost plate (styles.css) while the individual nav buttons
+            carry the glass-pill look — no lensed material on the plate. */}
+        <nav className="settings-nav" aria-label={t("settings.title")}>
           {navSections.map((section) => (
             <button
               key={section.id}
@@ -610,7 +604,7 @@ function SettingsPage({
               <span>{section.label}</span>
             </button>
           ))}
-        </LiquidGlass>
+        </nav>
 
         <div className="settings-content">
           {launcherUser && (
@@ -970,31 +964,54 @@ function SettingsPage({
                     <p className="settings-row-title">{t("settings.visualProfile")}</p>
                     <p className="settings-row-hint">{t("settings.visualProfileHint")}</p>
                   </div>
+                  {/* Interactive picker tiles: compact clickable cards, so they
+                      carry the lensed material under the liquid profile. */}
                   <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
-                    <button
+                    <LiquidGlass
+                      as="button"
                       type="button"
+                      mode="standard"
+                      displacementScale={28}
+                      aberrationIntensity={1.6}
+                      blur={7}
+                      interactive
+                      elastic
                       className={`profile-option ${settings.visualProfile === "standard" ? "is-active" : ""}`}
                       onClick={() => applyVisualProfile("standard")}
                     >
                       <p className="profile-option-title">{t("settings.profile.standard")}</p>
                       <p className="profile-option-hint">{t("settings.profile.standardDesc")}</p>
-                    </button>
-                    <button
+                    </LiquidGlass>
+                    <LiquidGlass
+                      as="button"
                       type="button"
+                      mode="standard"
+                      displacementScale={28}
+                      aberrationIntensity={1.6}
+                      blur={7}
+                      interactive
+                      elastic
                       className={`profile-option ${settings.visualProfile === "glass" ? "is-active" : ""}`}
                       onClick={() => applyVisualProfile("glass")}
                     >
                       <p className="profile-option-title">{t("settings.profile.glass")}</p>
                       <p className="profile-option-hint">{t("settings.profile.glassDesc")}</p>
-                    </button>
-                    <button
+                    </LiquidGlass>
+                    <LiquidGlass
+                      as="button"
                       type="button"
+                      mode="standard"
+                      displacementScale={28}
+                      aberrationIntensity={1.6}
+                      blur={7}
+                      interactive
+                      elastic
                       className={`profile-option ${settings.visualProfile === "liquid" ? "is-active" : ""}`}
                       onClick={() => applyVisualProfile("liquid")}
                     >
                       <p className="profile-option-title">{t("settings.profile.liquid")}</p>
                       <p className="profile-option-hint">{t("settings.profile.liquidDesc")}</p>
-                    </button>
+                    </LiquidGlass>
                   </div>
                   {settings.visualProfile === "custom" && (
                     <p className="settings-row-hint">{t("settings.profile.customNote")}</p>
@@ -1464,6 +1481,7 @@ function SettingsPage({
                     size="sm"
                     className="gap-2"
                     disabled={!launcherUpdateAvailable || launcherUpdateDownloading}
+                    liquidGlass
                     onClick={onInstallLauncherUpdate}
                   >
                     <Download size={14} />

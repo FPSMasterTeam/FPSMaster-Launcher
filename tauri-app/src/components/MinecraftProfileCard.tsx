@@ -3,6 +3,8 @@ import { ChevronDown, Crown, LoaderCircle, Plus, TriangleAlert, User, X } from "
 import { memo, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import steveFaceUrl from "../assets/steve-face.svg";
+import { LiquidGlassLayers } from "./LiquidGlass";
+import { useLiquidGlass } from "../hooks/useLiquidGlass";
 import { useI18n } from "../i18n";
 import { describeApiError } from "../lib/launcherError";
 import { lookupMinecraftSkinUrl } from "../lib/minecraftAccount";
@@ -30,6 +32,7 @@ function MinecraftProfileCard({
   onDeleteAccount
 }: MinecraftProfileCardProps) {
   const { t } = useI18n();
+  const glass = useLiquidGlass();
   const [open, setOpen] = useState(false);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [mode, setMode] = useState<AccountDialogMode>("offline");
@@ -156,9 +159,20 @@ function MinecraftProfileCard({
       <div className="minecraft-profile-anchor" ref={containerRef}>
         <button
           type="button"
-          className={`minecraft-profile-card ${open ? "is-open" : ""}`}
+          className={`minecraft-profile-card ${open ? "is-open" : ""} ${glass.hostClassName}`.trim()}
           onClick={() => setOpen((value) => !value)}
         >
+          {/* Compact clickable card: lensed Liquid Glass under the liquid profile. */}
+          {glass.active && (
+            <LiquidGlassLayers
+              mode="standard"
+              displacementScale={26}
+              aberrationIntensity={1.6}
+              blur={7}
+              interactive
+              elastic
+            />
+          )}
           <MinecraftAvatar account={displayAccount} title={profileTitle} className="minecraft-profile-avatar" />
           <div className="minecraft-profile-copy">
             <p className="minecraft-profile-name">{profileTitle}</p>
