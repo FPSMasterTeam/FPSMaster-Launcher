@@ -28,7 +28,7 @@ sha1 = "0.10"
 sha2 = "0.10"
 sysinfo = { version = "0.33", default-features = false, features = ["system"] }
 tar = "0.4"
-tauri = { version = "2.10", features = ["tray-icon", "image-png"] }
+tauri = { version = "2.10", features = ["tray-icon", "image-png", "protocol-asset"] }
 tauri-plugin-autostart = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-single-instance = "2"

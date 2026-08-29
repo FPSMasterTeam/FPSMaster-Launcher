@@ -836,6 +836,7 @@ fn hide_main_window_internal(app: &AppHandle) -> Result<(), String> {
     window
         .hide()
         .map_err(|e| format!("Failed to hide main window: {e}"))?;
+    let _ = app.emit("fpsmaster://main-window-visibility", false);
     Ok(())
 }
 
@@ -855,6 +856,7 @@ fn show_main_window_internal(app: &AppHandle) -> Result<(), String> {
     window
         .set_focus()
         .map_err(|e| format!("Failed to focus main window: {e}"))?;
+    let _ = app.emit("fpsmaster://main-window-visibility", true);
     Ok(())
 }
 
@@ -11071,13 +11073,9 @@ fn main() {
         .manage(LauncherRuntimeState::default())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
-            // Callback when a second instance is launched
-            // Show and focus the main window
-            if let Ok(window) = ensure_main_window(app) {
-                let _ = window.show();
-                let _ = window.set_focus();
-                let _ = window.unminimize();
-            }
+            // Reuse the normal show path so the frontend also resumes paused
+            // background video after the launcher is restored from the tray.
+            let _ = show_main_window_internal(app);
         }))
         .plugin({
             #[cfg(target_os = "macos")]

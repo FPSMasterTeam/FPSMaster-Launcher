@@ -20,7 +20,12 @@ export type ThemeAccent =
   | "lime"
   | "background"
   | "custom";
-export type BackgroundSource = "local" | "web-random" | "system";
+export type BackgroundSource = "local" | "video" | "web-random" | "system";
+// How blur is spent: none at all, on the background layer only, or on frosted
+// UI surfaces (translucent panels with backdrop blur).
+export type BlurMode = "off" | "background" | "frost";
+// Named visual presets. "custom" means the user moved a knob away from a preset.
+export type VisualProfile = "standard" | "glass" | "custom";
 export type LauncherVersionType = "EDGE" | "NOVA" | "EXTREME";
 export type MinecraftAccountType = "offline" | "microsoft";
 export type ContentSource = "modrinth" | "curseforge" | "local";
@@ -114,9 +119,17 @@ export type Settings = {
   customAccentHex: string;
   backgroundSource: BackgroundSource;
   backgroundImage: string;
+  // Absolute path to a local mp4/webm played muted on loop (source "video").
+  backgroundVideo: string;
   backgroundWebUrl: string;
   backgroundOpacity: number;
   backgroundBlur: number;
+  blurMode: BlurMode;
+  // Percent scale applied to the shared radius tokens (75–150, 100 = default).
+  cornerRadiusScale: number;
+  // Accent glow strength 0–100. Kept low by default; 0 disables glow entirely.
+  glowAmount: number;
+  visualProfile: VisualProfile;
   curseforgeApiKey: string;
 };
 

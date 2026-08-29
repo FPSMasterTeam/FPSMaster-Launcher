@@ -175,13 +175,9 @@ function HomePage({
     }
     return [];
   }, [filteredNovaVersions, pickerQuery, novaPreset, selectedNovaGameVersion]);
-  const launcherUpdateDate = useMemo(
-    () =>
-      launcherUpdate?.publishedAt
-        ? new Date(launcherUpdate.publishedAt).toLocaleDateString()
-        : null,
-    [launcherUpdate?.publishedAt]
-  );
+  const launcherUpdateDate = launcherUpdate?.publishedAt
+    ? new Date(launcherUpdate.publishedAt).toLocaleDateString()
+    : null;
   const selectedLoaderLabel = selectedInstance ? loaderLabel(selectedInstance.loader, t) : null;
   // Nova shows the picked game version rather than the preset's fixed default baseVersion.
   const selectedBaseVersion = selectedInstance
@@ -237,7 +233,7 @@ function HomePage({
 
   return (
     <div className="relative flex h-full flex-col overflow-hidden">
-      <div className="page-shell flex-1 pb-24">
+      <div className="page-shell flex-1">
         <header className="page-header mb-6">
           <div className="page-header-main">
             <p className="page-eyebrow">{t("home.welcomeBack")}</p>
@@ -314,59 +310,79 @@ function HomePage({
         )}
 
         <section className="mb-6">
-          <div className="home-instance-card">
-            <div className="icon-tile relative h-16 w-16 rounded-[12px]">
-              {selectedInstanceIcon ? (
-                <img
-                  src={selectedInstanceIcon}
-                  alt={selectedInstance?.name ?? "instance"}
-                  className="h-full w-full object-cover"
-                />
-              ) : (
-                <Gamepad2 size={24} className="text-[var(--text-muted)]" />
-              )}
-              {selectedInstance && !instanceLaunchable && (
-                <div className="absolute inset-0 flex items-center justify-center bg-black/50">
-                  <Lock size={16} className="text-white/70" />
-                </div>
-              )}
-            </div>
-            <div className="min-w-0 flex-1">
-              <p className="truncate text-lg font-bold leading-tight text-[var(--text-primary)]">
-                {selectedInstance ? selectedInstance.name : t("home.noInstance")}
-              </p>
-              <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1.5">
-                {selectedInstance && (
-                  <span className="text-data truncate text-xs text-[var(--text-secondary)]">
-                    {[selectedBaseVersion, selectedLoaderLabel, selectedInstance.launcherVersionType]
-                      .filter(Boolean)
-                      .join(" · ")}
-                  </span>
+          <div className="home-launch-card">
+            <div className="home-launch-main">
+              <div className="icon-tile relative h-16 w-16 rounded-[12px]">
+                {selectedInstanceIcon ? (
+                  <img
+                    src={selectedInstanceIcon}
+                    alt={selectedInstance?.name ?? "instance"}
+                    className="h-full w-full object-cover"
+                  />
+                ) : (
+                  <Gamepad2 size={24} className="text-[var(--text-muted)]" />
                 )}
-                <span className="text-xs text-[var(--text-muted)]">
-                  {t("home.loadout.launchAs", { name: launchAsName })}
-                </span>
-                {isOfflineAccount && (
-                  <span className="inline-flex items-center gap-1 text-xs font-medium text-[var(--warning-text)]">
-                    <AlertTriangle size={11} className="shrink-0" />
-                    {t("home.loadout.offlineNote")}
-                  </span>
-                )}
-                {novaSelectedIsTesting && (
-                  <span className="inline-flex items-center gap-1 text-xs font-medium text-[var(--warning-text)]">
-                    <AlertTriangle size={11} className="shrink-0" />
-                    {t("home.novaTestingWarning", { version: selectedNovaGameVersion })}
-                  </span>
+                {selectedInstance && !instanceLaunchable && (
+                  <div className="absolute inset-0 flex items-center justify-center bg-black/50">
+                    <Lock size={16} className="text-white/70" />
+                  </div>
                 )}
               </div>
+              <div className="min-w-0 flex-1">
+                <p className="truncate text-lg font-bold leading-tight text-[var(--text-primary)]">
+                  {selectedInstance ? selectedInstance.name : t("home.noInstance")}
+                </p>
+                <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1.5">
+                  {selectedInstance && (
+                    <span className="text-data truncate text-xs text-[var(--text-secondary)]">
+                      {[selectedBaseVersion, selectedLoaderLabel, selectedInstance.launcherVersionType]
+                        .filter(Boolean)
+                        .join(" · ")}
+                    </span>
+                  )}
+                  <span className="text-xs text-[var(--text-muted)]">
+                    {t("home.loadout.launchAs", { name: launchAsName })}
+                  </span>
+                  {isOfflineAccount && (
+                    <span className="inline-flex items-center gap-1 text-xs font-medium text-[var(--warning-text)]">
+                      <AlertTriangle size={11} className="shrink-0" />
+                      {t("home.loadout.offlineNote")}
+                    </span>
+                  )}
+                  {novaSelectedIsTesting && (
+                    <span className="inline-flex items-center gap-1 text-xs font-medium text-[var(--warning-text)]">
+                      <AlertTriangle size={11} className="shrink-0" />
+                      {t("home.novaTestingWarning", { version: selectedNovaGameVersion })}
+                    </span>
+                  )}
+                </div>
+              </div>
             </div>
-            <button
-              className="segment-chip !min-h-9 shrink-0 px-4"
-              type="button"
-              onClick={() => setPickerOpen(true)}
-            >
-              {t("home.loadout.change")}
-            </button>
+            <div className="home-launch-actions">
+              <button
+                className="segment-chip !min-h-9 shrink-0 px-4"
+                type="button"
+                onClick={() => setPickerOpen(true)}
+              >
+                {t("home.loadout.change")}
+              </button>
+              <Button
+                variant="primary"
+                size="md"
+                className="cta-glow min-h-[46px] min-w-[164px] justify-center !rounded-[var(--radius-lg)]"
+                disabled={busy || !selectedInstance || !instanceLaunchable}
+                launchProgress={launching}
+                launchProgressPercent={launchProgressPercent}
+                onClick={onLaunch}
+              >
+                <span className="flex items-center justify-center gap-2">
+                  <Play fill="currentColor" size={15} />
+                  {launching
+                    ? `${t("home.launching")}${typeof launchProgressPercent === "number" ? ` ${launchProgressPercent}%` : ""}`
+                    : t("home.launch")}
+                </span>
+              </Button>
+            </div>
           </div>
         </section>
 
@@ -500,25 +516,6 @@ function HomePage({
         </section>
       </div>
 
-      <footer className="home-footer">
-        <Button
-          variant="primary"
-          size="md"
-          className="min-h-[46px] min-w-[220px] justify-center !rounded-[10px]"
-          disabled={busy || !selectedInstance || !canAccessInstance(selectedInstance, user)}
-          launchProgress={launching}
-          launchProgressPercent={launchProgressPercent}
-          onClick={onLaunch}
-        >
-          <span className="flex items-center justify-center gap-2">
-            <Play fill="currentColor" size={15} />
-            {launching
-              ? `${t("home.launching")}${typeof launchProgressPercent === "number" ? ` ${launchProgressPercent}%` : ""}`
-              : t("home.launch")}
-          </span>
-        </Button>
-      </footer>
-
       {(pickerOpen || pickerClosing) &&
         typeof document !== "undefined" &&
         createPortal(
@@ -571,7 +568,6 @@ function HomePage({
                           instance={instance}
                           active={selectedInstance?.id === instance.id}
                           selectable={canAccessInstance(instance, user)}
-                          user={user}
                           t={t}
                           onSelect={() => {
                             onSelect(instance.id);
@@ -634,7 +630,6 @@ function HomePage({
                             instance={instance}
                             active={selectedInstance?.id === instance.id}
                             selectable={canAccessInstance(instance, user)}
-                            user={user}
                             compact
                             t={t}
                             onSelect={() => {
@@ -727,7 +722,6 @@ function InstanceSelectRow({
   instance,
   active,
   selectable,
-  user,
   compact = false,
   t,
   onSelect
@@ -735,7 +729,6 @@ function InstanceSelectRow({
   instance: Instance;
   active: boolean;
   selectable: boolean;
-  user: LauncherUser | null;
   compact?: boolean;
   t: ReturnType<typeof useI18n>["t"];
   onSelect: () => void;
