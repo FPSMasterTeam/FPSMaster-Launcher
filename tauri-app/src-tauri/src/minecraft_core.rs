@@ -6,7 +6,7 @@ use base64::Engine;
 use serde_json::{json, Map, Value};
 use std::collections::{HashMap, HashSet};
 use std::fs;
-use std::io::{self, Read, Write};
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -1581,12 +1581,17 @@ pub(crate) fn build_vanilla_launch_plan(
     prefetch_missing_libraries(window, &libraries)?;
 
     let mut classpath_entries = Vec::new();
+    let mut native_budget = crate::zip_budget::NATIVE_JAR_BUDGET.tracker();
     for library in libraries {
         if library.classpath_entry {
             classpath_entries.push(library.path.clone());
         }
         if library.native_entry {
-            extract_native_jar(&library.path, &natives_dir)?;
+            if let Err(error) = extract_native_jar(&library.path, &natives_dir, &mut native_budget)
+            {
+                let _ = fs::remove_dir_all(&natives_dir);
+                return Err(error);
+            }
         }
     }
 
@@ -1713,10 +1718,14 @@ struct EdgeAotLaunchProfiles {
 
 fn read_edge_aot_launch_profiles(aot_dir: &Path) -> EdgeAotLaunchProfiles {
     let path = aot_dir.join("launch-profiles.json");
-    fs::read_to_string(&path)
-        .ok()
-        .and_then(|text| serde_json::from_str::<EdgeAotLaunchProfiles>(&text).ok())
-        .unwrap_or_default()
+    crate::zip_budget::read_text_file_bounded(
+        &path,
+        crate::zip_budget::MAX_TEXT_ENTRY_BYTES,
+        "Edge AOT launch profiles",
+    )
+    .ok()
+    .and_then(|text| serde_json::from_str::<EdgeAotLaunchProfiles>(&text).ok())
+    .unwrap_or_default()
 }
 
 fn resolve_edge_aot_maven_library(
@@ -1911,12 +1920,17 @@ pub(crate) fn build_edge_aot_launch_plan(
     libraries.pop();
 
     let mut classpath_entries = vec![runtime_jar_path];
+    let mut native_budget = crate::zip_budget::NATIVE_JAR_BUDGET.tracker();
     for library in libraries {
         if library.classpath_entry {
             classpath_entries.push(library.path.clone());
         }
         if library.native_entry {
-            extract_native_jar(&library.path, &natives_dir)?;
+            if let Err(error) = extract_native_jar(&library.path, &natives_dir, &mut native_budget)
+            {
+                let _ = fs::remove_dir_all(&natives_dir);
+                return Err(error);
+            }
         }
     }
     classpath_entries.push(launchwrapper.path);
@@ -2105,12 +2119,11 @@ fn resolve_version_descriptor(
         .join("versions")
         .join(version_id)
         .join(format!("{version_id}.json"));
-    let text = fs::read_to_string(&version_json_path).map_err(|e| {
-        format!(
-            "Failed to read version metadata {}: {e}",
-            version_json_path.display()
-        )
-    })?;
+    let text = crate::zip_budget::read_text_file_bounded(
+        &version_json_path,
+        crate::zip_budget::MAX_TEXT_ENTRY_BYTES,
+        "version metadata",
+    )?;
     let raw: Value = serde_json::from_str(&text).map_err(|e| {
         format!(
             "Invalid version metadata {}: {e}",
@@ -3274,7 +3287,11 @@ fn download_file_with_ipc(
     Err(error)
 }
 
-fn extract_native_jar(native_jar: &Path, natives_dir: &Path) -> Result<(), String> {
+fn extract_native_jar(
+    native_jar: &Path,
+    natives_dir: &Path,
+    budget: &mut crate::zip_budget::ZipBudgetTracker,
+) -> Result<(), String> {
     if !native_jar.is_file() {
         return Ok(());
     }
@@ -3282,6 +3299,7 @@ fn extract_native_jar(native_jar: &Path, natives_dir: &Path) -> Result<(), Strin
         .map_err(|e| format!("Failed to open native jar {}: {e}", native_jar.display()))?;
     let mut archive = zip::ZipArchive::new(file)
         .map_err(|e| format!("Invalid native jar {}: {e}", native_jar.display()))?;
+    crate::zip_budget::NATIVE_JAR_BUDGET.check_archive(&mut archive, "native jar")?;
     for index in 0..archive.len() {
         let mut entry = archive.by_index(index).map_err(|e| {
             format!(
@@ -3308,8 +3326,11 @@ fn extract_native_jar(native_jar: &Path, natives_dir: &Path) -> Result<(), Strin
                 target.display()
             )
         })?;
-        io::copy(&mut entry, &mut output)
-            .map_err(|e| format!("Failed to extract native {}: {e}", target.display()))?;
+        budget.copy_entry(
+            &mut entry,
+            &mut output,
+            &format!("native {}", target.display()),
+        )?;
     }
     Ok(())
 }
@@ -3385,8 +3406,11 @@ fn build_http_client_with_optional_timeout(
 }
 
 fn read_json_file(path: &Path) -> Result<Value, String> {
-    let text = fs::read_to_string(path)
-        .map_err(|e| format!("Failed to read JSON file {}: {e}", path.display()))?;
+    let text = crate::zip_budget::read_text_file_bounded(
+        path,
+        crate::zip_budget::MAX_TEXT_ENTRY_BYTES,
+        "JSON file",
+    )?;
     serde_json::from_str(&text).map_err(|e| format!("Invalid JSON file {}: {e}", path.display()))
 }
 
@@ -3548,14 +3572,15 @@ fn inspect_forge_installer(installer_path: &Path) -> Result<ForgeInstallerProfil
     })?;
     let mut archive = zip::ZipArchive::new(file)
         .map_err(|e| format!("Invalid forge installer {}: {e}", installer_path.display()))?;
+    crate::zip_budget::FORGE_INSTALLER_BUDGET.check_archive(&mut archive, "forge installer")?;
     let mut entry = archive
         .by_name("install_profile.json")
         .map_err(|e| format!("Forge installer missing install_profile.json: {e}"))?;
-    let mut text = String::new();
-    use std::io::Read;
-    entry
-        .read_to_string(&mut text)
-        .map_err(|e| format!("Failed reading install_profile.json: {e}"))?;
+    let text = crate::zip_budget::read_text_entry_bounded(
+        &mut entry,
+        crate::zip_budget::MAX_TEXT_ENTRY_BYTES,
+        "forge install_profile.json",
+    )?;
     let payload: Value = serde_json::from_str(&text)
         .map_err(|e| format!("Invalid forge install_profile.json: {e}"))?;
     Ok(ForgeInstallerProfile {
@@ -3605,6 +3630,7 @@ fn install_forge_old_profile(
     })?;
     let mut archive = zip::ZipArchive::new(file)
         .map_err(|e| format!("Invalid forge installer {}: {e}", installer_path.display()))?;
+    crate::zip_budget::FORGE_INSTALLER_BUDGET.check_archive(&mut archive, "forge installer")?;
     let mut entry = archive.by_name(file_path).map_err(|e| {
         format!(
             "Old forge installer universal jar not found {} in {}: {e}",
@@ -3618,12 +3644,18 @@ fn install_forge_old_profile(
             target_library.display()
         )
     })?;
-    io::copy(&mut entry, &mut output).map_err(|e| {
-        format!(
-            "Failed to extract forge universal jar {}: {e}",
-            target_library.display()
+    if let Err(error) = crate::zip_budget::FORGE_INSTALLER_BUDGET
+        .tracker()
+        .copy_entry(
+            &mut entry,
+            &mut output,
+            &format!("forge universal jar {}", target_library.display()),
         )
-    })?;
+    {
+        drop(output);
+        let _ = fs::remove_file(&target_library);
+        return Err(error);
+    }
 
     let version_id = version_info
         .get("id")
@@ -3938,12 +3970,11 @@ fn download_assets(
     )?;
     install_cancel_error(ipc_session)?;
 
-    let index_text = fs::read_to_string(&asset_index_path).map_err(|e| {
-        format!(
-            "Failed to read asset index {}: {e}",
-            asset_index_path.display()
-        )
-    })?;
+    let index_text = crate::zip_budget::read_text_file_bounded(
+        &asset_index_path,
+        crate::zip_budget::MAX_TEXT_ENTRY_BYTES,
+        "asset index",
+    )?;
     let index_json: Value = serde_json::from_str(&index_text)
         .map_err(|e| format!("Invalid asset index {}: {e}", asset_index_path.display()))?;
     let objects = index_json
