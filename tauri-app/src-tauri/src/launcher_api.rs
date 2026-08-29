@@ -149,6 +149,14 @@ pub struct LauncherServerItem {
     pub mode: String,
     #[serde(rename = "iconPath", default)]
     pub icon_path: Option<String>,
+    #[serde(rename = "iconUrl", default)]
+    pub icon_url: Option<String>,
+    #[serde(rename = "detailedDescription", default)]
+    pub detailed_description: Option<String>,
+    #[serde(rename = "serverGroup", default)]
+    pub server_group: Option<String>,
+    #[serde(rename = "displayOrder", default)]
+    pub display_order: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
