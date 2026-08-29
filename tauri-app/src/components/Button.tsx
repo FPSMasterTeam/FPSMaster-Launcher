@@ -1,4 +1,6 @@
 import React, { memo } from 'react';
+import { LiquidGlassLayers } from './LiquidGlass';
+import { useLiquidGlass } from '../hooks/useLiquidGlass';
 
 interface ButtonProps extends React.ButtonHTMLAttributes<HTMLButtonElement> {
   variant?: 'primary' | 'secondary' | 'outline' | 'ghost' | 'danger';
@@ -6,6 +8,12 @@ interface ButtonProps extends React.ButtonHTMLAttributes<HTMLButtonElement> {
   fullWidth?: boolean;
   launchProgress?: boolean;
   launchProgressPercent?: number | null;
+  /**
+   * Primary-CTA Liquid Glass: under the liquid visual profile the button
+   * becomes colored glass (lensed backdrop + accent tint + hover energy +
+   * elasticity). No-op in every other profile.
+   */
+  liquidGlass?: boolean;
 }
 
 const Button: React.FC<ButtonProps> = ({
@@ -14,11 +22,14 @@ const Button: React.FC<ButtonProps> = ({
   fullWidth = false,
   launchProgress = false,
   launchProgressPercent = null,
+  liquidGlass = false,
   className = '',
   children,
   style,
   ...props
 }) => {
+  const glass = useLiquidGlass();
+  const glassActive = liquidGlass && glass.active;
   const baseStyles =
     'inline-flex items-center justify-center font-medium transition-all duration-[var(--duration-normal)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--mc-grass)]/45 focus-visible:ring-offset-1 focus-visible:ring-offset-[var(--bg-primary)] disabled:opacity-50 disabled:cursor-not-allowed disabled:transform-none active:translate-y-[0.5px]';
 
@@ -49,7 +60,7 @@ const Button: React.FC<ButtonProps> = ({
 
   return (
     <button
-      className={`${baseStyles} ${variants[variant]} ${sizes[size]} ${fullWidth ? 'w-full' : ''} ${launchProgress ? 'launch-button-progress' : ''} ${className}`}
+      className={`${baseStyles} ${variants[variant]} ${sizes[size]} ${fullWidth ? 'w-full' : ''} ${launchProgress ? 'launch-button-progress' : ''} ${className} ${glassActive ? glass.hostClassName : ''}`}
       data-launching={launchProgress ? "true" : "false"}
       data-launch-progress-known={progress === null ? "false" : "true"}
       style={
@@ -59,6 +70,17 @@ const Button: React.FC<ButtonProps> = ({
       }
       {...props}
     >
+      {glassActive && (
+        <LiquidGlassLayers
+          mode="standard"
+          displacementScale={30}
+          aberrationIntensity={2}
+          blur={6}
+          tint="accent"
+          interactive
+          elastic
+        />
+      )}
       {children}
     </button>
   );

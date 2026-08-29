@@ -9,7 +9,6 @@ import Button from "./components/Button";
 import InstallDialog from "./components/InstallDialog";
 import LaunchErrorDialog from "./components/LaunchErrorDialog";
 import LaunchPrepareDialog from "./components/LaunchPrepareDialog";
-import LiquidGlassDefs from "./components/LiquidGlassDefs";
 import Sidebar from "./components/Sidebar";
 import ToastViewport from "./components/ToastViewport";
 import WindowTitleBar from "./components/WindowTitleBar";
@@ -2910,7 +2909,6 @@ function Launcher() {
       onLocaleChange={stableOnLocaleChange}
     >
       <div className="launcher-shell relative flex h-screen w-screen overflow-hidden bg-[var(--bg-primary)] text-[var(--text-primary)] select-none pixel-pattern">
-        <LiquidGlassDefs />
         {/* Drop the blurred full-window background while the monitor window is open:
             the game hogs the GPU, and a live-blurred compositor layer is the single
             most expensive thing this window paints. The video pauses (not just
