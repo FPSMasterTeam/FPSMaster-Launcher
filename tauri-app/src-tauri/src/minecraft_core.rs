@@ -8,7 +8,7 @@ use serde_json::{Map, Value};
 use std::collections::{HashMap, HashSet};
 use std::ffi::{OsStr, OsString};
 use std::fs;
-use std::io::{Read, Write};
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -5989,7 +5989,8 @@ mod tests {
             writer.finish().expect("archive finished");
         }
 
-        let result = extract_native_jar(&jar_path, &natives_dir);
+        let mut budget = crate::zip_budget::NATIVE_JAR_BUDGET.tracker();
+        let result = extract_native_jar(&jar_path, &natives_dir, &mut budget);
         assert!(result.is_err(), "zip-slip entry must be rejected");
         assert!(
             !dir.join("escape.txt").exists(),
