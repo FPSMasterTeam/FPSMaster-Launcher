@@ -138,7 +138,12 @@ export function classifyApiError(error: unknown): ClassifiedApiError {
   const raw = formatLaunchError(error);
   const normalized = raw.toLowerCase();
 
-  const statusMatch = normalized.match(/http\s*(\d{3})/);
+  // The backend reports HTTP failures in two shapes: "... HTTP 404" (downloads,
+  // API calls) and "Request failed url=... status=404 Not Found" (metadata /
+  // catalog fetches). Recognize both so 404s classify as notFound instead of
+  // falling through as opaque business errors.
+  const statusMatch =
+    normalized.match(/http\s*(\d{3})\b/) ?? normalized.match(/\bstatus[=:]\s*(\d{3})\b/);
   const status = statusMatch ? Number.parseInt(statusMatch[1], 10) : null;
 
   // A `spawn_blocking` join failure means the backend task died, not a network
@@ -193,8 +198,24 @@ export function describeApiError(error: unknown, t: Translator): string {
       return t("error.network.tls");
     case "auth":
       return t("error.auth.rejected");
-    case "notFound":
+    case "notFound": {
+      const normalized = classified.raw.toLowerCase();
+      if (
+        normalized.includes("catalog") ||
+        normalized.includes("version manifest") ||
+        normalized.includes("profile metadata")
+      ) {
+        return t("error.catalog.notFound");
+      }
+      if (
+        normalized.includes("download") ||
+        normalized.includes("artifact") ||
+        normalized.includes("installer")
+      ) {
+        return t("error.download.notFound");
+      }
       return t("error.http.notFound");
+    }
     case "rateLimited":
       return t("error.http.rateLimited");
     case "server":

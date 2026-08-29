@@ -36,6 +36,10 @@ const enUS = {
     "Secure connection failed. Check your system clock, or any proxy/antivirus that inspects HTTPS traffic.",
   "error.auth.rejected": "Your session is no longer valid. Please sign in again.",
   "error.http.notFound": "The requested resource does not exist on the server.",
+  "error.catalog.notFound":
+    "The selected game or loader version is no longer present in its catalog. Refresh the version list and choose an available version.",
+  "error.download.notFound":
+    "A required game file is missing from the selected download source. Switch download source or choose another compatible version.",
   "error.http.rateLimited": "Too many requests. Please wait a moment and try again.",
   "error.http.server": "The server reported an error (HTTP {status}). Please try again later.",
   "error.internal": "An internal launcher error occurred. Please retry, or restart the launcher.",

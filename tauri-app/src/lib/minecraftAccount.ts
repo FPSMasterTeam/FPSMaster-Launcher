@@ -149,6 +149,8 @@ export function resolveMinecraftLaunchIdentity(account: MinecraftAccount): {
   playerName: string;
   uuid: string;
   accessToken: string;
+  userType: "msa" | "legacy";
+  xuid: string | null;
 } {
   if (account.type === "microsoft") {
     if (!account.uuid.trim() || !account.accessToken.trim() || account.needsRelogin) {
@@ -157,13 +159,17 @@ export function resolveMinecraftLaunchIdentity(account: MinecraftAccount): {
     return {
       playerName: account.username,
       uuid: account.uuid,
-      accessToken: account.accessToken
+      accessToken: account.accessToken,
+      userType: "msa",
+      xuid: account.xuid ?? null
     };
   }
   return {
     playerName: account.username,
     uuid: account.uuid || NIL_MINECRAFT_UUID,
-    accessToken: account.accessToken || "offline"
+    accessToken: account.accessToken || "offline",
+    userType: "legacy",
+    xuid: null
   };
 }
 
