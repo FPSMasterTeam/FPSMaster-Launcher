@@ -12,8 +12,8 @@ use launcher_api::{
     open_downloaded_file, parse_api_envelope,
 };
 use microsoft_auth::{
-    get_minecraft_auth_config, poll_minecraft_device_login, refresh_minecraft_account,
-    start_minecraft_browser_login, start_minecraft_device_login,
+    get_minecraft_auth_config, lookup_minecraft_skin_url, poll_minecraft_device_login,
+    refresh_minecraft_account, start_minecraft_browser_login, start_minecraft_device_login,
 };
 use secure_storage::{secure_storage_delete, secure_storage_get, secure_storage_set};
 
@@ -769,7 +769,7 @@ fn sample_game_runtime_cache() {
     }
 }
 
-fn push_ui_log(source: &str, level: &str, message: &str) {
+pub(crate) fn push_ui_log(source: &str, level: &str, message: &str) {
     if let Ok(mut store) = ui_log_store().lock() {
         let entry = UiLogEntry {
             seq: store.next_seq,
@@ -10492,6 +10492,7 @@ fn main() {
             start_minecraft_browser_login,
             poll_minecraft_device_login,
             refresh_minecraft_account,
+            lookup_minecraft_skin_url,
             open_external_link,
             quit_launcher_app,
             destroy_current_window,

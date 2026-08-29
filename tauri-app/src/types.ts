@@ -61,6 +61,10 @@ export type MinecraftAccount = {
   skinUrl?: string | null;
   expiresAt?: number | null;
   addedAt: number;
+  // Microsoft accounts only: the last token refresh failed, so the stored session
+  // is dead until the user signs in interactively again. The account stays in the
+  // list; launching or auto-refresh clears the flag once a refresh succeeds.
+  needsRelogin?: boolean;
 };
 
 export type MinecraftAuthConfig = {
