@@ -5684,12 +5684,16 @@ button:disabled {
 }
 
 /* ===================== Liquid Glass (visual profile "liquid") ===================== */
-/* Apple-style lensed glass, reserved for the navigation layer: sidebar,
-   settings groups, dialogs, the Home launch card, and floating toolbars
-   (.liquid-chrome). Content cards and list rows deliberately return to the
-   matte Standard surfaces so hierarchy stays readable — no glass-on-glass.
-   The CSS-only material below must read as its own third look even when the
-   optional SVG lens filter (see LiquidGlassDefs) is unavailable. */
+/* Apple-style lensed glass, reserved for the navigation layer. Two tiers:
+   1. CSS-only material (tint, rim, specular, sheen, plain blur) on chrome
+      surfaces: sidebar, titlebar, settings groups + nav, dialogs, the Home
+      launch card, and floating toolbars (.liquid-chrome).
+   2. Shape-aware edge refraction (SVG bezel displacement, Chromium only) on a
+      tiny subset of persistent/floating chrome — see the lens rule below.
+   Content cards and list rows deliberately return to the matte Standard
+   surfaces so hierarchy stays readable — no glass-on-glass. The CSS-only
+   material must read as its own third look even when the optional SVG lens
+   filter (see LiquidGlassDefs) is unavailable. */
 
 .liquid-glass-defs {
   position: absolute;
@@ -5798,17 +5802,45 @@ button:disabled {
   backdrop-filter: var(--liquid-filter);
 }
 
+/* The window titlebar is persistent floating chrome. */
+:root[data-visual-profile="liquid"] .app-titlebar {
+  border-bottom-color: var(--liquid-rim);
+  background: var(--liquid-sheen), var(--liquid-tint);
+  -webkit-backdrop-filter: var(--liquid-filter);
+  backdrop-filter: var(--liquid-filter);
+}
+
+/* The sticky Settings jump list becomes a small floating chrome panel under
+   liquid (it is transparent in the other profiles). Individual settings
+   groups stay on the CSS-only material above — the nav is the one piece of
+   chrome on that page that floats over scrolling content. */
+:root[data-visual-profile="liquid"] .settings-nav {
+  padding: 8px;
+  border-radius: calc(14px * var(--radius-scale));
+  border: 1px solid var(--liquid-rim);
+  background: var(--liquid-sheen), var(--liquid-tint);
+  box-shadow:
+    inset 0 1px 0 var(--liquid-specular),
+    var(--liquid-shadow);
+  -webkit-backdrop-filter: var(--liquid-filter);
+  backdrop-filter: var(--liquid-filter);
+}
+
 /* Optional lens enhancement (Chromium/WebView2 only, detected at runtime):
-   materialize by modulating lensing — displace the backdrop through the SVG
-   filter first, then a lighter blur so the refraction stays visible. Video
-   wallpaper keeps the cheap frost instead: displacement over a playing video
-   is the most expensive thing this window could paint. */
-:root[data-visual-profile="liquid"][data-liquid-lens="on"]:not([data-bg-video="true"]) .liquid-chrome,
-:root[data-visual-profile="liquid"][data-liquid-lens="on"]:not([data-bg-video="true"]) .settings-group,
+   materialize by modulating lensing — displace the backdrop through the
+   shape-aware bezel map first, then a lighter blur so the refraction stays
+   visible. Refraction is deliberately restricted to a handful of persistent /
+   floating chrome surfaces (sidebar, titlebar, dialogs, the sticky Settings
+   nav): a one-page Settings can mount ~11 groups at once, and Win7-era
+   WebView2 109 is Chromium and passes the runtime gate, so the displacement
+   surface count must stay tiny. Everything else keeps the plain CSS material
+   (blur/tint/rim) above. Video wallpaper keeps the cheap frost everywhere:
+   displacement over a playing video is the most expensive thing this window
+   could paint. */
+:root[data-visual-profile="liquid"][data-liquid-lens="on"]:not([data-bg-video="true"]) .app-sidebar-panel,
+:root[data-visual-profile="liquid"][data-liquid-lens="on"]:not([data-bg-video="true"]) .app-titlebar,
 :root[data-visual-profile="liquid"][data-liquid-lens="on"]:not([data-bg-video="true"]) .modal-card,
-:root[data-visual-profile="liquid"][data-liquid-lens="on"]:not([data-bg-video="true"]) .home-launch-card,
-:root[data-visual-profile="liquid"][data-liquid-lens="on"]:not([data-bg-video="true"]) .minecraft-profile-card,
-:root[data-visual-profile="liquid"][data-liquid-lens="on"]:not([data-bg-video="true"]) .app-sidebar-panel {
+:root[data-visual-profile="liquid"][data-liquid-lens="on"]:not([data-bg-video="true"]) .settings-nav {
   -webkit-backdrop-filter: url(#liquid-lens) blur(calc(var(--frost-blur) * 0.45)) saturate(1.4) brightness(1.05);
   backdrop-filter: url(#liquid-lens) blur(calc(var(--frost-blur) * 0.45)) saturate(1.4) brightness(1.05);
 }
@@ -5880,10 +5912,12 @@ button:disabled {
 
   :root[data-visual-profile="liquid"] .liquid-chrome,
   :root[data-visual-profile="liquid"] .settings-group,
+  :root[data-visual-profile="liquid"] .settings-nav,
   :root[data-visual-profile="liquid"] .modal-card,
   :root[data-visual-profile="liquid"] .home-launch-card,
   :root[data-visual-profile="liquid"] .minecraft-profile-card,
-  :root[data-visual-profile="liquid"] .app-sidebar-panel {
+  :root[data-visual-profile="liquid"] .app-sidebar-panel,
+  :root[data-visual-profile="liquid"] .app-titlebar {
     -webkit-backdrop-filter: none;
     backdrop-filter: none;
   }
@@ -5897,10 +5931,12 @@ button:disabled {
 @media (prefers-contrast: more) {
   :root[data-visual-profile="liquid"] .liquid-chrome,
   :root[data-visual-profile="liquid"] .settings-group,
+  :root[data-visual-profile="liquid"] .settings-nav,
   :root[data-visual-profile="liquid"] .modal-card,
   :root[data-visual-profile="liquid"] .home-launch-card,
   :root[data-visual-profile="liquid"] .minecraft-profile-card,
-  :root[data-visual-profile="liquid"] .app-sidebar-panel {
+  :root[data-visual-profile="liquid"] .app-sidebar-panel,
+  :root[data-visual-profile="liquid"] .app-titlebar {
     -webkit-backdrop-filter: none;
     backdrop-filter: none;
     background: var(--linear-card-bg);
@@ -5916,10 +5952,12 @@ button:disabled {
 @media (forced-colors: active) {
   :root[data-visual-profile="liquid"] .liquid-chrome,
   :root[data-visual-profile="liquid"] .settings-group,
+  :root[data-visual-profile="liquid"] .settings-nav,
   :root[data-visual-profile="liquid"] .modal-card,
   :root[data-visual-profile="liquid"] .home-launch-card,
   :root[data-visual-profile="liquid"] .minecraft-profile-card,
-  :root[data-visual-profile="liquid"] .app-sidebar-panel {
+  :root[data-visual-profile="liquid"] .app-sidebar-panel,
+  :root[data-visual-profile="liquid"] .app-titlebar {
     -webkit-backdrop-filter: none;
     backdrop-filter: none;
     background: Canvas;

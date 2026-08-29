@@ -147,7 +147,16 @@ function UninstallConfirmDialog({
     document.addEventListener("keydown", handleKeyDown);
     return () => {
       document.removeEventListener("keydown", handleKeyDown);
-      previouslyFocused?.focus();
+      if (previouslyFocused?.isConnected) {
+        previouslyFocused.focus();
+        return;
+      }
+      // The trigger row is gone after a confirmed uninstall — fall back to
+      // the installed tab (or the search field) instead of dropping focus.
+      const fallback =
+        document.querySelector<HTMLElement>(".content-primary-tab.is-active") ??
+        document.querySelector<HTMLElement>(".content-topbar-search input");
+      fallback?.focus();
     };
   }, [item]);
 
@@ -938,6 +947,7 @@ function ContentPage({
                       }}
                       type="text"
                       placeholder={searchPlaceholder}
+                      aria-label={searchPlaceholder}
                       className="ui-input"
                     />
                   </label>

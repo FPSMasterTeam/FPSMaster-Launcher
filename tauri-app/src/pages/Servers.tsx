@@ -72,11 +72,14 @@ function ServersPage({
     return sortServers(list);
   }, [servers, selectedGroup, query, t]);
 
-  const totalPages = Math.ceil(filteredServers.length / SERVERS_PER_PAGE);
+  const totalPages = Math.max(1, Math.ceil(filteredServers.length / SERVERS_PER_PAGE));
+  // A refresh (or a narrower filter) can shrink the page count while the user
+  // sits on a late page; clamp instead of showing an empty page.
+  const safePage = Math.min(currentPage, totalPages);
   const paginatedServers = useMemo(() => {
-    const start = (currentPage - 1) * SERVERS_PER_PAGE;
+    const start = (safePage - 1) * SERVERS_PER_PAGE;
     return filteredServers.slice(start, start + SERVERS_PER_PAGE);
-  }, [filteredServers, currentPage]);
+  }, [filteredServers, safePage]);
 
   const handleGroupChange = (group: string | null) => {
     setSelectedGroup(group);
@@ -136,6 +139,7 @@ function ServersPage({
               onChange={(event) => handleQueryChange(event.target.value)}
               type="text"
               placeholder={t("servers.searchPlaceholder")}
+              aria-label={t("servers.searchPlaceholder")}
               className="ui-input"
             />
           </label>
@@ -231,19 +235,19 @@ function ServersPage({
                 <Button
                   variant="secondary"
                   size="sm"
-                  disabled={currentPage === 1}
-                  onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
+                  disabled={safePage === 1}
+                  onClick={() => setCurrentPage(Math.max(1, safePage - 1))}
                 >
                   <ArrowLeft size={16} />
                 </Button>
                 <span className="text-data text-sm text-[var(--text-secondary)]">
-                  {currentPage} / {totalPages}
+                  {safePage} / {totalPages}
                 </span>
                 <Button
                   variant="secondary"
                   size="sm"
-                  disabled={currentPage === totalPages}
-                  onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
+                  disabled={safePage === totalPages}
+                  onClick={() => setCurrentPage(Math.min(totalPages, safePage + 1))}
                 >
                   <ArrowRight size={16} />
                 </Button>
