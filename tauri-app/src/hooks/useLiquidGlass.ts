@@ -74,15 +74,21 @@ function useMediaFlag(query: string): boolean {
       if (typeof window === "undefined" || typeof window.matchMedia !== "function") {
         return () => {};
       }
-      const mql = window.matchMedia(query);
       try {
-        mql.addEventListener("change", onChange);
-        return () => mql.removeEventListener("change", onChange);
-      } catch {
+        const mql = window.matchMedia(query);
+        if (typeof mql.addEventListener === "function") {
+          mql.addEventListener("change", onChange);
+          return () => mql.removeEventListener("change", onChange);
+        }
         // Older engines only expose the deprecated listener API.
-        mql.addListener(onChange);
-        return () => mql.removeListener(onChange);
+        if (typeof mql.addListener === "function") {
+          mql.addListener(onChange);
+          return () => mql.removeListener(onChange);
+        }
+      } catch {
+        // Unsupported media-query implementations must degrade silently.
       }
+      return () => {};
     },
     [query]
   );
