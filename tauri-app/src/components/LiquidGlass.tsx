@@ -25,9 +25,20 @@ import { buildLiquidGlassMap, type LiquidGlassMode } from "../lib/liquidGlass";
 //     controls only (large surfaces never warp).
 // Unlike the reference, layout is fill-parent (no centered translate) and the
 // material renders as plain children of the host element, so existing chrome
-// keeps its flex/grid layout: the layers live in an absolutely positioned,
-// aria-hidden span behind the host's content, which therefore stays sharp
+// keeps its flex/grid layout: the layers live in absolutely positioned,
+// aria-hidden spans behind the host's content, which therefore stays sharp
 // (only the backdrop layer is filtered).
+//
+// DOM shape is load-bearing. The filtered .lg-backdrop span MUST be a direct
+// child of the host, and the mix-blend-mode layers (shine / glint) MUST sit
+// in their own stacking-context wrapper (.lg-layers): a blend-mode child
+// forces Chromium to isolate its parent group into a render surface, which
+// becomes the backdrop root for every descendant — a backdrop-filter sibling
+// inside the same wrapper then samples an empty group and renders nothing.
+// Keeping the blends bounded by .lg-layers and the backdrop span outside it
+// lets the filter sample the real page. (Verified empirically; the same flat
+// structure works in the reference only because its wrapper is not a
+// stacking context.)
 //
 // Degradation ladder (never throws), resolved by useLiquidGlass:
 //   - Chromium / WebView2 (incl. Win7-era 109): full lens + aberration.
@@ -51,6 +62,10 @@ let lensSlotsUsed = 0;
 type GlassFilterProps = {
   id: string;
   mapUrl: string;
+  /** Host CSS size; feImage needs absolute px (percentages resolve against
+      the nearest SVG viewport, and the defs svg is 0x0 => an empty map). */
+  width: number;
+  height: number;
   displacementScale: number;
   aberrationIntensity: number;
 };
@@ -60,7 +75,14 @@ type GlassFilterProps = {
 // mask, and laid over the untouched center. The rim mask comes straight from
 // the map's G channel (see buildLiquidGlassMap) instead of a luminance
 // heuristic, which keeps the center provably clean.
-function GlassFilter({ id, mapUrl, displacementScale, aberrationIntensity }: GlassFilterProps) {
+function GlassFilter({
+  id,
+  mapUrl,
+  width,
+  height,
+  displacementScale,
+  aberrationIntensity,
+}: GlassFilterProps) {
   const redScale = displacementScale;
   const greenScale = displacementScale * Math.max(0.35, 1 - aberrationIntensity * 0.05);
   const blueScale = displacementScale * Math.max(0.3, 1 - aberrationIntensity * 0.1);
@@ -70,18 +92,18 @@ function GlassFilter({ id, mapUrl, displacementScale, aberrationIntensity }: Gla
       <defs>
         <filter
           id={id}
-          x="0%"
-          y="0%"
-          width="100%"
-          height="100%"
+          x="-35%"
+          y="-35%"
+          width="170%"
+          height="170%"
           colorInterpolationFilters="sRGB"
         >
           <feImage
             href={mapUrl}
-            x="0%"
-            y="0%"
-            width="100%"
-            height="100%"
+            x="0"
+            y="0"
+            width={width}
+            height={height}
             preserveAspectRatio="none"
             result="LG_MAP"
           />
@@ -202,7 +224,43 @@ export function LiquidGlassLayers({
   const rawId = useId();
   const filterId = useMemo(() => `lg-lens-${rawId.replace(/[^a-zA-Z0-9_-]/g, "")}`, [rawId]);
   const anchorRef = useRef<HTMLSpanElement | null>(null);
-  const [mapUrl, setMapUrl] = useState<string | null>(null);
+  const [map, setMap] = useState<{ url: string; width: number; height: number } | null>(null);
+
+  // The z:-1 material layers must stay inside the host: make the host a
+  // positioned stacking context, but only where it is not one already (a CSS
+  // rule would fight Tailwind's cascade layers and could break e.g. the
+  // sidebar panel's `absolute`). Never isolation:isolate — that would create
+  // a backdrop root and blind the backdrop-filter.
+  useEffect(() => {
+    if (!glass.active) {
+      return;
+    }
+    const host = anchorRef.current?.parentElement as HTMLElement | null;
+    if (!host) {
+      return;
+    }
+    const computed = getComputedStyle(host);
+    const prevPosition = host.style.position;
+    const prevZIndex = host.style.zIndex;
+    let touchedPosition = false;
+    let touchedZIndex = false;
+    if (computed.position === "static") {
+      host.style.position = "relative";
+      touchedPosition = true;
+    }
+    if (getComputedStyle(host).zIndex === "auto") {
+      host.style.zIndex = "0";
+      touchedZIndex = true;
+    }
+    return () => {
+      if (touchedPosition) {
+        host.style.position = prevPosition;
+      }
+      if (touchedZIndex) {
+        host.style.zIndex = prevZIndex;
+      }
+    };
+  }, [glass.active]);
 
   // Size-aware map: take a slot from the scarce refraction budget, observe
   // the host and (re)build the displacement map at the element's actual
@@ -229,7 +287,7 @@ export function LiquidGlassLayers({
       const height = Math.round(rect.height);
       if (width < 24 || height < 24) {
         lastKey = "";
-        setMapUrl(null);
+        setMap(null);
         return;
       }
       const radius = readCornerRadius(host, width, height);
@@ -238,7 +296,8 @@ export function LiquidGlassLayers({
         return;
       }
       lastKey = key;
-      setMapUrl(buildLiquidGlassMap(width, height, radius, mode));
+      const url = buildLiquidGlassMap(width, height, radius, mode);
+      setMap(url === null ? null : { url, width, height });
     };
     // First build lands a frame later so mount stays cheap and the effect
     // body itself never sets state synchronously.
@@ -352,12 +411,16 @@ export function LiquidGlassLayers({
     return null;
   }
 
-  const lensReady = glass.lensed && mapUrl !== null;
-  // Blur/saturate first, then the displacement graph — same order as the
-  // reference (backdrop-filter blur+saturate, SVG filter on the result).
+  const lensReady = glass.lensed && map !== null;
+  // Split exactly like the reference: backdrop-filter carries only the plain
+  // blur/saturate chain, while the displacement graph goes into the regular
+  // `filter` property of the same span. Chromium folds the backdrop-filter
+  // output into the span's own surface, so the SVG filter (running on the
+  // fully supported non-compositor path) warps the blurred backdrop; a
+  // `url()` inside backdrop-filter itself hits Chromium's compositor filter
+  // path, which mishandles feImage-based graphs and silently no-ops.
   const plainChain =
     "blur(calc(var(--lg-blur, 10px) + var(--lg-blur-boost, 0px))) saturate(var(--lg-saturate, 1.4)) brightness(var(--lg-brightness, 1.06))";
-  const lensChain = lensReady ? `${plainChain} url(#${filterId})` : plainChain;
   const layerStyle: Record<string, string> = {};
   if (blur !== undefined) {
     layerStyle["--lg-blur"] = `${blur}px`;
@@ -367,37 +430,51 @@ export function LiquidGlassLayers({
   }
 
   return (
-    <span
-      ref={anchorRef}
-      className="lg-layers"
-      aria-hidden="true"
-      data-lg-lens={lensReady ? "on" : "off"}
-      data-lg-tint={tint}
-      data-lg-overlight={glass.overLight ? "true" : "false"}
-      style={layerStyle as CSSProperties}
-    >
-      {lensReady && mapUrl !== null && (
-        <GlassFilter
-          id={filterId}
-          mapUrl={mapUrl}
-          displacementScale={displacementScale}
-          aberrationIntensity={aberrationIntensity}
-        />
-      )}
+    <>
       {/* Backdrop layer: the only filtered layer — bends and frosts what is
-          behind the glass while the host's content above stays sharp. */}
+          behind the glass while the host's content above stays sharp. Direct
+          host child on purpose: inside .lg-layers the blend-mode siblings
+          would isolate the wrapper and blind the backdrop-filter (see the
+          header comment). The outer span clips (regular `filter` output is
+          not clipped by the element's own border-radius); the inner warp
+          span carries backdrop-filter + the SVG displacement filter. */}
+      <span className="lg-backdrop" aria-hidden="true">
+        {lensReady && map !== null && (
+          <GlassFilter
+            id={filterId}
+            mapUrl={map.url}
+            width={map.width}
+            height={map.height}
+            displacementScale={displacementScale}
+            aberrationIntensity={aberrationIntensity}
+          />
+        )}
+        <span
+          className="lg-warp"
+          style={
+            {
+              ...layerStyle,
+              WebkitBackdropFilter: plainChain,
+              backdropFilter: plainChain,
+              filter: lensReady ? `url(#${filterId})` : undefined,
+            } as CSSProperties
+          }
+        />
+      </span>
       <span
-        className="lg-backdrop"
-        style={{
-          WebkitBackdropFilter: plainChain,
-          backdropFilter: lensChain,
-        }}
-      />
-      <span className="lg-tint" />
-      <span className="lg-shine" />
-      <span className="lg-shine lg-shine-overlay" />
-      {interactive && <span className="lg-glint" />}
-    </span>
+        ref={anchorRef}
+        className="lg-layers"
+        aria-hidden="true"
+        data-lg-lens={lensReady ? "on" : "off"}
+        data-lg-tint={tint}
+        data-lg-overlight={glass.overLight ? "true" : "false"}
+      >
+        <span className="lg-tint" />
+        <span className="lg-shine" />
+        <span className="lg-shine lg-shine-overlay" />
+        {interactive && <span className="lg-glint" />}
+      </span>
+    </>
   );
 }
 

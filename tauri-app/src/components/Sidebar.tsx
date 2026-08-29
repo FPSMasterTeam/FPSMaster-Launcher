@@ -49,7 +49,7 @@ function Sidebar({ currentPage, user, setPage }: SidebarProps) {
       <LiquidGlass
         as="div"
         mode="standard"
-        displacementScale={40}
+        displacementScale={56}
         aberrationIntensity={1.6}
         className={`app-sidebar-panel absolute inset-y-0 left-0 flex h-full flex-col overflow-hidden border-r border-white/8 bg-[var(--bg-secondary)] transition-[width] duration-200 ease-[var(--ease-standard)] ${
           expanded ? `${PANEL} shadow-[10px_0_30px_rgba(0,0,0,0.32)]` : RAIL

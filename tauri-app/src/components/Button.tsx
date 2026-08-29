@@ -73,7 +73,7 @@ const Button: React.FC<ButtonProps> = ({
       {glassActive && (
         <LiquidGlassLayers
           mode="standard"
-          displacementScale={30}
+          displacementScale={36}
           aberrationIntensity={2}
           blur={6}
           tint="accent"

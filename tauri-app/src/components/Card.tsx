@@ -71,7 +71,7 @@ export default function Card<T extends ElementType = "div">({
       {...rest}
     >
       {glassActive && (
-        <LiquidGlassLayers mode="standard" displacementScale={48} aberrationIntensity={2} />
+        <LiquidGlassLayers mode="standard" displacementScale={64} aberrationIntensity={2} />
       )}
       {children}
     </Component>

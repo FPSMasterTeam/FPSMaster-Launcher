@@ -115,11 +115,13 @@ export function buildLiquidGlassMap(
     const halfW = w / 2;
     const halfH = h / 2;
     const r = clamp(cornerRadius * scale, 0, Math.min(halfW, halfH));
+    // Narrow rims read as a crisp beveled slab (the Apple look); wide soft
+    // rims read as smeared frost. Prominent mode keeps a broader ring.
     const minSide = Math.min(w, h);
     const bezel =
       mode === "prominent"
         ? clamp(minSide * 0.42, 8, 110)
-        : clamp(minSide * 0.26, 6, 72);
+        : clamp(minSide * 0.18, 6, 42);
 
     const count = w * h;
     const dxArr = new Float32Array(count);

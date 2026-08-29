@@ -40,7 +40,7 @@ function WindowTitleBar({ version, onClose }: WindowTitleBarProps) {
     <LiquidGlass
       as="div"
       mode="standard"
-      displacementScale={32}
+      displacementScale={44}
       aberrationIntensity={1.4}
       className="app-titlebar"
       data-tauri-drag-region

@@ -4285,8 +4285,13 @@ button:disabled {
   }
 }
 
+/* Entrance animations end at the natural state, so no fill-mode: a forwards
+   fill would keep the opacity animation active forever, and an element with
+   an active opacity animation is a backdrop root — it would permanently
+   blind backdrop-filter on any Liquid Glass surface inside the modal. Exit
+   animations still hold their final frame until unmount. */
 .modal-animate {
-  animation: modal-fade-in 240ms var(--ease-spring) forwards;
+  animation: modal-fade-in 240ms var(--ease-spring);
 }
 
 .modal-animate-out {
@@ -4294,7 +4299,7 @@ button:disabled {
 }
 
 .modal-backdrop-animate {
-  animation: modal-backdrop-fade-in 180ms var(--ease-standard) forwards;
+  animation: modal-backdrop-fade-in 180ms var(--ease-standard);
 }
 
 .modal-backdrop-animate-out {
@@ -5835,19 +5840,21 @@ button:disabled {
 
 /* ---------- LiquidGlass component (components/LiquidGlass.tsx) ----------
    Hosts marked .lg-on hold their layout, border rim and drop shadow; the
-   material itself renders in the absolutely positioned .lg-layers span
-   behind the host's content. The span sits at z-index -1 inside the host's
-   own stacking context, so the content layer above it stays sharp — only
-   the .lg-backdrop layer is filtered. Deliberately NOT isolation:isolate
-   anywhere in this subtree: isolation creates a backdrop root and would
-   blind backdrop-filter. */
+   material itself renders in absolutely positioned spans behind the host's
+   content (negative z-index inside the host's own stacking context), so the
+   content layer above stays sharp. Two spans, and the split is load-bearing:
+   the filtered .lg-backdrop is a DIRECT host child at z -2, while the
+   mix-blend-mode layers live in the .lg-layers wrapper at z -1 — a blend
+   child forces Chromium to isolate its parent into a render surface, which
+   becomes the backdrop root for its descendants and would blind a
+   backdrop-filter sibling inside the same wrapper. Same reason there is no
+   isolation:isolate anywhere in this subtree. */
 
-/* :where keeps specificity at zero so surfaces that are already positioned
-   (fixed titlebar, absolute sidebar, sticky nav) keep their own values. */
-:where(.lg-on) {
-  position: relative;
-  z-index: 0;
-}
+/* Hosts must be positioned stacking contexts so the z:-1 layers stay inside
+   them; LiquidGlassLayers establishes that imperatively (position: relative
+   + z-index: 0 only where the host doesn't already have them), because a CSS
+   rule here — even :where() — would sit outside Tailwind's cascade layers
+   and override utility classes like `absolute` on the sidebar panel. */
 
 :root[data-visual-profile="liquid"] .lg-on {
   border-color: var(--liquid-rim);
@@ -5861,6 +5868,24 @@ button:disabled {
 :root[data-visual-profile="liquid"] .app-titlebar.lg-on,
 :root[data-visual-profile="liquid"] .app-sidebar-panel.lg-on {
   box-shadow: none;
+}
+
+.lg-backdrop {
+  position: absolute;
+  inset: 0;
+  z-index: -2;
+  border-radius: inherit;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+/* The warp span carries backdrop-filter (plain blur/saturate) plus the SVG
+   displacement graph as a regular `filter` (see LiquidGlass.tsx). Filter
+   output ignores the element's own border-radius, so .lg-backdrop above
+   clips it to the host's rounded rect. */
+.lg-warp {
+  position: absolute;
+  inset: 0;
 }
 
 .lg-layers {
@@ -5879,7 +5904,6 @@ button:disabled {
   overflow: hidden;
 }
 
-.lg-backdrop,
 .lg-tint,
 .lg-shine,
 .lg-glint {

@@ -593,7 +593,7 @@ function SettingsPage({
         <LiquidGlass
           as="nav"
           mode="standard"
-          displacementScale={44}
+          displacementScale={56}
           aberrationIntensity={2}
           className="settings-nav"
           aria-label={t("settings.title")}
@@ -1082,7 +1082,7 @@ function SettingsPage({
                   <LiquidGlass
                     as="div"
                     mode="shader"
-                    displacementScale={64}
+                    displacementScale={76}
                     aberrationIntensity={2.4}
                     className="appearance-preview"
                   >
@@ -1101,7 +1101,7 @@ function SettingsPage({
                       <LiquidGlass
                         as="span"
                         mode="standard"
-                        displacementScale={28}
+                        displacementScale={34}
                         aberrationIntensity={2}
                         blur={6}
                         tint="accent"
