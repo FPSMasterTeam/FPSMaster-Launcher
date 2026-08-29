@@ -25,7 +25,7 @@ export type LauncherVersionType = "EDGE" | "NOVA" | "EXTREME";
 export type MinecraftAccountType = "offline" | "microsoft";
 export type ContentSource = "modrinth" | "curseforge" | "local";
 export type OnlineContentSource = Exclude<ContentSource, "local">;
-export type ContentProjectType = "mod" | "resourcepack" | "shader" | "world";
+export type ContentProjectType = "mod" | "resourcepack" | "shader" | "world" | "modpack";
 export type InstalledContentUpdateStatus =
   | "up-to-date"
   | "update-available"
@@ -216,6 +216,38 @@ export type ContentInstallProgressEvent = {
   downloadedBytes: number;
   totalBytes: number | null;
   percent: number | null;
+};
+
+export type ModpackInstallStage =
+  | "catalog"
+  | "download-pack"
+  | "parse"
+  | "loader"
+  | "files"
+  | "overrides"
+  | "finalize";
+
+export type ModpackInstallProgressEvent = {
+  projectKey: string;
+  stage: ModpackInstallStage;
+  message: string;
+  current: number;
+  total: number;
+  percent: number | null;
+};
+
+export type ModpackInstallResult = {
+  source: OnlineContentSource;
+  projectId: string;
+  projectTitle: string;
+  name: string;
+  versionId: string;
+  baseVersion: string;
+  loader: Loader;
+  loaderVersion?: string | null;
+  packVersion: string;
+  fileCount: number;
+  overrideCount: number;
 };
 
 export type InstallPhaseState = {

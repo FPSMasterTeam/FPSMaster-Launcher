@@ -11,6 +11,7 @@ import type {
   LauncherVersionMap,
   Loader,
   MinecraftAccount,
+  ModpackInstallResult,
   NewsItem,
   OptiFineVersion,
   Page,
@@ -51,6 +52,7 @@ export type PageRouterContext = {
   onOpenInstanceSettings: (id: string, gameVersion?: string) => void;
   onOpenInstanceContent: (id: string, gameVersion?: string) => void;
   onGoContent: () => void;
+  onModpackInstalled: (result: ModpackInstallResult) => void;
   onInstanceRepair: () => void;
   onInstanceDelete: () => void;
   onInstanceDuplicate: () => void;
@@ -262,11 +264,14 @@ export default function PageRouter({ ctx }: { ctx: PageRouterContext }) {
           current={ctx.current}
           gameDir={ctx.gameDir}
           curseforgeApiKey={ctx.curseforgeApiKey}
+          downloadSource={ctx.settings.downloadSource}
+          downloadThreads={ctx.settings.downloadThreads}
           busy={ctx.busy}
           novaGameVersions={ctx.novaGameVersions}
           selectedNovaGameVersion={ctx.selectedNovaGameVersion}
           onSelectNovaGameVersion={ctx.onSelectNovaGameVersion}
           onSelectInstance={ctx.onSelect}
+          onModpackInstalled={ctx.onModpackInstalled}
           onStatusChange={ctx.onStatusChange}
         />
       );
