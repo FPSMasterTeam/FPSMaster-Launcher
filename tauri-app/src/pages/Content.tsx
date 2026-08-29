@@ -147,9 +147,9 @@ function UninstallConfirmDialog({
     document.addEventListener("keydown", handleKeyDown);
     return () => {
       document.removeEventListener("keydown", handleKeyDown);
-      if (previouslyFocused?.isConnected) {
+      if (previouslyFocused?.isConnected && !previouslyFocused.matches(":disabled")) {
         previouslyFocused.focus();
-        return;
+        if (document.activeElement === previouslyFocused) return;
       }
       // The trigger row is gone after a confirmed uninstall — fall back to
       // the installed tab (or the search field) instead of dropping focus.
