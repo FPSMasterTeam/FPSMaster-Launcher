@@ -12,6 +12,14 @@ tauri-app/dist/
 tauri-app/src-tauri/target/
 tauri-app/src-tauri/target-codex-check*/
 tmp-check/
+tauri-app/src-tauri/.cargo/
+
+# Windows 7 redistributables downloaded by CI / prepare-win7-runtime.ps1
+tauri-app/src-tauri/Microsoft.WebView2.FixedVersionRuntime.*/
+tauri-app/src-tauri/win7-runtime/*.dll
+tauri-app/src-tauri/win7-runtime/*.exe
+tauri-app/src-tauri/win7-runtime/*.msu
+tauri-app/src-tauri/wv2.cab
 
 # Reference (HMCL, etc. - not redistributable)
 reference

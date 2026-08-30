@@ -180,6 +180,9 @@ jobs:
 
           [unstable]
           build-std = ["std"]
+
+          [target.x86_64-win7-windows-msvc]
+          rustflags = ["-C", "target-feature=+crt-static"]
           '@ | Set-Content -Encoding utf8 ".cargo/config.toml"
 
       - name: Cache Rust target
@@ -210,6 +213,10 @@ jobs:
         working-directory: tauri-app/src-tauri
         run: cargo test
 
+      - name: Verify Windows 7 packaging files
+        if: runner.os == 'Linux'
+        run: python3 tauri-app/src-tauri/scripts/verify-win7-pe.py --self-test --check-packaging .
+
       - name: Configure ad-hoc signing for macOS builds
         if: matrix.target == 'macos-aarch64'
         run: echo 'APPLE_SIGNING_IDENTITY=-' >> "$GITHUB_ENV"
@@ -227,8 +234,22 @@ jobs:
             throw "Fixed WebView2 runtime was not extracted correctly"
           }
 
+      - name: Prepare Windows 7 VC++ and Universal CRT payload
+        if: matrix.target == 'windows-x86_64-win7'
+        working-directory: tauri-app/src-tauri
+        shell: pwsh
+        run: powershell -File scripts/prepare-win7-runtime.ps1
+
       - name: Build installer
+        if: matrix.target != 'windows-x86_64-win7'
         working-directory: tauri-app
+        run: npm run ${{ matrix.build_script }}
+
+      - name: Build Windows 7 installer
+        if: matrix.target == 'windows-x86_64-win7'
+        working-directory: tauri-app
+        env:
+          STATIC_VCRUNTIME: "false"
         run: npm run ${{ matrix.build_script }}
 
       - name: Verify Linux glibc baseline
@@ -258,12 +279,16 @@ jobs:
         shell: pwsh
         run: |
           $binary = "tauri-app/src-tauri/target/x86_64-win7-windows-msvc/release/fpsmaster-launcher.exe"
-          if (-not (Test-Path $binary)) {
-            throw "Windows 7 launcher binary was not produced: $binary"
+          $installers = @(Get-ChildItem -Path "tauri-app/src-tauri/target/x86_64-win7-windows-msvc/release/bundle/nsis/*.exe" | Sort-Object LastWriteTime -Descending)
+          if (-not $installers) {
+            throw "Windows 7 NSIS installer was not produced"
           }
-          $contents = [Text.Encoding]::ASCII.GetString([IO.File]::ReadAllBytes($binary))
-          if ($contents.Contains("ProcessPrng")) {
-            throw "Windows 7 launcher still imports the Windows 10-only ProcessPrng API"
+          python tauri-app/src-tauri/scripts/verify-win7-pe.py --binary $binary --installer $installers[0].FullName --check-packaging .
+          $runtimeDir = "tauri-app/src-tauri/win7-runtime"
+          foreach ($name in @("ucrtbase.dll", "vcruntime140.dll", "vcruntime140_1.dll", "msvcp140.dll", "api-ms-win-crt-runtime-l1-1-0.dll", "vc_redist.x64.exe")) {
+            if (-not (Test-Path (Join-Path $runtimeDir $name))) {
+              throw "Windows 7 runtime payload is missing $name"
+            }
           }
 
       - name: Verify macOS binary has no build-machine dylib references

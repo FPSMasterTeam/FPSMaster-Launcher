@@ -5,6 +5,7 @@ mod microsoft_auth;
 mod minecraft_core;
 mod modpack;
 mod secure_storage;
+mod win7_compat;
 mod zip_budget;
 
 use launcher_api::{
@@ -10736,6 +10737,44 @@ fn rect_contains_origin(rect: &RECT) -> bool {
 
 #[cfg(windows)]
 fn get_system_wallpaper_path() -> Result<Option<String>, String> {
+    match get_system_wallpaper_via_desktop_com() {
+        Ok(path) => Ok(path),
+        Err(_) => get_system_wallpaper_via_spi(),
+    }
+}
+
+#[cfg(windows)]
+fn get_system_wallpaper_via_spi() -> Result<Option<String>, String> {
+    const SPI_GETDESKWALLPAPER: u32 = 0x0073;
+    let mut buffer = [0u16; 260];
+    let ok = unsafe {
+        SystemParametersInfoW(
+            SPI_GETDESKWALLPAPER,
+            buffer.len() as u32,
+            buffer.as_mut_ptr(),
+            0,
+        )
+    };
+    if ok == 0 {
+        return Err("Failed to query desktop wallpaper via SystemParametersInfo".to_string());
+    }
+    let len = buffer.iter().position(|&unit| unit == 0).unwrap_or(buffer.len());
+    normalize_system_wallpaper_path(String::from_utf16_lossy(&buffer[..len]))
+}
+
+#[cfg(windows)]
+#[link(name = "user32")]
+extern "system" {
+    fn SystemParametersInfoW(
+        ui_action: u32,
+        ui_param: u32,
+        pv_param: *mut u16,
+        f_win_ini: u32,
+    ) -> i32;
+}
+
+#[cfg(windows)]
+fn get_system_wallpaper_via_desktop_com() -> Result<Option<String>, String> {
     let _com_scope = initialize_com_scope()?;
     let wallpaper: IDesktopWallpaper =
         unsafe { CoCreateInstance(&DesktopWallpaper, None, CLSCTX_ALL) }
@@ -11069,6 +11108,15 @@ fn get_system_wallpaper_path() -> Result<Option<String>, String> {
 }
 
 fn main() {
+    #[cfg(all(windows, target_vendor = "win7"))]
+    {
+        win7_compat::prepare_dll_search_path();
+        if let Err(error) = win7_compat::preflight() {
+            win7_compat::show_blocking_error(&error);
+            std::process::exit(1);
+        }
+    }
+
     tauri::Builder::default()
         .manage(LauncherRuntimeState::default())
         .plugin(tauri_plugin_dialog::init())

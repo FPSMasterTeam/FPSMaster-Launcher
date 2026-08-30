@@ -1,10 +1,24 @@
 {
   "productName": "FPSMaster Launcher (Win7)",
   "bundle": {
+    "resources": [
+      "win7-runtime/ucrtbase.dll",
+      "win7-runtime/vcruntime140.dll",
+      "win7-runtime/vcruntime140_1.dll",
+      "win7-runtime/msvcp140.dll",
+      "win7-runtime/api-ms-win-crt-runtime-l1-1-0.dll",
+      "win7-runtime/api-ms-win-crt-math-l1-1-0.dll",
+      "win7-runtime/**/*"
+    ],
     "windows": {
       "webviewInstallMode": {
         "type": "fixedRuntime",
         "path": "./Microsoft.WebView2.FixedVersionRuntime.109.0.1518.78.x64/"
+      },
+      "nsis": {
+        "installerHooks": "./windows/win7-hooks.nsh",
+        "languages": ["SimpChinese", "English"],
+        "displayLanguageSelector": true
       }
     }
   }

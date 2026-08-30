@@ -48,4 +48,6 @@ GitHub 仓库需要配置以下 Secrets：
 
 工作流发布 Windows x64、Windows 7 x64、Linux x64 `.deb` 和 Apple Silicon macOS `.dmg`。Intel Mac 暂不打包。Linux 在 Ubuntu 22.04 构建并校验最高 GLIBC 需求不超过 2.35。macOS 包一律使用 ad-hoc / 未签名分发，不需要 Apple Developer ID 证书，也不做公证；玩家首次打开时可能需要在系统设置里允许运行。
 
+Windows 7 必须使用单独的 `(Win7)` 安装包：除了官方的 `x86_64-win7-windows-msvc` + WebView2 109 固定运行时，安装程序还会把 VC++ 2015-2022 和 Universal CRT 放到启动器旁边。限制和真机验收步骤见 [docs/windows7.md](docs/windows7.md)。
+
 发布回调接口为 `POST /api/v1/launcher/releases/ci`，`productCode` 固定为 `launcher`，`target` 按产物平台填写。
