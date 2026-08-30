@@ -19,6 +19,7 @@ tauri-app/src-tauri/Microsoft.WebView2.FixedVersionRuntime.*/
 tauri-app/src-tauri/win7-runtime/*.dll
 tauri-app/src-tauri/win7-runtime/*.exe
 tauri-app/src-tauri/win7-runtime/*.msu
+tauri-app/src-tauri/win7-runtime/.extract/
 tauri-app/src-tauri/wv2.cab
 
 # Reference (HMCL, etc. - not redistributable)

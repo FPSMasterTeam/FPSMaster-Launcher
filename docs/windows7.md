@@ -54,7 +54,9 @@
 5. 故意删掉安装目录里的 `ucrtbase.dll`（若 System32 也没有）或 WebView2 目录，再启动，应看到启动器自己的中英错误说明。
 6. 在 Windows 10/11 上抽查：普通安装包行为不变；Win7 包也可以启动，但玩家应继续使用对应通道更新。
 
-本地打包（仅 Windows + VS 2022 + Windows SDK）：
+`windows-latest` 现在是 Visual Studio 2026。`VC\Redist\MSVC\v145` 不再是原来的 `x64\Microsoft.VC*.CRT` 布局，所以 CI 从 `aka.ms/vs/17/release/vc_redist.x64.exe` 解出 CRT，而不是按目录名取最新的 VS 文件夹。
+
+本地打包（Windows + VS 2022/2026 + Windows SDK）：
 
 ```powershell
 cd tauri-app/src-tauri
