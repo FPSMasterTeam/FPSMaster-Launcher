@@ -13,6 +13,7 @@ use std::collections::HashSet;
 use std::fs;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -533,15 +534,27 @@ fn remember_recommendation(source: DownloadSource) {
 
 /// Resolution of the "auto" download source id: the fastest of official and
 /// BMCLAPI, measured at most every 30 minutes.
+///
+/// Never blocks on the network: `from_id("auto")` runs at the start of every
+/// launch, and an offline or already-installed launch must not wait for the
+/// probes. A missing or stale measurement is refreshed in the background and
+/// the last known answer (or mirror-first, which still falls back to the
+/// official source) is used meanwhile.
 pub(crate) fn auto_download_source() -> DownloadSource {
-    if let Some((at, source)) = *lock_recover(auto_source_cache()) {
+    static REFRESHING: AtomicBool = AtomicBool::new(false);
+    let cached = *lock_recover(auto_source_cache());
+    if let Some((at, source)) = cached {
         if at.elapsed() < AUTO_SOURCE_TTL {
             return source;
         }
     }
-    let source = recommend(&probe_all(probe_targets(None)));
-    remember_recommendation(source);
-    source
+    if !REFRESHING.swap(true, Ordering::SeqCst) {
+        thread::spawn(|| {
+            remember_recommendation(recommend(&probe_all(probe_targets(None))));
+            REFRESHING.store(false, Ordering::SeqCst);
+        });
+    }
+    cached.map_or(DownloadSource::MirrorFirst, |(_, source)| source)
 }
 
 /// Measures latency/throughput of the Minecraft download sources (and the
