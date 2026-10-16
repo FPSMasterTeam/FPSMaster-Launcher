@@ -12,6 +12,7 @@ import LaunchPrepareDialog from "./components/LaunchPrepareDialog";
 import Sidebar from "./components/Sidebar";
 import ToastViewport from "./components/ToastViewport";
 import CloseConfirmDialog from "./components/CloseConfirmDialog";
+import CrashDialog from "./components/CrashDialog";
 import WindowTitleBar from "./components/WindowTitleBar";
 import {
   DEFAULT_LOGIN_PREFS,
@@ -28,7 +29,7 @@ import {
   I18nProvider,
   resolveLocale
 } from "./i18n";
-import { syncApiLanguage } from "./lib/apiLanguage";
+import { acceptLanguageFor, syncApiLanguage } from "./lib/apiLanguage";
 import {
   mapLaunchPreparePhaseKey,
   mergePhaseByteProgress,
@@ -54,6 +55,7 @@ import {
   shouldRefreshMicrosoftAccount
 } from "./lib/minecraftAccount";
 import {
+  loadOrCreateLauncherSessionId,
   normalizeStoredToken,
   parseLauncherAuthState,
   parseLauncherLoginPrefs,
@@ -83,6 +85,7 @@ import type {
   EdgeAotInstallResult,
   FabricInstallResult,
   ForgeInstallResult,
+  GameExitEvent,
   GameRuntimeStats,
   InstalledContentItem,
   InstalledContentUpdate,
@@ -250,6 +253,7 @@ function Launcher() {
   const autoLoginAttemptedRef = useRef(false);
   const [minecraftAccountPromptOpen, setMinecraftAccountPromptOpen] = useState(false);
   const [closeConfirmOpen, setCloseConfirmOpen] = useState(false);
+  const [crashReport, setCrashReport] = useState<GameExitEvent | null>(null);
 
   const logCursorRef = useRef<number | null>(null);
   const pollingRef = useRef(false);
@@ -630,6 +634,28 @@ function Launcher() {
       window.clearInterval(timer);
     };
   }, [activeGamePid, windowVisible]);
+
+  // A game that crashes after the launcher hid itself used to leave the user
+  // with nothing but "exited" in the monitor (launcher-ui-20 / product-4).
+  useEffect(() => {
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    void listen<GameExitEvent>("game-exit", ({ payload }) => {
+      setActiveGamePid((prev) => (prev === payload.pid ? null : prev));
+      if (!payload.crashed || payload.terminatedByUser) return;
+      setCrashReport(payload);
+      invoke("show_main_window").catch((error) => console.warn("[crash] cannot show main window:", error));
+    })
+      .then((dispose) => {
+        if (disposed) dispose();
+        else unlisten = dispose;
+      })
+      .catch((error) => console.warn("[crash] cannot listen to game-exit:", error));
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, []);
 
   useEffect(() => {
     void syncAutostart(settings.launchOnStartup);
@@ -2858,6 +2884,57 @@ function Launcher() {
 
 
 
+  // Instance (and Nova game version) a game-exit versionId belongs to.
+  function findInstanceForVersionId(versionId: string): { instance: Instance; gameVersion?: string } | null {
+    if (versionId.startsWith(`${NOVA_VERSION_ID_PREFIX}-`)) {
+      const nova = instances.find((item) => item.preset && item.launcherVersionType === "NOVA");
+      return nova ? { instance: nova, gameVersion: versionId.slice(NOVA_VERSION_ID_PREFIX.length + 1) } : null;
+    }
+    const instance = instances.find((item) => localVersionIdFor(item) === versionId);
+    return instance ? { instance } : null;
+  }
+
+  function crashInstanceName(crash: GameExitEvent): string {
+    const match = findInstanceForVersionId(crash.versionId);
+    if (!match) return crash.versionId;
+    return match.gameVersion ? `Nova ${match.gameVersion}` : match.instance.name;
+  }
+
+  function diagnoseCrash(crash: GameExitEvent) {
+    const match = findInstanceForVersionId(crash.versionId);
+    if (match) {
+      if (match.gameVersion) setSelectedNovaGameVersion(match.gameVersion);
+      setSelected(match.instance.id);
+    }
+    setCrashReport(null);
+    navigatePage("diagnostics");
+  }
+
+  function openPathWithSystem(path: string) {
+    invoke("open_downloaded_file", { filePath: path }).catch((error) => notifyError(describeApiError(error, t)));
+  }
+
+  // Sent only after the user pressed the consent button in the crash dialog.
+  async function uploadCrashReport(crash: GameExitEvent) {
+    try {
+      // "rate_limited" means the backend dropped it (HTTP 429): no retry, by contract.
+      await invoke<{ status: string }>("upload_game_crash_report", {
+        request: {
+          baseUrl: LAUNCHER_API_BASE_URL,
+          versionId: crash.versionId,
+          exitCode: crash.exitCode,
+          durationMs: crash.durationMs,
+          crashReportPath: crash.crashReportPath ?? undefined,
+          hsErrPath: crash.hsErrPath ?? undefined,
+          sessionId: loadOrCreateLauncherSessionId(),
+          language: acceptLanguageFor(settings.language)
+        }
+      });
+    } catch (error) {
+      throw new Error(describeApiError(error, t));
+    }
+  }
+
   // Only with explicit consent: the key then lives in a 0600 file instead of
   // the system keychain.
   async function enableCredentialFileFallback() {
@@ -3210,6 +3287,27 @@ function Launcher() {
 
         {authenticated && launchError && (
           <LaunchErrorDialog message={launchError} onConfirm={() => setLaunchError(null)} />
+        )}
+
+        {authenticated && crashReport && (
+          <CrashDialog
+            crash={crashReport}
+            instanceName={crashInstanceName(crashReport)}
+            onOpenLogs={
+              crashReport.versionId === resolvePresetVersionId("preset-extreme")
+                ? null
+                : () =>
+                    void invoke("open_instance_section", {
+                      gameDir: settings.gameDir,
+                      versionId: crashReport.versionId,
+                      section: "logs"
+                    }).catch((error) => notifyError(describeApiError(error, t)))
+            }
+            onOpenFile={openPathWithSystem}
+            onDiagnose={() => diagnoseCrash(crashReport)}
+            onUpload={() => uploadCrashReport(crashReport)}
+            onClose={() => setCrashReport(null)}
+          />
         )}
 
         {closeConfirmOpen && (

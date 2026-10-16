@@ -887,7 +887,20 @@ const enUS = {
   "diagnostics.code.NO_RECENT_CRASHES.desc": "No crash in the last 7 days.",
   "diagnostics.code.RECENT_CRASHES.title": "{count} crash(es) in the last 7 days",
   "diagnostics.code.RECENT_CRASHES.desc": "Latest: {latestSummary}. Export a support bundle and send it to support.",
-  "secureStorage.useFileFallback": "Store the key in a file instead"
+  "secureStorage.useFileFallback": "Store the key in a file instead",
+  "crash.title": "{name} closed unexpectedly",
+  "crash.subtitle": "Exit code {code}, ran for {duration}.",
+  "crash.summary": "Crash summary",
+  "crash.noSummary": "No crash report was written. The game log may show what happened.",
+  "crash.openReport": "Open crash report",
+  "crash.openHsErr": "Open JVM error log",
+  "crash.openLogs": "Open logs folder",
+  "crash.diagnose": "Run diagnostics",
+  "crash.uploadExplain": "Send this crash report to FPSMaster so we can fix the cause. It contains the crash report, your system type and the launcher version; tokens and passwords are removed first.",
+  "crash.uploadConsent": "Agree and send",
+  "crash.uploadDone": "Sent. Thank you!",
+  "crash.uploadFailed": "Sending failed: {error}",
+  "crash.close": "Close"
 } as const;
 
 export default enUS;

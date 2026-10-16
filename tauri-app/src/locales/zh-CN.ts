@@ -882,7 +882,20 @@ const zhCN: EnUSTranslations = {
   "diagnostics.code.NO_RECENT_CRASHES.desc": "最近 7 天没有崩溃记录。",
   "diagnostics.code.RECENT_CRASHES.title": "最近 7 天崩溃 {count} 次",
   "diagnostics.code.RECENT_CRASHES.desc": "最近一次：{latestSummary}。可以导出求助包发给客服。",
-  "secureStorage.useFileFallback": "改用文件保存密钥"
+  "secureStorage.useFileFallback": "改用文件保存密钥",
+  "crash.title": "{name} 异常退出",
+  "crash.subtitle": "退出码 {code}，运行了 {duration}。",
+  "crash.summary": "崩溃摘要",
+  "crash.noSummary": "游戏没有生成崩溃报告，可以查看游戏日志了解原因。",
+  "crash.openReport": "打开崩溃报告",
+  "crash.openHsErr": "打开 JVM 错误日志",
+  "crash.openLogs": "打开日志文件夹",
+  "crash.diagnose": "一键诊断",
+  "crash.uploadExplain": "把这份崩溃报告发送给 FPSMaster，帮助我们修复问题。内容包括崩溃报告、系统类型和启动器版本，令牌和密码会先被移除。",
+  "crash.uploadConsent": "同意并发送",
+  "crash.uploadDone": "已发送，感谢反馈！",
+  "crash.uploadFailed": "发送失败：{error}",
+  "crash.close": "关闭"
 } as const;
 
 export default zhCN;
