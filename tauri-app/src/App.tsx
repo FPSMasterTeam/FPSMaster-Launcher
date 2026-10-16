@@ -2970,11 +2970,26 @@ function Launcher() {
     }
     // Quitting mid-download used to drop it silently and leave half-written
     // version dirs behind (launcher-ui-24).
-    if (busy || installDialogRef.current !== null || hasContentTasks() || launcherUpdate.downloading) {
+    if (hasRunningWork()) {
       setCloseConfirmOpen(true);
       return;
     }
-    await getCurrentWindow().close();
+    await invoke("quit_launcher_app");
+  }
+
+  // Tray "Quit" and macOS Cmd+Q: an explicit quit, so no tray detour, but the
+  // same confirmation while something is still downloading.
+  async function requestLauncherQuit() {
+    if (hasRunningWork()) {
+      await invoke("show_main_window");
+      setCloseConfirmOpen(true);
+      return;
+    }
+    await invoke("quit_launcher_app");
+  }
+
+  function hasRunningWork() {
+    return busy || installDialogRef.current !== null || hasContentTasks() || launcherUpdate.downloading;
   }
 
   function answerAutostartPrompt(enabled: boolean) {
@@ -2999,7 +3014,7 @@ function Launcher() {
       } catch (error) {
         console.warn("[close] cancel_all_downloads failed:", error);
       }
-      await getCurrentWindow().close();
+      await invoke("quit_launcher_app");
     }
   }
 
@@ -3024,6 +3039,41 @@ function Launcher() {
   const stableUpdateMemory = useStableCallback(updateMemory);
   const stableLogout = useStableCallback(logoutLauncherAccount);
   const stableCloseWindow = useStableCallback(closeLauncherWindow);
+  const stableRequestQuit = useStableCallback(requestLauncherQuit);
+
+  // The native close (macOS traffic light, Alt+F4) and app quit (Cmd+Q, tray
+  // Quit) used to bypass closeLauncherWindow: no tray notice, no download
+  // confirmation. Route them here, then tell the backend we own the decision.
+  useEffect(() => {
+    let disposed = false;
+    const unlisteners: Array<() => void> = [];
+    // An unmount can land between awaits (StrictMode remount); drop late
+    // listeners right away so the handlers never fire twice.
+    const keep = (unlisten: () => void) => {
+      if (disposed) unlisten();
+      else unlisteners.push(unlisten);
+    };
+    const bind = async () => {
+      try {
+        keep(
+          await getCurrentWindow().onCloseRequested((event) => {
+            event.preventDefault();
+            void stableCloseWindow();
+          })
+        );
+        keep(await listen("fpsmaster://quit-requested", () => void stableRequestQuit()));
+        if (disposed) return;
+        await invoke("claim_main_window_close");
+      } catch (error) {
+        console.warn("[close] failed to bind window close handlers:", error);
+      }
+    };
+    void bind();
+    return () => {
+      disposed = true;
+      unlisteners.forEach((unlisten) => unlisten());
+    };
+  }, [stableCloseWindow, stableRequestQuit]);
   const stableOnLocaleChange = useStableCallback((locale: Locale) => {
     setSettings((prev) => ({ ...prev, language: locale }));
     setStatus(createTranslator(locale)("app.status.ready"));

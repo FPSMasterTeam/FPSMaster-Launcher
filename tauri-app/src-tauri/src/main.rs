@@ -719,6 +719,8 @@ const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 const TRAY_SHOW_ID: &str = "tray_show";
 const TRAY_HIDE_ID: &str = "tray_hide";
 const TRAY_QUIT_ID: &str = "tray_quit";
+#[cfg(target_os = "macos")]
+const APP_MENU_QUIT_ID: &str = "app_menu_quit";
 const GAME_RUNTIME_CACHE_TTL_MS: u128 = 3000;
 const GAME_RUNTIME_SAMPLE_INTERVAL_MS: u64 = 2000;
 // The monitor UI keeps at most 1000 log lines, so poll batches beyond that are wasted work.
@@ -866,8 +868,14 @@ fn main_window(app: &AppHandle) -> Result<WebviewWindow, String> {
 
 fn attach_main_window_handlers(window: &WebviewWindow, app: &AppHandle) {
     let app_handle = app.clone();
-    window.on_window_event(move |event| {
-        if let WindowEvent::CloseRequested { api, .. } = event {
+    window.on_window_event(move |event| match event {
+        WindowEvent::CloseRequested { api, .. } => {
+            // Once the frontend claimed the close it decides (tray notice,
+            // busy confirmation); Tauri already prevented the close for its
+            // JS listener, and hiding here would skip both.
+            if frontend_handles_close(&app_handle) {
+                return;
+            }
             if should_minimize_to_tray(&app_handle) {
                 api.prevent_close();
                 let _ = hide_main_window_internal(&app_handle);
@@ -875,6 +883,9 @@ fn attach_main_window_handlers(window: &WebviewWindow, app: &AppHandle) {
                 flush_launcher_telemetry_session(&app_handle);
             }
         }
+        // A recreated window gets a fresh frontend that must claim again.
+        WindowEvent::Destroyed => set_frontend_handles_close(&app_handle, false),
+        _ => {}
     });
 }
 
@@ -932,6 +943,58 @@ fn show_main_window_internal(app: &AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+fn frontend_handles_close(app: &AppHandle) -> bool {
+    app.state::<LauncherRuntimeState>()
+        .frontend_handles_close
+        .load(Ordering::Relaxed)
+}
+
+fn set_frontend_handles_close(app: &AppHandle, value: bool) {
+    app.state::<LauncherRuntimeState>()
+        .frontend_handles_close
+        .store(value, Ordering::Relaxed);
+}
+
+/// Quit requests from the tray and the macOS app menu (Cmd+Q). A live frontend
+/// asks first when downloads are running (launcher-ui-24); without one there is
+/// nothing to lose, so quit directly.
+fn request_app_quit(app: &AppHandle) {
+    if frontend_handles_close(app) {
+        if let Some(window) = app.get_webview_window("main") {
+            if window.emit("fpsmaster://quit-requested", ()).is_ok() {
+                return;
+            }
+        }
+    }
+    flush_launcher_telemetry_session(app);
+    app.exit(0);
+}
+
+/// The default macOS menu's Quit item terminates the process on the spot (tao
+/// has no applicationShouldTerminate hook), so swap it for one we can route.
+#[cfg(target_os = "macos")]
+fn route_app_menu_quit(app: &AppHandle) -> tauri::Result<()> {
+    use tauri::menu::MenuItemKind;
+    let Some(menu) = app.menu() else {
+        return Ok(());
+    };
+    let Some(MenuItemKind::Submenu(app_menu)) = menu.items()?.into_iter().next() else {
+        return Ok(());
+    };
+    if let Some(last @ MenuItemKind::Predefined(_)) = app_menu.items()?.into_iter().last() {
+        app_menu.remove(&last)?;
+    }
+    let label = format!("Quit {}", app.package_info().name);
+    let quit = MenuItem::with_id(app, APP_MENU_QUIT_ID, label, true, Some("CmdOrCtrl+Q"))?;
+    app_menu.append(&quit)?;
+    app.on_menu_event(|app, event| {
+        if event.id().as_ref() == APP_MENU_QUIT_ID {
+            request_app_quit(app);
+        }
+    });
+    Ok(())
+}
+
 fn should_minimize_to_tray(app: &AppHandle) -> bool {
     app.state::<LauncherRuntimeState>()
         .minimize_to_tray
@@ -944,6 +1007,8 @@ fn is_autostart_launch() -> bool {
 
 struct LauncherRuntimeState {
     minimize_to_tray: AtomicBool,
+    /// Set once the main window's frontend registered its close/quit handlers.
+    frontend_handles_close: AtomicBool,
     telemetry_session: Mutex<Option<LauncherTelemetrySession>>,
     /// The one live heartbeat loop. Each start creates its own handle, so a
     /// stop followed by a quick start can never revive an older thread
@@ -955,6 +1020,7 @@ impl Default for LauncherRuntimeState {
     fn default() -> Self {
         Self {
             minimize_to_tray: AtomicBool::new(true),
+            frontend_handles_close: AtomicBool::new(false),
             telemetry_session: Mutex::new(None),
             heartbeat: Mutex::new(None),
         }
@@ -1175,6 +1241,11 @@ fn hide_main_window(app: tauri::AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn claim_main_window_close(app: tauri::AppHandle) {
+    set_frontend_handles_close(&app, true);
+}
+
+#[tauri::command]
 fn configure_tray_behavior(app: tauri::AppHandle, minimize_to_tray: bool) {
     app.state::<LauncherRuntimeState>()
         .minimize_to_tray
@@ -1221,10 +1292,7 @@ fn create_tray(app: &AppHandle) -> Result<(), String> {
             TRAY_HIDE_ID => {
                 let _ = hide_main_window_internal(app);
             }
-            TRAY_QUIT_ID => {
-                flush_launcher_telemetry_session(app);
-                app.exit(0);
-            }
+            TRAY_QUIT_ID => request_app_quit(app),
             _ => {}
         })
         .on_tray_icon_event(|tray, event| {
@@ -12027,6 +12095,8 @@ fn main() {
         .setup(|app| {
             let _ = app.path().app_data_dir();
             create_tray(&app.handle())?;
+            #[cfg(target_os = "macos")]
+            route_app_menu_quit(&app.handle())?;
             let launched_from_autostart = is_autostart_launch();
             if let Some(window) = app.get_webview_window("main") {
                 attach_main_window_handlers(&window, &app.handle());
@@ -12057,6 +12127,7 @@ fn main() {
             lookup_minecraft_skin_url,
             open_external_link,
             quit_launcher_app,
+            claim_main_window_close,
             destroy_current_window,
             launcher_cache_telemetry_session,
             launcher_offline_telemetry_session,
@@ -12113,6 +12184,7 @@ fn main() {
             show_main_window,
             hide_main_window,
             quit_launcher_app,
+            claim_main_window_close,
             configure_tray_behavior,
             set_launch_on_startup,
             terminate_game_process,
