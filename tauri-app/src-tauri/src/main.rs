@@ -833,12 +833,23 @@ fn sample_game_runtime_cache() {
 }
 
 pub(crate) fn push_ui_log(source: &str, level: &str, message: &str) {
+    // Game output and error texts can echo credentials (a JVM printing its
+    // arguments, an HTTP error with headers). The cheap substring prefilter
+    // keeps the regex pass off the per-line hot path for normal output.
+    let message = if ["eyJ", "oken", "OKEN", "assw", "ASSW", "ookie", "uthorization", "ecret"]
+        .iter()
+        .any(|needle| message.contains(needle))
+    {
+        diagnostics::redact_secrets(message)
+    } else {
+        message.to_string()
+    };
     if let Ok(mut store) = ui_log_store().lock() {
         let entry = UiLogEntry {
             seq: store.next_seq,
             source: source.to_string(),
             level: level.to_string(),
-            message: message.to_string(),
+            message,
         };
         store.next_seq = store.next_seq.saturating_add(1);
         store.entries.push_back(entry);
