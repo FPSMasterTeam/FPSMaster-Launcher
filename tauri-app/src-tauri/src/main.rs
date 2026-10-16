@@ -2115,6 +2115,7 @@ fn ensure_jdk_blocking(
         major,
         download_threads,
         needs_x64,
+        false,
     )?;
 
     emit_log(
@@ -8027,9 +8028,10 @@ fn parse_managed_runtime_name(name: &str) -> Option<(i32, bool)> {
     major.parse::<i32>().ok().filter(|major| *major > 0).map(|major| (major, x64))
 }
 
-/// Health-check repair for a managed runtime: drops its completion marker so
-/// `ensure_managed_jdk_runtime` re-verifies every file against the manifest
-/// and downloads only what is missing or corrupt.
+/// Health-check repair for a managed runtime: `ensure_managed_jdk_runtime`
+/// re-verifies every file against the remote source and downloads only what
+/// is missing or corrupt. The installed runtime is not touched until the
+/// remote metadata was fetched, so repairing while offline changes nothing.
 #[tauri::command]
 async fn repair_java_runtime(
     window: tauri::Window,
@@ -8042,11 +8044,6 @@ async fn repair_java_runtime(
             .ok_or_else(|| format!("Not a managed Java runtime: {runtime_name}"))?;
         let game_dir_path = resolve_game_dir_path(&game_dir)?;
         let root = managed_jdk_runtime_root(&game_dir_path, major, x64);
-        let marker = root.join(RUNTIME_MARKER_FILE);
-        if marker.exists() {
-            fs::remove_file(&marker)
-                .map_err(|e| format!("Failed to reset runtime marker {}: {e}", marker.display()))?;
-        }
         let cancel = downloader::CancelToken::new(ipc_session.as_deref());
         let result = ensure_managed_jdk_runtime(
             Some(&window),
@@ -8055,6 +8052,7 @@ async fn repair_java_runtime(
             major,
             Some(DEFAULT_DOWNLOAD_THREADS),
             x64,
+            true,
         );
         clear_install_cancel(ipc_session.as_deref());
         result.map(|java_path| JdkEnsureResult {
@@ -8156,8 +8154,10 @@ fn runtime_relative_path(root: &Path, relative: &str) -> PathBuf {
 /// Checks a managed runtime against its completion marker. `deep` also
 /// re-hashes files whose SHA1 is known (used by the health check).
 fn verify_runtime_install(runtime_root: &Path, deep: bool) -> Result<PathBuf, String> {
-    let marker = read_runtime_marker(runtime_root)
-        .ok_or_else(|| "installation was not completed (no completion marker)".to_string())?;
+    let marker = match read_runtime_marker(runtime_root) {
+        Some(marker) => marker,
+        None => adopt_legacy_runtime(runtime_root)?,
+    };
     for file in &marker.files {
         let path = runtime_relative_path(runtime_root, &file.path);
         let size = fs::metadata(&path)
@@ -8179,6 +8179,84 @@ fn verify_runtime_install(runtime_root: &Path, deep: bool) -> Result<PathBuf, St
         }
     }
     locate_java_binary(runtime_root).ok_or_else(|| "java executable not found".to_string())
+}
+
+const RUNTIME_NOT_COMPLETED: &str = "installation was not completed (no completion marker)";
+
+/// Runtimes installed before completion markers existed have none, yet are
+/// usually complete: without adoption every upgraded user would see them as
+/// broken and the next launch would move them aside and need the network.
+/// A marker is generated from the current files only when the tree looks
+/// like a finished JRE; anything that hints at an interrupted install (a
+/// staging sibling, download temp files, no class library or JVM library)
+/// stays "not completed" and goes through the repair path.
+fn adopt_legacy_runtime(runtime_root: &Path) -> Result<RuntimeInstallMarker, String> {
+    if runtime_root.join(RUNTIME_MARKER_FILE).exists() {
+        return Err("completion marker is unreadable".to_string());
+    }
+    if !runtime_root.is_dir() || runtime_staging_dir(runtime_root).exists() {
+        return Err(RUNTIME_NOT_COMPLETED.to_string());
+    }
+    let java = locate_java_binary(runtime_root).ok_or_else(|| RUNTIME_NOT_COMPLETED.to_string())?;
+    let home = java
+        .parent()
+        .and_then(Path::parent)
+        .ok_or_else(|| RUNTIME_NOT_COMPLETED.to_string())?;
+    let has_class_library = ["lib/modules", "lib/rt.jar", "jre/lib/rt.jar"]
+        .iter()
+        .any(|relative| runtime_relative_path(home, relative).is_file());
+    let files = collect_runtime_file_records(runtime_root)?;
+    let file_name = |record: &RuntimeFileRecord| {
+        record.path.rsplit('/').next().unwrap_or_default().to_ascii_lowercase()
+    };
+    let has_jvm_library = files.iter().any(|record| {
+        matches!(
+            file_name(record).as_str(),
+            "libjvm.so" | "libjvm.dylib" | "jvm.dll"
+        )
+    });
+    // Temp names used by the current and the pre-marker downloaders.
+    let has_download_leftovers = files.iter().any(|record| {
+        let name = file_name(record);
+        [".download", ".part", ".tmp", ".unpacking", ".lzma"]
+            .iter()
+            .any(|suffix| name.ends_with(suffix))
+    });
+    if !has_class_library || !has_jvm_library || has_download_leftovers {
+        return Err(RUNTIME_NOT_COMPLETED.to_string());
+    }
+    let major = runtime_root
+        .file_name()
+        .and_then(|name| parse_managed_runtime_name(&name.to_string_lossy()))
+        .map(|(major, _)| major)
+        .unwrap_or(0);
+    let marker = RuntimeInstallMarker {
+        source: "adopted".to_string(),
+        version: "unknown".to_string(),
+        platform: format!("{}-{}", env::consts::OS, env::consts::ARCH),
+        major,
+        installed_at: now_epoch_seconds(),
+        files,
+    };
+    let encoded = serde_json::to_vec_pretty(&marker)
+        .map_err(|e| format!("Failed to encode runtime marker: {e}"))?;
+    match fs::write(runtime_root.join(RUNTIME_MARKER_FILE), encoded) {
+        Ok(()) => emit_log(
+            None,
+            "info",
+            &format!("Adopted existing runtime {}", runtime_root.display()),
+        ),
+        // The runtime is still usable; the next check simply adopts it again.
+        Err(e) => emit_log(
+            None,
+            "warn",
+            &format!(
+                "Failed to write adopted runtime marker {}: {e}",
+                runtime_root.display()
+            ),
+        ),
+    }
+    Ok(marker)
 }
 
 /// Records every regular file below `root` (used for archive-based installs
@@ -8219,6 +8297,71 @@ fn collect_runtime_file_records(root: &Path) -> Result<Vec<RuntimeFileRecord>, S
     Ok(records)
 }
 
+/// Install target for a managed runtime. The installed runtime is moved aside
+/// only when an installer calls `prepare`, i.e. after its remote metadata was
+/// fetched: an offline launch or repair then fails without touching a runtime
+/// that still works.
+struct RuntimeStaging<'a> {
+    runtime_root: &'a Path,
+    path: PathBuf,
+    discard_existing: bool,
+    prepared: std::cell::Cell<bool>,
+}
+
+impl<'a> RuntimeStaging<'a> {
+    fn new(runtime_root: &'a Path, discard_existing: bool) -> Self {
+        Self {
+            runtime_root,
+            path: runtime_staging_dir(runtime_root),
+            discard_existing,
+            prepared: std::cell::Cell::new(false),
+        }
+    }
+
+    /// Where download temp files that must survive a reset (archives) go.
+    fn download_parent(&self) -> &Path {
+        self.path.parent().unwrap_or(&self.path)
+    }
+
+    fn is_prepared(&self) -> bool {
+        self.prepared.get()
+    }
+
+    /// An unfinished runtime directory is moved into staging rather than
+    /// deleted: the per-file SHA1 skip in the Mojang path then only
+    /// re-downloads what is actually missing or corrupt.
+    fn prepare(&self) -> Result<&Path, String> {
+        if self.prepared.get() {
+            return Ok(&self.path);
+        }
+        let runtime_root = self.runtime_root;
+        if runtime_root.exists() {
+            if self.discard_existing || self.path.exists() {
+                fs::remove_dir_all(runtime_root).map_err(|e| {
+                    format!(
+                        "Failed removing outdated runtime {}: {e}",
+                        runtime_root.display()
+                    )
+                })?;
+            } else {
+                fs::rename(runtime_root, &self.path).map_err(|e| {
+                    format!(
+                        "Failed to move runtime {} aside: {e}",
+                        runtime_root.display()
+                    )
+                })?;
+            }
+        }
+        let _ = fs::remove_file(self.path.join(RUNTIME_MARKER_FILE));
+        fs::create_dir_all(&self.path)
+            .map_err(|e| format!("Failed creating runtime dir {}: {e}", self.path.display()))?;
+        self.prepared.set(true);
+        Ok(&self.path)
+    }
+}
+
+/// `reinstall` (health-check repair) skips the "already installed" shortcut
+/// and re-verifies the runtime against the remote source.
 fn ensure_managed_jdk_runtime(
     window: Option<&tauri::Window>,
     cancel: &downloader::CancelToken,
@@ -8226,70 +8369,59 @@ fn ensure_managed_jdk_runtime(
     major: i32,
     download_threads: Option<i32>,
     force_x64: bool,
+    reinstall: bool,
 ) -> Result<PathBuf, String> {
     if force_x64 {
         ensure_x64_emulation_available()?;
     }
 
     let mut discard_existing = false;
-    match verify_runtime_install(runtime_root, false) {
-        Ok(java_path)
-            if prefers_zulu_over_mojang_x64(major, force_x64)
-                && is_mojang_bundle_layout(&java_path) =>
-        {
-            // A Mojang jre-legacy install from before the Zulu switch — it crashes on
-            // modern macOS (see below), so wipe it and reinstall instead of reusing it.
-            emit_log(
+    let mut existing_legacy_java = None;
+    if reinstall {
+        emit_log(
+            window,
+            "info",
+            &format!("Repairing managed JDK major={major}"),
+        );
+    } else {
+        match verify_runtime_install(runtime_root, false) {
+            Ok(java_path)
+                if prefers_zulu_over_mojang_x64(major, force_x64)
+                    && is_mojang_bundle_layout(&java_path) =>
+            {
+                // A Mojang jre-legacy install from before the Zulu switch — it crashes on
+                // modern macOS (see below), so replace it instead of reusing it.
+                emit_log(
+                    window,
+                    "warn",
+                    "Replacing Mojang jre-legacy x64 runtime: its AWT crashes on macOS 14.4+",
+                );
+                discard_existing = true;
+                existing_legacy_java = Some(java_path);
+            }
+            Ok(java_path) => {
+                emit_log(
+                    window,
+                    "info",
+                    &format!(
+                        "Managed JDK already exists major={major} path={}",
+                        java_path.to_string_lossy()
+                    ),
+                );
+                return Ok(java_path);
+            }
+            Err(reason) if runtime_root.exists() => emit_log(
                 window,
                 "warn",
-                "Replacing Mojang jre-legacy x64 runtime: its AWT crashes on macOS 14.4+",
-            );
-            discard_existing = true;
+                &format!("Managed JDK major={major} is incomplete ({reason}); repairing it"),
+            ),
+            Err(_) => {}
         }
-        Ok(java_path) => {
-            emit_log(
-                window,
-                "info",
-                &format!(
-                    "Managed JDK already exists major={major} path={}",
-                    java_path.to_string_lossy()
-                ),
-            );
-            return Ok(java_path);
-        }
-        Err(reason) if runtime_root.exists() => emit_log(
-            window,
-            "warn",
-            &format!("Managed JDK major={major} is incomplete ({reason}); repairing it"),
-        ),
-        Err(_) => {}
     }
 
     // Install into a sibling staging directory and only promote it once the
-    // completion marker is written. An unfinished runtime directory is moved
-    // into staging rather than deleted: the per-file SHA1 skip in the Mojang
-    // path then only re-downloads what is actually missing or corrupt.
-    let staging = runtime_staging_dir(runtime_root);
-    if runtime_root.exists() {
-        if discard_existing || staging.exists() {
-            fs::remove_dir_all(runtime_root).map_err(|e| {
-                format!(
-                    "Failed removing outdated runtime {}: {e}",
-                    runtime_root.display()
-                )
-            })?;
-        } else {
-            fs::rename(runtime_root, &staging).map_err(|e| {
-                format!(
-                    "Failed to move incomplete runtime {} aside: {e}",
-                    runtime_root.display()
-                )
-            })?;
-        }
-    }
-    let _ = fs::remove_file(staging.join(RUNTIME_MARKER_FILE));
-    fs::create_dir_all(&staging)
-        .map_err(|e| format!("Failed creating runtime dir {}: {e}", staging.display()))?;
+    // completion marker is written.
+    let staging = RuntimeStaging::new(runtime_root, discard_existing);
 
     let normalized_download_threads = normalize_download_threads(download_threads);
     let component = mojang_java_component_for_major(major);
@@ -8329,6 +8461,26 @@ fn ensure_managed_jdk_runtime(
                 Ok(marker) => installed = Some(marker),
                 Err(zulu_err) => {
                     cancel.check()?;
+                    if !staging.is_prepared() {
+                        // Falling back would only swap the runtime on disk for
+                        // jre-legacy, which is either what is already there or
+                        // the build this path exists to avoid.
+                        if let Some(java) = existing_legacy_java {
+                            emit_log(
+                                window,
+                                "warn",
+                                &format!(
+                                    "Zulu x64 JRE unavailable ({zulu_err}); keeping the existing Mojang runtime"
+                                ),
+                            );
+                            return Ok(java);
+                        }
+                        if reinstall {
+                            return Err(format!(
+                                "Zulu x64 JRE unavailable ({zulu_err}); the installed runtime was left unchanged"
+                            ));
+                        }
+                    }
                     emit_log(
                         window,
                         "warn",
@@ -8384,6 +8536,13 @@ fn ensure_managed_jdk_runtime(
                     Ok(marker) => marker,
                     Err(native_err) => {
                         cancel.check()?;
+                        if reinstall && !staging.is_prepared() {
+                            // A repair must not trade the installed native JRE
+                            // for an emulated one just because Azul is down.
+                            return Err(format!(
+                                "Native JRE unavailable ({native_err}); the installed runtime was left unchanged"
+                            ));
+                        }
                         // 3) Last resort: Mojang's x64 build via emulation.
                         emit_log(
                             window,
@@ -8408,12 +8567,13 @@ fn ensure_managed_jdk_runtime(
         }
     };
 
-    if locate_java_binary(&staging).is_none() {
+    let staging_dir = staging.prepare()?;
+    if locate_java_binary(staging_dir).is_none() {
         return Err("JDK extracted but java executable not found".to_string());
     }
     let marker_bytes = serde_json::to_vec_pretty(&marker)
         .map_err(|e| format!("Failed to encode runtime marker: {e}"))?;
-    fs::write(staging.join(RUNTIME_MARKER_FILE), marker_bytes)
+    fs::write(staging_dir.join(RUNTIME_MARKER_FILE), marker_bytes)
         .map_err(|e| format!("Failed to write runtime marker: {e}"))?;
     if runtime_root.exists() {
         fs::remove_dir_all(runtime_root).map_err(|e| {
@@ -8423,7 +8583,7 @@ fn ensure_managed_jdk_runtime(
             )
         })?;
     }
-    fs::rename(&staging, runtime_root).map_err(|e| {
+    fs::rename(staging_dir, runtime_root).map_err(|e| {
         format!(
             "Failed to activate runtime {}: {e}",
             runtime_root.display()
@@ -8816,6 +8976,7 @@ async fn install_optifine(
                     java_major,
                     Some(DEFAULT_DOWNLOAD_THREADS),
                     false,
+                    false,
                 )?)
             } else {
                 None
@@ -8879,6 +9040,7 @@ async fn install_forge(
                     &managed_jdk_runtime_root(&game_dir_path, java_major, false),
                     java_major,
                     Some(normalized_download_threads as i32),
+                    false,
                     false,
                 )?
                 .to_string_lossy()
@@ -9127,7 +9289,7 @@ fn mojang_java_platform_keys() -> Vec<&'static str> {
 fn install_mojang_java_runtime(
     window: Option<&tauri::Window>,
     cancel: &downloader::CancelToken,
-    runtime_root: &Path,
+    staging: &RuntimeStaging,
     component: &str,
     major: i32,
     download_threads: usize,
@@ -9168,7 +9330,9 @@ fn install_mojang_java_runtime(
 
     let manifest: MojangJavaManifest =
         fetch_json(window, "Mojang Java manifest", &candidate.manifest.url)?;
+    let runtime_root = staging.prepare()?;
     download_mojang_runtime_files(window, cancel, runtime_root, &manifest, download_threads)?;
+    prune_runtime_files_outside_manifest(runtime_root, &manifest)?;
     let mut files = manifest
         .files
         .iter()
@@ -9228,12 +9392,12 @@ fn azul_arch() -> Option<&'static str> {
 fn install_native_jre_archive(
     window: Option<&tauri::Window>,
     cancel: &downloader::CancelToken,
-    runtime_root: &Path,
+    staging: &RuntimeStaging,
     major: i32,
     download_threads: usize,
 ) -> Result<RuntimeInstallMarker, String> {
     let arch = azul_arch().ok_or_else(|| "Unsupported CPU arch for native JRE".to_string())?;
-    install_zulu_jre_archive(window, cancel, runtime_root, major, download_threads, arch)
+    install_zulu_jre_archive(window, cancel, staging, major, download_threads, arch)
 }
 
 /// Downloads and extracts a Zulu JRE for an explicit CPU arch into `runtime_root`.
@@ -9242,7 +9406,7 @@ fn install_native_jre_archive(
 fn install_zulu_jre_archive(
     window: Option<&tauri::Window>,
     cancel: &downloader::CancelToken,
-    runtime_root: &Path,
+    staging: &RuntimeStaging,
     major: i32,
     download_threads: usize,
     arch: &str,
@@ -9267,9 +9431,8 @@ fn install_zulu_jre_archive(
     );
     // Kept outside the staging directory under a stable name so an interrupted
     // download resumes instead of starting over.
-    let archive_path = runtime_root
-        .parent()
-        .unwrap_or(runtime_root)
+    let archive_path = staging
+        .download_parent()
         .join(".downloads")
         .join(format!("{}.{archive_type}", sanitize_file_name(&package.name)));
     let progress = |downloaded: u64, total: Option<u64>| match total.filter(|value| *value > 0) {
@@ -9296,6 +9459,7 @@ fn install_zulu_jre_archive(
     .map_err(|e| format!("Native JRE download failed: {e}"))?;
 
     // An archive install replaces whatever a previous attempt left in staging.
+    let runtime_root = staging.prepare()?;
     let _ = fs::remove_dir_all(runtime_root);
     fs::create_dir_all(runtime_root)
         .map_err(|e| format!("Failed creating runtime dir {}: {e}", runtime_root.display()))?;
@@ -9548,6 +9712,48 @@ fn download_mojang_runtime_files(
                     done.saturating_sub(downloaded.load(Ordering::Relaxed))
                 ),
             );
+        }
+    }
+    Ok(())
+}
+
+/// Staging may hold a tree from another source (a Zulu archive moved aside
+/// when Azul became unreachable). Files the manifest does not list are
+/// removed so a stray `java` cannot be picked by `locate_java_binary`.
+fn prune_runtime_files_outside_manifest(
+    runtime_root: &Path,
+    manifest: &MojangJavaManifest,
+) -> Result<(), String> {
+    let keep = manifest
+        .files
+        .iter()
+        .filter(|(_, entry)| entry.entry_type != "directory")
+        .map(|(path, _)| path.replace('\\', "/"))
+        .collect::<HashSet<_>>();
+    let mut stack = vec![runtime_root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let entries =
+            fs::read_dir(&dir).map_err(|e| format!("Failed to scan {}: {e}", dir.display()))?;
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let Ok(meta) = fs::symlink_metadata(&path) else {
+                continue;
+            };
+            if meta.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            let relative = path
+                .strip_prefix(runtime_root)
+                .map_err(|e| e.to_string())?
+                .components()
+                .map(|component| component.as_os_str().to_string_lossy().to_string())
+                .collect::<Vec<_>>()
+                .join("/");
+            if relative != RUNTIME_MARKER_FILE && !keep.contains(&relative) {
+                fs::remove_file(&path)
+                    .map_err(|e| format!("Failed to remove stray runtime file {}: {e}", path.display()))?;
+            }
         }
     }
     Ok(())
@@ -10548,6 +10754,84 @@ mod tests {
             super::runtime_staging_dir(&root),
             temp.path().join(".jdk-17.staging")
         );
+    }
+
+    fn write_legacy_runtime(root: &std::path::Path) {
+        let java = if cfg!(windows) { "java.exe" } else { "java" };
+        fs::create_dir_all(root.join("bin")).unwrap();
+        fs::write(root.join("bin").join(java), b"binary").unwrap();
+        fs::create_dir_all(root.join("lib").join("server")).unwrap();
+        fs::write(root.join("lib").join("modules"), b"0123456789").unwrap();
+        fs::write(root.join("lib").join("server").join("libjvm.so"), b"jvm").unwrap();
+    }
+
+    #[test]
+    fn complete_runtime_from_before_markers_is_adopted() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("jdk-17");
+        write_legacy_runtime(&root);
+        assert!(super::verify_runtime_install(&root, true).is_ok());
+        let marker = super::read_runtime_marker(&root).expect("adoption writes a marker");
+        assert_eq!(marker.source, "adopted");
+        assert_eq!(marker.major, 17);
+        // Later checks use the generated marker like any other.
+        fs::write(root.join("lib").join("modules"), b"0123").unwrap();
+        assert!(super::verify_runtime_install(&root, false).is_err());
+    }
+
+    #[test]
+    fn interrupted_runtime_is_not_adopted() {
+        let temp = tempfile::tempdir().unwrap();
+
+        let leftover = temp.path().join("jdk-8");
+        write_legacy_runtime(&leftover);
+        fs::write(leftover.join("lib").join("rt.download"), b"partial").unwrap();
+        assert!(super::verify_runtime_install(&leftover, false).is_err());
+
+        let no_jvm = temp.path().join("jdk-16");
+        write_legacy_runtime(&no_jvm);
+        fs::remove_file(no_jvm.join("lib").join("server").join("libjvm.so")).unwrap();
+        assert!(super::verify_runtime_install(&no_jvm, false).is_err());
+
+        let staged = temp.path().join("jdk-21");
+        write_legacy_runtime(&staged);
+        fs::create_dir_all(super::runtime_staging_dir(&staged)).unwrap();
+        assert!(super::verify_runtime_install(&staged, false).is_err());
+
+        for root in [&leftover, &no_jvm, &staged] {
+            assert!(!root.join(super::RUNTIME_MARKER_FILE).exists());
+        }
+    }
+
+    #[test]
+    fn runtime_staging_leaves_installed_runtime_until_prepared() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("jdk-17");
+        write_legacy_runtime(&root);
+        let staging = super::RuntimeStaging::new(&root, false);
+        // Nothing moves before an installer has its remote metadata.
+        assert!(!staging.is_prepared());
+        assert!(root.join("lib").join("modules").is_file());
+        let path = staging.prepare().unwrap().to_path_buf();
+        assert!(!root.exists());
+        assert!(path.join("lib").join("modules").is_file());
+    }
+
+    #[test]
+    fn mojang_install_prunes_files_from_another_source() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("staging");
+        fs::create_dir_all(root.join("zulu-8.jre").join("bin")).unwrap();
+        fs::write(root.join("zulu-8.jre").join("bin").join("java"), b"zulu").unwrap();
+        fs::create_dir_all(root.join("bin")).unwrap();
+        fs::write(root.join("bin").join("java"), b"mojang").unwrap();
+        let manifest: super::MojangJavaManifest = serde_json::from_str(
+            r#"{"files":{"bin":{"type":"directory"},"bin/java":{"type":"file","downloads":{}}}}"#,
+        )
+        .unwrap();
+        super::prune_runtime_files_outside_manifest(&root, &manifest).unwrap();
+        assert!(root.join("bin").join("java").is_file());
+        assert!(!root.join("zulu-8.jre").join("bin").join("java").exists());
     }
 
     #[test]
