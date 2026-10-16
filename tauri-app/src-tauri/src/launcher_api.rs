@@ -879,12 +879,14 @@ fn parse_launcher_login_response(
         });
     }
 
-    let value: serde_json::Value =
-        serde_json::from_str(body).map_err(|e| format!("Invalid login response JSON: {e}"))?;
-
+    // Status first: a non-JSON error page (proxy 502, framework 404) must still
+    // come back tagged so the frontend words it by status (contract §1).
     if !status.is_success() {
         return Err(api_failure(status, body, "login"));
     }
+
+    let value: serde_json::Value =
+        serde_json::from_str(body).map_err(|e| format!("Invalid login response JSON: {e}"))?;
 
     let container = login_payload_container(&value);
     let token = extract_login_token(container)
@@ -963,12 +965,12 @@ fn parse_launcher_news_response(
         return Ok(items);
     }
 
-    let value: serde_json::Value = serde_json::from_str(body)
-        .map_err(|e| format!("Invalid launcher news response JSON: {e}"))?;
-
     if !status.is_success() {
         return Err(api_failure(status, body, "launcher news"));
     }
+
+    let value: serde_json::Value = serde_json::from_str(body)
+        .map_err(|e| format!("Invalid launcher news response JSON: {e}"))?;
 
     extract_launcher_news(&value).ok_or_else(|| "launcher news response missing data".to_string())
 }
@@ -981,12 +983,12 @@ fn parse_launcher_dashboard_response(
         return Ok(item);
     }
 
-    let value: serde_json::Value = serde_json::from_str(body)
-        .map_err(|e| format!("Invalid launcher dashboard response JSON: {e}"))?;
-
     if !status.is_success() {
         return Err(api_failure(status, body, "launcher dashboard"));
     }
+
+    let value: serde_json::Value = serde_json::from_str(body)
+        .map_err(|e| format!("Invalid launcher dashboard response JSON: {e}"))?;
 
     serde_json::from_value::<LauncherDashboard>(value)
         .map_err(|e| format!("launcher dashboard response missing data: {e}"))
@@ -1000,12 +1002,12 @@ fn parse_launcher_home_response(
         return Ok(item);
     }
 
-    let value: serde_json::Value = serde_json::from_str(body)
-        .map_err(|e| format!("Invalid launcher home response JSON: {e}"))?;
-
     if !status.is_success() {
         return Err(api_failure(status, body, "launcher home"));
     }
+
+    let value: serde_json::Value = serde_json::from_str(body)
+        .map_err(|e| format!("Invalid launcher home response JSON: {e}"))?;
 
     serde_json::from_value::<LauncherHomePayload>(value)
         .map_err(|e| format!("launcher home response missing data: {e}"))
@@ -1021,12 +1023,12 @@ fn parse_launcher_app_update_response(
         return Ok(item);
     }
 
-    let value: serde_json::Value = serde_json::from_str(body)
-        .map_err(|e| format!("Invalid launcher app update response JSON: {e}"))?;
-
     if !status.is_success() {
         return Err(api_failure(status, body, "launcher app update"));
     }
+
+    let value: serde_json::Value = serde_json::from_str(body)
+        .map_err(|e| format!("Invalid launcher app update response JSON: {e}"))?;
 
     serde_json::from_value::<LauncherAppUpdateInfo>(value)
         .map_err(|e| format!("launcher app update response missing data: {e}"))
@@ -1231,7 +1233,10 @@ fn find_error_message_in_value(value: &serde_json::Value) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{api_failure, parse_launcher_versions_response, API_ERROR_PREFIX};
+    use super::{
+        api_failure, parse_launcher_app_update_response, parse_launcher_login_response,
+        parse_launcher_versions_response, API_ERROR_PREFIX,
+    };
 
     fn decode(error: &str) -> serde_json::Value {
         let json = error
@@ -1267,5 +1272,27 @@ mod tests {
         let value = decode(&error);
         assert_eq!(value["status"], 404);
         assert!(value["code"].is_null());
+    }
+
+    #[test]
+    fn login_proxy_html_error_keeps_the_status() {
+        let error = parse_launcher_login_response(
+            reqwest::StatusCode::BAD_GATEWAY,
+            "<html><body><h1>502 Bad Gateway</h1></body></html>",
+        )
+        .unwrap_err();
+        let value = decode(&error);
+        assert_eq!(value["status"], 502);
+        assert!(value["message"].is_null());
+    }
+
+    #[test]
+    fn app_update_plain_text_404_keeps_the_status() {
+        let error = parse_launcher_app_update_response(
+            reqwest::StatusCode::NOT_FOUND,
+            "Unable to find matching target resource method",
+        )
+        .unwrap_err();
+        assert_eq!(decode(&error)["status"], 404);
     }
 }
