@@ -5,6 +5,7 @@ import { memo, startTransition, useCallback, useEffect, useLayoutEffect, useRef,
 import Card from "../components/Card";
 import TitleBar from "../components/TitleBar";
 import { useI18n } from "../i18n";
+import { describeApiError } from "../lib/launcherError";
 import type { GameRuntimeStats, UiLogPollResult } from "../types";
 import { formatDuration, nowMs, parseIntSafe, prefix } from "../utils/launcher";
 
@@ -146,7 +147,7 @@ function MonitorPage({ params }: MonitorPageProps) {
         }
       } catch (error) {
         if (!active) return;
-        setStatus(t("monitor.runtimePollingFailed", { error: String(error) }));
+        setStatus(t("monitor.runtimePollingFailed", { error: describeApiError(error, t) }));
       } finally {
         runtimePollingRef.current = false;
       }
@@ -214,7 +215,7 @@ function MonitorPage({ params }: MonitorPageProps) {
       setStatus(terminated ? t("monitor.stopSent") : t("monitor.processExited"));
       return terminated;
     } catch (error) {
-      setStatus(t("monitor.stopFailed", { error: String(error) }));
+      setStatus(t("monitor.stopFailed", { error: describeApiError(error, t) }));
       return false;
     } finally {
       setStopping(false);

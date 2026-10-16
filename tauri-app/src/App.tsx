@@ -27,6 +27,7 @@ import {
   I18nProvider,
   resolveLocale
 } from "./i18n";
+import { syncApiLanguage } from "./lib/apiLanguage";
 import {
   mapLaunchPreparePhaseKey,
   mergePhaseByteProgress,
@@ -270,6 +271,7 @@ function Launcher() {
     user: launcherAuth?.user ?? null,
     playerName: settings.playerName,
     backgroundMode,
+    language: settings.language,
     t,
     onAuthExpired: handleAuthExpired
   });
@@ -488,6 +490,10 @@ function Launcher() {
     }
     void launcherData.refreshHome(true);
   }, [backgroundMode, launcherAuth?.token]);
+
+  useEffect(() => {
+    void syncApiLanguage(settings.language);
+  }, [settings.language]);
 
   useEffect(() => {
     applyTheme(settings.themeMode, settings.themeAccent, settings.customAccentHex);
@@ -1152,7 +1158,7 @@ function Launcher() {
       setStatus(
         t("app.status.gameStartedMonitorFailed", {
           pid,
-          error: String(error)
+          error: describeApiError(error, t)
         })
       );
     }
@@ -2370,7 +2376,7 @@ function Launcher() {
       });
       setInstallDialog(null);
     } catch (error) {
-      const errorText = String(error);
+      const errorText = describeApiError(error, t);
       setStatus(t("app.status.installFailed", { error: errorText }));
       setInstallDialog((prev) => {
         if (!prev || prev.sessionId !== sessionId) return prev;

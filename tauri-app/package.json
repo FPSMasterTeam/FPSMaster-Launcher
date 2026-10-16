@@ -21,6 +21,7 @@
     "pretauri": "npm run version:sync",
     "tauri": "tauri",
     "lint": "eslint .",
+    "test": "node --test \"src/**/*.test.ts\"",
     "format": "prettier --write \"src/**/*.{ts,tsx,css}\""
   },
   "dependencies": {

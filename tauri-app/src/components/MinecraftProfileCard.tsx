@@ -86,14 +86,14 @@ function MinecraftProfileCard({
         if (!disposed) {
           setAuthConfig({
             configured: false,
-            configurationHint: String(error)
+            configurationHint: describeApiError(error, t)
           });
         }
       });
     return () => {
       disposed = true;
     };
-  }, [dialogVisible]);
+  }, [dialogVisible, t]);
 
   const displayAccount = currentAccount ?? accounts[0] ?? null;
   const profileTitle = displayAccount?.username?.trim() || t("minecraftAccount.emptyTitle");

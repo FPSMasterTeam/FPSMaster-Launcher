@@ -37,6 +37,7 @@ import LiquidGlass from "../components/LiquidGlass";
 import Select from "../components/Select";
 import { VISUAL_PROFILE_PRESETS, resolveVisualProfile } from "../constants";
 import { LOCALE_OPTIONS, useI18n } from "../i18n";
+import { describeApiError } from "../lib/launcherError";
 import type {
   BackgroundSource,
   BlurMode,
@@ -171,7 +172,7 @@ function SettingsPage({
         }
       }
     } catch (error) {
-      setGameDirError(t("settings.gameDirPickerFailed", { error: String(error) }));
+      setGameDirError(t("settings.gameDirPickerFailed", { error: describeApiError(error, t) }));
     }
   }
 
@@ -238,7 +239,7 @@ function SettingsPage({
       if (backgroundAccentRequestRef.current !== requestId) {
         return;
       }
-      setAccentError(t("settings.backgroundAccentFailed", { error: String(error) }));
+      setAccentError(t("settings.backgroundAccentFailed", { error: describeApiError(error, t) }));
     } finally {
       if (backgroundAccentRequestRef.current === requestId) {
         setBackgroundAccentLoading(false);
@@ -354,7 +355,7 @@ function SettingsPage({
           backgroundSource: "system",
           backgroundImage: ""
         });
-        setBackgroundError(t("settings.backgroundSystemLoadFailed", { error: String(error) }));
+        setBackgroundError(t("settings.backgroundSystemLoadFailed", { error: describeApiError(error, t) }));
       }
       return;
     }

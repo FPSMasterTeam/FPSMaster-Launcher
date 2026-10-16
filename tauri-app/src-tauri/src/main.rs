@@ -4525,10 +4525,47 @@ pub(crate) fn build_blocking_http_client() -> Result<reqwest::blocking::Client, 
         .map_err(|e| e.to_string())
 }
 
+/// UI language the backend localizes `message` into (Accept-Language). Set by
+/// the frontend via `set_ui_language`; English until then, which is also what
+/// the backend falls back to without the header.
+fn ui_language() -> &'static std::sync::RwLock<String> {
+    static LANGUAGE: OnceLock<std::sync::RwLock<String>> = OnceLock::new();
+    LANGUAGE.get_or_init(|| std::sync::RwLock::new("en".to_string()))
+}
+
+/// Maps the launcher locale ("zh-CN" / "en-US") onto the Accept-Language value
+/// the backend expects ("zh-CN" / "en").
+fn accept_language_for(locale: &str) -> &'static str {
+    if locale.trim().to_ascii_lowercase().starts_with("zh") {
+        "zh-CN"
+    } else {
+        "en"
+    }
+}
+
+#[tauri::command]
+fn set_ui_language(language: String) {
+    let value = accept_language_for(&language).to_string();
+    match ui_language().write() {
+        Ok(mut guard) => *guard = value,
+        Err(poisoned) => *poisoned.into_inner() = value,
+    }
+}
+
 /// 面向 api.fpsmaster.top 的短超时客户端。API 调用必须快速失败。
+/// Every request carries the UI language so the backend's `message` matches it.
 pub(crate) fn build_api_http_client() -> Result<reqwest::blocking::Client, String> {
+    let language = ui_language()
+        .read()
+        .map(|guard| guard.clone())
+        .unwrap_or_else(|poisoned| poisoned.into_inner().clone());
+    let mut headers = reqwest::header::HeaderMap::new();
+    if let Ok(value) = reqwest::header::HeaderValue::from_str(&language) {
+        headers.insert(reqwest::header::ACCEPT_LANGUAGE, value);
+    }
     reqwest::blocking::Client::builder()
         .user_agent(LAUNCHER_HTTP_USER_AGENT)
+        .default_headers(headers)
         .connect_timeout(std::time::Duration::from_secs(10))
         .timeout(std::time::Duration::from_secs(20))
         .redirect(reqwest::redirect::Policy::limited(10))
@@ -11891,6 +11928,7 @@ fn main() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            set_ui_language,
             ensure_jdk,
             launcher_login,
             launcher_list_available_versions,

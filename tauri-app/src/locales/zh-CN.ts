@@ -765,7 +765,20 @@ const zhCN: EnUSTranslations = {
   "install.phase.optiFineCompleted": "OptiFine 安装完成",
   "install.phase.installingFabric": "正在安装 Fabric {version}",
   "install.phase.installingForge": "正在安装 Forge {version}",
-  "install.phase.installingOptiFine": "正在安装 OptiFine {version}"
+  "install.phase.installingOptiFine": "正在安装 OptiFine {version}",
+  "error.network.proxy": "代理服务器拒绝了连接，请检查系统代理设置。",
+  "error.source.offline": "无法连接到下载源 {host}。请在设置中切换下载源，或稍后重试。",
+  "error.source.timeout": "下载源 {host} 响应超时。请在设置中切换下载源，或稍后重试。",
+  "error.source.dns": "无法解析 {host} 的地址。请检查 DNS 设置或切换下载源。",
+  "error.source.tls": "与 {host} 建立安全连接失败。请检查系统时间，或检查代理/杀毒软件是否拦截了 HTTPS 流量。",
+  "error.source.forbidden": "下载源 {host} 拒绝了请求。请在设置中切换下载源。",
+  "error.source.notFound": "下载源 {host} 缺少必需的文件。请切换下载源或选择其他版本。",
+  "error.source.server": "下载源 {host} 返回错误（HTTP {status}）。请切换下载源或稍后重试。",
+  "error.http.forbidden": "没有权限执行此操作。",
+  "error.catalog.unavailable": "版本服务暂时不可用，请稍后重试。",
+  "error.download.integrity": "下载的文件校验失败，下次尝试时会重新下载。",
+  "error.disk.full": "磁盘空间不足，请清理后重试。",
+  "error.cancelled": "已取消。"
 } as const;
 
 export default zhCN;

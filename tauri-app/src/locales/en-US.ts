@@ -770,7 +770,20 @@ const enUS = {
   "install.phase.optiFineCompleted": "OptiFine install completed",
   "install.phase.installingFabric": "Installing fabric {version}",
   "install.phase.installingForge": "Installing forge {version}",
-  "install.phase.installingOptiFine": "Installing OptiFine {version}"
+  "install.phase.installingOptiFine": "Installing OptiFine {version}",
+  "error.network.proxy": "The proxy refused the connection. Check your system proxy settings.",
+  "error.source.offline": "Cannot reach the download source {host}. Switch the download source in Settings, or try again later.",
+  "error.source.timeout": "The download source {host} is not responding. Switch the download source in Settings, or try again later.",
+  "error.source.dns": "Could not resolve {host}. Check your DNS settings or switch the download source.",
+  "error.source.tls": "Secure connection to {host} failed. Check your system clock, or any proxy/antivirus that inspects HTTPS traffic.",
+  "error.source.forbidden": "The download source {host} refused the request. Switch the download source in Settings.",
+  "error.source.notFound": "{host} does not have a required file. Switch the download source or choose another version.",
+  "error.source.server": "The download source {host} reported an error (HTTP {status}). Switch the download source or try again later.",
+  "error.http.forbidden": "You do not have permission to do this.",
+  "error.catalog.unavailable": "The release service is temporarily unavailable. Please try again in a moment.",
+  "error.download.integrity": "A downloaded file failed verification. It will be downloaded again on the next attempt.",
+  "error.disk.full": "The disk is full. Free up space and try again.",
+  "error.cancelled": "Cancelled."
 } as const;
 
 export default enUS;

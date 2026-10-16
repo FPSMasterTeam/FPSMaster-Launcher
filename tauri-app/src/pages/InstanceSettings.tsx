@@ -5,6 +5,7 @@ import Button from "../components/Button";
 import Card from "../components/Card";
 import { resolvePresetVersionId } from "../constants";
 import { useI18n } from "../i18n";
+import { describeApiError } from "../lib/launcherError";
 import { novaVersionIdFor } from "../lib/novaTargets";
 import type { Instance, InstanceSectionEntry } from "../types";
 
@@ -118,7 +119,7 @@ function InstanceSettingsPage({
         [section]: {
           ...prev[section],
           loading: false,
-          error: t("instanceFiles.loadFailed", { error: String(error) })
+          error: t("instanceFiles.loadFailed", { error: describeApiError(error, t) })
         }
       }));
     }
@@ -137,7 +138,7 @@ function InstanceSettingsPage({
         ...prev,
         [section]: {
           ...prev[section],
-          error: t("instanceFiles.openFailed", { error: String(error) })
+          error: t("instanceFiles.openFailed", { error: describeApiError(error, t) })
         }
       }));
     }
@@ -160,7 +161,7 @@ function InstanceSettingsPage({
         ...prev,
         [section]: {
           ...prev[section],
-          error: t("instanceFiles.deleteFailed", { error: String(error) })
+          error: t("instanceFiles.deleteFailed", { error: describeApiError(error, t) })
         }
       }));
     }
@@ -182,7 +183,7 @@ function InstanceSettingsPage({
         ...prev,
         mods: {
           ...prev.mods,
-          error: t("instanceFiles.toggleFailed", { error: String(error) })
+          error: t("instanceFiles.toggleFailed", { error: describeApiError(error, t) })
         }
       }));
     }

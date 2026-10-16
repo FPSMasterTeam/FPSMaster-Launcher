@@ -2,10 +2,11 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { LAUNCHER_API_BASE_URL } from "../constants";
 import type { TranslationKey } from "../i18n";
+import { acceptLanguageFor } from "../lib/apiLanguage";
 import { isAuthExpiredError } from "../lib/launcherError";
 import { loadOrCreateLauncherSessionId } from "../lib/launcherAuth";
 import { nextRecurringDelay } from "../lib/system";
-import type { TelemetryOnlineSummary } from "../types";
+import type { Locale, TelemetryOnlineSummary } from "../types";
 
 const ONLINE_REFRESH_INTERVAL_MS = 90_000;
 const ONLINE_REFRESH_JITTER_MS = 8_000;
@@ -18,6 +19,7 @@ type UseLauncherTelemetryDeps = {
   user: SessionUser | null;
   playerName: string;
   backgroundMode: boolean;
+  language: Locale;
   t: Translator;
   onAuthExpired: (message: string) => void;
 };
@@ -72,7 +74,9 @@ export function useLauncherTelemetry(deps: UseLauncherTelemetryDeps): LauncherTe
   }, []);
 
   const fetchOnlineSummary = useCallback(async (): Promise<TelemetryOnlineSummary> => {
-    const response = await fetch(`${LAUNCHER_API_BASE_URL}/api/v1/telemetry/online?clientKind=LAUNCHER`);
+    const response = await fetch(`${LAUNCHER_API_BASE_URL}/api/v1/telemetry/online?clientKind=LAUNCHER`, {
+      headers: { "Accept-Language": acceptLanguageFor(depsRef.current.language) }
+    });
     const raw = (await response.json()) as {
       success?: boolean;
       message?: string;
