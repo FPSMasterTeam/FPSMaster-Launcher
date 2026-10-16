@@ -18,7 +18,6 @@ import {
   DEFAULT_LOGIN_PREFS,
   DEFAULT_SETTINGS,
   LAUNCHER_API_BASE_URL,
-  NEWS_ITEMS,
   NOVA_DEFAULT_GAME_VERSION,
   PRESET_INSTANCES,
   STORAGE_KEYS,
@@ -2002,6 +2001,9 @@ function Launcher() {
   }
 
   function endLaunch() {
+    // Cleared directly: the state round-trip can coalesce to "no change" when a
+    // launch ends before React rendered its start, leaving the guard stuck.
+    launchingInstanceRef.current = null;
     setBusy(false);
     setLaunchingInstanceId(null);
   }
@@ -2025,10 +2027,13 @@ function Launcher() {
       notifyWarning(t("launch.warning.contentInstalling", { name: target.name }));
       return;
     }
+    // Reserved before the first await so a double click cannot start two launches.
+    launchingInstanceRef.current = target.id;
     if (activeGamePid !== null && activeGamePid > 0) {
       try {
         const runtime = await invoke<GameRuntimeStats>("poll_game_runtime", { pid: activeGamePid });
         if (runtime.running) {
+          launchingInstanceRef.current = null;
           notifyWarning(t("app.status.singleInstanceRunning", { pid: activeGamePid }));
           return;
         }
@@ -2039,7 +2044,6 @@ function Launcher() {
     }
 
     const sessionId = createSessionId();
-    launchingInstanceRef.current = target.id;
     openLaunchPrepare(target, sessionId);
     setLaunchError(null);
     setLaunchingInstanceId(target.id);
@@ -2097,6 +2101,7 @@ function Launcher() {
       return;
     }
 
+    cancelledLaunchSessionsRef.current.delete(sessionId);
     await openMonitorForLaunch(launchResult.pid, target.name);
     completeLaunchPrepare();
     endLaunch();
@@ -2293,23 +2298,15 @@ function Launcher() {
     const { installVersion, loader, loaderVersion, optiFineEnabled, optiFineVersion } = installCtl;
     if (!installVersion) return;
     if (loader !== "vanilla" && !loaderVersion) {
-      setStatus(
-        t("app.status.selectLoaderVersionFirst", {
-          loader: loaderDisplayName(loader)
-        })
-      );
+      notifyWarning(t("app.status.selectLoaderVersionFirst", { loader: loaderDisplayName(loader) }));
       return;
     }
     if (optiFineEnabled && loader === "fabric") {
-      setStatus(t("install.optifineFabricConflict"));
+      notifyWarning(t("install.optifineFabricConflict"));
       return;
     }
     if (optiFineEnabled && !optiFineVersion) {
-      setStatus(
-        t("app.status.selectLoaderVersionFirst", {
-          loader: t("loader.optifine")
-        })
-      );
+      notifyWarning(t("app.status.selectLoaderVersionFirst", { loader: t("loader.optifine") }));
       return;
     }
 
@@ -2567,6 +2564,7 @@ function Launcher() {
       );
       setSelected(duplicated.id);
       setStatus(t("app.status.instanceDuplicated", { name: source.name }));
+      notifySuccess(t("app.status.instanceDuplicated", { name: source.name }));
     } catch (error) {
       reportFailure(error);
     }
@@ -2583,6 +2581,7 @@ function Launcher() {
         archiveName: source.name
       });
       setStatus(t("app.status.instanceExported", { name: source.name }));
+      notifySuccess(t("app.status.instanceExported", { name: source.name }));
     } catch (error) {
       reportFailure(error);
     }

@@ -2,7 +2,6 @@ import type {
   BlurMode,
   Instance,
   LauncherLoginPrefs,
-  NewsItem,
   Settings,
   VisualProfile
 } from "./types";
@@ -41,13 +40,6 @@ export const LAUNCHER_API_BASE_URL = "https://api.fpsmaster.top";
 
 // Account registration happens on the website, not in the launcher.
 export const REGISTER_URL = "https://fpsmaster.top/register";
-
-export const NEWS_ITEMS: readonly NewsItem[] = [
-  {
-    title: "欢迎使用 FPSMaster",
-    summary: "登录后即可同步客户端包、查看最新公告，并快速启动常用实例。"
-  }
-];
 
 export const DEFAULT_SETTINGS: Settings = {
   gameDir: "",
