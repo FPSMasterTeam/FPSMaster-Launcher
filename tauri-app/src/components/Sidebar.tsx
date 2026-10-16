@@ -1,5 +1,5 @@
 import { memo, useState } from "react";
-import { Compass, Crown, Gamepad2, Home, Server, Settings } from "lucide-react";
+import { Compass, Crown, Gamepad2, Home, Server, Settings, Stethoscope } from "lucide-react";
 import AppLogo from "./AppLogo";
 import { useI18n } from "../i18n";
 import type { LauncherUser, Page } from "../types";
@@ -22,6 +22,7 @@ function Sidebar({ currentPage, user, setPage }: SidebarProps) {
     { id: "instances" as const, icon: Gamepad2, label: t("nav.myGames") },
     { id: "servers" as const, icon: Server, label: t("nav.servers") },
     { id: "content" as const, icon: Compass, label: t("nav.content") },
+    { id: "diagnostics" as const, icon: Stethoscope, label: t("nav.diagnostics") },
     { id: "settings" as const, icon: Settings, label: t("nav.settings") }
   ];
 

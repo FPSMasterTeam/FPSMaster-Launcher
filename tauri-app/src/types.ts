@@ -1,4 +1,4 @@
-export type Page = "home" | "instances" | "install" | "servers" | "content" | "settings" | "instance-settings" | "mandatory-update" | "account-center";
+export type Page = "home" | "instances" | "install" | "servers" | "content" | "settings" | "instance-settings" | "mandatory-update" | "account-center" | "diagnostics";
 export type Loader = "vanilla" | "forge" | "fabric";
 export type OptiFineCompatibilityState = "compatible" | "incompatible" | "unknown";
 export type PhaseStatus = "pending" | "running" | "done" | "error";
@@ -642,4 +642,47 @@ export type LauncherHomePayload = {
   servers: ServerItem[];
   online: TelemetryOnlineSummary;
   dashboard?: LauncherDashboard | null;
+};
+
+// run_health_check
+export type HealthCheckStatus = "ok" | "warning" | "error" | "skipped";
+export type HealthCheckCategory = "java" | "instance" | "disk" | "network" | "credentials" | "crashes";
+export type HealthCheckItem = {
+  id: string;
+  category: HealthCheckCategory;
+  status: HealthCheckStatus;
+  /** Stable code for the i18n table (diagnostics.code.<CODE>.*). */
+  code: string;
+  params: Record<string, unknown>;
+  /** Technical detail in English; shown small, never as the sentence. */
+  detail: string;
+  fix: { command: string; args: Record<string, unknown> } | null;
+};
+export type HealthReport = { generatedAt: string; items: HealthCheckItem[] };
+export type SupportBundleResult = { path: string; entries: string[]; sizeBytes: number };
+
+// probe_download_sources
+export type SourceProbe = {
+  id: "official" | "bmclapi" | "fpsmaster-api";
+  url: string;
+  ok: boolean;
+  latencyMs?: number | null;
+  bytesPerSecond?: number | null;
+  bytesRead: number;
+  error?: string | null;
+};
+export type SourceProbeReport = { sources: SourceProbe[]; recommended: "official-first" | "mirror-first" };
+
+// game-exit event payload
+export type GameExitEvent = {
+  pid: number;
+  exitCode: number;
+  versionId: string;
+  durationMs: number;
+  crashed: boolean;
+  terminatedByUser: boolean;
+  crashReportPath?: string | null;
+  crashSummary?: string | null;
+  hsErrPath?: string | null;
+  hsErrSummary?: string | null;
 };

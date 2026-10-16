@@ -324,9 +324,12 @@ fn validated_crash_file(
 }
 
 fn client_kind_for(version_id: &str) -> &'static str {
+    // Nova installs one directory per game version: FPSMaster-Nova-<gv>.
+    if version_id == "FPSMaster-Nova" || version_id.starts_with("FPSMaster-Nova-") {
+        return "NOVA";
+    }
     match version_id {
         "FPSMaster-Edge" => "EDGE",
-        "FPSMaster-Nova" => "NOVA",
         _ => "GENERIC",
     }
 }
@@ -1088,6 +1091,7 @@ fn export_support_bundle_blocking(
     game_dir: &Path,
     version_id: Option<&str>,
     health_report: Option<Value>,
+    target_path: Option<&Path>,
 ) -> Result<SupportBundleResult, String> {
     const LOG_TAIL: u64 = 2 * 1024 * 1024;
     let mut files: Vec<(String, String)> = vec![
@@ -1138,11 +1142,20 @@ fn export_support_bundle_blocking(
         }
     }
 
-    let exports_dir = game_dir.join("exports");
-    fs::create_dir_all(&exports_dir)
-        .map_err(|e| format!("Failed to create {}: {e}", exports_dir.display()))?;
-    let stamp = iso8601_utc(SystemTime::now()).replace([':', '-'], "");
-    let path = exports_dir.join(format!("fpsmaster-support-{stamp}.zip"));
+    let path = match target_path {
+        // A location the user picked in the save dialog.
+        Some(target) if target.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("zip")) => {
+            target.to_path_buf()
+        }
+        Some(target) => target.with_extension("zip"),
+        None => {
+            let exports_dir = game_dir.join("exports");
+            fs::create_dir_all(&exports_dir)
+                .map_err(|e| format!("Failed to create {}: {e}", exports_dir.display()))?;
+            let stamp = iso8601_utc(SystemTime::now()).replace([':', '-'], "");
+            exports_dir.join(format!("fpsmaster-support-{stamp}.zip"))
+        }
+    };
     let file =
         fs::File::create(&path).map_err(|e| format!("Failed to create {}: {e}", path.display()))?;
     let mut zip = zip::ZipWriter::new(file);
@@ -1163,17 +1176,29 @@ fn export_support_bundle_blocking(
 }
 
 /// Writes a redacted zip (launcher log, latest game log, crash reports,
-/// hs_err files, health check, system info) to `<gameDir>/exports/`.
+/// hs_err files, health check, system info) to `target_path` (picked by the
+/// user in a save dialog) or, without one, to `<gameDir>/exports/`.
 #[tauri::command]
 pub(crate) async fn export_support_bundle(
     app: AppHandle,
     game_dir: String,
     version_id: Option<String>,
     health_report: Option<Value>,
+    target_path: Option<String>,
 ) -> Result<SupportBundleResult, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let game_dir = crate::resolve_game_dir_path(&game_dir)?;
-        export_support_bundle_blocking(&app, &game_dir, version_id.as_deref(), health_report)
+        let target = target_path
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .map(PathBuf::from);
+        export_support_bundle_blocking(
+            &app,
+            &game_dir,
+            version_id.as_deref(),
+            health_report,
+            target.as_deref(),
+        )
     })
     .await
     .map_err(|e| format!("Failed to join support bundle task: {e}"))?

@@ -2858,6 +2858,18 @@ function Launcher() {
 
 
 
+  // Only with explicit consent: the key then lives in a 0600 file instead of
+  // the system keychain.
+  async function enableCredentialFileFallback() {
+    if (!window.confirm(t("diagnostics.fileFallbackConsent"))) return;
+    try {
+      await invoke("secure_storage_set_file_fallback", { enabled: true });
+      window.location.reload();
+    } catch (error) {
+      notifyError(describeApiError(error, t));
+    }
+  }
+
   async function closeLauncherWindow() {
     if (settings.minimizeToTray) {
       await invoke("hide_main_window");
@@ -3105,7 +3117,8 @@ function Launcher() {
     onLogoutLauncherAccount: stableLogout,
     onChangeSettings: stableUpdateSettings,
     onClampMemory: stableUpdateMemory,
-    onResetSettings: onSettingsReset
+    onResetSettings: onSettingsReset,
+    diagnosticsVersionId: current ? localVersionIdFor(current) : null
   };
 
   return (
@@ -3139,9 +3152,16 @@ function Launcher() {
                 <pre className="mt-4 max-h-32 overflow-auto whitespace-pre-wrap rounded-[8px] bg-black/25 p-3 text-left text-xs text-[var(--text-muted)]">
                   {secureStorageError}
                 </pre>
-                <Button variant="primary" className="mt-5" onClick={() => window.location.reload()}>
-                  {t("secureStorage.retry")}
-                </Button>
+                <div className="mt-5 flex flex-wrap justify-center gap-2">
+                  {secureStorageError.startsWith("CREDENTIAL_STORE_UNAVAILABLE") && (
+                    <Button variant="secondary" onClick={() => void enableCredentialFileFallback()}>
+                      {t("secureStorage.useFileFallback")}
+                    </Button>
+                  )}
+                  <Button variant="primary" onClick={() => window.location.reload()}>
+                    {t("secureStorage.retry")}
+                  </Button>
+                </div>
               </div>
             ) : (
               <PageFallback />

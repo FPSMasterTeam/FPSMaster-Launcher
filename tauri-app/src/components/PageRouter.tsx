@@ -29,6 +29,7 @@ const ContentPage = lazy(() => import("../pages/Content"));
 const MandatoryUpdatePage = lazy(() => import("../pages/MandatoryUpdate"));
 const AccountCenterPage = lazy(() => import("../pages/AccountCenter"));
 const SettingsPage = lazy(() => import("../pages/Settings"));
+const DiagnosticsPage = lazy(() => import("../pages/Diagnostics"));
 
 // Everything the page tree needs, assembled by the Launcher. Grouped loosely
 // by domain so it maps cleanly onto the domain hooks that feed it.
@@ -135,6 +136,8 @@ export type PageRouterContext = {
   onChangeSettings: (next: Settings) => void;
   onClampMemory: (input: string) => void;
   onResetSettings: () => void;
+  // diagnostics
+  diagnosticsVersionId: string | null;
 };
 
 export default function PageRouter({ ctx }: { ctx: PageRouterContext }) {
@@ -277,6 +280,17 @@ export default function PageRouter({ ctx }: { ctx: PageRouterContext }) {
           onSelectInstance={ctx.onSelect}
           onModpackInstalled={ctx.onModpackInstalled}
           onStatusChange={ctx.onStatusChange}
+        />
+      );
+    case "diagnostics":
+      return (
+        <DiagnosticsPage
+          versionId={ctx.diagnosticsVersionId}
+          instanceName={ctx.current?.name ?? null}
+          settings={ctx.settings}
+          busy={ctx.busy}
+          onRepairInstance={ctx.onInstanceRepair}
+          onOpenSettings={ctx.onGoSettings}
         />
       );
     case "mandatory-update":
