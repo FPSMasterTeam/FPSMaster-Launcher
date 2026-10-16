@@ -229,6 +229,44 @@ pub(crate) struct VanillaLaunchRequest {
 pub(crate) struct VanillaResolvedLaunchPlan {
     pub(crate) plan: LaunchPlan,
     pub(crate) natives_dir: PathBuf,
+    /// Extra environment for the game process (never logged).
+    pub(crate) env: Vec<(String, String)>,
+}
+
+/// Environment variable carrying the FPSMaster platform token to Edge/Nova.
+/// Unlike a `-D` argument it is not visible in the process command line and is
+/// not written into hs_err files (product-7 / launcher-core-17).
+pub(crate) const LAUNCH_TOKEN_ENV: &str = "FPSMASTER_LAUNCH_TOKEN";
+
+/// The platform token to hand to the game, only for the preset Edge/Nova
+/// instances that understand it.
+fn preset_platform_token(request: &VanillaLaunchRequest) -> Option<&str> {
+    if !matches!(
+        request.version_id.trim(),
+        "FPSMaster-Edge" | "FPSMaster-Nova"
+    ) {
+        return None;
+    }
+    request
+        .fpsmaster_token
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+}
+
+fn push_platform_token(
+    request: &VanillaLaunchRequest,
+    jvm_args: &mut Vec<String>,
+    env: &mut Vec<(String, String)>,
+) {
+    let Some(token) = preset_platform_token(request) else {
+        return;
+    };
+    env.push((LAUNCH_TOKEN_ENV.to_string(), token.to_string()));
+    // TODO(remove one release after Edge/Nova read FPSMASTER_LAUNCH_TOKEN):
+    // already-released clients only read this system property, so it stays
+    // for one version cycle (CONTRACTS.md section 6).
+    jvm_args.push(format!("-Dfpsmaster.auth.token={token}"));
 }
 
 #[derive(Debug, Clone)]
@@ -2163,21 +2201,9 @@ pub(crate) fn build_vanilla_launch_plan(
     append_launch_logging_argument(window, &version_json, request, source, &mut jvm_args);
     jvm_args = normalize_jvm_arguments(jvm_args);
 
-    // Inject the FPSMaster platform auth token only for preset Edge/Nova instances so the
-    // client inherits the launcher login. Edge/Nova read -Dfpsmaster.auth.token at startup.
-    if matches!(
-        request.version_id.trim(),
-        "FPSMaster-Edge" | "FPSMaster-Nova"
-    ) {
-        if let Some(token) = request
-            .fpsmaster_token
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-        {
-            jvm_args.push(format!("-Dfpsmaster.auth.token={token}"));
-        }
-    }
+    // Hand the FPSMaster platform login to preset Edge/Nova instances.
+    let mut env = Vec::new();
+    push_platform_token(request, &mut jvm_args, &mut env);
 
     let main_class = if optifine_overlay.is_some() {
         "net.minecraft.launchwrapper.Launch".to_string()
@@ -2247,6 +2273,7 @@ pub(crate) fn build_vanilla_launch_plan(
             main_class,
         },
         natives_dir,
+        env,
     })
 }
 
@@ -2556,21 +2583,9 @@ pub(crate) fn build_edge_aot_launch_plan(
     jvm_args = normalize_jvm_arguments(jvm_args);
     jvm_args.extend(jvm_extra);
 
-    // Inject the FPSMaster platform auth token only for preset Edge instances, matching
-    // the Forge launch path.
-    if matches!(
-        request.version_id.trim(),
-        "FPSMaster-Edge" | "FPSMaster-Nova"
-    ) {
-        if let Some(token) = request
-            .fpsmaster_token
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-        {
-            jvm_args.push(format!("-Dfpsmaster.auth.token={token}"));
-        }
-    }
+    // Hand the FPSMaster platform login to preset Edge/Nova instances.
+    let mut env = Vec::new();
+    push_platform_token(request, &mut jvm_args, &mut env);
 
     let main_class = "net.minecraft.launchwrapper.Launch".to_string();
     let mut game_args = if let Some(args) = version_json
@@ -2633,6 +2648,7 @@ pub(crate) fn build_edge_aot_launch_plan(
             main_class,
         },
         natives_dir,
+        env,
     })
 }
 
@@ -5339,6 +5355,31 @@ mod tests {
         should_omit_resolved_arg, DownloadSource, MavenCoordinates, StandaloneOptiFineOverlay,
         VanillaLaunchRequest,
     };
+
+    #[test]
+    fn platform_token_goes_to_env_for_presets_only() {
+        let request = |version: &str| super::VanillaLaunchRequest {
+            game_dir: std::path::PathBuf::from("/tmp"),
+            version_id: version.to_string(),
+            player_name: "Player".to_string(),
+            uuid: String::new(),
+            access_token: String::new(),
+            user_type: None,
+            auth_xuid: None,
+            java_path: std::path::PathBuf::from("java"),
+            max_memory_mb: 1024,
+            server_address: None,
+            fpsmaster_token: Some(" jwt ".to_string()),
+        };
+        let (mut args, mut env) = (Vec::new(), Vec::new());
+        super::push_platform_token(&request("FPSMaster-Nova"), &mut args, &mut env);
+        assert_eq!(env, vec![(super::LAUNCH_TOKEN_ENV.to_string(), "jwt".to_string())]);
+        assert_eq!(args, vec!["-Dfpsmaster.auth.token=jwt".to_string()]);
+
+        let (mut args, mut env) = (Vec::new(), Vec::new());
+        super::push_platform_token(&request("1.8.9"), &mut args, &mut env);
+        assert!(env.is_empty() && args.is_empty());
+    }
 
     #[cfg(unix)]
     #[test]

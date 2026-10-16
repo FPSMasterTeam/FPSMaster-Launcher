@@ -6574,6 +6574,7 @@ fn launch_vanilla_blocking(
     };
     let plan = resolved_plan.plan;
     let natives_dir = resolved_plan.natives_dir;
+    let launch_env = resolved_plan.env;
 
     let mut normalized_command = normalize_game_command_tokens(plan.command.clone());
     if normalized_command.is_empty() {
@@ -6593,7 +6594,13 @@ fn launch_vanilla_blocking(
     );
 
     let should_wait = wait_for_exit.unwrap_or(false);
-    let mut child = match spawn_game_process(Some(&window), &runtime_dir, &executable, &args) {
+    let mut child = match spawn_game_process(
+        Some(&window),
+        &runtime_dir,
+        &executable,
+        &args,
+        &launch_env,
+    ) {
         Ok(child) => child,
         Err(error) => {
             cleanup_launch_natives_dir(&natives_dir);
@@ -6648,7 +6655,7 @@ fn launch_vanilla_blocking(
             exit_code: Some(exit_code),
             main_class: plan.main_class,
             shell: "direct".to_string(),
-            command: normalized_command,
+            command: redact_launch_secrets(normalized_command),
         });
     }
 
@@ -6683,7 +6690,7 @@ fn launch_vanilla_blocking(
         } else {
             "direct".to_string()
         },
-        command: normalized_command,
+        command: redact_launch_secrets(normalized_command),
     })
 }
 
@@ -7130,7 +7137,7 @@ fn launch_native_app_blocking(
         ),
     );
 
-    let mut child = spawn_game_process(Some(&window), &install_dir, &executable, &args)?;
+    let mut child = spawn_game_process(Some(&window), &install_dir, &executable, &args, &[])?;
     let pid = i64::from(child.id());
     if let Ok(mut store) = game_runtime_starts().lock() {
         store.insert(pid, std::time::Instant::now());
@@ -7674,6 +7681,35 @@ fn format_quoted_command(executable: &str, args: &[String]) -> String {
     parts.join(" ")
 }
 
+/// Removes credentials from a launch command before it leaves the backend
+/// (command results are shown and logged by the UI).
+fn redact_launch_secrets(command: Vec<String>) -> Vec<String> {
+    let mut redact_next = false;
+    command
+        .into_iter()
+        .map(|arg| {
+            if std::mem::take(&mut redact_next) {
+                return "<redacted>".to_string();
+            }
+            let lower = arg.to_ascii_lowercase();
+            if matches!(lower.as_str(), "--accesstoken" | "--access-token" | "--session") {
+                redact_next = true;
+                return arg;
+            }
+            match arg.split_once('=') {
+                Some((key, _))
+                    if lower.starts_with("-dfpsmaster.auth.token=")
+                        || lower.starts_with("--accesstoken=")
+                        || lower.starts_with("--access-token=") =>
+                {
+                    format!("{key}=<redacted>")
+                }
+                _ => arg,
+            }
+        })
+        .collect()
+}
+
 fn redact_path_for_log(path: &Path) -> String {
     let components = path
         .components()
@@ -7779,10 +7815,12 @@ fn spawn_game_process(
     game_dir: &Path,
     executable: &str,
     args: &[String],
+    env: &[(String, String)],
 ) -> Result<std::process::Child, String> {
     let mut command = Command::new(executable);
     command
         .args(args)
+        .envs(env.iter().map(|(key, value)| (key.as_str(), value.as_str())))
         .current_dir(game_dir)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -10134,6 +10172,21 @@ mod tests {
     use std::io::Write;
     use std::path::Path;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn launch_command_result_hides_credentials() {
+        let redacted = super::redact_launch_secrets(vec![
+            "java".to_string(),
+            "-Dfpsmaster.auth.token=jwt".to_string(),
+            "--accessToken".to_string(),
+            "mc-token".to_string(),
+            "--username".to_string(),
+            "Steve".to_string(),
+        ]);
+        assert_eq!(redacted[1], "-Dfpsmaster.auth.token=<redacted>");
+        assert_eq!(redacted[3], "<redacted>");
+        assert_eq!(redacted[5], "Steve");
+    }
 
     #[test]
     fn broken_user_jar_does_not_fail_mods_scan() {
