@@ -8,10 +8,10 @@ use serde_json::{Map, Value};
 use std::collections::{HashMap, HashSet};
 use std::ffi::{OsStr, OsString};
 use std::fs;
-use std::io::{self, Read, Write};
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -1678,7 +1678,7 @@ fn install_standalone_optifine(
             "patch",
             "Patching vanilla client for standalone OptiFine",
         );
-        let patch_output = patched_path.with_extension("patching");
+        let patch_output = crate::downloader::with_suffix(&patched_path, ".patching");
         let _ = fs::remove_file(&patch_output);
         run_optifine_patcher(
             game_dir,
@@ -1705,7 +1705,7 @@ fn install_standalone_optifine(
     } else {
         // Older OptiFine downloads (1.12.2 and earlier) already are the complete
         // mod jar; the download itself goes onto the classpath unchanged.
-        let staged = patched_path.with_extension("staging");
+        let staged = crate::downloader::with_suffix(&patched_path, ".staging");
         fs::copy(&installer_path, &staged).map_err(|error| {
             format!(
                 "Failed to stage OptiFine jar {}: {error}",
@@ -1853,7 +1853,7 @@ fn resolve_optifine_launchwrapper(
     let mut entry = archive
         .by_name(&entry_name)
         .map_err(|error| format!("OptiFine installer is missing {entry_name}: {error}"))?;
-    let temp = target.with_extension("extracting");
+    let temp = crate::downloader::with_suffix(&target, ".extracting");
     let mut output = fs::File::create(&temp).map_err(|error| {
         format!(
             "Failed to create OptiFine launchwrapper {}: {error}",
@@ -3502,98 +3502,20 @@ fn download_file(
     if cached_file_usable(target, expected_sha1) {
         return Ok(());
     }
-
-    let parent = target
-        .parent()
-        .ok_or_else(|| format!("Target path has no parent: {}", target.display()))?;
-    fs::create_dir_all(parent)
-        .map_err(|e| format!("Failed to create directory {}: {e}", parent.display()))?;
-
-    let tmp = target.with_extension("download");
-    // Not the shared download client: this path buffers the whole body via `.bytes()`,
-    // where reqwest applies the client timeout as a single whole-body deadline. The client
-    // jar (tens of MB) legitimately needs longer than the streaming client's short per-read
-    // timeout, so keep the generous general-purpose client here.
-    let client = build_blocking_http_client()?;
-    let mut last_error = None;
-    for url in mirror_health::prioritize(urls) {
-        let url = url.as_str();
-        let response = match client.get(url).send() {
-            Ok(response) => response,
-            Err(error) => {
-                mirror_health::record_failure(url);
-                last_error = Some(format!("Failed to download {label} from {url}: {error}"));
-                continue;
-            }
-        };
-        let status = response.status();
-        if !status.is_success() {
-            if !status.is_client_error() {
-                mirror_health::record_failure(url);
-            }
-            last_error = Some(format!(
-                "Failed to download {label} from {url}: HTTP {status}"
-            ));
-            continue;
-        }
-
-        let bytes = match response.bytes() {
-            Ok(bytes) => bytes,
-            Err(error) => {
-                mirror_health::record_failure(url);
-                last_error = Some(format!(
-                    "Failed reading {label} response from {url}: {error}"
-                ));
-                continue;
-            }
-        };
-        if let Err(error) = fs::write(&tmp, &bytes) {
-            last_error = Some(format!(
-                "Failed writing temp file {}: {error}",
-                tmp.display()
-            ));
-            continue;
-        }
-
-        if let Some(expected_sha1) = expected_sha1 {
-            match compute_sha1_hex(&tmp) {
-                Ok(actual) if actual.eq_ignore_ascii_case(expected_sha1) => {}
-                Ok(actual) => {
-                    let _ = fs::remove_file(&tmp);
-                    mirror_health::record_failure(url);
-                    last_error = Some(format!(
-                        "SHA1 mismatch for {url}: expected={expected_sha1} actual={actual}"
-                    ));
-                    continue;
-                }
-                Err(error) => {
-                    let _ = fs::remove_file(&tmp);
-                    last_error = Some(error);
-                    continue;
-                }
-            }
-        }
-
-        fs::rename(&tmp, target)
-            .or_else(|_| {
-                fs::copy(&tmp, target)
-                    .map(|_| ())
-                    .and_then(|_| fs::remove_file(&tmp))
-            })
-            .map_err(|e| format!("Failed to move temp file to {}: {e}", target.display()))?;
-
-        mirror_health::record_success(url);
-        emit_log(
-            window,
-            "info",
-            &format!("Downloaded {label}: {}", target.display()),
-        );
-        return Ok(());
-    }
-
-    Err(last_error.unwrap_or_else(|| format!("Failed downloading {label} to {}", target.display())))
+    let cancel = crate::downloader::CancelToken::new(None);
+    crate::downloader::download(
+        &crate::downloader::Request::new(urls, target, &cancel).sha1(expected_sha1),
+    )
+    .map_err(|error| format!("Failed to download {label}: {error}"))?;
+    emit_log(
+        window,
+        "info",
+        &format!("Downloaded {label}: {}", target.display()),
+    );
+    Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn download_file_with_ipc(
     window: Option<&tauri::Window>,
     session: Option<&str>,
@@ -3605,7 +3527,6 @@ fn download_file_with_ipc(
     aggregate: Option<&DownloadAggregate>,
     expected_size: Option<u64>,
 ) -> Result<bool, String> {
-    const DOWNLOAD_PROGRESS_CHUNK_SIZE: usize = 64 * 1024;
     install_cancel_error(session)?;
     if cached_file_usable(target, expected_sha1) {
         let total = fs::metadata(target).ok().map(|meta| meta.len());
@@ -3624,277 +3545,67 @@ fn download_file_with_ipc(
         return Ok(false);
     }
 
-    let parent = target
-        .parent()
-        .ok_or_else(|| format!("Target path has no parent: {}", target.display()))?;
-    fs::create_dir_all(parent)
-        .map_err(|e| format!("Failed to create directory {}: {e}", parent.display()))?;
-
     emit_download_item_start(window, session, artifact, Some(0), expected_size, "Downloading");
-    let tmp = target.with_extension("download");
-    let client = download_http_client()?;
-    let mut last_error = None;
-    // Hosts known to be failing right now go last, so a dead mirror costs the
-    // first few files instead of all of them.
-    let candidates = mirror_health::prioritize(urls);
-    let candidate_count = candidates.len();
-    for (index, url) in candidates.iter().enumerate() {
-        let url = url.as_str();
-        // Retrying a host that just failed is only worth it when there is nothing
-        // else left to try; while another candidate is untried, failing over is
-        // strictly faster than waiting out another stall on the same host.
-        let attempts = if index + 1 == candidate_count {
-            DOWNLOAD_RETRY_ATTEMPTS
-        } else {
-            1
-        };
-        for attempt in 1..=attempts {
-            install_cancel_error(session)?;
-            let response = match client.get(url).send() {
-                Ok(response) => response,
-                Err(error) => {
-                    mirror_health::record_failure(url);
-                    last_error = Some(format!("Failed to download {label} from {url}: {error}"));
-                    if attempt < attempts {
-                        emit_download_item_start(
-                            window,
-                            session,
-                            artifact,
-                            Some(0),
-                            None,
-                            &format!("Retrying ({attempt}/{})", attempts - 1),
-                        );
-                    }
-                    continue;
-                }
-            };
-            if !response.status().is_success() {
-                let status = response.status();
-                last_error = Some(format!(
-                    "Failed to download {label} from {url}: HTTP {status}"
-                ));
-                // A 4xx means this URL will never serve the file (e.g. the mirror
-                // simply doesn't have it) — retrying it is pointless, so fail over to
-                // the next candidate immediately instead of burning all attempts here.
-                // It also says nothing about the host's health, so it is not recorded
-                // as a failure: a mirror missing one artifact is still worth using.
-                if status.is_client_error() {
-                    break;
-                }
-                mirror_health::record_failure(url);
-                if attempt < attempts {
-                    emit_download_item_start(
-                        window,
-                        session,
-                        artifact,
-                        Some(0),
-                        None,
-                        &format!("Retrying ({attempt}/{})", attempts - 1),
-                    );
-                }
-                continue;
+    let cancel = crate::downloader::CancelToken::new(session);
+    // Bytes of this file currently credited to the stage aggregate. A retry
+    // that restarts from zero reports a smaller count, which is debited back
+    // so the stage bar never overshoots.
+    let accounted = AtomicU64::new(0);
+    let progress = |downloaded: u64, total: Option<u64>| {
+        if let Some(aggregate) = aggregate {
+            let previous = accounted.swap(downloaded, Ordering::Relaxed);
+            if downloaded >= previous {
+                aggregate.add_transferred(downloaded - previous);
+            } else {
+                aggregate.discard_transferred(previous - downloaded);
             }
-
-            let total = response.content_length();
-            emit_download_item_start(window, session, artifact, Some(0), total, "Downloading");
-            let mut response = response;
-            let mut output = match fs::File::create(&tmp) {
-                Ok(file) => file,
-                Err(error) => {
-                    last_error = Some(format!(
-                        "Failed writing temp file {}: {error}",
-                        tmp.display()
-                    ));
-                    if attempt < attempts {
-                        emit_download_item_start(
-                            window,
-                            session,
-                            artifact,
-                            Some(0),
-                            total,
-                            &format!("Retrying ({attempt}/{})", attempts - 1),
-                        );
-                    }
-                    continue;
-                }
-            };
-            let mut buffer = [0_u8; DOWNLOAD_PROGRESS_CHUNK_SIZE];
-            let mut downloaded_bytes = 0_u64;
-            let mut stream_failed = None::<String>;
-            let mut last_progress_emit = Instant::now();
-            loop {
-                install_cancel_error(session)?;
-                match response.read(&mut buffer) {
-                    Ok(0) => break,
-                    Ok(read_bytes) => {
-                        if let Err(error) = output.write_all(&buffer[..read_bytes]) {
-                            stream_failed = Some(format!(
-                                "Failed writing temp file {}: {error}",
-                                tmp.display()
-                            ));
-                            break;
-                        }
-                        downloaded_bytes += read_bytes as u64;
-                        if let Some(aggregate) = aggregate {
-                            aggregate.add_transferred(read_bytes as u64);
-                        }
-                        if last_progress_emit.elapsed() >= DOWNLOAD_PROGRESS_EMIT_INTERVAL {
-                            last_progress_emit = Instant::now();
-                            emit_download_item_progress(
-                                window,
-                                session,
-                                artifact,
-                                Some(downloaded_bytes),
-                                total,
-                                "Downloading",
-                            );
-                        }
-                    }
-                    Err(error) => {
-                        stream_failed = Some(format!(
-                            "Failed reading {label} response from {url}: {error}"
-                        ));
-                        break;
-                    }
-                }
-            }
-            if let Some(error) = stream_failed {
-                let _ = fs::remove_file(&tmp);
-                // A body that dies mid-stream is the signature of a stalled
-                // mirror, which is exactly what the health tracker exists for.
-                mirror_health::record_failure(url);
-                // The retry re-reads from byte 0, so its partial transfer must not
-                // stay counted or the aggregate bar would overshoot.
-                if let Some(aggregate) = aggregate {
-                    aggregate.discard_transferred(downloaded_bytes);
-                }
-                last_error = Some(error);
-                if attempt < attempts {
-                    emit_download_item_start(
-                        window,
-                        session,
-                        artifact,
-                        Some(0),
-                        total,
-                        &format!("Retrying ({attempt}/{})", attempts - 1),
-                    );
-                }
-                continue;
-            }
-            if let Err(error) = output.flush() {
-                let _ = fs::remove_file(&tmp);
-                if let Some(aggregate) = aggregate {
-                    aggregate.discard_transferred(downloaded_bytes);
-                }
-                last_error = Some(format!(
-                    "Failed flushing temp file {}: {error}",
-                    tmp.display()
-                ));
-                if attempt < attempts {
-                    emit_download_item_start(
-                        window,
-                        session,
-                        artifact,
-                        Some(0),
-                        total,
-                        &format!("Retrying ({attempt}/{})", attempts - 1),
-                    );
-                }
-                continue;
-            }
-            install_cancel_error(session)?;
-
-            if let Some(expected_sha1) = expected_sha1 {
-                match compute_sha1_hex(&tmp) {
-                    Ok(actual) if actual.eq_ignore_ascii_case(expected_sha1) => {}
-                    Ok(actual) => {
-                        let _ = fs::remove_file(&tmp);
-                        if let Some(aggregate) = aggregate {
-                            aggregate.discard_transferred(downloaded_bytes);
-                        }
-                        emit_log(
-                            window,
-                            "warn",
-                            &format!(
-                                "Checksum mismatch for {label}: expected sha1={expected_sha1}, got {actual}; re-downloading"
-                            ),
-                        );
-                        // Serving the wrong bytes is a mirror-health problem too:
-                        // a mirror with a stale cache will keep doing it.
-                        mirror_health::record_failure(url);
-                        last_error = Some(format!(
-                            "SHA1 mismatch for {url}: expected={expected_sha1} actual={actual}"
-                        ));
-                        if attempt < attempts {
-                            emit_download_item_start(
-                                window,
-                                session,
-                                artifact,
-                                Some(0),
-                                total.or(Some(downloaded_bytes)),
-                                &format!(
-                                    "Checksum failed, retrying ({attempt}/{})",
-                                    attempts - 1
-                                ),
-                            );
-                        }
-                        continue;
-                    }
-                    Err(error) => {
-                        let _ = fs::remove_file(&tmp);
-                        if let Some(aggregate) = aggregate {
-                            aggregate.discard_transferred(downloaded_bytes);
-                        }
-                        last_error = Some(error);
-                        if attempt < attempts {
-                            emit_download_item_start(
-                                window,
-                                session,
-                                artifact,
-                                Some(0),
-                                total.or(Some(downloaded_bytes)),
-                                &format!("Retrying ({attempt}/{})", attempts - 1),
-                            );
-                        }
-                        continue;
-                    }
-                }
-            }
-
-            fs::rename(&tmp, target)
-                .or_else(|_| {
-                    fs::copy(&tmp, target)
-                        .map(|_| ())
-                        .and_then(|_| fs::remove_file(&tmp))
-                })
-                .map_err(|e| format!("Failed to move temp file to {}: {e}", target.display()))?;
-
-            mirror_health::record_success(url);
-            if let Some(aggregate) = aggregate {
-                aggregate.settle(expected_size, downloaded_bytes);
-            }
-            emit_log(
-                window,
-                "info",
-                &format!("Downloaded {label}: {}", target.display()),
-            );
-            emit_download_item_complete(
-                window,
-                session,
-                artifact,
-                Some(downloaded_bytes),
-                total.or(Some(downloaded_bytes)),
-                false,
-                "Completed",
-            );
-            return Ok(true);
         }
+        emit_download_item_progress(
+            window,
+            session,
+            artifact,
+            Some(downloaded),
+            total.or(expected_size),
+            "Downloading",
+        );
+    };
+    let retry = |message: &str| {
+        emit_download_item_start(window, session, artifact, Some(0), expected_size, message);
+    };
+    let result = crate::downloader::download(
+        &crate::downloader::Request::new(urls, target, &cancel)
+            .size(expected_size)
+            .sha1(expected_sha1)
+            .on_progress(&progress)
+            .on_retry(&retry),
+    );
+    let downloaded_bytes = accounted.load(Ordering::Relaxed);
+    if let Err(error) = result {
+        if let Some(aggregate) = aggregate {
+            aggregate.discard_transferred(downloaded_bytes);
+        }
+        let error = format!("Failed to download {label}: {error}");
+        emit_download_item_error(window, session, artifact, &error);
+        return Err(error);
     }
-
-    let error =
-        last_error.unwrap_or_else(|| format!("Failed downloading {label} to {}", target.display()));
-    emit_download_item_error(window, session, artifact, &error);
-    Err(error)
+    if let Some(aggregate) = aggregate {
+        aggregate.settle(expected_size, downloaded_bytes);
+    }
+    emit_log(
+        window,
+        "info",
+        &format!("Downloaded {label}: {}", target.display()),
+    );
+    emit_download_item_complete(
+        window,
+        session,
+        artifact,
+        Some(downloaded_bytes),
+        Some(downloaded_bytes),
+        false,
+        "Completed",
+    );
+    Ok(true)
 }
 
 fn extract_native_jar(
@@ -4998,10 +4709,6 @@ struct DownloadRateSnapshot {
     eta_seconds: Option<u64>,
 }
 
-const DOWNLOAD_RETRY_ATTEMPTS: usize = 3;
-// Progress IPC per item at most this often; the dialog only refreshes on a 500ms
-// poll, so per-64KB-chunk events were pure serialization overhead.
-const DOWNLOAD_PROGRESS_EMIT_INTERVAL: Duration = Duration::from_millis(200);
 
 /// Process-wide memory of which download hosts are currently reachable.
 ///
@@ -5093,36 +4800,6 @@ pub(crate) mod mirror_health {
         }
         healthy.into_iter().chain(demoted).collect()
     }
-}
-
-// One shared HTTP client for all file downloads. reqwest pools keep-alive connections
-// per client, so building a client per file (the previous behavior) forced a fresh
-// DNS + TCP + TLS handshake for every one of the thousands of small asset/library
-// files — the dominant cost of an install, far ahead of actual transfer time.
-//
-// This is deliberately separate from the general API/metadata client so its aggressive
-// stall detection stays on the download hot path — it is used only by the streaming
-// `download_file_with_ipc`. The timeout is the important part: for reqwest's blocking
-// client, `Response`'s `Read` impl wraps *each* `read()` call in `wait::timeout(_, timeout)`
-// (see reqwest blocking/response.rs), so on a streamed body this acts as a per-read idle
-// timeout, not a whole-request deadline — a healthy transfer resets it on every chunk.
-// Without it a peer that accepts the connection then stalls mid-body — extremely common
-// for the Mojang CDN from mainland China — blocks until the total timeout before the next
-// mirror candidate is tried, so fallback never appears to happen. 20s of complete silence
-// on the socket is a genuine stall and triggers a fast failover to the next candidate.
-fn download_http_client() -> Result<&'static reqwest::blocking::Client, String> {
-    static CLIENT: OnceLock<reqwest::blocking::Client> = OnceLock::new();
-    if let Some(client) = CLIENT.get() {
-        return Ok(client);
-    }
-    let client = reqwest::blocking::Client::builder()
-        .user_agent(crate::LAUNCHER_HTTP_USER_AGENT)
-        .connect_timeout(Duration::from_secs(15))
-        .timeout(Duration::from_secs(20))
-        .redirect(reqwest::redirect::Policy::limited(10))
-        .build()
-        .map_err(|e| e.to_string())?;
-    Ok(CLIENT.get_or_init(|| client))
 }
 
 fn download_jobs_in_parallel(

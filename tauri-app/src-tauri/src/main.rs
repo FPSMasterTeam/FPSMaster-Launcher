@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod downloader;
 mod launcher_api;
 mod microsoft_auth;
 mod minecraft_core;
@@ -1660,6 +1661,7 @@ fn repair_instance_runtime_blocking(
             .ok_or_else(|| format!("No forge version available for {}", normalized_base_version))?;
         let jdk = ensure_jdk_blocking(
             window.clone(),
+            &downloader::CancelToken::new(None),
             game_dir_path.to_string_lossy().to_string(),
             normalized_base_version.clone(),
             Some(DEFAULT_DOWNLOAD_THREADS),
@@ -1880,10 +1882,15 @@ async fn ensure_jdk(
     game_dir: String,
     version_id: String,
     download_threads: Option<i32>,
+    ipc_session: Option<String>,
 ) -> Result<JdkEnsureResult, String> {
     let window_clone = window.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        ensure_jdk_blocking(window_clone, game_dir, version_id, download_threads)
+        let cancel = downloader::CancelToken::new(ipc_session.as_deref());
+        let result =
+            ensure_jdk_blocking(window_clone, &cancel, game_dir, version_id, download_threads);
+        clear_install_cancel(ipc_session.as_deref());
+        result
     })
     .await
     .map_err(|e| format!("Failed to join ensure_jdk task: {e}"))
@@ -1893,6 +1900,7 @@ async fn ensure_jdk(
 
 fn ensure_jdk_blocking(
     window: tauri::Window,
+    cancel: &downloader::CancelToken,
     game_dir: String,
     version_id: String,
     download_threads: Option<i32>,
@@ -1908,6 +1916,7 @@ fn ensure_jdk_blocking(
     let runtime_root = managed_jdk_runtime_root(&game_dir_path, major, needs_x64);
     let java_path = ensure_managed_jdk_runtime(
         Some(&window),
+        cancel,
         &runtime_root,
         major,
         download_threads,
@@ -2158,10 +2167,13 @@ async fn install_modpack(
     api_key: Option<String>,
     download_source: Option<String>,
     download_threads: Option<i32>,
+    ipc_session: Option<String>,
 ) -> Result<modpack::ModpackInstallResult, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        modpack::install_modpack_blocking(
+        let cancel = downloader::CancelToken::new(ipc_session.as_deref());
+        let result = modpack::install_modpack_blocking(
             window,
+            &cancel,
             game_dir,
             source,
             project_id,
@@ -2169,7 +2181,9 @@ async fn install_modpack(
             api_key,
             download_source,
             download_threads,
-        )
+        );
+        clear_install_cancel(ipc_session.as_deref());
+        result
     })
     .await
     .map_err(|e| format!("[modpack:finalize] Failed to join modpack install task: {e}"))
@@ -2400,7 +2414,6 @@ fn install_modrinth_project_blocking(
         sanitize_file_name(&file.filename)
     ));
     download_file_quiet_with_progress_blocking(
-        &client,
         &file.url,
         &download_path,
         window.as_ref(),
@@ -2660,7 +2673,6 @@ fn install_curseforge_project_blocking(
         sanitize_file_name(&file.file_name)
     ));
     download_file_quiet_with_progress_blocking(
-        &client,
         &download_url,
         &download_path,
         window.as_ref(),
@@ -3130,16 +3142,23 @@ fn install_edge_aot_package_blocking(
         });
     }
 
+    // The AOT runtime jar runs inside the game JVM; never install it on TLS alone
+    // (launcher-core-14). Checked after the up-to-date shortcut so an installed
+    // package keeps launching even if the catalog entry lacks a checksum.
+    let expected_checksum = normalized_checksum
+        .as_deref()
+        .and_then(normalize_sha256_value)
+        .ok_or_else(|| {
+            "Edge AOT package checksum is missing or invalid; refusing to install an unverified package"
+                .to_string()
+        })?;
+
     let download_file_name = format!(
         "{}.zip",
         sanitize_file_name(&format!("fpsmaster-edge-aot-{}", normalized_tag))
     );
-    let temp_download_path = env::temp_dir().join(format!(
-        "fpsmaster-edge-aot-{}-{}-{}",
-        std::process::id(),
-        now_epoch_millis(),
-        download_file_name
-    ));
+    // Stable path so an interrupted download resumes on the next attempt.
+    let temp_download_path = launcher_download_cache_path(&download_file_name)?;
 
     // Reuses the "mods" phase key: from the launch-prepare dialog's point of view this
     // replaces the mod-sync step for no-Forge Edge instances.
@@ -3166,45 +3185,40 @@ fn install_edge_aot_package_blocking(
         "Downloading",
     );
 
-    let progress_session = ipc_session.map(str::to_string);
-    let progress_item_id = normalized_url.clone();
-    let progress_item_name = download_file_name.clone();
-    let progress_callback: DownloadProgressCallback =
-        Arc::new(move |downloaded: u64, total: Option<u64>| {
-            emit_launch_prepare_item(
-                progress_session.as_deref(),
-                "item-progress",
+    let progress_callback = |downloaded: u64, total: Option<u64>| {
+        emit_launch_prepare_item(
+            ipc_session,
+            "item-progress",
+            "mods",
+            &normalized_url,
+            &download_file_name,
+            "aot-package",
+            Some(downloaded as i64),
+            total.map(|value| value as i64),
+            None,
+            "Downloading",
+        );
+        if let Some(total) = total.filter(|value| *value > 0) {
+            let percent = (downloaded.saturating_mul(100) / total).min(100) as i32;
+            emit_launch_prepare_ipc(
+                ipc_session,
+                "progress",
                 "mods",
-                &progress_item_id,
-                &progress_item_name,
-                "aot-package",
-                Some(downloaded as i64),
-                total.map(|value| value as i64),
+                "download",
+                Some(percent),
+                Some(100),
+                &format!("Downloading {download_file_name} ({percent}%)"),
                 None,
-                "Downloading",
             );
-            if let Some(total) = total.filter(|value| *value > 0) {
-                let percent = (downloaded.saturating_mul(100) / total).min(100) as i32;
-                emit_launch_prepare_ipc(
-                    progress_session.as_deref(),
-                    "progress",
-                    "mods",
-                    "download",
-                    Some(percent),
-                    Some(100),
-                    &format!("Downloading {progress_item_name} ({percent}%)"),
-                    None,
-                );
-            }
-        });
+        }
+    };
 
-    let download_result = download_file_blocking(
-        window,
-        "edge-aot",
-        &normalized_url,
-        &temp_download_path,
-        normalize_download_threads(Some(DEFAULT_DOWNLOAD_THREADS)),
-        Some(progress_callback),
+    let cancel = downloader::CancelToken::new(ipc_session);
+    let download_result = downloader::download(
+        &downloader::Request::single(&normalized_url, &temp_download_path, &cancel)
+            .sha256(Some(expected_checksum.as_str()))
+            .max_parts(normalize_download_threads(Some(DEFAULT_DOWNLOAD_THREADS)))
+            .on_progress(&progress_callback),
     );
     emit_launch_prepare_item(
         ipc_session,
@@ -3219,16 +3233,9 @@ fn install_edge_aot_package_blocking(
         "Downloaded",
     );
     if let Err(err) = download_result {
-        let _ = fs::remove_file(&temp_download_path);
         return Err(format!("Failed to download Edge AOT package: {err}"));
     }
-
-    if let Some(expected_checksum) = normalized_checksum.as_deref() {
-        if let Err(err) = verify_file_sha256(&temp_download_path, expected_checksum) {
-            let _ = fs::remove_file(&temp_download_path);
-            return Err(format!("Edge AOT package checksum mismatch: {err}"));
-        }
-    }
+    emit_log(window, "info", &format!("Downloaded Edge AOT package {download_file_name}"));
 
     let stage_dir = aot_dir.with_file_name(format!(
         ".fpsmaster-edge-aot-stage-{}-{}",
@@ -3516,7 +3523,6 @@ fn install_fabric_api_blocking(
         "Downloading",
     );
     if let Err(err) = download_file_quiet_with_progress_blocking(
-        &client,
         &file.url,
         &download_path,
         window,
@@ -3616,6 +3622,15 @@ fn install_fabric_api_blocking(
 // download URL ends with (".../1783864173-0e0f....jar"). The extension is taken
 // from the URL when it looks like a real archive extension so that non-jar
 // packages (e.g. .zip) still route through the archive-extraction path.
+/// Stable location for package downloads, so a `.part` left by an interrupted
+/// attempt is resumed by the next one instead of being orphaned.
+fn launcher_download_cache_path(file_name: &str) -> Result<PathBuf, String> {
+    let dir = env::temp_dir().join("fpsmaster-launcher-downloads");
+    fs::create_dir_all(&dir)
+        .map_err(|e| format!("Failed to create download cache {}: {e}", dir.display()))?;
+    Ok(dir.join(sanitize_file_name(file_name)))
+}
+
 fn launcher_mod_package_file_name(download_url: &str, version_id: &str, version_tag: &str) -> String {
     let ext = reqwest::Url::parse(download_url)
         .ok()
@@ -3712,12 +3727,17 @@ fn install_launcher_version_mods_blocking(
     } else {
         let download_file_name =
             launcher_mod_package_file_name(&normalized_url, &version_id, &normalized_tag);
-        let temp_download_path = env::temp_dir().join(format!(
-            "fpsmaster-launcher-mods-{}-{}-{}",
-            std::process::id(),
-            now_epoch_millis(),
-            download_file_name
-        ));
+        // The package jars run inside the game JVM; never install them on TLS
+        // alone (launcher-core-14).
+        let expected_checksum = checksum
+            .as_deref()
+            .and_then(normalize_sha256_value)
+            .ok_or_else(|| {
+                "Launcher package checksum is missing or invalid; refusing to install an unverified package"
+                    .to_string()
+            })?;
+        // Stable path so an interrupted download resumes on the next attempt.
+        let temp_download_path = launcher_download_cache_path(&download_file_name)?;
         emit_launch_prepare_ipc(
             ipc_session,
             "progress",
@@ -3743,44 +3763,39 @@ fn install_launcher_version_mods_blocking(
         // The package is a single file, so unlike the manifest path there is no
         // per-file counter to move the bar. Stream byte-level progress instead so the
         // prepare dialog's task bar and the file row advance while it downloads.
-        let progress_session = ipc_session.map(str::to_string);
-        let progress_item_id = normalized_url.clone();
-        let progress_item_name = download_file_name.clone();
-        let progress_callback: DownloadProgressCallback =
-            Arc::new(move |downloaded: u64, total: Option<u64>| {
-                emit_launch_prepare_item(
-                    progress_session.as_deref(),
-                    "item-progress",
+        let progress_callback = |downloaded: u64, total: Option<u64>| {
+            emit_launch_prepare_item(
+                ipc_session,
+                "item-progress",
+                "mods",
+                &normalized_url,
+                &download_file_name,
+                "package",
+                Some(downloaded as i64),
+                total.map(|value| value as i64),
+                None,
+                "Downloading",
+            );
+            if let Some(total) = total.filter(|value| *value > 0) {
+                let percent = (downloaded.saturating_mul(100) / total).min(100) as i32;
+                emit_launch_prepare_ipc(
+                    ipc_session,
+                    "progress",
                     "mods",
-                    &progress_item_id,
-                    &progress_item_name,
-                    "package",
-                    Some(downloaded as i64),
-                    total.map(|value| value as i64),
+                    "download",
+                    Some(percent),
+                    Some(100),
+                    &format!("Downloading {download_file_name} ({percent}%)"),
                     None,
-                    "Downloading",
                 );
-                if let Some(total) = total.filter(|value| *value > 0) {
-                    let percent = (downloaded.saturating_mul(100) / total).min(100) as i32;
-                    emit_launch_prepare_ipc(
-                        progress_session.as_deref(),
-                        "progress",
-                        "mods",
-                        "download",
-                        Some(percent),
-                        Some(100),
-                        &format!("Downloading {progress_item_name} ({percent}%)"),
-                        None,
-                    );
-                }
-            });
-        let download_result = download_file_blocking(
-            None,
-            "launcher-mods",
-            &normalized_url,
-            &temp_download_path,
-            normalize_download_threads(Some(DEFAULT_DOWNLOAD_THREADS)),
-            Some(progress_callback),
+            }
+        };
+        let cancel = downloader::CancelToken::new(ipc_session);
+        let download_result = downloader::download(
+            &downloader::Request::single(&normalized_url, &temp_download_path, &cancel)
+                .sha256(Some(expected_checksum.as_str()))
+                .max_parts(normalize_download_threads(Some(DEFAULT_DOWNLOAD_THREADS)))
+                .on_progress(&progress_callback),
         );
         emit_launch_prepare_item(
             ipc_session,
@@ -3795,14 +3810,7 @@ fn install_launcher_version_mods_blocking(
             "Downloaded",
         );
         if let Err(err) = download_result {
-            let _ = fs::remove_file(&temp_download_path);
             return Err(format!("Failed to download launcher package: {err}"));
-        }
-        if let Some(expected_checksum) = checksum.as_deref() {
-            if let Err(err) = verify_file_sha256(&temp_download_path, expected_checksum) {
-                let _ = fs::remove_file(&temp_download_path);
-                return Err(format!("Launcher package checksum mismatch: {err}"));
-            }
         }
 
         let stage_dir = create_launcher_mods_stage_dir(&mods_dir)?;
@@ -4196,7 +4204,7 @@ fn install_manifest_files_into_stage(
     manifest: &LauncherPackageManifest,
     stage_dir: &Path,
 ) -> Result<Vec<LauncherInstalledFileRecord>, String> {
-    let client = build_blocking_http_client()?;
+    let cancel = downloader::CancelToken::new(ipc_session);
     let base_url = resolve_manifest_base_url(manifest_url, manifest.base_url.as_deref())?;
     let mut installed_files = Vec::new();
     let total = manifest.files.len() as i32;
@@ -4241,7 +4249,24 @@ fn install_manifest_files_into_stage(
             "Downloading",
         );
 
-        download_file_quiet_blocking(&client, &resolved_url, &target_path).map_err(|err| {
+        // Every file in a launcher package ends up in the game JVM, so each
+        // one must carry a checksum (launcher-core-14).
+        let expected_sha256 = entry
+            .sha256
+            .as_deref()
+            .and_then(normalize_sha256_value)
+            .ok_or_else(|| {
+                format!(
+                    "Manifest file {} has no valid sha256; refusing to install an unverified file",
+                    relative_path.display()
+                )
+            })?;
+        downloader::download(
+            &downloader::Request::single(&resolved_url, &target_path, &cancel)
+                .size(entry.size)
+                .sha256(Some(expected_sha256.as_str())),
+        )
+        .map_err(|err| {
             emit_launch_prepare_item(
                 ipc_session,
                 "item-error",
@@ -4260,33 +4285,6 @@ fn install_manifest_files_into_stage(
                 resolved_url
             )
         })?;
-
-        if let Some(expected_size) = entry.size {
-            let actual_size = fs::metadata(&target_path)
-                .map_err(|e| {
-                    format!(
-                        "Failed to inspect downloaded file {}: {e}",
-                        target_path.display()
-                    )
-                })?
-                .len();
-            if actual_size != expected_size {
-                return Err(format!(
-                    "Manifest file size mismatch for {}: expected {}, got {}",
-                    relative_path.display(),
-                    expected_size,
-                    actual_size
-                ));
-            }
-        }
-        if let Some(expected_sha256) = entry.sha256.as_deref() {
-            verify_file_sha256(&target_path, expected_sha256).map_err(|err| {
-                format!(
-                    "Manifest file checksum mismatch for {}: {err}",
-                    relative_path.display()
-                )
-            })?;
-        }
 
         installed_files.push(build_launcher_installed_file_record(
             &target_path,
@@ -4342,18 +4340,21 @@ fn fetch_launcher_package_manifest(manifest_url: &str) -> Result<LauncherPackage
 pub(crate) const LAUNCHER_HTTP_USER_AGENT: &str =
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) FPSMasterLauncher (+https://github.com/fpsmasterteam)";
 
+/// Client for metadata/catalog requests (Modrinth, CurseForge, manifests).
+/// File transfers go through `downloader`. The timeout used to be 30 minutes,
+/// which let a stalled peer hang a launch for half an hour per retry
+/// (launcher-core-8); metadata bodies are small, so one minute is generous.
 pub(crate) fn build_blocking_http_client() -> Result<reqwest::blocking::Client, String> {
     reqwest::blocking::Client::builder()
         .user_agent(LAUNCHER_HTTP_USER_AGENT)
-        .connect_timeout(std::time::Duration::from_secs(30))
-        .timeout(std::time::Duration::from_secs(60 * 30))
+        .connect_timeout(std::time::Duration::from_secs(15))
+        .timeout(std::time::Duration::from_secs(60))
         .redirect(reqwest::redirect::Policy::limited(10))
         .build()
         .map_err(|e| e.to_string())
 }
 
-/// 面向 api.fpsmaster.top 的短超时客户端。和 `build_blocking_http_client` 的区别
-/// 只在超时预算：那个是给大文件下载用的(30 分钟)，API 调用必须快速失败。
+/// 面向 api.fpsmaster.top 的短超时客户端。API 调用必须快速失败。
 pub(crate) fn build_api_http_client() -> Result<reqwest::blocking::Client, String> {
     reqwest::blocking::Client::builder()
         .user_agent(LAUNCHER_HTTP_USER_AGENT)
@@ -5833,14 +5834,6 @@ fn zip_archive_path(path: &Path) -> Result<String, String> {
     Ok(output)
 }
 
-pub(crate) fn download_file_quiet_blocking(
-    client: &reqwest::blocking::Client,
-    url: &str,
-    target: &Path,
-) -> Result<(), String> {
-    download_file_with_progress_callback_blocking(client, url, target, |_, _| {})
-}
-
 fn emit_content_install_progress(
     window: Option<&tauri::Window>,
     project_key: &str,
@@ -5870,111 +5863,31 @@ fn emit_content_install_progress(
     );
 }
 
+/// Content downloads (Modrinth/CurseForge/Fabric API). They have no install
+/// session, so they are only cancellable through `cancel_all_downloads`.
 fn download_file_quiet_with_progress_blocking(
-    client: &reqwest::blocking::Client,
     url: &str,
     target: &Path,
     window: Option<&tauri::Window>,
     project_key: Option<&str>,
 ) -> Result<(), String> {
-    download_file_with_progress_callback_blocking(client, url, target, |downloaded, total| {
+    let cancel = downloader::CancelToken::new(None);
+    download_file_with_progress_callback_blocking(&cancel, url, target, &|downloaded, total| {
         if let Some(key) = project_key {
             emit_content_install_progress(window, key, downloaded, total);
         }
     })
 }
 
-pub(crate) fn download_file_with_progress_callback_blocking<F>(
-    client: &reqwest::blocking::Client,
+/// Streams `url` into `target` through the unified downloader (resume, retry
+/// with backoff, idle timeout, cancellation, throttled progress).
+pub(crate) fn download_file_with_progress_callback_blocking(
+    cancel: &downloader::CancelToken,
     url: &str,
     target: &Path,
-    mut on_progress: F,
-) -> Result<(), String>
-where
-    F: FnMut(u64, Option<u64>),
-{
-    if let Some(parent) = target.parent() {
-        fs::create_dir_all(parent).map_err(|e| {
-            format!(
-                "Failed to create download directory {}: {e}",
-                parent.display()
-            )
-        })?;
-    }
-
-    let tmp = target.with_extension("download");
-    let mut last_error = String::new();
-    for attempt in 1..=3 {
-        let response = client
-            .get(url)
-            .header(reqwest::header::ACCEPT, "*/*")
-            .header(reqwest::header::ACCEPT_ENCODING, "identity")
-            .send();
-
-        let mut response = match response {
-            Ok(value) => value,
-            Err(err) => {
-                last_error =
-                    format!("request failed on attempt {attempt}/3: {}", describe_http_error(&err));
-                continue;
-            }
-        };
-        if !response.status().is_success() {
-            last_error = format!("HTTP {}", response.status());
-            continue;
-        }
-        let total_bytes = response.content_length();
-        on_progress(0, total_bytes);
-
-        let mut file = fs::File::create(&tmp)
-            .map_err(|e| format!("Failed to create temp file {}: {e}", tmp.display()))?;
-        let mut write_result = Ok(0_u64);
-        let mut downloaded_bytes = 0_u64;
-        let mut buffer = [0_u8; 64 * 1024];
-        loop {
-            let read = match response.read(&mut buffer) {
-                Ok(0) => break,
-                Ok(value) => value,
-                Err(err) => {
-                    write_result = Err(err);
-                    break;
-                }
-            };
-            if let Err(err) = file.write_all(&buffer[..read]) {
-                write_result = Err(err);
-                break;
-            }
-            downloaded_bytes += read as u64;
-            on_progress(downloaded_bytes, total_bytes);
-        }
-        match write_result {
-            Ok(_) => {
-                file.flush()
-                    .map_err(|e| format!("Failed to flush temp file {}: {e}", tmp.display()))?;
-                if target.exists() {
-                    fs::remove_file(target).map_err(|e| {
-                        format!("Failed to replace existing file {}: {e}", target.display())
-                    })?;
-                }
-                fs::rename(&tmp, target).map_err(|e| {
-                    format!(
-                        "Failed to move downloaded file from {} to {}: {e}",
-                        tmp.display(),
-                        target.display()
-                    )
-                })?;
-                on_progress(downloaded_bytes, total_bytes.or(Some(downloaded_bytes)));
-                return Ok(());
-            }
-            Err(err) => {
-                last_error = format!("read failed on attempt {attempt}/3: {err}");
-                let _ = fs::remove_file(&tmp);
-            }
-        }
-    }
-
-    let _ = fs::remove_file(&tmp);
-    Err(last_error)
+    on_progress: &(dyn Fn(u64, Option<u64>) + Sync),
+) -> Result<(), String> {
+    downloader::download(&downloader::Request::single(url, target, cancel).on_progress(on_progress))
 }
 
 fn resolve_manifest_base_url(
@@ -6260,6 +6173,13 @@ pub(crate) fn is_install_cancelled(session_id: Option<&str>) -> bool {
 #[tauri::command]
 async fn cancel_install(session_id: String) -> Result<(), String> {
     request_install_cancel(&session_id)
+}
+
+/// Cancels every running download/install task (all sessions, plus content
+/// downloads that have no session). Returns how many tasks were signalled.
+#[tauri::command]
+async fn cancel_all_downloads() -> usize {
+    downloader::cancel_all()
 }
 
 #[tauri::command]
@@ -6689,9 +6609,19 @@ async fn install_native_app(
     download_url: String,
     version_tag: Option<String>,
     checksum: Option<String>,
+    ipc_session: Option<String>,
 ) -> Result<NativeAppInstallResult, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        install_native_app_blocking(game_dir, version_id, download_url, version_tag, checksum)
+        let result = install_native_app_blocking(
+            ipc_session.as_deref(),
+            game_dir,
+            version_id,
+            download_url,
+            version_tag,
+            checksum,
+        );
+        clear_install_cancel(ipc_session.as_deref());
+        result
     })
     .await
     .map_err(|e| format!("Failed to join native app install task: {e}"))
@@ -6700,6 +6630,7 @@ async fn install_native_app(
 }
 
 fn install_native_app_blocking(
+    ipc_session: Option<&str>,
     game_dir: String,
     version_id: String,
     download_url: String,
@@ -6744,14 +6675,6 @@ fn install_native_app_blocking(
         }
     }
 
-    let client = reqwest::blocking::Client::builder()
-        .user_agent(JDK_DOWNLOAD_USER_AGENT)
-        .connect_timeout(Duration::from_secs(30))
-        .timeout(Duration::from_secs(600))
-        .redirect(reqwest::redirect::Policy::limited(10))
-        .build()
-        .map_err(|e| e.to_string())?;
-
     let tmp_dir = game_dir_path.join("apps").join(".downloads");
     fs::create_dir_all(&tmp_dir)
         .map_err(|e| format!("Failed to create download dir {}: {e}", tmp_dir.display()))?;
@@ -6760,11 +6683,13 @@ fn install_native_app_blocking(
         sanitize_file_name(&normalized_tag)
     ));
 
-    download_file_quiet_blocking(&client, &normalized_url, &archive_path)?;
-    verify_file_sha256(&archive_path, &normalized_checksum).map_err(|err| {
-        let _ = fs::remove_file(&archive_path);
-        format!("Checksum mismatch for {version_id}: {err}")
-    })?;
+    let cancel = downloader::CancelToken::new(ipc_session);
+    downloader::download(
+        &downloader::Request::single(&normalized_url, &archive_path, &cancel)
+            .sha256(Some(normalized_checksum.as_str()))
+            .max_parts(normalize_download_threads(Some(DEFAULT_DOWNLOAD_THREADS))),
+    )
+    .map_err(|err| format!("Failed to download {version_id}: {err}"))?;
 
     let apps_dir = install_dir.parent().ok_or_else(|| {
         format!(
@@ -7803,8 +7728,121 @@ fn is_mojang_bundle_layout(java_path: &Path) -> bool {
         .any(|component| component.as_os_str() == "jre.bundle")
 }
 
+const RUNTIME_MARKER_FILE: &str = ".fpsmaster-runtime.json";
+
+/// Written as the very last step of a runtime install. A runtime directory
+/// without it (or whose files no longer match it) is treated as not installed,
+/// so a download interrupted halfway is repaired instead of being launched
+/// forever as a JRE missing `lib/modules` (launcher-core-1).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RuntimeInstallMarker {
+    source: String,
+    version: String,
+    platform: String,
+    major: i32,
+    installed_at: u64,
+    files: Vec<RuntimeFileRecord>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct RuntimeFileRecord {
+    path: String,
+    size: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    sha1: Option<String>,
+}
+
+fn runtime_staging_dir(runtime_root: &Path) -> PathBuf {
+    let name = runtime_root
+        .file_name()
+        .map(|value| value.to_string_lossy().to_string())
+        .unwrap_or_else(|| "runtime".to_string());
+    runtime_root.with_file_name(format!(".{name}.staging"))
+}
+
+fn read_runtime_marker(runtime_root: &Path) -> Option<RuntimeInstallMarker> {
+    let raw = fs::read(runtime_root.join(RUNTIME_MARKER_FILE)).ok()?;
+    serde_json::from_slice(&raw).ok()
+}
+
+fn runtime_relative_path(root: &Path, relative: &str) -> PathBuf {
+    relative
+        .replace('\\', "/")
+        .split('/')
+        .filter(|component| !component.is_empty() && *component != ".." && *component != ".")
+        .fold(root.to_path_buf(), |acc, component| acc.join(component))
+}
+
+/// Checks a managed runtime against its completion marker. `deep` also
+/// re-hashes files whose SHA1 is known (used by the health check).
+fn verify_runtime_install(runtime_root: &Path, deep: bool) -> Result<PathBuf, String> {
+    let marker = read_runtime_marker(runtime_root)
+        .ok_or_else(|| "installation was not completed (no completion marker)".to_string())?;
+    for file in &marker.files {
+        let path = runtime_relative_path(runtime_root, &file.path);
+        let size = fs::metadata(&path)
+            .map_err(|_| format!("missing file {}", file.path))?
+            .len();
+        if size != file.size {
+            return Err(format!(
+                "file {} has {size} bytes, expected {}",
+                file.path, file.size
+            ));
+        }
+        if deep {
+            if let Some(expected) = file.sha1.as_deref() {
+                let actual = compute_sha1_hex(&path)?;
+                if !actual.eq_ignore_ascii_case(expected) {
+                    return Err(format!("file {} is corrupted (SHA1 mismatch)", file.path));
+                }
+            }
+        }
+    }
+    locate_java_binary(runtime_root).ok_or_else(|| "java executable not found".to_string())
+}
+
+/// Records every regular file below `root` (used for archive-based installs
+/// that have no manifest of their own).
+fn collect_runtime_file_records(root: &Path) -> Result<Vec<RuntimeFileRecord>, String> {
+    let mut records = Vec::new();
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let entries =
+            fs::read_dir(&dir).map_err(|e| format!("Failed to scan {}: {e}", dir.display()))?;
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let Ok(meta) = fs::symlink_metadata(&path) else {
+                continue;
+            };
+            if meta.is_dir() {
+                stack.push(path);
+            } else if meta.is_file() {
+                let relative = path
+                    .strip_prefix(root)
+                    .map_err(|e| e.to_string())?
+                    .components()
+                    .map(|component| component.as_os_str().to_string_lossy().to_string())
+                    .collect::<Vec<_>>()
+                    .join("/");
+                if relative == RUNTIME_MARKER_FILE {
+                    continue;
+                }
+                records.push(RuntimeFileRecord {
+                    path: relative,
+                    size: meta.len(),
+                    sha1: None,
+                });
+            }
+        }
+    }
+    records.sort_by(|left, right| left.path.cmp(&right.path));
+    Ok(records)
+}
+
 fn ensure_managed_jdk_runtime(
     window: Option<&tauri::Window>,
+    cancel: &downloader::CancelToken,
     runtime_root: &Path,
     major: i32,
     download_threads: Option<i32>,
@@ -7813,15 +7851,13 @@ fn ensure_managed_jdk_runtime(
     if force_x64 {
         ensure_x64_emulation_available()?;
     }
-    fs::create_dir_all(runtime_root).map_err(|e| {
-        format!(
-            "Failed creating runtime dir {}: {e}",
-            runtime_root.display()
-        )
-    })?;
 
-    if let Some(java_path) = locate_java_binary(runtime_root) {
-        if prefers_zulu_over_mojang_x64(major, force_x64) && is_mojang_bundle_layout(&java_path) {
+    let mut discard_existing = false;
+    match verify_runtime_install(runtime_root, false) {
+        Ok(java_path)
+            if prefers_zulu_over_mojang_x64(major, force_x64)
+                && is_mojang_bundle_layout(&java_path) =>
+        {
             // A Mojang jre-legacy install from before the Zulu switch — it crashes on
             // modern macOS (see below), so wipe it and reinstall instead of reusing it.
             emit_log(
@@ -7829,19 +7865,9 @@ fn ensure_managed_jdk_runtime(
                 "warn",
                 "Replacing Mojang jre-legacy x64 runtime: its AWT crashes on macOS 14.4+",
             );
-            fs::remove_dir_all(runtime_root).map_err(|e| {
-                format!(
-                    "Failed removing outdated runtime {}: {e}",
-                    runtime_root.display()
-                )
-            })?;
-            fs::create_dir_all(runtime_root).map_err(|e| {
-                format!(
-                    "Failed creating runtime dir {}: {e}",
-                    runtime_root.display()
-                )
-            })?;
-        } else {
+            discard_existing = true;
+        }
+        Ok(java_path) => {
             emit_log(
                 window,
                 "info",
@@ -7852,7 +7878,39 @@ fn ensure_managed_jdk_runtime(
             );
             return Ok(java_path);
         }
+        Err(reason) if runtime_root.exists() => emit_log(
+            window,
+            "warn",
+            &format!("Managed JDK major={major} is incomplete ({reason}); repairing it"),
+        ),
+        Err(_) => {}
     }
+
+    // Install into a sibling staging directory and only promote it once the
+    // completion marker is written. An unfinished runtime directory is moved
+    // into staging rather than deleted: the per-file SHA1 skip in the Mojang
+    // path then only re-downloads what is actually missing or corrupt.
+    let staging = runtime_staging_dir(runtime_root);
+    if runtime_root.exists() {
+        if discard_existing || staging.exists() {
+            fs::remove_dir_all(runtime_root).map_err(|e| {
+                format!(
+                    "Failed removing outdated runtime {}: {e}",
+                    runtime_root.display()
+                )
+            })?;
+        } else {
+            fs::rename(runtime_root, &staging).map_err(|e| {
+                format!(
+                    "Failed to move incomplete runtime {} aside: {e}",
+                    runtime_root.display()
+                )
+            })?;
+        }
+    }
+    let _ = fs::remove_file(staging.join(RUNTIME_MARKER_FILE));
+    fs::create_dir_all(&staging)
+        .map_err(|e| format!("Failed creating runtime dir {}: {e}", staging.display()))?;
 
     let normalized_download_threads = normalize_download_threads(download_threads);
     let component = mojang_java_component_for_major(major);
@@ -7867,7 +7925,7 @@ fn ensure_managed_jdk_runtime(
         ),
     );
 
-    if force_x64 {
+    let marker = if force_x64 {
         // The game ships only x64 native libs (old LWJGL); the JVM must be x64 too, so
         // it runs under Rosetta 2 / Windows-on-ARM emulation. A native-arch JVM here
         // would fail to load the natives (UnsatisfiedLinkError).
@@ -7879,90 +7937,121 @@ fn ensure_managed_jdk_runtime(
         // +[NSApplication _crashOnException:] takes the process down with SIGILL
         // (fixed upstream in 8u412). Install a current Zulu x64 JRE instead and keep
         // the Mojang runtime only as a fallback when Azul is unreachable.
-        let mut installed = false;
+        let mut installed = None;
         if prefers_zulu_over_mojang_x64(major, force_x64) {
             match install_zulu_jre_archive(
                 window,
-                runtime_root,
+                cancel,
+                &staging,
                 major,
                 normalized_download_threads,
                 "x64",
             ) {
-                Ok(()) => installed = true,
-                Err(zulu_err) => emit_log(
-                    window,
-                    "warn",
-                    &format!(
-                        "Zulu x64 JRE unavailable ({zulu_err}); falling back to Mojang x64 runtime"
-                    ),
-                ),
+                Ok(marker) => installed = Some(marker),
+                Err(zulu_err) => {
+                    cancel.check()?;
+                    emit_log(
+                        window,
+                        "warn",
+                        &format!(
+                            "Zulu x64 JRE unavailable ({zulu_err}); falling back to Mojang x64 runtime"
+                        ),
+                    )
+                }
             }
         }
-        if !installed
-            && !install_mojang_java_runtime(
+        match installed {
+            Some(marker) => marker,
+            None => install_mojang_java_runtime(
                 window,
-                runtime_root,
+                cancel,
+                &staging,
                 component,
                 major,
                 normalized_download_threads,
                 &[key],
             )?
-        {
-            return Err(format!("No x64 Mojang runtime available for {component}"));
+            .ok_or_else(|| format!("No x64 Mojang runtime available for {component}"))?,
         }
     } else {
         // 1) Mojang's runtime for the native CPU arch (no emulation).
         let native = native_key
             .ok_or_else(|| format!("Unsupported platform for Mojang runtime, major={major}"))?;
-        let installed = install_mojang_java_runtime(
+        match install_mojang_java_runtime(
             window,
-            runtime_root,
+            cancel,
+            &staging,
             component,
             major,
             normalized_download_threads,
             &[native],
-        )?;
-        if !installed {
-            // 2) Mojang has no native build (e.g. macOS arm64 + Java 8/16). Try a native
-            //    third-party JRE before considering emulation.
-            emit_log(
-                window,
-                "info",
-                &format!("No native Mojang runtime for {component}; fetching native JRE for major={major}"),
-            );
-            match install_native_jre_archive(
-                window,
-                runtime_root,
-                major,
-                normalized_download_threads,
-            ) {
-                Ok(()) => {}
-                Err(native_err) => {
-                    // 3) Last resort: Mojang's x64 build via emulation.
-                    emit_log(
-                        window,
-                        "warn",
-                        &format!("Native JRE unavailable ({native_err}); falling back to emulated x64 runtime"),
-                    );
-                    let key = x64_key
-                        .ok_or_else(|| format!("No Java runtime available for major={major}"))?;
-                    if !install_mojang_java_runtime(
-                        window,
-                        runtime_root,
-                        component,
-                        major,
-                        normalized_download_threads,
-                        &[key],
-                    )? {
-                        return Err(format!("No Java runtime available for major={major}"));
+        )? {
+            Some(marker) => marker,
+            None => {
+                // 2) Mojang has no native build (e.g. macOS arm64 + Java 8/16). Try a native
+                //    third-party JRE before considering emulation.
+                emit_log(
+                    window,
+                    "info",
+                    &format!("No native Mojang runtime for {component}; fetching native JRE for major={major}"),
+                );
+                match install_native_jre_archive(
+                    window,
+                    cancel,
+                    &staging,
+                    major,
+                    normalized_download_threads,
+                ) {
+                    Ok(marker) => marker,
+                    Err(native_err) => {
+                        cancel.check()?;
+                        // 3) Last resort: Mojang's x64 build via emulation.
+                        emit_log(
+                            window,
+                            "warn",
+                            &format!("Native JRE unavailable ({native_err}); falling back to emulated x64 runtime"),
+                        );
+                        let key = x64_key
+                            .ok_or_else(|| format!("No Java runtime available for major={major}"))?;
+                        install_mojang_java_runtime(
+                            window,
+                            cancel,
+                            &staging,
+                            component,
+                            major,
+                            normalized_download_threads,
+                            &[key],
+                        )?
+                        .ok_or_else(|| format!("No Java runtime available for major={major}"))?
                     }
                 }
             }
         }
-    }
+    };
 
-    locate_java_binary(runtime_root)
-        .ok_or_else(|| "JDK extracted but java executable not found".to_string())
+    if locate_java_binary(&staging).is_none() {
+        return Err("JDK extracted but java executable not found".to_string());
+    }
+    let marker_bytes = serde_json::to_vec_pretty(&marker)
+        .map_err(|e| format!("Failed to encode runtime marker: {e}"))?;
+    fs::write(staging.join(RUNTIME_MARKER_FILE), marker_bytes)
+        .map_err(|e| format!("Failed to write runtime marker: {e}"))?;
+    if runtime_root.exists() {
+        fs::remove_dir_all(runtime_root).map_err(|e| {
+            format!(
+                "Failed to replace runtime {}: {e}",
+                runtime_root.display()
+            )
+        })?;
+    }
+    fs::rename(&staging, runtime_root).map_err(|e| {
+        format!(
+            "Failed to activate runtime {}: {e}",
+            runtime_root.display()
+        )
+    })?;
+    verify_runtime_install(runtime_root, false)
+        .map_err(|e| format!("Installed runtime failed verification: {e}"))
 }
 
 #[cfg(windows)]
@@ -8181,6 +8270,7 @@ async fn install_optifine(
                 let java_major = requirement.major_version.max(8);
                 Some(ensure_managed_jdk_runtime(
                     Some(&window),
+                    &downloader::CancelToken::new(session.as_deref()),
                     &managed_jdk_runtime_root(&game_dir_path, java_major, false),
                     java_major,
                     Some(DEFAULT_DOWNLOAD_THREADS),
@@ -8244,6 +8334,7 @@ async fn install_forge(
                 let java_major = requirement.major_version.max(8);
                 ensure_managed_jdk_runtime(
                     Some(&window),
+                    &downloader::CancelToken::new(session.as_deref()),
                     &managed_jdk_runtime_root(&game_dir_path, java_major, false),
                     java_major,
                     Some(normalized_download_threads as i32),
@@ -8494,12 +8585,13 @@ fn mojang_java_platform_keys() -> Vec<&'static str> {
 /// when a runtime was installed.
 fn install_mojang_java_runtime(
     window: Option<&tauri::Window>,
+    cancel: &downloader::CancelToken,
     runtime_root: &Path,
     component: &str,
     major: i32,
     download_threads: usize,
     platform_keys: &[&str],
-) -> Result<bool, String> {
+) -> Result<Option<RuntimeInstallMarker>, String> {
     if platform_keys.is_empty() {
         return Err(format!(
             "Unsupported platform for Mojang runtime, major={major}"
@@ -8521,7 +8613,7 @@ fn install_mojang_java_runtime(
     });
     let (platform, candidate) = match selected {
         Some(found) => found,
-        None => return Ok(false),
+        None => return Ok(None),
     };
 
     emit_log(
@@ -8535,8 +8627,29 @@ fn install_mojang_java_runtime(
 
     let manifest: MojangJavaManifest =
         fetch_json(window, "Mojang Java manifest", &candidate.manifest.url)?;
-    download_mojang_runtime_files(window, runtime_root, &manifest, download_threads)?;
-    Ok(true)
+    download_mojang_runtime_files(window, cancel, runtime_root, &manifest, download_threads)?;
+    let mut files = manifest
+        .files
+        .iter()
+        .filter(|(_, entry)| entry.entry_type == "file")
+        .filter_map(|(path, entry)| {
+            let raw = entry.downloads.get("raw")?;
+            Some(RuntimeFileRecord {
+                path: path.replace('\\', "/"),
+                size: raw.size,
+                sha1: Some(raw.sha1.clone()),
+            })
+        })
+        .collect::<Vec<_>>();
+    files.sort_by(|left, right| left.path.cmp(&right.path));
+    Ok(Some(RuntimeInstallMarker {
+        source: format!("mojang:{component}"),
+        version: candidate.version.name.clone(),
+        platform: platform.to_string(),
+        major,
+        installed_at: now_epoch_seconds(),
+        files,
+    }))
 }
 
 /// A native third-party JRE (Azul Zulu) used when Mojang ships no native build for this
@@ -8573,12 +8686,13 @@ fn azul_arch() -> Option<&'static str> {
 /// Downloads and extracts a native Zulu JRE for the given Java major into `runtime_root`.
 fn install_native_jre_archive(
     window: Option<&tauri::Window>,
+    cancel: &downloader::CancelToken,
     runtime_root: &Path,
     major: i32,
     download_threads: usize,
-) -> Result<(), String> {
+) -> Result<RuntimeInstallMarker, String> {
     let arch = azul_arch().ok_or_else(|| "Unsupported CPU arch for native JRE".to_string())?;
-    install_zulu_jre_archive(window, runtime_root, major, download_threads, arch)
+    install_zulu_jre_archive(window, cancel, runtime_root, major, download_threads, arch)
 }
 
 /// Downloads and extracts a Zulu JRE for an explicit CPU arch into `runtime_root`.
@@ -8586,11 +8700,12 @@ fn install_native_jre_archive(
 /// current Zulu build replaces Mojang's unusably old jre-legacy.
 fn install_zulu_jre_archive(
     window: Option<&tauri::Window>,
+    cancel: &downloader::CancelToken,
     runtime_root: &Path,
     major: i32,
     download_threads: usize,
     arch: &str,
-) -> Result<(), String> {
+) -> Result<RuntimeInstallMarker, String> {
     let os = azul_os().ok_or_else(|| "Unsupported OS for native JRE".to_string())?;
     let archive_type = if cfg!(windows) { "zip" } else { "tar.gz" };
     let api_url = format!(
@@ -8609,25 +8724,46 @@ fn install_zulu_jre_archive(
         "info",
         &format!("Downloading JDK {} ({os}/{arch})", package.name),
     );
-    let archive_path = runtime_root.join(format!(".zulu-download.{archive_type}"));
-    download_file_blocking(
-        window,
-        "native-jre",
-        &package.download_url,
-        &archive_path,
-        download_threads,
-        None,
-    )?;
-    verify_file_sha256(&archive_path, &package.sha256_hash)
-        .map_err(|e| format!("Native JRE checksum failed: {e}"))?;
+    // Kept outside the staging directory under a stable name so an interrupted
+    // download resumes instead of starting over.
+    let archive_path = runtime_root
+        .parent()
+        .unwrap_or(runtime_root)
+        .join(".downloads")
+        .join(format!("{}.{archive_type}", sanitize_file_name(&package.name)));
+    let progress = |downloaded: u64, total: Option<u64>| match total.filter(|value| *value > 0) {
+        Some(total) => emit_log(
+            window,
+            "info",
+            &format!(
+                "JDK download progress: {}% ({downloaded}/{total} bytes)",
+                downloaded.saturating_mul(100) / total
+            ),
+        ),
+        None => emit_log(
+            window,
+            "info",
+            &format!("JDK download progress: {downloaded} bytes"),
+        ),
+    };
+    downloader::download(
+        &downloader::Request::single(&package.download_url, &archive_path, cancel)
+            .sha256(Some(package.sha256_hash.as_str()))
+            .max_parts(download_threads)
+            .on_progress(&progress),
+    )
+    .map_err(|e| format!("Native JRE download failed: {e}"))?;
 
+    // An archive install replaces whatever a previous attempt left in staging.
+    let _ = fs::remove_dir_all(runtime_root);
+    fs::create_dir_all(runtime_root)
+        .map_err(|e| format!("Failed creating runtime dir {}: {e}", runtime_root.display()))?;
     emit_log(window, "info", "Extracting JDK archive");
     let extract_result = if archive_type == "zip" {
         extract_zip_into(&archive_path, runtime_root)
     } else {
         extract_tar_gz_into(&archive_path, runtime_root)
     };
-    let _ = fs::remove_file(&archive_path);
     if let Err(error) = extract_result {
         // A capped extraction may have written files before it reaches the
         // limit. Never let a later runtime probe mistake that partial tree for
@@ -8635,7 +8771,15 @@ fn install_zulu_jre_archive(
         let _ = fs::remove_dir_all(runtime_root);
         return Err(error);
     }
-    Ok(())
+    let _ = fs::remove_file(&archive_path);
+    Ok(RuntimeInstallMarker {
+        source: "zulu".to_string(),
+        version: package.name,
+        platform: format!("{os}-{arch}"),
+        major,
+        installed_at: now_epoch_seconds(),
+        files: collect_runtime_file_records(runtime_root)?,
+    })
 }
 
 fn extract_tar_gz_into(archive_path: &Path, dest: &Path) -> Result<(), String> {
@@ -8743,6 +8887,7 @@ fn parse_java_major_version(version: &str) -> i32 {
 
 fn download_mojang_runtime_files(
     window: Option<&tauri::Window>,
+    cancel: &downloader::CancelToken,
     runtime_root: &Path,
     manifest: &MojangJavaManifest,
     download_threads: usize,
@@ -8770,25 +8915,32 @@ fn download_mojang_runtime_files(
         let downloaded = Arc::clone(&downloaded);
         let runtime_root = runtime_root.to_path_buf();
         let window = window.cloned();
+        let cancel = cancel.clone();
         workers.push(thread::spawn(move || loop {
+            if lock_recover(&error).is_some() {
+                return;
+            }
+            if let Err(cancelled) = cancel.check() {
+                let mut slot = lock_recover(&error);
+                if slot.is_none() {
+                    *slot = Some(cancelled);
+                }
+                return;
+            }
             let next = lock_recover(&jobs).pop_front();
             let Some((relative_path, entry)) = next else {
                 return;
             };
 
-            if lock_recover(&error).is_some() {
-                return;
-            }
-
-            // One part per file: this pool already has `worker_count` files in
-            // flight, so also sharding each file would multiply out to
-            // `threads × threads` simultaneous connections.
+            // One file per worker connection: this pool already has
+            // `worker_count` files in flight, so the downloader is not asked to
+            // shard them further.
             let result = process_mojang_runtime_entry(
                 window.as_ref(),
+                &cancel,
                 &runtime_root,
                 &relative_path,
                 &entry,
-                1,
             );
 
             match result {
@@ -8837,7 +8989,7 @@ fn download_mojang_runtime_files(
         return Err("Mojang runtime worker panicked".to_string());
     }
     for (relative_path, entry) in links {
-        let fetched = process_mojang_runtime_entry(window, runtime_root, &relative_path, &entry, 1)
+        let fetched = process_mojang_runtime_entry(window, cancel, runtime_root, &relative_path, &entry)
             .map_err(|err| {
                 format!("Failed processing Mojang runtime entry {relative_path}: {err}")
             })?;
@@ -8871,21 +9023,15 @@ fn clone_mojang_entry(entry: &MojangJavaRemoteEntry) -> MojangJavaRemoteEntry {
 
 fn process_mojang_runtime_entry(
     window: Option<&tauri::Window>,
+    cancel: &downloader::CancelToken,
     runtime_root: &Path,
     relative_path: &str,
     entry: &MojangJavaRemoteEntry,
-    max_parts: usize,
 ) -> Result<bool, String> {
     // Manifest paths are always forward-slash separated. Join component-by-component so
     // the OS separator is used on every platform — `replace('/', "\\")` would create a
     // single file literally named "a\b\c" on macOS/Linux (where '\' isn't a separator).
-    let target = relative_path
-        .replace('\\', "/")
-        .split('/')
-        .filter(|component| !component.is_empty() && *component != ".." && *component != ".")
-        .fold(runtime_root.to_path_buf(), |acc, component| {
-            acc.join(component)
-        });
+    let target = runtime_relative_path(runtime_root, relative_path);
     match entry.entry_type.as_str() {
         "directory" => {
             fs::create_dir_all(&target).map_err(|e| e.to_string())?;
@@ -8916,90 +9062,90 @@ fn process_mojang_runtime_entry(
             }
             Ok(true)
         }
-        "file" => download_mojang_runtime_file(window, &target, entry, max_parts),
+        "file" => download_mojang_runtime_file(window, cancel, &target, entry),
         other => Err(format!("Unsupported Mojang runtime entry type: {other}")),
     }
 }
 
 fn download_mojang_runtime_file(
     window: Option<&tauri::Window>,
+    cancel: &downloader::CancelToken,
     target: &Path,
     entry: &MojangJavaRemoteEntry,
-    max_parts: usize,
 ) -> Result<bool, String> {
     if let Some(parent) = target.parent() {
         fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
 
-    if let Some(raw) = entry.downloads.get("raw") {
+    let raw = entry.downloads.get("raw");
+    if let Some(raw) = raw {
         if target.is_file() {
             let size_ok = fs::metadata(target)
                 .map(|meta| meta.len() == raw.size)
                 .unwrap_or(false);
-            let sha1_ok = compute_sha1_hex(target)
-                .map(|sha1| sha1.eq_ignore_ascii_case(&raw.sha1))
-                .unwrap_or(false);
-            if size_ok && sha1_ok {
+            if size_ok
+                && compute_sha1_hex(target)
+                    .map(|sha1| sha1.eq_ignore_ascii_case(&raw.sha1))
+                    .unwrap_or(false)
+            {
                 return Ok(false);
             }
         }
     }
 
     if let Some(lzma) = entry.downloads.get("lzma") {
-        let temp_lzma = target.with_extension("lzma.download");
-        download_file_with_sha1(
-            window,
-            "mojang-runtime-lzma",
-            &lzma.url,
-            &temp_lzma,
-            &lzma.sha1,
-            max_parts,
+        // Temp names append to the full file name: `with_extension` turned both
+        // bin/java.exe and bin/java.dll into bin/java.lzma.download, and two
+        // workers then raced on one temp file (launcher-core-2).
+        let temp_lzma = downloader::with_suffix(target, ".lzma");
+        downloader::download(
+            &downloader::Request::single(&lzma.url, &temp_lzma, cancel)
+                .size(Some(lzma.size))
+                .sha1(Some(lzma.sha1.as_str())),
         )?;
-        let temp_output = target.with_extension("tmp");
-        let input = fs::File::open(&temp_lzma).map_err(|e| e.to_string())?;
-        let stream = Stream::new_auto_decoder(u64::MAX, 0).map_err(|e| e.to_string())?;
-        let mut decoder = XzDecoder::new_stream(BufReader::new(input), stream);
-        let mut output = fs::File::create(&temp_output).map_err(|e| e.to_string())?;
-        if let Err(error) = std::io::copy(&mut decoder, &mut output) {
-            let _ = fs::remove_file(&temp_output);
-            return Err(error.to_string());
-        }
-        if let Err(error) = output.flush() {
-            let _ = fs::remove_file(&temp_output);
-            return Err(error.to_string());
-        }
-        drop(output);
-        if let Some(raw) = entry.downloads.get("raw") {
-            let sha1 = match compute_sha1_hex(&temp_output) {
-                Ok(sha1) => sha1,
-                Err(error) => {
-                    let _ = fs::remove_file(&temp_output);
-                    return Err(error);
+        let temp_output = downloader::with_suffix(target, ".unpacking");
+        let unpack = (|| -> Result<(), String> {
+            let input = fs::File::open(&temp_lzma).map_err(|e| e.to_string())?;
+            let stream = Stream::new_auto_decoder(u64::MAX, 0).map_err(|e| e.to_string())?;
+            let mut decoder = XzDecoder::new_stream(BufReader::new(input), stream);
+            let mut output = fs::File::create(&temp_output).map_err(|e| e.to_string())?;
+            std::io::copy(&mut decoder, &mut output).map_err(|e| e.to_string())?;
+            output.flush().map_err(|e| e.to_string())?;
+            drop(output);
+            if let Some(raw) = raw {
+                let sha1 = compute_sha1_hex(&temp_output)?;
+                if !sha1.eq_ignore_ascii_case(&raw.sha1) {
+                    return Err(format!(
+                        "SHA1 mismatch after decompressing Mojang runtime {}: expected={} actual={sha1}",
+                        target.display(),
+                        raw.sha1
+                    ));
                 }
-            };
-            if !sha1.eq_ignore_ascii_case(&raw.sha1) {
-                let _ = fs::remove_file(&temp_output);
-                return Err(format!(
-                    "SHA1 mismatch after decompressing Mojang runtime {}: expected={} actual={sha1}",
-                    target.display(),
-                    raw.sha1
-                ));
             }
-        }
-        fs::rename(&temp_output, target).map_err(|e| e.to_string())?;
+            if target.exists() {
+                fs::remove_file(target).map_err(|e| e.to_string())?;
+            }
+            fs::rename(&temp_output, target).map_err(|e| e.to_string())
+        })();
         let _ = fs::remove_file(&temp_lzma);
-    } else if let Some(raw) = entry.downloads.get("raw") {
-        download_file_with_sha1(
-            window,
-            "mojang-runtime-raw",
-            &raw.url,
-            target,
-            &raw.sha1,
-            max_parts,
+        if let Err(error) = unpack {
+            let _ = fs::remove_file(&temp_output);
+            return Err(error);
+        }
+    } else if let Some(raw) = raw {
+        downloader::download(
+            &downloader::Request::single(&raw.url, target, cancel)
+                .size(Some(raw.size))
+                .sha1(Some(raw.sha1.as_str())),
         )?;
     } else {
         return Err("No downloadable source found".to_string());
     }
+    emit_log(
+        window,
+        "info",
+        &format!("Downloaded runtime file: {}", redact_path_for_log(target)),
+    );
 
     if entry.executable {
         #[cfg(unix)]
@@ -9013,29 +9159,6 @@ fn download_mojang_runtime_file(
         }
     }
     Ok(true)
-}
-
-fn download_file_with_sha1(
-    window: Option<&tauri::Window>,
-    source_name: &str,
-    url: &str,
-    target: &Path,
-    expected_sha1: &str,
-    max_parts: usize,
-) -> Result<(), String> {
-    download_file_blocking(window, source_name, url, target, max_parts, None)?;
-    let sha1 = compute_sha1_hex(target)?;
-    if !sha1.eq_ignore_ascii_case(expected_sha1) {
-        return Err(format!(
-            "SHA1 mismatch for {url}: expected={expected_sha1} actual={sha1}"
-        ));
-    }
-    emit_log(
-        window,
-        "info",
-        &format!("Downloaded {source_name}: {}", target.display()),
-    );
-    Ok(())
 }
 
 fn compute_sha1_hex(path: &Path) -> Result<String, String> {
@@ -9094,352 +9217,6 @@ struct MojangJavaRemoteEntry {
     downloads: HashMap<String, MojangJavaDownloadInfo>,
     #[serde(default)]
     target: String,
-}
-
-/// Reports raw byte progress during a download: `(downloaded_bytes, total_bytes)`.
-/// Owned (`Arc`) so it can be cloned into the parallel-download worker threads,
-/// which require `'static + Send + Sync` closures.
-type DownloadProgressCallback = Arc<dyn Fn(u64, Option<u64>) + Send + Sync>;
-
-/// Shared client for runtime/JDK downloads.
-///
-/// This used to be built per call. A Mojang Java manifest is hundreds of small
-/// files, so that meant a fresh DNS + TCP + TLS handshake for every one of them
-/// and no keep-alive reuse at all — the dominant cost of installing a runtime.
-/// The 30-minute timeout is a whole-request budget for the multi-hundred-MB
-/// archive downloads that also use this path.
-fn jdk_download_client() -> Result<&'static reqwest::blocking::Client, String> {
-    static CLIENT: OnceLock<reqwest::blocking::Client> = OnceLock::new();
-    if let Some(client) = CLIENT.get() {
-        return Ok(client);
-    }
-    let client = reqwest::blocking::Client::builder()
-        .user_agent(JDK_DOWNLOAD_USER_AGENT)
-        .connect_timeout(std::time::Duration::from_secs(30))
-        .timeout(std::time::Duration::from_secs(60 * 30))
-        .redirect(reqwest::redirect::Policy::limited(10))
-        .build()
-        .map_err(|e| e.to_string())?;
-    Ok(CLIENT.get_or_init(|| client))
-}
-
-/// Downloads one file, optionally splitting it into `max_parts` Range requests.
-///
-/// `max_parts` is a budget for *this file only*. Callers that are already
-/// downloading many files concurrently must pass 1: multiplying an outer worker
-/// pool by an inner part pool opened `threads × threads` sockets at once, which
-/// on a 16-thread setting meant 256 concurrent connections and made the runtime
-/// install slower than a plain sequential fetch.
-fn download_file_blocking(
-    window: Option<&tauri::Window>,
-    source_name: &str,
-    url: &str,
-    target: &Path,
-    max_parts: usize,
-    progress: Option<DownloadProgressCallback>,
-) -> Result<(), String> {
-    const MIN_PARALLEL_SIZE: u64 = 8 * 1024 * 1024;
-    const MIN_PART_SIZE: u64 = 4 * 1024 * 1024;
-
-    if let Some(parent) = target.parent() {
-        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-    }
-
-    let client = jdk_download_client()?;
-
-    // The probe costs an extra HEAD round trip, so it is only worth doing when
-    // sharding is actually on the table.
-    if max_parts > 1 {
-        if let Ok(Some(total_size)) = probe_parallel_download_support(client, url) {
-            if total_size >= MIN_PARALLEL_SIZE {
-                let size_limited_parts = total_size.div_ceil(MIN_PART_SIZE) as usize;
-                let part_count = max_parts.min(size_limited_parts.max(1));
-                if part_count > 1 {
-                    emit_log(
-                        window,
-                        "info",
-                        &format!(
-                            "JDK download ({source_name}) using {part_count} parallel threads, size={total_size} bytes"
-                        ),
-                    );
-                    return download_file_blocking_parallel(
-                        window,
-                        client,
-                        source_name,
-                        url,
-                        target,
-                        total_size,
-                        part_count,
-                        progress,
-                    );
-                }
-            }
-        }
-    }
-
-    download_file_blocking_single(window, client, source_name, url, target, progress)
-}
-
-fn probe_parallel_download_support(
-    client: &reqwest::blocking::Client,
-    url: &str,
-) -> Result<Option<u64>, String> {
-    let response = client
-        .head(url)
-        .header(reqwest::header::ACCEPT, "*/*")
-        .send()
-        .map_err(|e| e.to_string())?;
-    if !response.status().is_success() {
-        return Ok(None);
-    }
-    let supports_range = response
-        .headers()
-        .get(reqwest::header::ACCEPT_RANGES)
-        .and_then(|value| value.to_str().ok())
-        .map(|value| value.to_ascii_lowercase().contains("bytes"))
-        .unwrap_or(false);
-    if !supports_range {
-        return Ok(None);
-    }
-    Ok(response.content_length())
-}
-
-fn download_file_blocking_single(
-    window: Option<&tauri::Window>,
-    client: &reqwest::blocking::Client,
-    source_name: &str,
-    url: &str,
-    target: &Path,
-    progress: Option<DownloadProgressCallback>,
-) -> Result<(), String> {
-    let mut last_error = String::new();
-    for attempt in 1..=3 {
-        let tmp = target.with_extension("download");
-        let mut response = match client
-            .get(url)
-            .header(reqwest::header::USER_AGENT, JDK_DOWNLOAD_USER_AGENT)
-            .header(reqwest::header::ACCEPT, "*/*")
-            .header(reqwest::header::ACCEPT_ENCODING, "identity")
-            .send()
-        {
-            Ok(resp) => resp,
-            Err(err) => {
-                last_error = describe_http_error(&err);
-                emit_log(
-                    window,
-                    "stderr",
-                    &format!(
-                        "JDK download ({source_name}) attempt {attempt}/3 request failed: {last_error}"
-                    ),
-                );
-                continue;
-            }
-        };
-
-        if !response.status().is_success() {
-            last_error = format!("HTTP {}", response.status());
-            emit_log(
-                window,
-                "stderr",
-                &format!("JDK download ({source_name}) attempt {attempt}/3 failed: {last_error}"),
-            );
-            continue;
-        }
-
-        let total = response.content_length();
-        let mut file = fs::File::create(&tmp).map_err(|e| e.to_string())?;
-        let mut downloaded: u64 = 0;
-        let mut buffer = [0_u8; 64 * 1024];
-        let mut last_percent = 0_u64;
-
-        loop {
-            let read = response.read(&mut buffer).map_err(|e| {
-                format!(
-                    "attempt {attempt}/3 read failed after {} bytes: {e}",
-                    downloaded
-                )
-            });
-
-            let read = match read {
-                Ok(value) => value,
-                Err(err) => {
-                    last_error = err;
-                    emit_log(
-                        window,
-                        "stderr",
-                        &format!("JDK download ({source_name}) {last_error}"),
-                    );
-                    let _ = fs::remove_file(&tmp);
-                    break;
-                }
-            };
-
-            if read == 0 {
-                file.flush().map_err(|e| e.to_string())?;
-                fs::rename(&tmp, target).map_err(|e| e.to_string())?;
-                emit_log(window, "info", "JDK download progress: 100%");
-                return Ok(());
-            }
-
-            file.write_all(&buffer[..read]).map_err(|e| e.to_string())?;
-            downloaded += read as u64;
-
-            if let Some(total_size) = total {
-                if total_size > 0 {
-                    let percent = downloaded.saturating_mul(100) / total_size;
-                    if percent >= last_percent + 2 || percent == 100 {
-                        last_percent = percent;
-                        emit_log(
-                            window,
-                            "info",
-                            &format!("JDK download progress: {percent}% ({downloaded}/{total_size} bytes)"),
-                        );
-                        if let Some(callback) = progress.as_ref() {
-                            callback(downloaded, Some(total_size));
-                        }
-                    }
-                }
-            } else if downloaded % (1024 * 1024) < 64 * 1024 {
-                emit_log(
-                    window,
-                    "info",
-                    &format!("JDK download progress: {downloaded} bytes"),
-                );
-                if let Some(callback) = progress.as_ref() {
-                    callback(downloaded, None);
-                }
-            }
-        }
-    }
-
-    emit_log(
-        window,
-        "stderr",
-        &format!("JDK download ({source_name}) failed after 3 attempts: {last_error}"),
-    );
-    Err(last_error)
-}
-
-fn download_file_blocking_parallel(
-    window: Option<&tauri::Window>,
-    client: &reqwest::blocking::Client,
-    source_name: &str,
-    url: &str,
-    target: &Path,
-    total_size: u64,
-    part_count: usize,
-    progress_cb: Option<DownloadProgressCallback>,
-) -> Result<(), String> {
-    let tmp = target.with_extension("download");
-    let chunk_size = total_size.div_ceil(part_count as u64);
-    let progress = Arc::new(std::sync::atomic::AtomicU64::new(0));
-    let last_percent = Arc::new(std::sync::atomic::AtomicU64::new(0));
-    let mut handles = Vec::with_capacity(part_count);
-    let mut part_paths = Vec::with_capacity(part_count);
-
-    for part_index in 0..part_count {
-        let start = chunk_size * part_index as u64;
-        if start >= total_size {
-            break;
-        }
-        let end = (start + chunk_size).min(total_size) - 1;
-        let client = client.clone();
-        let part_path = target.with_extension(format!("download.part{part_index}"));
-        let part_path_for_thread = part_path.clone();
-        let url = url.to_string();
-        let source_name = source_name.to_string();
-        let progress = Arc::clone(&progress);
-        let last_percent = Arc::clone(&last_percent);
-        let progress_callback = progress_cb.clone();
-        let window = window.cloned();
-        part_paths.push(part_path.clone());
-        handles.push(thread::spawn(move || -> Result<(), String> {
-            let mut response = client
-                .get(&url)
-                .header(reqwest::header::ACCEPT, "*/*")
-                .header(reqwest::header::RANGE, format!("bytes={start}-{end}"))
-                .send()
-                .map_err(|e| format!("part {part_index} request failed: {}", describe_http_error(&e)))?;
-            if response.status() != reqwest::StatusCode::PARTIAL_CONTENT {
-                return Err(format!(
-                    "part {part_index} expected HTTP 206 but got {}",
-                    response.status()
-                ));
-            }
-            let mut file = fs::File::create(&part_path_for_thread).map_err(|e| e.to_string())?;
-            let mut buffer = [0_u8; 64 * 1024];
-            loop {
-                let read = response.read(&mut buffer).map_err(|e| {
-                    format!("part {part_index} read failed for {source_name}: {e}")
-                })?;
-                if read == 0 {
-                    file.flush().map_err(|e| e.to_string())?;
-                    return Ok(());
-                }
-                file.write_all(&buffer[..read]).map_err(|e| e.to_string())?;
-                let downloaded =
-                    progress.fetch_add(read as u64, Ordering::Relaxed) + read as u64;
-                let percent = downloaded.saturating_mul(100) / total_size;
-                let previous = last_percent.load(Ordering::Relaxed);
-                if percent >= previous + 2 || percent == 100 {
-                    if last_percent
-                        .compare_exchange(
-                            previous,
-                            percent,
-                            Ordering::Relaxed,
-                            Ordering::Relaxed,
-                        )
-                        .is_ok()
-                    {
-                        emit_log(
-                            window.as_ref(),
-                            "info",
-                            &format!(
-                                "JDK download progress: {percent}% ({downloaded}/{total_size} bytes)"
-                            ),
-                        );
-                        if let Some(callback) = progress_callback.as_ref() {
-                            callback(downloaded, Some(total_size));
-                        }
-                    }
-                }
-            }
-        }));
-    }
-
-    for handle in handles {
-        match handle.join() {
-            Ok(Ok(())) => {}
-            Ok(Err(err)) => {
-                cleanup_download_parts(&part_paths, &tmp);
-                return Err(err);
-            }
-            Err(_) => {
-                cleanup_download_parts(&part_paths, &tmp);
-                return Err("JDK parallel download worker panicked".to_string());
-            }
-        }
-    }
-
-    let mut output = fs::File::create(&tmp).map_err(|e| e.to_string())?;
-    for part_path in &part_paths {
-        let mut input = fs::File::open(part_path).map_err(|e| e.to_string())?;
-        std::io::copy(&mut input, &mut output).map_err(|e| e.to_string())?;
-    }
-    output.flush().map_err(|e| e.to_string())?;
-    fs::rename(&tmp, target).map_err(|e| e.to_string())?;
-    cleanup_download_parts(&part_paths, Path::new(""));
-    emit_log(window, "info", "JDK download progress: 100%");
-    Ok(())
-}
-
-fn cleanup_download_parts(part_paths: &[PathBuf], tmp: &Path) {
-    for path in part_paths {
-        let _ = fs::remove_file(path);
-    }
-    if !tmp.as_os_str().is_empty() {
-        let _ = fs::remove_file(tmp);
-    }
 }
 
 fn open_target_with_system(target: &str) -> Result<(), String> {
@@ -10119,6 +9896,43 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
+    fn runtime_without_completion_marker_is_not_reused() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("jdk-17");
+        let java = if cfg!(windows) { "java.exe" } else { "java" };
+        fs::create_dir_all(root.join("bin")).unwrap();
+        fs::write(root.join("bin").join(java), b"binary").unwrap();
+        fs::create_dir_all(root.join("lib")).unwrap();
+        fs::write(root.join("lib").join("modules"), b"0123456789").unwrap();
+        // java present but no marker: an interrupted install must not be reused.
+        assert!(super::verify_runtime_install(&root, false).is_err());
+
+        let marker = super::RuntimeInstallMarker {
+            source: "test".to_string(),
+            version: "17".to_string(),
+            platform: "test".to_string(),
+            major: 17,
+            installed_at: 0,
+            files: super::collect_runtime_file_records(&root).unwrap(),
+        };
+        fs::write(
+            root.join(super::RUNTIME_MARKER_FILE),
+            serde_json::to_vec(&marker).unwrap(),
+        )
+        .unwrap();
+        assert!(super::verify_runtime_install(&root, false).is_ok());
+
+        // A truncated file is detected by the size check.
+        fs::write(root.join("lib").join("modules"), b"0123").unwrap();
+        let error = super::verify_runtime_install(&root, false).unwrap_err();
+        assert!(error.contains("lib/modules"), "{error}");
+        assert_eq!(
+            super::runtime_staging_dir(&root),
+            temp.path().join(".jdk-17.staging")
+        );
+    }
+
+    #[test]
     fn fabric_install_result_matches_java_core_payload() {
         let payload = r#"{
             "profileId":"fabric-loader-0.16.10-1.20.1",
@@ -10258,7 +10072,7 @@ mod tests {
             target: "../lib/source.txt".to_string(),
         };
 
-        process_mojang_runtime_entry(None, temp.path(), "bin/runtime-link", &entry, 1)
+        process_mojang_runtime_entry(None, &crate::downloader::CancelToken::new(None), temp.path(), "bin/runtime-link", &entry)
             .expect("runtime link should be created");
 
         let link = temp.path().join("bin/runtime-link");
@@ -11200,6 +11014,7 @@ fn main() {
             build_vanilla_launch_plan,
             launch_vanilla,
             cancel_install,
+            cancel_all_downloads,
             list_fabric_loaders,
             install_fabric,
             list_forge_versions,

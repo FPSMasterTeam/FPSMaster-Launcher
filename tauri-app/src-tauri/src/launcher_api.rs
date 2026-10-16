@@ -1,14 +1,12 @@
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use tauri::{Emitter, Manager};
 
 use crate::{
-    build_api_http_client, build_blocking_http_client, describe_http_error,
-    download_file_with_progress_callback_blocking, open_file_with_system, sanitize_file_name,
-    verify_file_sha256,
+    build_api_http_client, describe_http_error, open_file_with_system, sanitize_file_name,
 };
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -385,9 +383,14 @@ pub async fn download_launcher_app_update(
     download_url: String,
     version: String,
     checksum: Option<String>,
+    ipc_session: Option<String>,
 ) -> Result<DownloadedLauncherUpdate, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        download_launcher_app_update_blocking(&app, download_url, version, checksum)
+        let cancel = crate::downloader::CancelToken::new(ipc_session.as_deref());
+        let result =
+            download_launcher_app_update_blocking(&app, &cancel, download_url, version, checksum);
+        crate::clear_install_cancel(ipc_session.as_deref());
+        result
     })
     .await
     .map_err(|e| format!("Failed to join launcher app download task: {e}"))?
@@ -535,7 +538,7 @@ fn launcher_get_app_update_blocking(
     channel: Option<String>,
 ) -> Result<LauncherAppUpdateInfo, String> {
     let normalized_base = normalize_api_base_url(&base_url)?;
-    let client = build_blocking_http_client()?;
+    let client = build_api_http_client()?;
     let install_id = get_or_create_launcher_install_id(app)?;
     let mut url = reqwest::Url::parse(&format!("{normalized_base}/api/v1/launcher/app-update"))
         .map_err(|e| format!("Invalid launcher app update endpoint URL: {e}"))?;
@@ -567,7 +570,7 @@ fn launcher_list_app_update_channels_blocking(
     token: Option<String>,
 ) -> Result<Vec<LauncherAppUpdateChannel>, String> {
     let normalized_base = normalize_api_base_url(&base_url)?;
-    let client = build_blocking_http_client()?;
+    let client = build_api_http_client()?;
     let url = reqwest::Url::parse(&format!(
         "{normalized_base}/api/v1/launcher/app-update/channels"
     ))
@@ -593,6 +596,7 @@ fn launcher_list_app_update_channels_blocking(
 
 fn download_launcher_app_update_blocking(
     app: &tauri::AppHandle,
+    cancel: &crate::downloader::CancelToken,
     download_url: String,
     version: String,
     checksum: Option<String>,
@@ -609,7 +613,6 @@ fn download_launcher_app_update_blocking(
         .and_then(|item| normalize_launcher_update_checksum(&item))
         .ok_or_else(|| "Launcher update checksum is missing or invalid".to_string())?;
 
-    let client = build_blocking_http_client()?;
     let file_name = infer_download_file_name(&normalized_download_url, &normalized_version);
     let updates_dir = app
         .path()
@@ -623,42 +626,64 @@ fn download_launcher_app_update_blocking(
         )
     })?;
     let target_path = updates_dir.join(&file_name);
-    download_file_with_progress_callback_blocking(
-        &client,
-        &normalized_download_url,
-        &target_path,
-        |downloaded_bytes, total_bytes| {
-            let percent = total_bytes
-                .filter(|value| *value > 0)
-                .map(|value| {
-                    downloaded_bytes
-                        .saturating_mul(100)
-                        .min(value.saturating_mul(100))
-                        / value
-                })
-                .and_then(|value| u8::try_from(value).ok());
-            let _ = app.emit(
-                "launcher-app-update-progress",
-                LauncherAppUpdateProgress {
-                    downloaded_bytes,
-                    total_bytes,
-                    percent,
-                },
-            );
-        },
+    remove_stale_update_files(&updates_dir, &file_name);
+    // The downloader throttles this callback (launcher-core-19: it used to fire
+    // an IPC event for every 64 KiB read).
+    let progress = |downloaded_bytes: u64, total_bytes: Option<u64>| {
+        let percent = total_bytes
+            .filter(|value| *value > 0)
+            .map(|value| {
+                downloaded_bytes
+                    .saturating_mul(100)
+                    .min(value.saturating_mul(100))
+                    / value
+            })
+            .and_then(|value| u8::try_from(value).ok());
+        let _ = app.emit(
+            "launcher-app-update-progress",
+            LauncherAppUpdateProgress {
+                downloaded_bytes,
+                total_bytes,
+                percent,
+            },
+        );
+    };
+    crate::downloader::download(
+        &crate::downloader::Request::single(&normalized_download_url, &target_path, cancel)
+            .sha256(Some(expected_checksum.as_str()))
+            .on_progress(&progress),
     )
     .map_err(|e| format!("Failed to download launcher installer: {e}"))?;
-
-    if let Err(error) = verify_file_sha256(&target_path, &expected_checksum) {
-        let _ = fs::remove_file(&target_path);
-        return Err(format!("Launcher installer checksum mismatch: {error}"));
-    }
 
     Ok(DownloadedLauncherUpdate {
         version: normalized_version,
         file_name,
         file_path: target_path.to_string_lossy().to_string(),
     })
+}
+
+/// Deletes installers left over from earlier updates. Only the file being
+/// downloaded now (and its resumable `.part` state) is kept.
+fn remove_stale_update_files(updates_dir: &Path, keep_file_name: &str) {
+    let Ok(entries) = fs::read_dir(updates_dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().to_string();
+        if name == keep_file_name || name.starts_with(&format!("{keep_file_name}.part")) {
+            continue;
+        }
+        let path = entry.path();
+        if path.is_file() {
+            if let Err(error) = fs::remove_file(&path) {
+                crate::push_ui_log(
+                    "core",
+                    "warn",
+                    &format!("Failed to remove old launcher installer {}: {error}", path.display()),
+                );
+            }
+        }
+    }
 }
 
 fn normalize_launcher_update_checksum(value: &str) -> Option<String> {
