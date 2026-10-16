@@ -49,6 +49,8 @@ impl DownloadSource {
             "mirror-only" => Ok(Self::MirrorOnly),
             "bmclapi" | "mirror" | "mirror-first" => Ok(Self::MirrorFirst),
             "official-first" => Ok(Self::OfficialFirst),
+            // Fastest of official/BMCLAPI by measurement (cached 30 min).
+            "auto" => Ok(crate::diagnostics::auto_download_source()),
             _ => Err(format!("Unsupported download source: {raw}")),
         }
     }
@@ -634,6 +636,128 @@ pub(crate) fn install_vanilla(
 /// Metadata is resolved fully offline from the local `<version>.json` (and its
 /// `inheritsFrom` chain), so an intact installation verifies without any network call
 /// and never re-runs loader processors — network is only touched to repair a bad file.
+/// Read-only check of what an instance needs to launch, without any network
+/// access. Used by the health check and by offline/quick launch.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct InstanceFileInspection {
+    pub(crate) checked: usize,
+    /// Paths relative to the game directory (capped).
+    pub(crate) missing: Vec<String>,
+    pub(crate) corrupted: Vec<String>,
+    pub(crate) java_major: i32,
+}
+
+const INSPECTION_LIST_CAP: usize = 50;
+
+pub(crate) fn inspect_instance_files(
+    game_dir: &Path,
+    version_id: &str,
+    deep: bool,
+) -> Result<InstanceFileInspection, String> {
+    let descriptor = resolve_version_descriptor(game_dir, version_id, 0)?;
+    let version_json = &descriptor.merged;
+    let (java_major, _) = extract_java_version(version_json);
+    let mut report = InstanceFileInspection {
+        checked: 0,
+        missing: Vec::new(),
+        corrupted: Vec::new(),
+        java_major,
+    };
+    let relative = |path: &Path| {
+        path.strip_prefix(game_dir)
+            .unwrap_or(path)
+            .to_string_lossy()
+            .replace('\\', "/")
+    };
+    let mut check = |path: &Path, sha1: Option<&str>, size: Option<u64>| {
+        report.checked += 1;
+        let Ok(meta) = fs::metadata(path) else {
+            if report.missing.len() < INSPECTION_LIST_CAP {
+                report.missing.push(relative(path));
+            }
+            return;
+        };
+        let bad_size = meta.len() == 0 || size.is_some_and(|size| size != meta.len());
+        let bad_hash = deep
+            && sha1.is_some_and(|expected| {
+                compute_sha1_hex(path)
+                    .map(|actual| !actual.eq_ignore_ascii_case(expected))
+                    .unwrap_or(true)
+            });
+        if (bad_size || bad_hash) && report.corrupted.len() < INSPECTION_LIST_CAP {
+            report.corrupted.push(relative(path));
+        }
+    };
+
+    let libraries = resolve_libraries(
+        version_json,
+        game_dir,
+        &build_rule_features(),
+        DownloadSource::OfficialOnly,
+    )?;
+    for library in &libraries {
+        check(&library.path, library.sha1.as_deref(), library.size);
+    }
+    let jar_version_id = &descriptor.jar_version_id;
+    let client_download = version_json
+        .get("downloads")
+        .and_then(|value| value.get("client"));
+    check(
+        &game_dir
+            .join("versions")
+            .join(jar_version_id)
+            .join(format!("{jar_version_id}.jar")),
+        client_download
+            .and_then(|value| value.get("sha1"))
+            .and_then(Value::as_str),
+        client_download
+            .and_then(|value| value.get("size"))
+            .and_then(Value::as_u64),
+    );
+    if let Some(index_id) = version_json
+        .get("assetIndex")
+        .and_then(|value| value.get("id"))
+        .and_then(Value::as_str)
+    {
+        let index_path = game_dir
+            .join("assets")
+            .join("indexes")
+            .join(format!("{index_id}.json"));
+        check(&index_path, None, None);
+        if let Ok(text) = crate::zip_budget::read_text_file_bounded(
+            &index_path,
+            crate::zip_budget::MAX_TEXT_ENTRY_BYTES,
+            "asset index",
+        ) {
+            let objects = serde_json::from_str::<Value>(&text)
+                .ok()
+                .and_then(|json| json.get("objects").and_then(Value::as_object).cloned())
+                .unwrap_or_default();
+            let mut seen = HashSet::new();
+            for object in objects.values() {
+                let Some(hash) = object.get("hash").and_then(Value::as_str) else {
+                    continue;
+                };
+                if hash.len() < 2 || !seen.insert(hash.to_string()) {
+                    continue;
+                }
+                let path = game_dir
+                    .join("assets")
+                    .join("objects")
+                    .join(&hash[0..2])
+                    .join(hash);
+                check(
+                    &path,
+                    deep.then_some(hash),
+                    object.get("size").and_then(Value::as_u64),
+                );
+            }
+        }
+    }
+    Ok(report)
+}
+
 pub(crate) fn verify_installed_files(
     window: Option<&tauri::Window>,
     game_dir: &Path,

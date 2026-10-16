@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod diagnostics;
 mod downloader;
 mod launcher_api;
 mod microsoft_auth;
@@ -596,11 +597,66 @@ struct CoreLogEvent {
     message: String,
 }
 
+/// Payload of the `game-exit` event.
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 struct GameExitEvent {
     pid: i64,
-    #[serde(rename = "exitCode")]
     exit_code: i32,
+    version_id: String,
+    duration_ms: u64,
+    /// Non-zero exit or a crash report / hs_err written during this run, and
+    /// not stopped by the user through `terminate_game_process`.
+    crashed: bool,
+    terminated_by_user: bool,
+    #[serde(flatten)]
+    crash: diagnostics::CrashArtifacts,
+}
+
+/// Emits `game-exit` (with crash detection) once a launched game has ended.
+fn report_game_exit(
+    window: &tauri::Window,
+    pid: i64,
+    exit_code: i32,
+    version_id: &str,
+    work_dir: &Path,
+    launched_at: SystemTime,
+) {
+    let terminated_by_user = diagnostics::take_user_terminated(pid);
+    let crash = if terminated_by_user {
+        diagnostics::CrashArtifacts::default()
+    } else {
+        diagnostics::find_crash_artifacts(work_dir, pid, launched_at)
+    };
+    let crashed = !terminated_by_user
+        && (exit_code != 0 || crash.crash_report_path.is_some() || crash.hs_err_path.is_some());
+    let duration_ms = SystemTime::now()
+        .duration_since(launched_at)
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or(0);
+    push_ui_log(
+        "game",
+        "exit",
+        &format!(
+            "process exited pid={pid} code={exit_code} crashed={crashed} durationMs={duration_ms}"
+        ),
+    );
+    if let Some(summary) = crash.crash_summary.as_deref().or(crash.hs_err_summary.as_deref()) {
+        push_ui_log("game", "stderr", &format!("[crash] {summary}"));
+    }
+    let _ = window.emit(
+        "game-exit",
+        GameExitEvent {
+            pid,
+            exit_code,
+            version_id: version_id.to_string(),
+            duration_ms,
+            crashed,
+            terminated_by_user,
+            crash,
+        },
+    );
+    clear_runtime_pid(pid);
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1224,6 +1280,8 @@ fn terminate_game_process_blocking(pid: i64, force: Option<bool>) -> Result<bool
             "Process {pid} is no longer the game started by the launcher"
         ));
     }
+    // The exit that follows is the user's doing, not a crash.
+    diagnostics::mark_user_terminated(pid);
 
     #[cfg(windows)]
     {
@@ -6594,6 +6652,7 @@ fn launch_vanilla_blocking(
     );
 
     let should_wait = wait_for_exit.unwrap_or(false);
+    let launched_at = SystemTime::now();
     let mut child = match spawn_game_process(
         Some(&window),
         &runtime_dir,
@@ -6640,13 +6699,7 @@ fn launch_vanilla_blocking(
         let _ = stderr_handle.join();
         let exit_code = status.code().unwrap_or(-1);
         cleanup_launch_natives_dir(&natives_dir);
-        let _ = window.emit("game-exit", GameExitEvent { pid, exit_code });
-        push_ui_log(
-            "game",
-            "exit",
-            &format!("process exited pid={pid} code={exit_code}"),
-        );
-        clear_runtime_pid(pid);
+        report_game_exit(&window, pid, exit_code, &version_id, &runtime_dir, launched_at);
 
         return Ok(LaunchExecutionResult {
             version_id,
@@ -6661,6 +6714,8 @@ fn launch_vanilla_blocking(
 
     let wait_natives_dir = natives_dir.clone();
     let wait_window = window.clone();
+    let wait_version_id = version_id.clone();
+    let wait_runtime_dir = runtime_dir.clone();
     thread::spawn(move || {
         let exit_code = child
             .wait()
@@ -6670,13 +6725,14 @@ fn launch_vanilla_blocking(
         let _ = stdout_handle.join();
         let _ = stderr_handle.join();
         cleanup_launch_natives_dir(&wait_natives_dir);
-        let _ = wait_window.emit("game-exit", GameExitEvent { pid, exit_code });
-        push_ui_log(
-            "game",
-            "exit",
-            &format!("process exited pid={pid} code={exit_code}"),
+        report_game_exit(
+            &wait_window,
+            pid,
+            exit_code,
+            &wait_version_id,
+            &wait_runtime_dir,
+            launched_at,
         );
-        clear_runtime_pid(pid);
     });
 
     Ok(LaunchExecutionResult {
@@ -7137,6 +7193,7 @@ fn launch_native_app_blocking(
         ),
     );
 
+    let launched_at = SystemTime::now();
     let mut child = spawn_game_process(Some(&window), &install_dir, &executable, &args, &[])?;
     let pid = i64::from(child.id());
     if let Ok(mut store) = game_runtime_starts().lock() {
@@ -7164,13 +7221,7 @@ fn launch_native_app_blocking(
         let _ = stdout_handle.join();
         let _ = stderr_handle.join();
         let exit_code = status.code().unwrap_or(-1);
-        let _ = window.emit("game-exit", GameExitEvent { pid, exit_code });
-        push_ui_log(
-            "game",
-            "exit",
-            &format!("process exited pid={pid} code={exit_code}"),
-        );
-        clear_runtime_pid(pid);
+        report_game_exit(&window, pid, exit_code, &version_id, &install_dir, launched_at);
         return Ok(LaunchExecutionResult {
             version_id,
             pid,
@@ -7183,6 +7234,8 @@ fn launch_native_app_blocking(
     }
 
     let wait_window = window.clone();
+    let wait_version_id = version_id.clone();
+    let wait_install_dir = install_dir.clone();
     thread::spawn(move || {
         let exit_code = child
             .wait()
@@ -7191,13 +7244,14 @@ fn launch_native_app_blocking(
             .unwrap_or(-1);
         let _ = stdout_handle.join();
         let _ = stderr_handle.join();
-        let _ = wait_window.emit("game-exit", GameExitEvent { pid, exit_code });
-        push_ui_log(
-            "game",
-            "exit",
-            &format!("process exited pid={pid} code={exit_code}"),
+        report_game_exit(
+            &wait_window,
+            pid,
+            exit_code,
+            &wait_version_id,
+            &wait_install_dir,
+            launched_at,
         );
-        clear_runtime_pid(pid);
     });
 
     Ok(LaunchExecutionResult {
@@ -7949,6 +8003,59 @@ fn managed_jdk_runtime_root(game_dir: &Path, major: i32, x64: bool) -> PathBuf {
         format!("jdk-{major}")
     };
     game_dir.join("runtime").join(name)
+}
+
+/// Inverse of `managed_jdk_runtime_root`: "jdk-17" -> (17, false),
+/// "jdk-8-x64" -> (8, true).
+fn parse_managed_runtime_name(name: &str) -> Option<(i32, bool)> {
+    let rest = name.strip_prefix("jdk-")?;
+    let (major, x64) = match rest.strip_suffix("-x64") {
+        Some(major) => (major, true),
+        None => (rest, false),
+    };
+    major.parse::<i32>().ok().filter(|major| *major > 0).map(|major| (major, x64))
+}
+
+/// Health-check repair for a managed runtime: drops its completion marker so
+/// `ensure_managed_jdk_runtime` re-verifies every file against the manifest
+/// and downloads only what is missing or corrupt.
+#[tauri::command]
+async fn repair_java_runtime(
+    window: tauri::Window,
+    game_dir: String,
+    runtime_name: String,
+    ipc_session: Option<String>,
+) -> Result<JdkEnsureResult, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let (major, x64) = parse_managed_runtime_name(runtime_name.trim())
+            .ok_or_else(|| format!("Not a managed Java runtime: {runtime_name}"))?;
+        let game_dir_path = resolve_game_dir_path(&game_dir)?;
+        let root = managed_jdk_runtime_root(&game_dir_path, major, x64);
+        let marker = root.join(RUNTIME_MARKER_FILE);
+        if marker.exists() {
+            fs::remove_file(&marker)
+                .map_err(|e| format!("Failed to reset runtime marker {}: {e}", marker.display()))?;
+        }
+        let cancel = downloader::CancelToken::new(ipc_session.as_deref());
+        let result = ensure_managed_jdk_runtime(
+            Some(&window),
+            &cancel,
+            &root,
+            major,
+            Some(DEFAULT_DOWNLOAD_THREADS),
+            x64,
+        );
+        clear_install_cancel(ipc_session.as_deref());
+        result.map(|java_path| JdkEnsureResult {
+            major_version: major,
+            java_path: java_path.to_string_lossy().to_string(),
+            cached: false,
+        })
+    })
+    .await
+    .map_err(|e| format!("Failed to join runtime repair task: {e}"))
+    .and_then(std::convert::identity)
+    .inspect_err(|e| log_command_error("repair_java_runtime", e))
 }
 
 // Whether the emulated-x64 runtime for this Java major should come from Azul Zulu
@@ -11386,7 +11493,12 @@ fn main() {
             secure_storage_set,
             secure_storage_delete,
             secure_storage_status,
-            secure_storage_set_file_fallback
+            secure_storage_set_file_fallback,
+            repair_java_runtime,
+            diagnostics::run_health_check,
+            diagnostics::export_support_bundle,
+            diagnostics::upload_game_crash_report,
+            diagnostics::probe_download_sources
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -223,7 +223,10 @@ fn write_meta(target: &Path, meta: &PartMeta) -> Result<(), String> {
     })
 }
 
-fn header_string(response: &reqwest::blocking::Response, name: reqwest::header::HeaderName) -> Option<String> {
+fn header_string(
+    response: &reqwest::blocking::Response,
+    name: reqwest::header::HeaderName,
+) -> Option<String> {
     response
         .headers()
         .get(name)
@@ -324,7 +327,9 @@ impl<'a> Request<'a> {
     }
 
     pub(crate) fn sha1(mut self, value: Option<&str>) -> Self {
-        self.sha1 = value.map(|v| v.trim().to_ascii_lowercase()).filter(|v| !v.is_empty());
+        self.sha1 = value
+            .map(|v| v.trim().to_ascii_lowercase())
+            .filter(|v| !v.is_empty());
         self
     }
 
@@ -369,25 +374,33 @@ impl<'a> Request<'a> {
         if let Some(expected) = self.expected_size {
             let actual = fs::metadata(path).map(|meta| meta.len()).unwrap_or(0);
             if actual != expected {
-                return Err(format!("size mismatch: expected {expected} bytes, got {actual}"));
+                return Err(format!(
+                    "size mismatch: expected {expected} bytes, got {actual}"
+                ));
             }
         }
         if let Some(expected) = self.sha1.as_deref() {
             let actual = crate::compute_sha1_hex(path)?;
             if !actual.eq_ignore_ascii_case(expected) {
-                return Err(format!("SHA1 mismatch: expected={expected} actual={actual}"));
+                return Err(format!(
+                    "SHA1 mismatch: expected={expected} actual={actual}"
+                ));
             }
         }
         if let Some(expected) = self.sha256.as_deref() {
             let actual = crate::compute_file_sha256_hex(path)?;
             if actual != expected {
-                return Err(format!("SHA256 mismatch: expected={expected} actual={actual}"));
+                return Err(format!(
+                    "SHA256 mismatch: expected={expected} actual={actual}"
+                ));
             }
         }
         if let Some(expected) = self.sha512.as_deref() {
             let actual = crate::compute_file_sha512_hex(path)?;
             if actual != expected {
-                return Err(format!("SHA512 mismatch: expected={expected} actual={actual}"));
+                return Err(format!(
+                    "SHA512 mismatch: expected={expected} actual={actual}"
+                ));
             }
         }
         Ok(())
@@ -446,7 +459,11 @@ pub(crate) fn download(request: &Request) -> Result<(), String> {
             request.cancel.check()?;
             if attempt > 1 {
                 if let Some(callback) = request.on_retry {
-                    callback(&format!("Retrying ({}/{}): {last_error}", attempt - 1, attempts - 1));
+                    callback(&format!(
+                        "Retrying ({}/{}): {last_error}",
+                        attempt - 1,
+                        attempts - 1
+                    ));
                 }
                 request.cancel.sleep(backoff_delay(attempt - 1))?;
             }
@@ -482,7 +499,11 @@ fn finalize(request: &Request) -> Result<(), String> {
             .map_err(|e| format!("Failed to replace existing file {}: {e}", target.display()))?;
     }
     fs::rename(&part, target)
-        .or_else(|_| fs::copy(&part, target).map(|_| ()).and_then(|_| fs::remove_file(&part)))
+        .or_else(|_| {
+            fs::copy(&part, target)
+                .map(|_| ())
+                .and_then(|_| fs::remove_file(&part))
+        })
         .map_err(|e| {
             format!(
                 "Failed to move downloaded file from {} to {}: {e}",
@@ -606,8 +627,9 @@ fn attempt_stream(
             segments: None,
         };
         write_meta(target, &meta).map_err(AttemptError::Fatal)?;
-        let file = fs::File::create(&part)
-            .map_err(|e| AttemptError::Fatal(format!("Failed to create {}: {e}", part.display())))?;
+        let file = fs::File::create(&part).map_err(|e| {
+            AttemptError::Fatal(format!("Failed to create {}: {e}", part.display()))
+        })?;
         (file, 0, response.content_length())
     } else if status == reqwest::StatusCode::PARTIAL_CONTENT {
         // 206 that does not continue where we stopped: start over.
@@ -764,7 +786,9 @@ fn try_segmented(
             .into_iter()
             .map(|handle| {
                 handle.join().unwrap_or_else(|_| {
-                    Err(AttemptError::Fatal("Download segment worker panicked".to_string()))
+                    Err(AttemptError::Fatal(
+                        "Download segment worker panicked".to_string(),
+                    ))
                 })
             })
             .collect()
@@ -850,14 +874,20 @@ fn download_segment(
             .get(url)
             .header(reqwest::header::ACCEPT, "*/*")
             .header(reqwest::header::ACCEPT_ENCODING, "identity")
-            .header(reqwest::header::RANGE, format!("bytes={}-{end}", start + have));
+            .header(
+                reqwest::header::RANGE,
+                format!("bytes={}-{end}", start + have),
+            );
         if let Some(validator) = validator {
             builder = builder.header(reqwest::header::IF_RANGE, validator);
         }
         let mut response = match builder.send() {
             Ok(response) => response,
             Err(error) => {
-                last_error = format!("Segment request failed: {}", crate::describe_http_error(&error));
+                last_error = format!(
+                    "Segment request failed: {}",
+                    crate::describe_http_error(&error)
+                );
                 continue;
             }
         };
@@ -927,7 +957,10 @@ pub(crate) fn probe_url(url: &str, max_bytes: u64, budget: Duration) -> ProbeRes
     let response = client
         .get(url)
         .header(reqwest::header::ACCEPT_ENCODING, "identity")
-        .header(reqwest::header::RANGE, format!("bytes=0-{}", max_bytes.saturating_sub(1)))
+        .header(
+            reqwest::header::RANGE,
+            format!("bytes=0-{}", max_bytes.saturating_sub(1)),
+        )
         .timeout(budget)
         .send();
     let mut response = match response {
@@ -1063,7 +1096,11 @@ mod tests {
 
     fn range_start(head: &str) -> Option<usize> {
         head.lines()
-            .find_map(|line| line.to_ascii_lowercase().strip_prefix("range: bytes=").map(str::to_string))
+            .find_map(|line| {
+                line.to_ascii_lowercase()
+                    .strip_prefix("range: bytes=")
+                    .map(str::to_string)
+            })
             .and_then(|value| value.trim().trim_end_matches('-').parse().ok())
     }
 
