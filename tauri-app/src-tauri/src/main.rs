@@ -9833,8 +9833,15 @@ fn launcher_package_has_unsupported_runtime_mods(
         }
         let relative_path = normalize_manifest_relative_path(&file.path)?;
         let target_path = mods_dir.join(relative_path);
-        if fabric_mod_uses_named_namespace(&target_path)? {
-            return Ok(true);
+        match fabric_mod_uses_named_namespace(&target_path) {
+            Ok(false) => {}
+            Ok(true) => return Ok(true),
+            // A launcher-managed jar that no longer opens is damaged: report the
+            // package as unusable so it gets reinstalled instead of failing.
+            Err(error) => {
+                push_ui_log("core", "warn", &format!("Launcher package file is damaged: {error}"));
+                return Ok(true);
+            }
         }
     }
     Ok(false)
@@ -9863,10 +9870,20 @@ fn mods_dir_has_unsupported_runtime_mods(mods_dir: &Path) -> Result<bool, String
         if !is_jar_file_name(&name) {
             continue;
         }
-        if is_unsupported_launcher_runtime_mod_name(&name)
-            || fabric_mod_uses_named_namespace(&path)?
-        {
+        if is_unsupported_launcher_runtime_mod_name(&name) {
             return Ok(true);
+        }
+        match fabric_mod_uses_named_namespace(&path) {
+            Ok(false) => {}
+            Ok(true) => return Ok(true),
+            // Users drop arbitrary jars here (half-downloaded, not a zip at all).
+            // One unreadable user mod must not block package checks and syncs
+            // for the whole instance (launcher-core-9); the game reports it.
+            Err(error) => push_ui_log(
+                "core",
+                "warn",
+                &format!("Skipping unreadable mod while checking runtime compatibility: {error}"),
+            ),
         }
     }
     Ok(false)
@@ -10024,6 +10041,14 @@ mod tests {
     use std::io::Write;
     use std::path::Path;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn broken_user_jar_does_not_fail_mods_scan() {
+        let temp = tempfile::tempdir().unwrap();
+        fs::write(temp.path().join("broken.jar"), b"").unwrap();
+        fs::write(temp.path().join("not-a-zip.jar"), b"hello").unwrap();
+        assert!(!super::mods_dir_has_unsupported_runtime_mods(temp.path()).unwrap());
+    }
 
     #[test]
     fn heartbeat_stop_wakes_sleeping_loop_immediately() {
