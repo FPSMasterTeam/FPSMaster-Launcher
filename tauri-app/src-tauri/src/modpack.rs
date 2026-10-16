@@ -810,6 +810,7 @@ struct ModpackFileJob {
 
 fn download_modpack_files(
     window: Option<&tauri::Window>,
+    cancel: &crate::downloader::CancelToken,
     project_key: &str,
     instance_root: &Path,
     jobs: Vec<ModpackFileJob>,
@@ -840,17 +841,8 @@ fn download_modpack_files(
         let window = window.cloned();
         let project_key = project_key.to_string();
         let instance_root = instance_root.to_path_buf();
+        let cancel = cancel.clone();
         workers.push(thread::spawn(move || {
-            let client = match crate::build_blocking_http_client() {
-                Ok(value) => value,
-                Err(err) => {
-                    let mut slot = crate::minecraft_core::lock_recover(&failure);
-                    if slot.is_none() {
-                        *slot = Some(err);
-                    }
-                    return;
-                }
-            };
             loop {
                 if crate::minecraft_core::lock_recover(&failure).is_some() {
                     return;
@@ -862,7 +854,7 @@ fn download_modpack_files(
                 let Some(job) = job else {
                     return;
                 };
-                if let Err(err) = download_single_modpack_file(&client, &instance_root, &job) {
+                if let Err(err) = download_single_modpack_file(&cancel, &instance_root, &job) {
                     let mut slot = crate::minecraft_core::lock_recover(&failure);
                     if slot.is_none() {
                         *slot = Some(err);
@@ -903,15 +895,11 @@ fn download_modpack_files(
 }
 
 fn download_single_modpack_file(
-    client: &reqwest::blocking::Client,
+    cancel: &crate::downloader::CancelToken,
     instance_root: &Path,
     job: &ModpackFileJob,
 ) -> Result<(), String> {
     let target = safe_join(instance_root, &job.relative_path)?;
-    if let Some(parent) = target.parent() {
-        fs::create_dir_all(parent)
-            .map_err(|e| format!("Failed to create directory {}: {e}", parent.display()))?;
-    }
 
     // Skip files that already exist with a matching checksum (idempotent
     // reinstall). Files without any verifier are always re-downloaded.
@@ -919,32 +907,24 @@ fn download_single_modpack_file(
     if has_verifier && target.is_file() && verify_job_checksums(&target, job).is_ok() {
         return Ok(());
     }
-
-    let mut last_error = format!(
-        "No download URL available for modpack file {}",
-        job.relative_path
-    );
-    for url in &job.urls {
-        match crate::download_file_with_progress_callback_blocking(client, url, &target, |_, _| {}) {
-            Ok(()) => match verify_job_checksums(&target, job) {
-                Ok(()) => return Ok(()),
-                Err(err) => {
-                    let _ = fs::remove_file(&target);
-                    last_error = format!(
-                        "Checksum mismatch for modpack file {}: {err}",
-                        job.relative_path
-                    );
-                }
-            },
-            Err(err) => {
-                last_error = format!(
-                    "Failed to download modpack file {}: {err}",
-                    job.relative_path
-                );
-            }
-        }
+    if job.urls.is_empty() {
+        return Err(format!(
+            "No download URL available for modpack file {}",
+            job.relative_path
+        ));
     }
-    Err(last_error)
+    crate::downloader::download(
+        &crate::downloader::Request::new(&job.urls, &target, cancel)
+            .size(job.size)
+            .sha1(job.sha1.as_deref())
+            .sha512(job.sha512.as_deref()),
+    )
+    .map_err(|err| {
+        format!(
+            "Failed to download modpack file {}: {err}",
+            job.relative_path
+        )
+    })
 }
 
 fn verify_job_checksums(path: &Path, job: &ModpackFileJob) -> Result<(), String> {
@@ -1019,6 +999,7 @@ fn allocate_instance_version_id(versions_dir: &Path, desired: &str) -> Result<St
 /// id (the copy source for the instance dir) and the resolved loader version.
 fn install_loader_profile(
     window: &tauri::Window,
+    cancel: &crate::downloader::CancelToken,
     game_dir: &Path,
     minecraft_version: &str,
     loader: &ModpackLoaderRequirement,
@@ -1071,6 +1052,7 @@ fn install_loader_profile(
             };
             let jdk = crate::ensure_jdk_blocking(
                 window.clone(),
+                cancel,
                 game_dir.to_string_lossy().to_string(),
                 minecraft_version.to_string(),
                 Some(download_threads as i32),
@@ -1149,6 +1131,7 @@ fn create_instance_from_profile(
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn install_modpack_blocking(
     window: tauri::Window,
+    cancel: &crate::downloader::CancelToken,
     game_dir: String,
     source: String,
     project_id: String,
@@ -1213,30 +1196,32 @@ pub(crate) fn install_modpack_blocking(
         0,
         0,
     );
-    let archive_path = std::env::temp_dir().join(format!(
-        "fpsmaster-modpack-{}-{}-{}",
-        std::process::id(),
-        crate::now_epoch_millis(),
+    // Stable name so an interrupted archive download resumes on retry.
+    let archive_path = crate::launcher_download_cache_path(&format!(
+        "modpack-{}-{}",
+        crate::sanitize_file_name(&normalized_project_id),
         crate::sanitize_file_name(&pack_download.file_name)
-    ));
+    ))
+    .map_err(|err| stage_err(STAGE_DOWNLOAD_PACK, err))?;
     {
         let window_ref = &window;
         let key_ref = project_key.as_str();
+        let progress = |downloaded: u64, total: Option<u64>| {
+            crate::emit_content_install_progress(Some(window_ref), key_ref, downloaded, total);
+            emit_modpack_progress(
+                Some(window_ref),
+                key_ref,
+                STAGE_DOWNLOAD_PACK,
+                "Downloading modpack archive",
+                downloaded,
+                total.unwrap_or(0),
+            );
+        };
         crate::download_file_with_progress_callback_blocking(
-            &client,
+            cancel,
             &pack_download.url,
             &archive_path,
-            |downloaded, total| {
-                crate::emit_content_install_progress(Some(window_ref), key_ref, downloaded, total);
-                emit_modpack_progress(
-                    Some(window_ref),
-                    key_ref,
-                    STAGE_DOWNLOAD_PACK,
-                    "Downloading modpack archive",
-                    downloaded,
-                    total.unwrap_or(0),
-                );
-            },
+            &progress,
         )
         .map_err(|err| {
             stage_err(
@@ -1419,6 +1404,7 @@ pub(crate) fn install_modpack_blocking(
     })?;
     let (source_version_id, resolved_loader_version) = install_loader_profile(
         &window,
+        cancel,
         &game_dir_path,
         &parsed.minecraft_version,
         &parsed.loader,
@@ -1462,6 +1448,7 @@ pub(crate) fn install_modpack_blocking(
     };
     let file_count = download_modpack_files(
         Some(&window),
+        cancel,
         &project_key,
         &instance_root,
         jobs,

@@ -12,6 +12,7 @@ type MandatoryUpdatePageProps = {
   launcherUpdateProgressPercent: number | null;
   launcherUpdateDownload: DownloadedLauncherUpdate | null;
   onInstallLauncherUpdate: () => void;
+  onCancelLauncherUpdate: () => void;
 };
 
 function MandatoryUpdatePage({
@@ -20,6 +21,7 @@ function MandatoryUpdatePage({
   launcherUpdateProgressPercent,
   launcherUpdateDownload,
   onInstallLauncherUpdate,
+  onCancelLauncherUpdate,
 }: MandatoryUpdatePageProps) {
   const { t } = useI18n();
   const notes = launcherUpdate?.notes?.trim() ?? "";
@@ -103,6 +105,11 @@ function MandatoryUpdatePage({
                   : t("mandatoryUpdate.installing")
                 : t("mandatoryUpdate.install")}
             </Button>
+            {launcherUpdateDownloading && (
+              <Button variant="ghost" size="lg" className="!rounded-[10px]" onClick={onCancelLauncherUpdate}>
+                {t("settings.launcherUpdateCancel")}
+              </Button>
+            )}
           </div>
         </Card>
       </div>

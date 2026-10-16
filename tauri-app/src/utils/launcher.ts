@@ -31,7 +31,7 @@ import type {
 
 export function createPhaseState(
   title: string,
-  sourcePhase: "vanilla" | "forge" | "fabric" | "optifine"
+  sourcePhase: InstallPhaseState["sourcePhase"]
 ): InstallPhaseState {
   return {
     title,
@@ -88,6 +88,8 @@ export function createLaunchPrepareDialogState(
     instanceName,
     versionId,
     canClose: false,
+    cancelling: false,
+    offlineAvailable: false,
     errorText: "",
     phases: [
       createLaunchPreparePhaseState("login", phaseTitles.login, waitingText),
@@ -287,6 +289,7 @@ function parseLocale(input: unknown): Locale {
 
 function parseDownloadSource(input: unknown): DownloadSource {
   if (
+    input === "auto" ||
     input === "official-only" ||
     input === "mirror-only" ||
     input === "mirror-first" ||
@@ -378,14 +381,20 @@ export function resolveBackgroundAssetUrl(settings: Settings): string {
   if (settings.backgroundSource === "web-random") {
     return settings.backgroundWebUrl;
   }
-  if (settings.backgroundSource === "system") {
-    const value = settings.backgroundImage.trim();
-    if (!value) {
-      return "";
-    }
-    return value.startsWith("data:") ? value : convertFileSrc(value);
+  // "local" and "system" store a file path (see import_background_image);
+  // older settings and the browser-dev fallback still hold a data URL.
+  const value = settings.backgroundImage.trim();
+  if (!value) {
+    return "";
   }
-  return settings.backgroundImage;
+  if (/^(data|blob|https?|asset):/i.test(value)) {
+    return value;
+  }
+  try {
+    return convertFileSrc(value);
+  } catch {
+    return "";
+  }
 }
 
 // Playable URL for the local background video. Absolute paths go through the

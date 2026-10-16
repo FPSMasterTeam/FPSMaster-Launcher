@@ -4,7 +4,9 @@ use aes_gcm::{
 };
 use rand::{rngs::OsRng, RngCore};
 use sha2::{Digest, Sha256};
+use serde::Serialize;
 use std::{
+    collections::HashMap,
     fs::{self, OpenOptions},
     io::Write,
     path::{Path, PathBuf},
@@ -21,10 +23,21 @@ const MAX_VALUE_LEN: usize = 256 * 1024;
 const CREDENTIALS_DIR: &str = "credentials-v1";
 const MASTER_KEY_FILE: &str = "master.key";
 const KEYRING_SERVICE: &str = "com.fpsmaster.launcher";
+/// Present when the user agreed to keep the master key in a 0600 file because
+/// the system credential store is unusable (e.g. Linux without Secret Service).
+const FILE_FALLBACK_FLAG: &str = "file-key-fallback.enabled";
 
-fn master_key_lock() -> &'static Mutex<()> {
-    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    LOCK.get_or_init(|| Mutex::new(()))
+/// Stable error codes (prefix of the error string) so the frontend can offer
+/// the right action instead of matching message text.
+pub(crate) const CODE_STORE_UNAVAILABLE: &str = "CREDENTIAL_STORE_UNAVAILABLE";
+pub(crate) const CODE_STORE_ACCESS_DENIED: &str = "CREDENTIAL_STORE_ACCESS_DENIED";
+
+/// Master keys resolved in this process, by credentials directory. Every
+/// get/set used to hit the keychain, and on macOS each access of an ad-hoc
+/// signed build can raise an authorization prompt (launcher-core-11).
+fn master_key_cache() -> &'static Mutex<HashMap<PathBuf, [u8; KEY_LEN]>> {
+    static CACHE: OnceLock<Mutex<HashMap<PathBuf, [u8; KEY_LEN]>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 fn validate_key(raw: &str) -> Result<&str, String> {
@@ -99,18 +112,79 @@ fn atomic_write(path: &Path, data: &[u8]) -> Result<(), String> {
     result
 }
 
+fn classify_keyring_error(context: &str, error: &keyring::Error) -> String {
+    let code = match error {
+        keyring::Error::NoStorageAccess(_) => CODE_STORE_ACCESS_DENIED,
+        _ => CODE_STORE_UNAVAILABLE,
+    };
+    format!("{code}: {context}: {error}")
+}
+
+fn has_stored_credentials(dir: &Path) -> bool {
+    fs::read_dir(dir)
+        .map(|entries| {
+            entries.flatten().any(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .ends_with(".credential")
+            })
+        })
+        .unwrap_or(false)
+}
+
+/// Master key from the 0600 file. Only used when the user enabled the file
+/// fallback. A new key is never created while credentials encrypted with an
+/// unreachable keychain key exist: that would silently orphan them.
+fn load_or_create_file_master_key(dir: &Path, keyring_error: String) -> Result<[u8; KEY_LEN], String> {
+    let path = dir.join(MASTER_KEY_FILE);
+    match fs::read(&path) {
+        Ok(bytes) => validate_master_key(&bytes),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            if has_stored_credentials(dir) {
+                return Err(keyring_error);
+            }
+            let mut bytes = [0u8; KEY_LEN];
+            OsRng.fill_bytes(&mut bytes);
+            atomic_write(&path, &bytes)?;
+            Ok(bytes)
+        }
+        Err(e) => Err(format!("Failed to read the file master key: {e}")),
+    }
+}
+
 fn load_or_create_master_key(dir: &Path) -> Result<[u8; KEY_LEN], String> {
-    let _guard = master_key_lock()
+    let mut cache = master_key_cache()
         .lock()
         .map_err(|_| "Secure storage master key lock is poisoned".to_string())?;
+    if let Some(key) = cache.get(dir) {
+        return Ok(*key);
+    }
     ensure_dir(dir)?;
+    let key = match load_master_key_from_keyring(dir) {
+        Ok(key) => key,
+        Err(error) if dir.join(FILE_FALLBACK_FLAG).exists() => {
+            crate::push_ui_log(
+                "launcher",
+                "warn",
+                &format!("System credential store unusable, using the file key: {error}"),
+            );
+            load_or_create_file_master_key(dir, error)?
+        }
+        Err(error) => return Err(error),
+    };
+    cache.insert(dir.to_path_buf(), key);
+    Ok(key)
+}
+
+fn load_master_key_from_keyring(dir: &Path) -> Result<[u8; KEY_LEN], String> {
     let legacy_path = dir.join(MASTER_KEY_FILE);
     let keyring_user = format!(
         "secure-storage-master-key-v1-{:x}",
         Sha256::digest(dir.as_os_str().to_string_lossy().as_bytes())
     );
     let entry = keyring::Entry::new(KEYRING_SERVICE, &keyring_user)
-        .map_err(|e| format!("Failed to access the system credential store: {e}"))?;
+        .map_err(|e| classify_keyring_error("Failed to access the system credential store", &e))?;
 
     let stored = match entry.get_secret() {
         Ok(bytes) => bytes,
@@ -126,10 +200,16 @@ fn load_or_create_master_key(dir: &Path) -> Result<[u8; KEY_LEN], String> {
             };
             validate_master_key(&bytes)?;
             entry.set_secret(&bytes).map_err(|e| {
-                format!("Failed to save master key in the system credential store: {e}")
+                classify_keyring_error(
+                    "Failed to save master key in the system credential store",
+                    &e,
+                )
             })?;
             let confirmed = entry.get_secret().map_err(|e| {
-                format!("Failed to verify the system credential store master key: {e}")
+                classify_keyring_error(
+                    "Failed to verify the system credential store master key",
+                    &e,
+                )
             })?;
             if confirmed != bytes {
                 return Err("System credential store returned a different master key".into());
@@ -137,8 +217,9 @@ fn load_or_create_master_key(dir: &Path) -> Result<[u8; KEY_LEN], String> {
             confirmed
         }
         Err(e) => {
-            return Err(format!(
-                "Failed to read master key from the system credential store: {e}"
+            return Err(classify_keyring_error(
+                "Failed to read master key from the system credential store",
+                &e,
             ))
         }
     };
@@ -160,6 +241,74 @@ fn load_or_create_master_key(dir: &Path) -> Result<[u8; KEY_LEN], String> {
         Err(e) => return Err(format!("Failed to inspect the legacy master key: {e}")),
     }
     Ok(key)
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SecureStorageStatus {
+    /// "system" | "file" | "unavailable"
+    pub backend: String,
+    pub file_fallback_enabled: bool,
+    /// Error code (CREDENTIAL_STORE_*) when the backend is unavailable.
+    pub error_code: Option<String>,
+    pub error: Option<String>,
+}
+
+pub(crate) fn secure_storage_status_blocking(app: &AppHandle) -> Result<SecureStorageStatus, String> {
+    let dir = credentials_dir(app)?;
+    let fallback = dir.join(FILE_FALLBACK_FLAG).exists();
+    let result = load_or_create_master_key(&dir);
+    let file_key = dir.join(MASTER_KEY_FILE).exists();
+    Ok(match result {
+        Ok(_) => SecureStorageStatus {
+            backend: if fallback && file_key { "file" } else { "system" }.to_string(),
+            file_fallback_enabled: fallback,
+            error_code: None,
+            error: None,
+        },
+        Err(error) => SecureStorageStatus {
+            backend: "unavailable".to_string(),
+            file_fallback_enabled: fallback,
+            error_code: error
+                .split_once(':')
+                .map(|(code, _)| code.to_string())
+                .filter(|code| code.starts_with("CREDENTIAL_STORE_")),
+            error: Some(error),
+        },
+    })
+}
+
+#[tauri::command]
+pub async fn secure_storage_status(app: AppHandle) -> Result<SecureStorageStatus, String> {
+    tauri::async_runtime::spawn_blocking(move || secure_storage_status_blocking(&app))
+        .await
+        .map_err(|e| format!("Failed to join secure storage status task: {e}"))?
+}
+
+/// Records the user's consent (or its withdrawal) to keep the master key in a
+/// 0600 file when the system credential store cannot be used.
+#[tauri::command]
+pub async fn secure_storage_set_file_fallback(
+    app: AppHandle,
+    enabled: bool,
+) -> Result<SecureStorageStatus, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let dir = credentials_dir(&app)?;
+        ensure_dir(&dir)?;
+        let flag = dir.join(FILE_FALLBACK_FLAG);
+        if enabled {
+            atomic_write(&flag, b"1")?;
+        } else if flag.exists() {
+            fs::remove_file(&flag)
+                .map_err(|e| format!("Failed to disable the file key fallback: {e}"))?;
+        }
+        if let Ok(mut cache) = master_key_cache().lock() {
+            cache.remove(&dir);
+        }
+        secure_storage_status_blocking(&app)
+    })
+    .await
+    .map_err(|e| format!("Failed to join secure storage fallback task: {e}"))?
 }
 
 fn validate_master_key(bytes: &[u8]) -> Result<[u8; KEY_LEN], String> {
@@ -312,6 +461,20 @@ mod tests {
             Err(e) => Err(e),
         };
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn file_fallback_never_orphans_existing_credentials() {
+        let temp = tempfile::tempdir().unwrap();
+        let key = load_or_create_file_master_key(temp.path(), "denied".into()).unwrap();
+        assert_eq!(load_or_create_file_master_key(temp.path(), "denied".into()).unwrap(), key);
+
+        let other = tempfile::tempdir().unwrap();
+        fs::write(other.path().join("abc.credential"), b"x").unwrap();
+        assert_eq!(
+            load_or_create_file_master_key(other.path(), "denied".into()).unwrap_err(),
+            "denied"
+        );
     }
 
     #[test]

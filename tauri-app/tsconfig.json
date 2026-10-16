@@ -15,5 +15,8 @@
       "@/*": ["src/*"]
     }
   },
-  "include": ["src"]
+  "include": ["src"],
+  // Node test-runner files (npm test): run through Node type stripping, which
+  // needs explicit .ts imports and node: modules this browser config lacks.
+  "exclude": ["src/**/*.test.ts"]
 }

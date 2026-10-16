@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { getAllWebviewWindows } from "@tauri-apps/api/webviewWindow";
 import { ChevronDown, Crown, LoaderCircle, Plus, TriangleAlert, User, X } from "lucide-react";
 import { memo, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
@@ -43,6 +44,9 @@ function MinecraftProfileCard({
   const [microsoftStatus, setMicrosoftStatus] = useState("");
   const [microsoftError, setMicrosoftError] = useState("");
   const containerRef = useRef<HTMLDivElement | null>(null);
+  // Bumped on every new attempt and on cancel: a browser login that resolves
+  // after the user cancelled must not add the account (launcher-ui-22).
+  const microsoftAttemptRef = useRef(0);
   const inputRef = useRef<HTMLInputElement | null>(null);
   const requiredDialogOpen = required && accounts.length === 0;
   const dialogVisible = dialogOpen || requiredDialogOpen;
@@ -86,14 +90,14 @@ function MinecraftProfileCard({
         if (!disposed) {
           setAuthConfig({
             configured: false,
-            configurationHint: String(error)
+            configurationHint: describeApiError(error, t)
           });
         }
       });
     return () => {
       disposed = true;
     };
-  }, [dialogVisible]);
+  }, [dialogVisible, t]);
 
   const displayAccount = currentAccount ?? accounts[0] ?? null;
   const profileTitle = displayAccount?.username?.trim() || t("minecraftAccount.emptyTitle");
@@ -122,8 +126,17 @@ function MinecraftProfileCard({
     if (required && !force) {
       return;
     }
+    if (microsoftBusy) {
+      cancelMicrosoftLogin();
+    }
     setDialogOpen(false);
     resetDialogState("offline");
+  }
+
+  // Closing the OAuth window makes the backend stop waiting for the callback.
+  function cancelMicrosoftLogin() {
+    microsoftAttemptRef.current += 1;
+    void closeMicrosoftAuthWindows();
   }
 
   function submitOfflineAccount() {
@@ -137,20 +150,23 @@ function MinecraftProfileCard({
   }
 
   async function beginMicrosoftLogin() {
+    const attempt = ++microsoftAttemptRef.current;
     setMicrosoftBusy(true);
     setMicrosoftError("");
     setMicrosoftStatus(t("minecraftAccount.microsoftBrowserOpening"));
     try {
       const account = await startMinecraftBrowserLogin();
+      if (microsoftAttemptRef.current !== attempt) return;
       onSaveMicrosoftAccount(account);
       closeAddDialog(true);
     } catch (error) {
+      if (microsoftAttemptRef.current !== attempt) return;
       // Raw `String(error)` here exposed reqwest/hyper source chains from the
       // Rust side; users saw "error sending request for url ..." and no hint of
       // what to do about it.
       setMicrosoftError(describeApiError(error, t));
     } finally {
-      setMicrosoftBusy(false);
+      if (microsoftAttemptRef.current === attempt) setMicrosoftBusy(false);
     }
   }
 
@@ -390,6 +406,20 @@ async function loadMinecraftAuthConfig(): Promise<MinecraftAuthConfig> {
 
 async function startMinecraftBrowserLogin(): Promise<MinecraftAccount> {
   return invoke<MinecraftAccount>("start_minecraft_browser_login");
+}
+
+// The embedded Microsoft login windows are labelled minecraft-auth-*.
+async function closeMicrosoftAuthWindows(): Promise<void> {
+  try {
+    const windows = await getAllWebviewWindows();
+    await Promise.all(
+      windows
+        .filter((win) => win.label.startsWith("minecraft-auth-"))
+        .map((win) => win.destroy().catch(() => win.close()))
+    );
+  } catch (error) {
+    console.warn("[minecraft-auth] cannot close the login window:", error);
+  }
 }
 
 // Resolves the skin to render for an account: the stored skinUrl when present,

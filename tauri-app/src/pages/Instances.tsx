@@ -367,12 +367,17 @@ function InstancesPage({
                           </span>
                         )}
                         {target.category !== "VANILLA" &&
-                          presetStatus &&
-                          (presetStatus.state === "update-available" ||
-                            presetStatus.state === "missing") &&
+                          presetStatus?.state === "update-available" &&
                           canAccess && (
                             <span className="badge badge-warning shrink-0 rounded-[5px] px-1.5 py-0.5 text-[10px]">
                               {t("instances.status.updateAvailable")}
+                            </span>
+                          )}
+                        {target.category !== "VANILLA" &&
+                          presetStatus?.state === "missing" &&
+                          canAccess && (
+                            <span className="badge badge-muted shrink-0 rounded-[5px] px-1.5 py-0.5 text-[10px]">
+                              {t("instances.status.missing")}
                             </span>
                           )}
                         {target.category !== "VANILLA" &&

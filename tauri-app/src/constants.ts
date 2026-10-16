@@ -2,7 +2,6 @@ import type {
   BlurMode,
   Instance,
   LauncherLoginPrefs,
-  NewsItem,
   Settings,
   VisualProfile
 } from "./types";
@@ -25,7 +24,11 @@ export const STORAGE_KEYS = {
   selectedMinecraftAccount: "fpsmaster.selectedMinecraftAccount",
   // Which Minecraft game version the user picked inside the Nova region (Nova stays one preset,
   // this sub-selection drives the launched MC version + matching mod jar).
-  selectedNovaGameVersion: "fpsmaster.selectedNovaGameVersion"
+  selectedNovaGameVersion: "fpsmaster.selectedNovaGameVersion",
+  // "1" once the user answered the start-with-computer question.
+  autostartPrompted: "fpsmaster.autostartPrompted",
+  // "1" once the user was told that closing only hides the launcher to the tray.
+  trayNoticeShown: "fpsmaster.trayNoticeShown"
 } as const;
 
 // Default/fallback Nova game version highlighted in the picker when the catalog hasn't loaded yet.
@@ -38,23 +41,18 @@ export const LAUNCHER_API_BASE_URL = "https://api.fpsmaster.top";
 // Account registration happens on the website, not in the launcher.
 export const REGISTER_URL = "https://fpsmaster.top/register";
 
-export const NEWS_ITEMS: readonly NewsItem[] = [
-  {
-    title: "欢迎使用 FPSMaster",
-    summary: "登录后即可同步客户端包、查看最新公告，并快速启动常用实例。"
-  }
-];
-
 export const DEFAULT_SETTINGS: Settings = {
   gameDir: "",
   playerName: "",
-  downloadSource: "mirror-first",
+  downloadSource: "auto",
   downloadThreads: 16,
   launcherUpdateChannel: "beta",
   maxMemoryMb: 4096,
   hideMainOnLaunch: true,
   minimizeToTray: true,
-  launchOnStartup: true,
+  // Off until the user opts in (asked once, see the autostart prompt): it used
+  // to be registered silently on first run (launcher-ui-14).
+  launchOnStartup: false,
   language: "en-US",
   themeMode: "dark",
   themeAccent: "emerald",

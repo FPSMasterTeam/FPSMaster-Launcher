@@ -1,12 +1,12 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { LAUNCHER_API_BASE_URL } from "../constants";
 import type { TranslationKey } from "../i18n";
-import { describeApiError, formatLaunchError, isLauncherAppUpdateMissing } from "../lib/launcherError";
-import { notifyError } from "../lib/toast";
+import { describeApiError, isCancelledError, isLauncherAppUpdateMissing } from "../lib/launcherError";
+import { notifyError, notifyInfo } from "../lib/toast";
 import type { DownloadedLauncherUpdate, LauncherAppUpdateChannel, LauncherAppUpdateInfo } from "../types";
-import { compareMajor } from "../utils/launcher";
+import { compareMajor, createSessionId } from "../utils/launcher";
 import { IS_WINDOWS } from "../utils/platform";
 
 type LauncherAppUpdateProgress = {
@@ -38,6 +38,8 @@ export type LauncherUpdateController = {
   refresh: (silent?: boolean) => Promise<void>;
   refreshChannels: () => Promise<void>;
   install: () => Promise<void>;
+  /** Stops a running installer download. */
+  cancel: () => Promise<void>;
 };
 
 // Owns the launcher self-update domain: checking for new versions, listing
@@ -51,6 +53,7 @@ export function useLauncherUpdate(deps: UseLauncherUpdateDeps): LauncherUpdateCo
   const [downloading, setDownloading] = useState(false);
   const [progressPercent, setProgressPercent] = useState<number | null>(null);
   const [download, setDownload] = useState<DownloadedLauncherUpdate | null>(null);
+  const downloadSessionRef = useRef<string | null>(null);
 
   const available = useMemo(
     () => appUpdate !== null && compareMajor(appUpdate.version, currentLauncherVersion) > 0,
@@ -91,8 +94,7 @@ export function useLauncherUpdate(deps: UseLauncherUpdateDeps): LauncherUpdateCo
           );
         }
       } catch (error) {
-        const rawText = formatLaunchError(error);
-        if (isLauncherAppUpdateMissing(rawText)) {
+        if (isLauncherAppUpdateMissing(error)) {
           setAppUpdate(null);
           setDownload(null);
         } else {
@@ -128,10 +130,13 @@ export function useLauncherUpdate(deps: UseLauncherUpdateDeps): LauncherUpdateCo
           }
         }
       );
+      const sessionId = createSessionId();
+      downloadSessionRef.current = sessionId;
       const downloaded = await invoke<DownloadedLauncherUpdate>("download_launcher_app_update", {
         downloadUrl: appUpdate.downloadUrl,
         version: appUpdate.version,
-        checksum: appUpdate.checksum
+        checksum: appUpdate.checksum,
+        ipcSession: sessionId
       });
       setDownload(downloaded);
       completed = true;
@@ -142,15 +147,31 @@ export function useLauncherUpdate(deps: UseLauncherUpdateDeps): LauncherUpdateCo
         await invoke("quit_launcher_app");
       }
     } catch (error) {
-      const errorText = describeApiError(error, t);
-      setStatus(t("app.status.failed", { error: errorText }));
-      notifyError(errorText, t("toast.title.updateFailed"));
+      if (isCancelledError(error)) {
+        setStatus(t("settings.launcherUpdateCancelled"));
+        notifyInfo(t("settings.launcherUpdateCancelled"));
+      } else {
+        const errorText = describeApiError(error, t);
+        setStatus(t("app.status.failed", { error: errorText }));
+        notifyError(errorText, t("toast.title.updateFailed"));
+      }
     } finally {
+      downloadSessionRef.current = null;
       stopProgressListener?.();
       if (!completed) setProgressPercent(null);
       setDownloading(false);
     }
   }, [appUpdate, available, flushTelemetry, setStatus, t]);
+
+  const cancel = useCallback(async () => {
+    const sessionId = downloadSessionRef.current;
+    if (!sessionId) return;
+    try {
+      await invoke("cancel_install", { sessionId });
+    } catch (error) {
+      notifyError(describeApiError(error, t), t("toast.title.updateFailed"));
+    }
+  }, [t]);
 
   // Load channels once, and re-check for updates whenever the channel changes.
   useEffect(() => {
@@ -174,6 +195,7 @@ export function useLauncherUpdate(deps: UseLauncherUpdateDeps): LauncherUpdateCo
     mandatoryRequired,
     refresh,
     refreshChannels,
-    install
+    install,
+    cancel
   };
 }

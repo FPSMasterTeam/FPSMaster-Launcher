@@ -29,6 +29,7 @@ const ContentPage = lazy(() => import("../pages/Content"));
 const MandatoryUpdatePage = lazy(() => import("../pages/MandatoryUpdate"));
 const AccountCenterPage = lazy(() => import("../pages/AccountCenter"));
 const SettingsPage = lazy(() => import("../pages/Settings"));
+const DiagnosticsPage = lazy(() => import("../pages/Diagnostics"));
 
 // Everything the page tree needs, assembled by the Launcher. Grouped loosely
 // by domain so it maps cleanly onto the domain hooks that feed it.
@@ -71,7 +72,9 @@ export type PageRouterContext = {
   launchProgressPercent: number | null;
   launchProgressText: string;
   onLaunch: () => void;
+  onQuickLaunch: () => void;
   onLaunchToServer: (serverAddress: string) => void;
+  gameRunning: boolean;
   // minecraft accounts
   minecraftAccounts: MinecraftAccount[];
   currentMinecraftAccount: MinecraftAccount | null;
@@ -90,6 +93,7 @@ export type PageRouterContext = {
   launcherUpdateDownload: DownloadedLauncherUpdate | null;
   onRefreshLauncherUpdate: () => void;
   onInstallLauncherUpdate: () => void;
+  onCancelLauncherUpdate: () => void;
   // install wizard
   catalogLoading: boolean;
   catalogCount: number;
@@ -132,6 +136,8 @@ export type PageRouterContext = {
   onChangeSettings: (next: Settings) => void;
   onClampMemory: (input: string) => void;
   onResetSettings: () => void;
+  // diagnostics
+  diagnosticsVersionId: string | null;
 };
 
 export default function PageRouter({ ctx }: { ctx: PageRouterContext }) {
@@ -162,6 +168,8 @@ export default function PageRouter({ ctx }: { ctx: PageRouterContext }) {
           minecraftAccountRequired={ctx.minecraftAccountRequired}
           onSelect={ctx.onSelect}
           onLaunch={ctx.onLaunch}
+          onQuickLaunch={ctx.onQuickLaunch}
+          gameRunning={ctx.gameRunning}
           onLaunchToServer={ctx.onLaunchToServer}
           onOpenSettings={ctx.onGoSettings}
           onOpenServers={ctx.onGoServers}
@@ -176,7 +184,7 @@ export default function PageRouter({ ctx }: { ctx: PageRouterContext }) {
         <ServersPage
           servers={ctx.launcherServers}
           currentInstance={ctx.current}
-          busy={ctx.busy}
+          busy={ctx.busy || ctx.gameRunning}
           launching={ctx.launching}
           launchProgressPercent={ctx.launchProgressPercent}
           launchProgressText={ctx.launchProgressText}
@@ -274,6 +282,17 @@ export default function PageRouter({ ctx }: { ctx: PageRouterContext }) {
           onStatusChange={ctx.onStatusChange}
         />
       );
+    case "diagnostics":
+      return (
+        <DiagnosticsPage
+          versionId={ctx.diagnosticsVersionId}
+          instanceName={ctx.current?.name ?? null}
+          settings={ctx.settings}
+          busy={ctx.busy}
+          onRepairInstance={ctx.onInstanceRepair}
+          onOpenSettings={ctx.onGoSettings}
+        />
+      );
     case "mandatory-update":
       return (
         <MandatoryUpdatePage
@@ -282,6 +301,7 @@ export default function PageRouter({ ctx }: { ctx: PageRouterContext }) {
           launcherUpdateProgressPercent={ctx.launcherUpdateProgressPercent}
           launcherUpdateDownload={ctx.launcherUpdateDownload}
           onInstallLauncherUpdate={ctx.onInstallLauncherUpdate}
+          onCancelLauncherUpdate={ctx.onCancelLauncherUpdate}
         />
       );
     default:
@@ -300,6 +320,7 @@ export default function PageRouter({ ctx }: { ctx: PageRouterContext }) {
           onLogoutLauncherAccount={ctx.onLogoutLauncherAccount}
           onRefreshLauncherUpdate={ctx.onRefreshLauncherUpdate}
           onInstallLauncherUpdate={ctx.onInstallLauncherUpdate}
+          onCancelLauncherUpdate={ctx.onCancelLauncherUpdate}
           onChange={ctx.onChangeSettings}
           onClampMemory={ctx.onClampMemory}
           onReset={ctx.onResetSettings}

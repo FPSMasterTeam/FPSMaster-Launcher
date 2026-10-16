@@ -1,4 +1,5 @@
 import Card from "./Card";
+import ModalFrame from "./ModalFrame";
 import { useI18n } from "../i18n";
 import { formatByteSize, formatEta, phasePercent } from "../lib/launchPrepare";
 import type { InstallDialogState, InstallPhaseState, LaunchPrepareItem, LaunchPrepareItemStatus } from "../types";
@@ -13,12 +14,12 @@ export default function InstallDialog({ dialog, onClose, onCancel }: InstallDial
   const { t } = useI18n();
 
   return (
-    <section className="modalOverlay">
+    <ModalFrame labelledBy="install-dialog-title" onEscape={dialog.canClose ? onClose : undefined}>
       <Card variant="strong" className="installDialogCard w-full max-w-[780px] rounded-[10px] p-5 md:p-6" interactive={false}>
         <div className="panelHead">
-          <h2 className="flex items-center gap-2">
+          <h2 id="install-dialog-title" className="flex items-center gap-2">
             {!dialog.canClose ? <span className="installDialogSpinner minecraft-inline-spinner" aria-hidden="true" /> : null}
-            {t("dialog.installing", { version: dialog.versionId })}
+            {dialog.title ?? t("dialog.installing", { version: dialog.versionId })}
           </h2>
           <span className="mutedPill">{t("dialog.session", { id: dialog.sessionId.slice(-6) })}</span>
         </div>
@@ -30,7 +31,7 @@ export default function InstallDialog({ dialog, onClose, onCancel }: InstallDial
             {dialog.loaderPhase && <InstallPhaseView phase={dialog.loaderPhase} />}
             {dialog.optiFinePhase && <InstallPhaseView phase={dialog.optiFinePhase} />}
           </div>
-          {dialog.errorText !== "" && <pre className="errorBox installDialogErrorBox">{dialog.errorText}</pre>}
+          {dialog.errorText !== "" && <pre className="errorBox installDialogErrorBox" role="alert">{dialog.errorText}</pre>}
         </div>
 
         <div className="modalActions">
@@ -45,7 +46,7 @@ export default function InstallDialog({ dialog, onClose, onCancel }: InstallDial
           )}
         </div>
       </Card>
-    </section>
+    </ModalFrame>
   );
 }
 

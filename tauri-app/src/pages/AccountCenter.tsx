@@ -96,12 +96,12 @@ function AccountCenterPage({ launcherDashboard }: AccountCenterPageProps) {
                 {/* Role Badge - Only show for non-admin users */}
                 {!isAdmin && !isSponsor && (
                   <div className="badge badge-muted rounded-[5px] px-3 py-1 normal-case tracking-normal text-xs">
-                    普通会员
+                    {t("account.memberBadge")}
                   </div>
                 )}
                 {isSponsor && (
                   <div className="badge badge-accent rounded-[5px] px-3 py-1 normal-case tracking-normal text-xs">
-                    Pro会员
+                    {t("account.proBadge")}
                   </div>
                 )}
               </div>

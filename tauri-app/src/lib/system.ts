@@ -22,12 +22,14 @@ async function closeExistingMonitorWindows(): Promise<void> {
   }
 }
 
+// `ipcSession` makes the download cancellable through cancel_install(sessionId).
 export async function ensureJdk(
   gameDir: string,
   versionId: string,
-  downloadThreads: number
+  downloadThreads: number,
+  ipcSession?: string
 ): Promise<JdkEnsureResult> {
-  return invoke<JdkEnsureResult>("ensure_jdk", { gameDir, versionId, downloadThreads });
+  return invoke<JdkEnsureResult>("ensure_jdk", { gameDir, versionId, downloadThreads, ipcSession });
 }
 
 export async function syncAutostart(enabled: boolean): Promise<void> {

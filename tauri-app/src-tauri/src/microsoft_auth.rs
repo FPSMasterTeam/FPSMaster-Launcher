@@ -1132,33 +1132,28 @@ fn wait_for_minecraft_oauth_callback(
         }
         match listener.accept() {
             Ok((mut stream, _)) => {
-                let mut request_line = String::new();
-                {
-                    let mut reader = BufReader::new(&mut stream);
-                    reader.read_line(&mut request_line).map_err(|e| {
-                        format!("Failed to read Microsoft OAuth callback request: {e}")
-                    })?;
+                // Accepted sockets inherit the listener's non-blocking mode on
+                // Windows and macOS, so an immediate read_line returned
+                // WouldBlock and aborted the login (launcher-core-10).
+                let _ = stream.set_nonblocking(false);
+                let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
+                // Browser pre-connects, favicon requests and stray local
+                // connections are answered and ignored; only a callback that
+                // carries our state may finish (or fail) the login.
+                let Some(query) = read_oauth_callback_query(&mut stream, &redirect_base) else {
+                    let _ = write_browser_callback_page(&mut stream, 404, "Not found", "");
+                    continue;
+                };
+                let returned_state = query.get("state").map(String::as_str).unwrap_or_default();
+                if returned_state != expected_state {
+                    let _ = write_browser_callback_page(
+                        &mut stream,
+                        400,
+                        "Microsoft login failed",
+                        "Microsoft login callback state did not match the launcher session.",
+                    );
+                    continue;
                 }
-                let path = request_line.split_whitespace().nth(1).ok_or_else(|| {
-                    "Microsoft OAuth callback request line is invalid".to_string()
-                })?;
-                let callback_url = reqwest::Url::parse(&format!(
-                    "{}://{}{}",
-                    redirect_base.scheme(),
-                    redirect_base
-                        .host_str()
-                        .ok_or_else(|| "Minecraft redirect URL is missing host".to_string())?,
-                    if let Some(port) = redirect_base.port() {
-                        format!(":{port}{path}")
-                    } else {
-                        path.to_string()
-                    }
-                ))
-                .or_else(|_| reqwest::Url::parse(&format!("http://callback{path}")))
-                .map_err(|e| format!("Failed to parse Microsoft OAuth callback URL: {e}"))?;
-
-                let query: HashMap<String, String> =
-                    callback_url.query_pairs().into_owned().collect();
                 if let Some(error) = query.get("error") {
                     let description = query
                         .get("error_description")
@@ -1176,21 +1171,17 @@ fn wait_for_minecraft_oauth_callback(
                     );
                     return Err(message);
                 }
-                let returned_state = query.get("state").map(String::as_str).unwrap_or_default();
-                if returned_state != expected_state {
-                    let message =
-                        "Microsoft login callback state did not match the launcher session.";
+                let Some(code) = query.get("code").cloned() else {
                     let _ = write_browser_callback_page(
                         &mut stream,
                         400,
                         "Microsoft login failed",
-                        message,
+                        "Microsoft login callback did not contain an authorization code.",
                     );
-                    return Err(message.to_string());
-                }
-                let code = query.get("code").cloned().ok_or_else(|| {
-                    "Microsoft login callback did not contain an authorization code".to_string()
-                })?;
+                    return Err(
+                        "Microsoft login callback did not contain an authorization code".to_string(),
+                    );
+                };
                 let _ = write_browser_callback_page(
                     &mut stream,
                     200,
@@ -1271,6 +1262,39 @@ fn cleanup_minecraft_auth_data_directory(path: &Path) {
     }
 }
 
+/// Reads one request and returns its query when it targets the redirect path.
+fn read_oauth_callback_query(
+    stream: &mut std::net::TcpStream,
+    redirect_base: &reqwest::Url,
+) -> Option<HashMap<String, String>> {
+    let mut request_line = String::new();
+    BufReader::new(&mut *stream)
+        .read_line(&mut request_line)
+        .ok()?;
+    let mut parts = request_line.split_whitespace();
+    if parts.next()? != "GET" {
+        return None;
+    }
+    let target = parts.next()?;
+    let callback_url = reqwest::Url::parse(&format!("http://callback{target}")).ok()?;
+    let expected_path = match redirect_base.path() {
+        "" => "/",
+        path => path,
+    };
+    if callback_url.path() != expected_path {
+        return None;
+    }
+    Some(callback_url.query_pairs().into_owned().collect())
+}
+
+fn escape_html(raw: &str) -> String {
+    raw.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&#39;")
+}
+
 fn write_browser_callback_page(
     stream: &mut std::net::TcpStream,
     status_code: u16,
@@ -1279,7 +1303,9 @@ fn write_browser_callback_page(
 ) -> Result<(), String> {
     let body = format!(
         "<!DOCTYPE html><html><head><meta charset=\"utf-8\"><title>{}</title></head><body style=\"font-family:Segoe UI,sans-serif;background:#10161c;color:#eef3f7;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;\"><div style=\"max-width:480px;padding:32px;border-radius:20px;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.08);box-shadow:0 18px 40px rgba(0,0,0,0.22);\"><h1 style=\"margin:0 0 12px;font-size:22px;\">{}</h1><p style=\"margin:0;font-size:14px;line-height:1.7;color:#c7d2de;\">{}</p></div></body></html>",
-        title, title, message
+        escape_html(title),
+        escape_html(title),
+        escape_html(message)
     );
     let response = format!(
         "HTTP/1.1 {} OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
@@ -1398,6 +1424,43 @@ fn unix_timestamp_millis() -> i64 {
 #[cfg(test)]
 mod tests {
     use super::{format_listener_host, is_loopback_redirect_host, normalize_minecraft_skin_url};
+
+    fn query_for(request: &str) -> Option<std::collections::HashMap<String, String>> {
+        use std::io::Write;
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        // Mirror production: the listener is non-blocking.
+        listener.set_nonblocking(true).unwrap();
+        let address = listener.local_addr().unwrap();
+        let mut client = std::net::TcpStream::connect(address).unwrap();
+        let (mut stream, _) = loop {
+            match listener.accept() {
+                Ok(pair) => break pair,
+                Err(_) => std::thread::sleep(std::time::Duration::from_millis(5)),
+            }
+        };
+        stream.set_nonblocking(false).unwrap();
+        let request = request.to_string();
+        let writer = std::thread::spawn(move || {
+            // Data arrives after accept, which used to fail with WouldBlock.
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            client.write_all(request.as_bytes()).unwrap();
+            client
+        });
+        let base = reqwest::Url::parse(&format!("http://{address}/")).unwrap();
+        let query = super::read_oauth_callback_query(&mut stream, &base);
+        drop(writer.join());
+        query
+    }
+
+    #[test]
+    fn oauth_callback_ignores_unrelated_requests() {
+        assert!(query_for("GET /favicon.ico HTTP/1.1\r\n\r\n").is_none());
+        assert!(query_for("garbage\r\n").is_none());
+        let query = query_for("GET /?code=abc&state=xyz HTTP/1.1\r\n\r\n").unwrap();
+        assert_eq!(query.get("code").map(String::as_str), Some("abc"));
+        assert_eq!(query.get("state").map(String::as_str), Some("xyz"));
+        assert_eq!(super::escape_html("<b>&\""), "&lt;b&gt;&amp;&quot;");
+    }
 
     #[test]
     fn normalizes_legacy_minecraft_texture_urls_to_https() {

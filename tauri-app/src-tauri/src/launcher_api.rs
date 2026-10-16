@@ -1,19 +1,19 @@
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use tauri::{Emitter, Manager};
 
 use crate::{
-    build_api_http_client, build_blocking_http_client, describe_http_error,
-    download_file_with_progress_callback_blocking, open_file_with_system, sanitize_file_name,
-    verify_file_sha256,
+    build_api_http_client, describe_http_error, open_file_with_system, sanitize_file_name,
 };
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ApiEnvelope<T> {
     pub success: bool,
+    #[serde(default)]
+    pub code: Option<String>,
     pub message: Option<String>,
     pub data: Option<T>,
 }
@@ -385,9 +385,14 @@ pub async fn download_launcher_app_update(
     download_url: String,
     version: String,
     checksum: Option<String>,
+    ipc_session: Option<String>,
 ) -> Result<DownloadedLauncherUpdate, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        download_launcher_app_update_blocking(&app, download_url, version, checksum)
+        let cancel = crate::downloader::CancelToken::new(ipc_session.as_deref());
+        let result =
+            download_launcher_app_update_blocking(&app, &cancel, download_url, version, checksum);
+        crate::clear_install_cancel(ipc_session.as_deref());
+        result
     })
     .await
     .map_err(|e| format!("Failed to join launcher app download task: {e}"))?
@@ -466,8 +471,7 @@ fn parse_launcher_servers_response(
     }
 
     if !status.is_success() {
-        return Err(extract_api_error_message(body)
-            .unwrap_or_else(|| format!("launcher servers failed with HTTP {}", status.as_u16())));
+        return Err(api_failure(status, body, "launcher servers"));
     }
 
     let value: serde_json::Value = serde_json::from_str(body)
@@ -535,7 +539,7 @@ fn launcher_get_app_update_blocking(
     channel: Option<String>,
 ) -> Result<LauncherAppUpdateInfo, String> {
     let normalized_base = normalize_api_base_url(&base_url)?;
-    let client = build_blocking_http_client()?;
+    let client = build_api_http_client()?;
     let install_id = get_or_create_launcher_install_id(app)?;
     let mut url = reqwest::Url::parse(&format!("{normalized_base}/api/v1/launcher/app-update"))
         .map_err(|e| format!("Invalid launcher app update endpoint URL: {e}"))?;
@@ -567,7 +571,7 @@ fn launcher_list_app_update_channels_blocking(
     token: Option<String>,
 ) -> Result<Vec<LauncherAppUpdateChannel>, String> {
     let normalized_base = normalize_api_base_url(&base_url)?;
-    let client = build_blocking_http_client()?;
+    let client = build_api_http_client()?;
     let url = reqwest::Url::parse(&format!(
         "{normalized_base}/api/v1/launcher/app-update/channels"
     ))
@@ -593,6 +597,7 @@ fn launcher_list_app_update_channels_blocking(
 
 fn download_launcher_app_update_blocking(
     app: &tauri::AppHandle,
+    cancel: &crate::downloader::CancelToken,
     download_url: String,
     version: String,
     checksum: Option<String>,
@@ -609,7 +614,6 @@ fn download_launcher_app_update_blocking(
         .and_then(|item| normalize_launcher_update_checksum(&item))
         .ok_or_else(|| "Launcher update checksum is missing or invalid".to_string())?;
 
-    let client = build_blocking_http_client()?;
     let file_name = infer_download_file_name(&normalized_download_url, &normalized_version);
     let updates_dir = app
         .path()
@@ -623,42 +627,64 @@ fn download_launcher_app_update_blocking(
         )
     })?;
     let target_path = updates_dir.join(&file_name);
-    download_file_with_progress_callback_blocking(
-        &client,
-        &normalized_download_url,
-        &target_path,
-        |downloaded_bytes, total_bytes| {
-            let percent = total_bytes
-                .filter(|value| *value > 0)
-                .map(|value| {
-                    downloaded_bytes
-                        .saturating_mul(100)
-                        .min(value.saturating_mul(100))
-                        / value
-                })
-                .and_then(|value| u8::try_from(value).ok());
-            let _ = app.emit(
-                "launcher-app-update-progress",
-                LauncherAppUpdateProgress {
-                    downloaded_bytes,
-                    total_bytes,
-                    percent,
-                },
-            );
-        },
+    remove_stale_update_files(&updates_dir, &file_name);
+    // The downloader throttles this callback (launcher-core-19: it used to fire
+    // an IPC event for every 64 KiB read).
+    let progress = |downloaded_bytes: u64, total_bytes: Option<u64>| {
+        let percent = total_bytes
+            .filter(|value| *value > 0)
+            .map(|value| {
+                downloaded_bytes
+                    .saturating_mul(100)
+                    .min(value.saturating_mul(100))
+                    / value
+            })
+            .and_then(|value| u8::try_from(value).ok());
+        let _ = app.emit(
+            "launcher-app-update-progress",
+            LauncherAppUpdateProgress {
+                downloaded_bytes,
+                total_bytes,
+                percent,
+            },
+        );
+    };
+    crate::downloader::download(
+        &crate::downloader::Request::single(&normalized_download_url, &target_path, cancel)
+            .sha256(Some(expected_checksum.as_str()))
+            .on_progress(&progress),
     )
     .map_err(|e| format!("Failed to download launcher installer: {e}"))?;
-
-    if let Err(error) = verify_file_sha256(&target_path, &expected_checksum) {
-        let _ = fs::remove_file(&target_path);
-        return Err(format!("Launcher installer checksum mismatch: {error}"));
-    }
 
     Ok(DownloadedLauncherUpdate {
         version: normalized_version,
         file_name,
         file_path: target_path.to_string_lossy().to_string(),
     })
+}
+
+/// Deletes installers left over from earlier updates. Only the file being
+/// downloaded now (and its resumable `.part` state) is kept.
+fn remove_stale_update_files(updates_dir: &Path, keep_file_name: &str) {
+    let Ok(entries) = fs::read_dir(updates_dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().to_string();
+        if name == keep_file_name || name.starts_with(&format!("{keep_file_name}.part")) {
+            continue;
+        }
+        let path = entry.path();
+        if path.is_file() {
+            if let Err(error) = fs::remove_file(&path) {
+                crate::push_ui_log(
+                    "core",
+                    "warn",
+                    &format!("Failed to remove old launcher installer {}: {error}", path.display()),
+                );
+            }
+        }
+    }
 }
 
 fn normalize_launcher_update_checksum(value: &str) -> Option<String> {
@@ -853,13 +879,14 @@ fn parse_launcher_login_response(
         });
     }
 
+    // Status first: a non-JSON error page (proxy 502, framework 404) must still
+    // come back tagged so the frontend words it by status (contract §1).
+    if !status.is_success() {
+        return Err(api_failure(status, body, "login"));
+    }
+
     let value: serde_json::Value =
         serde_json::from_str(body).map_err(|e| format!("Invalid login response JSON: {e}"))?;
-
-    if !status.is_success() {
-        return Err(extract_api_error_message(body)
-            .unwrap_or_else(|| format!("login failed with HTTP {}", status.as_u16())));
-    }
 
     let container = login_payload_container(&value);
     let token = extract_login_token(container)
@@ -884,22 +911,18 @@ fn parse_launcher_versions_response(
         if status.is_success() {
             return Ok(Vec::new());
         }
-        return Err(format!(
-            "versions list failed with HTTP {} and empty response body",
-            status.as_u16()
-        ));
+        return Err(api_failure(status, trimmed_body, "versions list"));
     }
 
     let value: serde_json::Value = match serde_json::from_str(trimmed_body) {
         Ok(value) => value,
         Err(err) => {
-            let preview = response_body_preview(trimmed_body);
             if !status.is_success() {
-                return Err(format!(
-                    "versions list failed with HTTP {}: {preview}",
-                    status.as_u16()
-                ));
+                // Non-JSON error page (proxy, framework 404 while the backend is
+                // mid-deploy): the frontend words it by status.
+                return Err(api_failure(status, trimmed_body, "versions list"));
             }
+            let preview = response_body_preview(trimmed_body);
             return Err(format!(
                 "Invalid versions list response (not JSON, {err}): {preview}"
             ));
@@ -909,33 +932,7 @@ fn parse_launcher_versions_response(
     if let Ok(envelope) = serde_json::from_value::<ApiEnvelope<Vec<LauncherVersion>>>(value.clone())
     {
         if !status.is_success() || !envelope.success {
-            let is_auth_error = status.as_u16() == 401 || status.as_u16() == 403;
-            // A 404 here means the release-catalog route itself didn't match on the server
-            // (e.g. a backend still mid-deploy, or a launcher/backend version skew). The raw
-            // framework body for that is "Unable to find matching target resource method",
-            // which is meaningless to a player — replace it with something actionable.
-            if status.as_u16() == 404 {
-                return Err(
-                    "Release service is temporarily unavailable (HTTP 404). Please try again in a moment."
-                        .to_string(),
-                );
-            }
-            let message = envelope
-                .message
-                .and_then(|value| {
-                    let trimmed = value.trim().to_string();
-                    (!trimmed.is_empty()).then_some(trimmed)
-                })
-                .or_else(|| find_error_message_in_value(&value))
-                .map(|msg| {
-                    if is_auth_error {
-                        format!("HTTP {} - {}", status.as_u16(), msg)
-                    } else {
-                        msg
-                    }
-                })
-                .unwrap_or_else(|| format!("versions list failed with HTTP {}", status.as_u16()));
-            return Err(message);
+            return Err(api_failure(status, trimmed_body, "versions list"));
         }
         if let Some(data) = envelope.data {
             return Ok(data);
@@ -943,17 +940,7 @@ fn parse_launcher_versions_response(
     }
 
     if !status.is_success() {
-        let is_auth_error = status.as_u16() == 401 || status.as_u16() == 403;
-        if let Some(msg) = find_error_message_in_value(&value) {
-            if is_auth_error {
-                return Err(format!("HTTP {} - {}", status.as_u16(), msg));
-            }
-            return Err(msg);
-        }
-        return Err(format!(
-            "versions list failed with HTTP {}",
-            status.as_u16()
-        ));
+        return Err(api_failure(status, trimmed_body, "versions list"));
     }
 
     extract_launcher_versions(&value)
@@ -978,13 +965,12 @@ fn parse_launcher_news_response(
         return Ok(items);
     }
 
+    if !status.is_success() {
+        return Err(api_failure(status, body, "launcher news"));
+    }
+
     let value: serde_json::Value = serde_json::from_str(body)
         .map_err(|e| format!("Invalid launcher news response JSON: {e}"))?;
-
-    if !status.is_success() {
-        return Err(extract_api_error_message(body)
-            .unwrap_or_else(|| format!("launcher news failed with HTTP {}", status.as_u16())));
-    }
 
     extract_launcher_news(&value).ok_or_else(|| "launcher news response missing data".to_string())
 }
@@ -997,22 +983,12 @@ fn parse_launcher_dashboard_response(
         return Ok(item);
     }
 
+    if !status.is_success() {
+        return Err(api_failure(status, body, "launcher dashboard"));
+    }
+
     let value: serde_json::Value = serde_json::from_str(body)
         .map_err(|e| format!("Invalid launcher dashboard response JSON: {e}"))?;
-
-    if !status.is_success() {
-        let is_auth_error = status.as_u16() == 401 || status.as_u16() == 403;
-        if let Some(msg) = extract_api_error_message(body) {
-            if is_auth_error {
-                return Err(format!("HTTP {} - {}", status.as_u16(), msg));
-            }
-            return Err(msg);
-        }
-        return Err(format!(
-            "launcher dashboard failed with HTTP {}",
-            status.as_u16()
-        ));
-    }
 
     serde_json::from_value::<LauncherDashboard>(value)
         .map_err(|e| format!("launcher dashboard response missing data: {e}"))
@@ -1026,22 +1002,12 @@ fn parse_launcher_home_response(
         return Ok(item);
     }
 
+    if !status.is_success() {
+        return Err(api_failure(status, body, "launcher home"));
+    }
+
     let value: serde_json::Value = serde_json::from_str(body)
         .map_err(|e| format!("Invalid launcher home response JSON: {e}"))?;
-
-    if !status.is_success() {
-        let is_auth_error = status.as_u16() == 401 || status.as_u16() == 403;
-        if let Some(msg) = extract_api_error_message(body) {
-            if is_auth_error {
-                return Err(format!("HTTP {} - {}", status.as_u16(), msg));
-            }
-            return Err(msg);
-        }
-        return Err(format!(
-            "launcher home failed with HTTP {}",
-            status.as_u16()
-        ));
-    }
 
     serde_json::from_value::<LauncherHomePayload>(value)
         .map_err(|e| format!("launcher home response missing data: {e}"))
@@ -1057,14 +1023,12 @@ fn parse_launcher_app_update_response(
         return Ok(item);
     }
 
+    if !status.is_success() {
+        return Err(api_failure(status, body, "launcher app update"));
+    }
+
     let value: serde_json::Value = serde_json::from_str(body)
         .map_err(|e| format!("Invalid launcher app update response JSON: {e}"))?;
-
-    if !status.is_success() {
-        return Err(extract_api_error_message(body).unwrap_or_else(|| {
-            format!("launcher app update failed with HTTP {}", status.as_u16())
-        }));
-    }
 
     serde_json::from_value::<LauncherAppUpdateInfo>(value)
         .map_err(|e| format!("launcher app update response missing data: {e}"))
@@ -1078,54 +1042,54 @@ pub(crate) fn parse_api_envelope<T: for<'de> Deserialize<'de>>(
     match serde_json::from_str::<ApiEnvelope<T>>(body) {
         Ok(payload) => {
             if !status.is_success() || !payload.success {
-                let is_auth_error = status.as_u16() == 401 || status.as_u16() == 403;
-                let message = payload
-                    .message
-                    .and_then(|value| {
-                        let trimmed = value.trim();
-                        if trimmed.is_empty() {
-                            None
-                        } else {
-                            Some(trimmed.to_string())
-                        }
-                    })
-                    .or_else(|| extract_api_error_message(body))
-                    .map(|msg| {
-                        if is_auth_error {
-                            format!("HTTP {} - {}", status.as_u16(), msg)
-                        } else {
-                            msg
-                        }
-                    })
-                    .unwrap_or_else(|| format!("{context} failed with HTTP {}", status.as_u16()));
-                return Err(message);
+                return Err(api_failure(status, body, context));
             }
             payload
                 .data
                 .ok_or_else(|| format!("{context} response missing data"))
         }
         Err(err) => {
-            let is_auth_error = status.as_u16() == 401 || status.as_u16() == 403;
-            if let Some(message) = extract_api_error_message(body) {
-                if is_auth_error {
-                    return Err(format!("HTTP {} - {}", status.as_u16(), message));
-                }
-                return Err(message);
-            }
-            if status.is_success() {
+            if status.is_success() && extract_api_error_message(body).is_none() {
                 return Err(format!("Invalid {context} response JSON: {err}"));
             }
-            let compact = body.trim();
-            if compact.is_empty() {
-                return Err(format!("{context} failed with HTTP {}", status.as_u16()));
-            }
-            Err(format!(
-                "{context} failed with HTTP {}: {}",
-                status.as_u16(),
-                compact
-            ))
+            Err(api_failure(status, body, context))
         }
     }
+}
+
+/// Marks a failed FPSMaster API call. What follows is a JSON object
+/// `{"status","code","message","context"}` so the frontend can branch on the
+/// stable `code` / HTTP status instead of matching message text (contract §1).
+pub(crate) const API_ERROR_PREFIX: &str = "FPSMASTER_API_ERROR ";
+
+/// Builds the tagged error for a non-success API response. `message` is the
+/// backend's localized text (or null when the body had none, e.g. a proxy's
+/// HTML error page); the frontend falls back to its own text by status.
+pub(crate) fn api_failure(status: reqwest::StatusCode, body: &str, context: &str) -> String {
+    let value = serde_json::from_str::<serde_json::Value>(body.trim_start_matches('\u{feff}').trim()).ok();
+    let code = value
+        .as_ref()
+        .and_then(|value| value.get("code"))
+        .and_then(|code| code.as_str())
+        .map(str::trim)
+        .filter(|code| !code.is_empty())
+        .map(str::to_string);
+    // `code` is an identifier, never display text: drop it before searching for
+    // the message so a body without one does not show "ITEM_ALREADY_OWNED".
+    let message = value.map(|mut value| {
+        if let Some(object) = value.as_object_mut() {
+            object.remove("code");
+        }
+        value
+    });
+    let message = message.as_ref().and_then(find_error_message_in_value);
+    let payload = serde_json::json!({
+        "status": status.as_u16(),
+        "code": code,
+        "message": message,
+        "context": context,
+    });
+    format!("{API_ERROR_PREFIX}{payload}")
 }
 
 fn login_payload_container(value: &serde_json::Value) -> &serde_json::Value {
@@ -1265,4 +1229,70 @@ fn find_error_message_in_value(value: &serde_json::Value) -> Option<String> {
     }
 
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        api_failure, parse_launcher_app_update_response, parse_launcher_login_response,
+        parse_launcher_versions_response, API_ERROR_PREFIX,
+    };
+
+    fn decode(error: &str) -> serde_json::Value {
+        let json = error
+            .strip_prefix(API_ERROR_PREFIX)
+            .expect("tagged API error");
+        serde_json::from_str(json).expect("JSON payload")
+    }
+
+    #[test]
+    fn api_failure_carries_status_code_and_message() {
+        let body = r#"{"success":false,"code":"UNAUTHORIZED","message":"请先登录","data":{}}"#;
+        let value = decode(&api_failure(reqwest::StatusCode::UNAUTHORIZED, body, "login"));
+        assert_eq!(value["status"], 401);
+        assert_eq!(value["code"], "UNAUTHORIZED");
+        assert_eq!(value["message"], "请先登录");
+    }
+
+    #[test]
+    fn api_failure_never_uses_the_code_as_message() {
+        let body = r#"{"success":false,"code":"ITEM_ALREADY_OWNED","message":null}"#;
+        let value = decode(&api_failure(reqwest::StatusCode::CONFLICT, body, "shop"));
+        assert_eq!(value["code"], "ITEM_ALREADY_OWNED");
+        assert!(value["message"].is_null());
+    }
+
+    #[test]
+    fn non_json_error_page_keeps_the_status() {
+        let error = parse_launcher_versions_response(
+            reqwest::StatusCode::NOT_FOUND,
+            "Unable to find matching target resource method",
+        )
+        .unwrap_err();
+        let value = decode(&error);
+        assert_eq!(value["status"], 404);
+        assert!(value["code"].is_null());
+    }
+
+    #[test]
+    fn login_proxy_html_error_keeps_the_status() {
+        let error = parse_launcher_login_response(
+            reqwest::StatusCode::BAD_GATEWAY,
+            "<html><body><h1>502 Bad Gateway</h1></body></html>",
+        )
+        .unwrap_err();
+        let value = decode(&error);
+        assert_eq!(value["status"], 502);
+        assert!(value["message"].is_null());
+    }
+
+    #[test]
+    fn app_update_plain_text_404_keeps_the_status() {
+        let error = parse_launcher_app_update_response(
+            reqwest::StatusCode::NOT_FOUND,
+            "Unable to find matching target resource method",
+        )
+        .unwrap_err();
+        assert_eq!(decode(&error)["status"], 404);
+    }
 }
