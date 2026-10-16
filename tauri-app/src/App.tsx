@@ -11,6 +11,7 @@ import LaunchErrorDialog from "./components/LaunchErrorDialog";
 import LaunchPrepareDialog from "./components/LaunchPrepareDialog";
 import Sidebar from "./components/Sidebar";
 import ToastViewport from "./components/ToastViewport";
+import CloseConfirmDialog from "./components/CloseConfirmDialog";
 import WindowTitleBar from "./components/WindowTitleBar";
 import {
   DEFAULT_LOGIN_PREFS,
@@ -45,7 +46,8 @@ import {
   isNetworkError,
   normalizeLoginError
 } from "./lib/launcherError";
-import { notifyError, notifyInfo, notifyWarning } from "./lib/toast";
+import { notifyError, notifyInfo, notifySuccess, notifyWarning } from "./lib/toast";
+import { hasContentTasks, isContentTaskRunningFor } from "./lib/contentTasks";
 import {
   parseMinecraftAccounts,
   resolveMinecraftLaunchIdentity,
@@ -247,6 +249,7 @@ function Launcher() {
   const [windowVisible, setWindowVisible] = useState(false);
   const autoLoginAttemptedRef = useRef(false);
   const [minecraftAccountPromptOpen, setMinecraftAccountPromptOpen] = useState(false);
+  const [closeConfirmOpen, setCloseConfirmOpen] = useState(false);
 
   const logCursorRef = useRef<number | null>(null);
   const pollingRef = useRef(false);
@@ -662,7 +665,7 @@ function Launcher() {
       if (ipc.session !== prev.sessionId) return prev;
 
       const phaseKey =
-        ipc.phase === "vanilla"
+        ipc.phase === prev.vanilla.sourcePhase
           ? "vanilla"
           : prev.loaderPhase && ipc.phase === prev.loaderPhase.sourcePhase
             ? "loaderPhase"
@@ -1980,6 +1983,10 @@ function Launcher() {
       return;
     }
     const target = resolveNovaEffectiveInstance(rawTarget);
+    if (isContentTaskRunningFor(localVersionIdFor(target))) {
+      notifyWarning(t("launch.warning.contentInstalling", { name: target.name }));
+      return;
+    }
     if (activeGamePid !== null && activeGamePid > 0) {
       try {
         const runtime = await invoke<GameRuntimeStats>("poll_game_runtime", { pid: activeGamePid });
@@ -2543,49 +2550,134 @@ function Launcher() {
     }
   }
 
+  // Repair reinstalls the runtime through the install dialog so it shows
+  // progress, can be cancelled and uses the chosen download source; Extreme is
+  // a native package and is force-reinstalled instead (launcher-ui-12).
   async function repairInstance(id: string) {
     if (ensureMandatoryLauncherUpdate()) {
+      return;
+    }
+    if (busy) {
+      notifyInfo(t("launch.info.alreadyLaunching"));
       return;
     }
     const rawSource = instances.find((entry) => entry.id === id);
     if (!rawSource) return;
     // Nova repairs the currently-picked game version's install dir, not the fixed default.
     const source = resolveNovaEffectiveInstance(rawSource);
-
+    if (isContentTaskRunningFor(localVersionIdFor(source))) {
+      notifyWarning(t("launch.warning.contentInstalling", { name: source.name }));
+      return;
+    }
+    const isExtreme = source.launcherVersionType === "EXTREME";
+    const sessionId = createSessionId();
+    setInstallDialog({
+      open: true,
+      sessionId,
+      title: t("repair.title", { name: source.name }),
+      versionId: localVersionIdFor(source),
+      loader: source.loader,
+      canClose: false,
+      cancelling: false,
+      errorText: "",
+      vanilla: {
+        ...createPhaseState(
+          isExtreme ? t("repair.phase.native") : t("install.phase.vanilla"),
+          isExtreme ? "native" : "vanilla"
+        ),
+        status: "running",
+        stage: "prepare",
+        message: t("app.status.instanceRepairing", { name: source.name })
+      },
+      loaderPhase:
+        isExtreme || source.loader === "vanilla"
+          ? null
+          : createPhaseState(
+              source.loader === "forge" ? t("install.phase.forge") : t("install.phase.fabric"),
+              source.loader
+            ),
+      optiFinePhase: null
+    });
     setBusy(true);
     setStatus(t("app.status.instanceRepairing", { name: source.name }));
     try {
-      const result = await invoke<InstanceRepairResult>("repair_instance_runtime", {
-        gameDir: settings.gameDir,
-        versionId: source.versionId,
-        loader: source.loader,
-        baseVersion: source.baseVersion,
-        loaderVersion: source.loaderVersion
-      });
-      const repaired: Instance = {
-        ...source,
-        versionId: result.versionId,
-        baseVersion: result.baseVersion,
-        loader: result.loader,
-        loaderVersion: result.loaderVersion,
-        optiFineVersion: result.optiFineVersion
-      };
-      // Keep the Nova preset generic in state (its versionId/baseVersion are picked at launch);
-      // custom/other-preset instances persist the repaired runtime ids as before.
-      const isNovaPreset = rawSource.preset && rawSource.launcherVersionType === "NOVA";
-      const persistedInstance = isNovaPreset ? rawSource : repaired;
-      setInstances((prev) =>
-        prev.map((item) => (item.id === persistedInstance.id ? persistedInstance : item))
-      );
-      installCtl.setInstalledVersions((prev) =>
-        prev.includes(result.versionId) ? prev : [result.versionId, ...prev]
-      );
-      if (repaired.preset) {
-        await ensurePresetModsReady(repaired);
+      if (isExtreme) {
+        const targetVersion =
+          launcherVersions.EXTREME ?? (await refreshLauncherVersions(true)).map?.EXTREME ?? null;
+        if (!targetVersion) {
+          throw new Error(t("launch.error.notReleased", { name: productLabel(source) }));
+        }
+        await invoke("install_native_app", {
+          gameDir: settings.gameDir,
+          versionId: localVersionIdFor(source),
+          downloadUrl: targetVersion.downloadUrl,
+          versionTag: targetVersion.versionName,
+          checksum: targetVersion.checksum,
+          ipcSession: sessionId,
+          force: true
+        });
+      } else {
+        const result = await invoke<InstanceRepairResult>("repair_instance_runtime", {
+          gameDir: settings.gameDir,
+          versionId: source.versionId,
+          loader: source.loader,
+          baseVersion: source.baseVersion,
+          loaderVersion: source.loaderVersion,
+          downloadSource: settings.downloadSource,
+          downloadThreads: settings.downloadThreads,
+          ipcSession: sessionId
+        });
+        const repaired: Instance = {
+          ...source,
+          versionId: result.versionId,
+          baseVersion: result.baseVersion,
+          loader: result.loader,
+          loaderVersion: result.loaderVersion,
+          optiFineVersion: result.optiFineVersion
+        };
+        // Keep the Nova preset generic in state (its versionId/baseVersion are picked at launch);
+        // custom/other-preset instances persist the repaired runtime ids as before.
+        const isNovaPreset = rawSource.preset && rawSource.launcherVersionType === "NOVA";
+        const persistedInstance = isNovaPreset ? rawSource : repaired;
+        setInstances((prev) =>
+          prev.map((item) => (item.id === persistedInstance.id ? persistedInstance : item))
+        );
+        installCtl.setInstalledVersions((prev) =>
+          prev.includes(result.versionId) ? prev : [result.versionId, ...prev]
+        );
+        if (repaired.preset) {
+          await ensurePresetModsReady(repaired, { sessionId });
+        }
       }
+      // Re-derive every preset badge (incl. Nova's per-version keys) so a
+      // "needs repair" badge does not outlive the repair (launcher-ui-6).
+      void refreshPresetPackageStatuses();
+      setInstallDialog(null);
       setStatus(t("app.status.instanceRepaired", { name: source.name }));
+      notifySuccess(t("repair.done", { name: source.name }));
     } catch (error) {
-      reportFailure(error);
+      if (isCancelledError(error)) {
+        setInstallDialog(null);
+        notifyInfo(t("launch.info.cancelled"));
+        return;
+      }
+      const errorText = describeApiError(error, t);
+      setStatus(t("app.status.failed", { error: errorText }));
+      setInstallDialog((prev) => {
+        if (!prev || prev.sessionId !== sessionId) return prev;
+        const fail = (phase: InstallPhaseState) =>
+          phase.status === "running" || phase.status === "pending"
+            ? { ...phase, status: "error" as const, stage: "failed", message: errorText }
+            : phase;
+        return {
+          ...prev,
+          canClose: true,
+          cancelling: false,
+          errorText,
+          vanilla: fail(prev.vanilla),
+          loaderPhase: prev.loaderPhase ? fail(prev.loaderPhase) : null
+        };
+      });
     } finally {
       setBusy(false);
     }
@@ -2771,7 +2863,27 @@ function Launcher() {
       await invoke("hide_main_window");
       return;
     }
+    // Quitting mid-download used to drop it silently and leave half-written
+    // version dirs behind (launcher-ui-24).
+    if (busy || installDialogRef.current !== null || hasContentTasks() || launcherUpdate.downloading) {
+      setCloseConfirmOpen(true);
+      return;
+    }
     await getCurrentWindow().close();
+  }
+
+  async function resolveCloseConfirm(choice: "minimize" | "quit" | "stay") {
+    setCloseConfirmOpen(false);
+    if (choice === "minimize") {
+      await invoke("hide_main_window");
+    } else if (choice === "quit") {
+      try {
+        await invoke<number>("cancel_all_downloads");
+      } catch (error) {
+        console.warn("[close] cancel_all_downloads failed:", error);
+      }
+      await getCurrentWindow().close();
+    }
   }
 
   // Stable callback identities so React.memo children (Sidebar, pages) don't
@@ -2864,7 +2976,10 @@ function Launcher() {
     );
     setSelected(item.id);
     setStatus(t("app.status.installed", { name: item.name }));
-    navigatePage("instances");
+    // The install may finish after the user moved on; only follow it from the content page.
+    if (page === "content") {
+      navigatePage("instances");
+    }
   });
   const onSelectMajor = useStableCallback((nextMajor: string) => {
     installCtl.setShowSnapshots(false);
@@ -2884,6 +2999,7 @@ function Launcher() {
   });
   const onRefreshLauncherUpdate = useStableCallback(() => void launcherUpdate.refresh(false));
   const onInstallLauncherUpdate = useStableCallback(() => void launcherUpdate.install());
+  const onCancelLauncherUpdate = useStableCallback(() => void launcherUpdate.cancel());
   const onSettingsReset = useStableCallback(() =>
     setSettings({
       ...DEFAULT_SETTINGS,
@@ -2949,6 +3065,7 @@ function Launcher() {
     launcherUpdateDownload: launcherUpdate.download,
     onRefreshLauncherUpdate,
     onInstallLauncherUpdate,
+    onCancelLauncherUpdate,
     catalogLoading: installCtl.catalogLoading,
     catalogCount: installCtl.catalog.length,
     majors: installCtl.majors,
@@ -3073,6 +3190,10 @@ function Launcher() {
 
         {authenticated && launchError && (
           <LaunchErrorDialog message={launchError} onConfirm={() => setLaunchError(null)} />
+        )}
+
+        {closeConfirmOpen && (
+          <CloseConfirmDialog onChoose={(choice) => void resolveCloseConfirm(choice)} />
         )}
 
         <ToastViewport />

@@ -1,4 +1,3 @@
-import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import { Archive, Box, Download, File, Globe, HardDriveDownload, Layers, PackageCheck, PackageOpen, Palette, Search, Trash2, X } from "lucide-react";
@@ -10,10 +9,20 @@ import Select from "../components/Select";
 import modrinthIcon from "../assets/icons/modrinth.ico";
 import curseforgeIcon from "../assets/icons/curseforge.ico";
 import { useI18n, type TranslationKey } from "../i18n";
-import { describeApiError } from "../lib/launcherError";
+import {
+  beginContentTask,
+  cancelContentTask,
+  clearContentTaskError,
+  endContentTask,
+  findContentTask,
+  setContentBatch,
+  useContentTasks,
+  type ContentTaskKind
+} from "../lib/contentTasks";
+import { describeApiError, formatLaunchError, isCancelledError } from "../lib/launcherError";
+import { notifyError, notifyInfo, notifySuccess } from "../lib/toast";
 import { buildNovaEffectiveInstance, listNovaVersionTargets } from "../lib/novaTargets";
 import type {
-  ContentInstallProgressEvent,
   ContentProjectType,
   ContentSource,
   DownloadSource,
@@ -28,7 +37,7 @@ import type {
   OnlineContentSource,
   WorldInstallResult
 } from "../types";
-import { resolveInstanceIconPath } from "../utils/launcher";
+import { createSessionId, resolveInstanceIconPath } from "../utils/launcher";
 
 type RightTab = "search" | "installed";
 
@@ -94,6 +103,12 @@ function contentSourceLabel(value: ContentSource, t: ReturnType<typeof useI18n>[
   if (value === "modrinth") return t("content.source.modrinth");
   if (value === "curseforge") return t("content.source.curseforge");
   return t("content.source.local");
+}
+
+function modpackPercent(progress: ModpackInstallProgressEvent | null): number {
+  if (!progress) return 0;
+  if (progress.percent != null) return progress.percent;
+  return progress.total > 0 ? Math.round((progress.current / progress.total) * 100) : 0;
 }
 
 function formatCompactCount(value: number): string {
@@ -254,19 +269,16 @@ function ContentPage({
   const [source, setSource] = useState<ContentSource>("modrinth");
   const [contentType, setContentType] = useState<ContentProjectType>("mod");
   const [loading, setLoading] = useState(false);
-  const [installingProjectId, setInstallingProjectId] = useState<string | null>(null);
-  const [uninstallingProjectId, setUninstallingProjectId] = useState<string | null>(null);
   const [checkingUpdates, setCheckingUpdates] = useState(false);
-  const [batchUpdating, setBatchUpdating] = useState(false);
-  const [importingWorld, setImportingWorld] = useState(false);
   const [hasSearched, setHasSearched] = useState(false);
   const [rightTab, setRightTab] = useState<RightTab>("search");
   const [results, setResults] = useState<ModrinthSearchResult[]>([]);
   const [installedItems, setInstalledItems] = useState<InstalledContentItem[]>([]);
   const [installedUpdates, setInstalledUpdates] = useState<InstalledContentUpdate[]>([]);
   const [error, setError] = useState<string | null>(null);
-  const [contentInstallProgress, setContentInstallProgress] = useState<ContentInstallProgressEvent | null>(null);
-  const [modpackProgress, setModpackProgress] = useState<ModpackInstallProgressEvent | null>(null);
+  const contentTasks = useContentTasks();
+  const searchRequestRef = useRef(0);
+  const installedRequestRef = useRef(0);
   const [pendingUninstall, setPendingUninstall] = useState<InstalledContentItem | null>(null);
   const [uninstallDialogClosing, setUninstallDialogClosing] = useState(false);
   const novaPreset = useMemo(
@@ -345,8 +357,22 @@ function ContentPage({
   // Modpack search/install builds a brand-new instance, so it never depends on
   // the currently selected instance.
   const modpackMode = contentType === "modpack";
-  const contentNavigationBusy =
-    loading || batchUpdating || importingWorld || Boolean(installingProjectId) || Boolean(uninstallingProjectId);
+  const currentVersionId = currentInstance?.versionId ?? null;
+  // Tasks writing to the selected instance block its other content actions;
+  // tasks for other instances (or a modpack, which creates its own) do not.
+  const instanceTasks = contentTasks.tasks.filter((task) => task.versionId !== null && task.versionId === currentVersionId);
+  const batchUpdating = contentTasks.batch !== null && contentTasks.batch.versionId === currentVersionId;
+  const instanceBusy = instanceTasks.length > 0 || batchUpdating;
+  const importingWorld = instanceTasks.some((task) => task.kind === "world-import");
+  const modpackTask = contentTasks.tasks.find((task) => task.kind === "modpack") ?? null;
+  const taskFor = (projectKey: string) => contentTasks.tasks.find((task) => task.projectKey === projectKey) ?? null;
+  const taskError =
+    contentTasks.lastError &&
+    (contentTasks.lastError.versionId === currentVersionId || (contentTasks.lastError.versionId === null && modpackMode))
+      ? contentTasks.lastError.message
+      : null;
+  const displayedError = error ?? taskError;
+  const contentNavigationBusy = loading;
   const searchPlaceholder = worldImportMode
     ? t("content.worldSearchUnavailable")
     : contentType === "world"
@@ -390,364 +416,6 @@ function ContentPage({
     });
   }, [filteredInstalledItems, updateMap]);
 
-  async function fetchProjects(queryValue: string): Promise<ModrinthSearchResult[]> {
-    if (!currentInstance && !modpackMode) return [];
-    // Modpacks bring their own Minecraft version and loader, so their search
-    // is not filtered by the selected instance.
-    const gameVersion = modpackMode ? undefined : currentInstance?.baseVersion;
-    const loader = modpackMode ? undefined : currentInstance?.loader;
-    if (source === "modrinth") {
-      return invoke<ModrinthSearchResult[]>("modrinth_search_projects", {
-        query: queryValue,
-        projectType: contentType,
-        gameVersion,
-        loader
-      });
-    }
-    if (source === "curseforge") {
-      return invoke<ModrinthSearchResult[]>("curseforge_search_projects", {
-        query: queryValue,
-        projectType: contentType,
-        gameVersion,
-        loader,
-        apiKey: curseforgeApiKey
-      });
-    }
-    return [];
-  }
-
-  async function loadTrendingProjects() {
-    if ((!currentInstance && !modpackMode) || worldImportMode) return;
-    setLoading(true);
-    setError(null);
-    onStatusChange(t("content.loadingTrending"));
-    try {
-      const searchResults = await fetchProjects("");
-      setResults(searchResults);
-      setHasSearched(true);
-      setRightTab("search");
-      onStatusChange(t("content.trendingLoaded", { count: searchResults.length }));
-    } catch (invokeError) {
-      setError(normalizeError(invokeError));
-      setResults([]);
-      setHasSearched(true);
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  async function refreshInstalledState(instance: Instance | null) {
-    if (!instance) {
-      setInstalledItems([]);
-      setInstalledUpdates([]);
-      setCheckingUpdates(false);
-      return;
-    }
-    try {
-      const items = await invoke<InstalledContentItem[]>("list_installed_content", {
-        gameDir,
-        versionId: instance.versionId
-      });
-      setInstalledItems(items);
-      if (items.length === 0) {
-        setInstalledUpdates([]);
-        return;
-      }
-      setCheckingUpdates(true);
-      try {
-        const updates = await invoke<InstalledContentUpdate[]>("check_installed_content_updates", {
-          gameDir,
-          versionId: instance.versionId,
-          gameVersion: instance.baseVersion,
-          loader: instance.loader,
-          apiKey: curseforgeApiKey
-        });
-        setInstalledUpdates(updates);
-      } catch {
-        // Ignore update check errors
-      }
-    } catch {
-      // Ignore content refresh errors
-    } finally {
-      setCheckingUpdates(false);
-    }
-  }
-
-  async function searchProjects() {
-    if (!currentInstance && !modpackMode) return;
-    const trimmedQuery = query.trim();
-    if (!trimmedQuery) {
-      await loadTrendingProjects();
-      return;
-    }
-    setLoading(true);
-    setError(null);
-    setResults([]);
-    try {
-      const searchResults = await fetchProjects(trimmedQuery);
-      setResults(searchResults);
-      setHasSearched(true);
-      setRightTab("search");
-      onStatusChange(t("content.searchDone", { count: searchResults.length }));
-    } catch (invokeError) {
-      setError(normalizeError(invokeError));
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  async function installModpack(params: {
-    source: OnlineContentSource;
-    projectId: string;
-    title: string;
-  }): Promise<boolean> {
-    const projectKey = `${params.source}:modpack:${params.projectId}`;
-    setInstallingProjectId(projectKey);
-    setContentInstallProgress({ projectKey, downloadedBytes: 0, totalBytes: null, percent: null });
-    setModpackProgress(null);
-    setError(null);
-    onStatusChange(t("content.modpack.installing", { title: params.title }));
-    try {
-      const result = await invoke<ModpackInstallResult>("install_modpack", {
-        gameDir,
-        source: params.source,
-        projectId: params.projectId,
-        projectTitle: params.title,
-        apiKey: params.source === "curseforge" ? curseforgeApiKey : undefined,
-        downloadSource,
-        downloadThreads
-      });
-      onModpackInstalled(result);
-      onStatusChange(t("content.modpack.installDone", { name: result.name }));
-      return true;
-    } catch (invokeError) {
-      const raw = typeof invokeError === "string" ? invokeError : invokeError instanceof Error ? invokeError.message : String(invokeError);
-      const { stage, message } = splitModpackError(raw.trim());
-      const stageLabelKey = stage ? MODPACK_STAGE_LABEL_KEYS[stage] : undefined;
-      const errorText = stageLabelKey
-        ? t("content.modpack.stageFailed", { stage: t(stageLabelKey), error: message })
-        : normalizeError(message);
-      setError(errorText);
-      onStatusChange(t("app.status.failed", { error: errorText }));
-      return false;
-    } finally {
-      setInstallingProjectId(null);
-      setContentInstallProgress(null);
-      setModpackProgress(null);
-    }
-  }
-
-  async function installProject(params: {
-    source: OnlineContentSource;
-    projectId: string;
-    projectType: string;
-    title: string;
-  }): Promise<boolean> {
-    if (params.projectType === "modpack") {
-      return installModpack(params);
-    }
-    if (!currentInstance) {
-      setError(t("content.noInstance"));
-      return false;
-    }
-    const projectKey = `${params.source}:${params.projectType}:${params.projectId}`;
-    setInstallingProjectId(projectKey);
-    setContentInstallProgress({ projectKey, downloadedBytes: 0, totalBytes: null, percent: null });
-    setError(null);
-    onStatusChange(t("content.installing", { title: params.title }));
-    try {
-      const command = params.source === "curseforge" ? "install_curseforge_project" : "install_modrinth_project";
-      const result = await invoke<ModrinthInstallResult>(command, {
-        gameDir,
-        versionId: currentInstance.versionId,
-        projectId: params.projectId,
-        projectTitle: params.title,
-        projectType: params.projectType,
-        gameVersion: currentInstance.baseVersion,
-        loader: currentInstance.loader,
-        ...(params.source === "curseforge" ? { apiKey: curseforgeApiKey } : {})
-      });
-      await refreshInstalledState(currentInstance);
-      onStatusChange(t("content.installDone", { title: params.title, file: result.fileName }));
-      return true;
-    } catch (invokeError) {
-      const errorText = normalizeError(invokeError);
-      setError(errorText);
-      onStatusChange(t("app.status.failed", { error: errorText }));
-      return false;
-    } finally {
-      setInstallingProjectId(null);
-      setContentInstallProgress(null);
-    }
-  }
-
-  function closeUninstallDialog() {
-    setUninstallDialogClosing(true);
-    window.setTimeout(() => {
-      setPendingUninstall(null);
-      setUninstallDialogClosing(false);
-    }, 150);
-  }
-
-  function confirmUninstall() {
-    const item = pendingUninstall;
-    closeUninstallDialog();
-    if (item) void uninstallProject(item);
-  }
-
-  async function uninstallProject(item: InstalledContentItem) {
-    if (!currentInstance) {
-      setError(t("content.noInstance"));
-      return;
-    }
-    setUninstallingProjectId(`${item.source}:${item.contentType}:${item.projectId}`);
-    setError(null);
-    onStatusChange(t("content.uninstalling", { title: item.projectTitle }));
-    try {
-      await invoke("uninstall_installed_content", {
-        gameDir,
-        versionId: currentInstance.versionId,
-        source: item.source,
-        projectId: item.projectId,
-        contentType: item.contentType
-      });
-      await refreshInstalledState(currentInstance);
-      onStatusChange(t("content.uninstallDone", { title: item.projectTitle }));
-    } catch (invokeError) {
-      const errorText = normalizeError(invokeError);
-      setError(errorText);
-      onStatusChange(t("app.status.failed", { error: errorText }));
-    } finally {
-      setUninstallingProjectId(null);
-    }
-  }
-
-  async function updateAllProjects() {
-    if (!currentInstance || filteredUpdatableItems.length === 0) return;
-    setBatchUpdating(true);
-    setError(null);
-    try {
-      let completed = 0;
-      for (const item of filteredUpdatableItems) {
-        completed += 1;
-        onStatusChange(
-          t("content.updatingProgress", {
-            title: item.projectTitle,
-            current: completed,
-            total: filteredUpdatableItems.length
-          })
-        );
-        const success = await installProject({
-          source: item.source as OnlineContentSource,
-          projectId: item.projectId,
-          projectType: item.contentType,
-          title: item.projectTitle
-        });
-        if (!success) return;
-      }
-      onStatusChange(t("content.updateAllDone", { count: filteredUpdatableItems.length }));
-    } finally {
-      setBatchUpdating(false);
-    }
-  }
-
-  async function handleWorldImport() {
-    if (!currentInstance) {
-      setError(t("content.noInstance"));
-      return;
-    }
-    const selected = await openFileDialog({
-      multiple: false,
-      filters: [{ name: "ZIP", extensions: ["zip"] }]
-    });
-    if (typeof selected !== "string" || !selected) return;
-    if (!selected.toLowerCase().endsWith(".zip")) {
-      setError(t("content.worldZipRequired"));
-      return;
-    }
-    const archiveName = selected.split(/[\\/]/).pop() ?? "world.zip";
-    setImportingWorld(true);
-    setError(null);
-    onStatusChange(t("content.importingWorld"));
-    try {
-      // Pass the picked path instead of streaming the whole ZIP over IPC.
-      const result = await invoke<WorldInstallResult>("import_world_archive", {
-        gameDir,
-        versionId: currentInstance.versionId,
-        archiveName,
-        archivePath: selected
-      });
-      await refreshInstalledState(currentInstance);
-      onStatusChange(t("content.worldImportDone", { title: result.projectTitle }));
-    } catch (invokeError) {
-      const errorText = normalizeError(invokeError);
-      setError(errorText);
-      onStatusChange(t("app.status.failed", { error: errorText }));
-    } finally {
-      setImportingWorld(false);
-    }
-  }
-
-  useEffect(() => {
-    setResults([]);
-    setError(null);
-    setContentInstallProgress(null);
-    setModpackProgress(null);
-    setHasSearched(false);
-    setRightTab("search");
-  }, [currentInstance?.id, currentInstance?.versionId, contentType, source]);
-
-  useEffect(() => {
-    void refreshInstalledState(currentInstance);
-  }, [currentInstance]);
-
-  useEffect(() => {
-    if ((!currentInstance && !modpackMode) || worldImportMode || query.trim()) {
-      if (worldImportMode) {
-        setResults([]);
-        setHasSearched(false);
-      }
-      return;
-    }
-    void loadTrendingProjects();
-  }, [currentInstance?.id, currentInstance?.versionId, contentType, source, worldImportMode]);
-
-  useEffect(() => {
-    let cancelled = false;
-    let unlisten: (() => void) | null = null;
-    void listen<ContentInstallProgressEvent>("content-install-progress", (event) => {
-      if (!cancelled) setContentInstallProgress(event.payload);
-    }).then((dispose) => {
-      if (cancelled) {
-        dispose();
-        return;
-      }
-      unlisten = dispose;
-    });
-    return () => {
-      cancelled = true;
-      unlisten?.();
-    };
-  }, []);
-
-  useEffect(() => {
-    let cancelled = false;
-    let unlisten: (() => void) | null = null;
-    void listen<ModpackInstallProgressEvent>("modpack-install-progress", (event) => {
-      if (!cancelled) setModpackProgress(event.payload);
-    }).then((dispose) => {
-      if (cancelled) {
-        dispose();
-        return;
-      }
-      unlisten = dispose;
-    });
-    return () => {
-      cancelled = true;
-      unlisten?.();
-    };
-  }, []);
-
   const loaderLabel = (loader: Instance["loader"]) => {
     if (loader === "forge") return t("loader.forge");
     if (loader === "fabric") return t("loader.fabric");
@@ -778,6 +446,361 @@ function ContentPage({
     // raw reqwest chain gave users nothing actionable.
     return describeApiError(errorValue, t);
   };
+
+  // Modpack errors name the failed stage ("[modpack:<stage>] ..." prefix).
+  const describeContentError = (errorValue: unknown) => {
+    const { stage, message } = splitModpackError(formatLaunchError(errorValue));
+    const stageLabelKey = stage ? MODPACK_STAGE_LABEL_KEYS[stage] : undefined;
+    return stageLabelKey
+      ? t("content.modpack.stageFailed", { stage: t(stageLabelKey), error: normalizeError(message) })
+      : normalizeError(errorValue);
+  };
+
+  async function fetchProjects(queryValue: string): Promise<ModrinthSearchResult[]> {
+    if (!currentInstance && !modpackMode) return [];
+    // Modpacks bring their own Minecraft version and loader, so their search
+    // is not filtered by the selected instance.
+    const gameVersion = modpackMode ? undefined : currentInstance?.baseVersion;
+    const loader = modpackMode ? undefined : currentInstance?.loader;
+    if (source === "modrinth") {
+      return invoke<ModrinthSearchResult[]>("modrinth_search_projects", {
+        query: queryValue,
+        projectType: contentType,
+        gameVersion,
+        loader
+      });
+    }
+    if (source === "curseforge") {
+      return invoke<ModrinthSearchResult[]>("curseforge_search_projects", {
+        query: queryValue,
+        projectType: contentType,
+        gameVersion,
+        loader,
+        apiKey: curseforgeApiKey
+      });
+    }
+    return [];
+  }
+
+  // Search and trending share one sequence: only the latest request may write
+  // results, so switching instance/source mid-request cannot show stale ones
+  // (launcher-ui-15).
+  async function runSearch(queryValue: string) {
+    const requestId = ++searchRequestRef.current;
+    setLoading(true);
+    setError(null);
+    if (queryValue) setResults([]);
+    try {
+      const searchResults = await fetchProjects(queryValue);
+      if (searchRequestRef.current !== requestId) return;
+      setResults(searchResults);
+      setHasSearched(true);
+      setRightTab("search");
+      onStatusChange(
+        queryValue
+          ? t("content.searchDone", { count: searchResults.length })
+          : t("content.trendingLoaded", { count: searchResults.length })
+      );
+    } catch (invokeError) {
+      if (searchRequestRef.current !== requestId) return;
+      setError(normalizeError(invokeError));
+      setResults([]);
+      setHasSearched(true);
+    } finally {
+      if (searchRequestRef.current === requestId) {
+        setLoading(false);
+      }
+    }
+  }
+
+  async function loadTrendingProjects() {
+    if ((!currentInstance && !modpackMode) || worldImportMode) return;
+    onStatusChange(t("content.loadingTrending"));
+    await runSearch("");
+  }
+
+  async function refreshInstalledState(instance: Instance | null) {
+    const requestId = ++installedRequestRef.current;
+    const isCurrent = () => installedRequestRef.current === requestId;
+    if (!instance) {
+      setInstalledItems([]);
+      setInstalledUpdates([]);
+      setCheckingUpdates(false);
+      return;
+    }
+    try {
+      const items = await invoke<InstalledContentItem[]>("list_installed_content", {
+        gameDir,
+        versionId: instance.versionId
+      });
+      if (!isCurrent()) return;
+      setInstalledItems(items);
+      if (items.length === 0) {
+        setInstalledUpdates([]);
+        return;
+      }
+      setCheckingUpdates(true);
+      try {
+        const updates = await invoke<InstalledContentUpdate[]>("check_installed_content_updates", {
+          gameDir,
+          versionId: instance.versionId,
+          gameVersion: instance.baseVersion,
+          loader: instance.loader,
+          apiKey: curseforgeApiKey
+        });
+        if (isCurrent()) setInstalledUpdates(updates);
+      } catch (updateError) {
+        // The list stays usable without update badges.
+        console.warn("[content] update check failed:", updateError);
+      }
+    } catch (listError) {
+      if (isCurrent()) setError(normalizeError(listError));
+    } finally {
+      if (isCurrent()) setCheckingUpdates(false);
+    }
+  }
+
+  async function searchProjects() {
+    if (!currentInstance && !modpackMode) return;
+    const trimmedQuery = query.trim();
+    if (!trimmedQuery) {
+      await loadTrendingProjects();
+      return;
+    }
+    await runSearch(trimmedQuery);
+  }
+
+  // Runs one backend content command as a global task: it keeps running (and
+  // reporting) after this page unmounts, and its outcome is a toast so the
+  // user still learns about it from any page.
+  async function runContentTask<T>(
+    task: { kind: ContentTaskKind; projectKey: string | null; title: string; versionId: string | null },
+    run: (sessionId: string) => Promise<T>,
+    successText: (result: T) => string
+  ): Promise<T | null> {
+    if (task.projectKey && findContentTask(task.projectKey)) {
+      return null;
+    }
+    const sessionId = createSessionId();
+    beginContentTask({ id: sessionId, ...task });
+    setError(null);
+    try {
+      const result = await run(sessionId);
+      endContentTask(sessionId);
+      notifySuccess(successText(result));
+      return result;
+    } catch (invokeError) {
+      if (isCancelledError(invokeError)) {
+        endContentTask(sessionId);
+        notifyInfo(t("content.cancelled", { title: task.title }));
+        return null;
+      }
+      const errorText = describeContentError(invokeError);
+      endContentTask(sessionId, errorText);
+      notifyError(errorText, task.title);
+      onStatusChange(t("app.status.failed", { error: errorText }));
+      return null;
+    }
+  }
+
+  async function installModpack(params: {
+    source: OnlineContentSource;
+    projectId: string;
+    title: string;
+  }): Promise<boolean> {
+    onStatusChange(t("content.modpack.installing", { title: params.title }));
+    const result = await runContentTask(
+      {
+        kind: "modpack",
+        projectKey: `${params.source}:modpack:${params.projectId}`,
+        title: params.title,
+        versionId: null
+      },
+      (sessionId) =>
+        invoke<ModpackInstallResult>("install_modpack", {
+          gameDir,
+          source: params.source,
+          projectId: params.projectId,
+          projectTitle: params.title,
+          apiKey: params.source === "curseforge" ? curseforgeApiKey : undefined,
+          downloadSource,
+          downloadThreads,
+          ipcSession: sessionId
+        }),
+      (installed) => t("content.modpack.installDone", { name: installed.name })
+    );
+    if (result) {
+      onModpackInstalled(result);
+    }
+    return result !== null;
+  }
+
+  async function installProject(params: {
+    source: OnlineContentSource;
+    projectId: string;
+    projectType: string;
+    title: string;
+  }): Promise<boolean> {
+    if (params.projectType === "modpack") {
+      return installModpack(params);
+    }
+    const instance = currentInstance;
+    if (!instance) {
+      setError(t("content.noInstance"));
+      return false;
+    }
+    onStatusChange(t("content.installing", { title: params.title }));
+    const result = await runContentTask(
+      {
+        kind: "install",
+        projectKey: `${params.source}:${params.projectType}:${params.projectId}`,
+        title: params.title,
+        versionId: instance.versionId
+      },
+      (sessionId) =>
+        invoke<ModrinthInstallResult>(
+          params.source === "curseforge" ? "install_curseforge_project" : "install_modrinth_project",
+          {
+            gameDir,
+            versionId: instance.versionId,
+            projectId: params.projectId,
+            projectTitle: params.title,
+            projectType: params.projectType,
+            gameVersion: instance.baseVersion,
+            loader: instance.loader,
+            ipcSession: sessionId,
+            ...(params.source === "curseforge" ? { apiKey: curseforgeApiKey } : {})
+          }
+        ),
+      (installed) => t("content.installDone", { title: params.title, file: installed.fileName })
+    );
+    return result !== null;
+  }
+
+  function closeUninstallDialog() {
+    setUninstallDialogClosing(true);
+    window.setTimeout(() => {
+      setPendingUninstall(null);
+      setUninstallDialogClosing(false);
+    }, 150);
+  }
+
+  function confirmUninstall() {
+    const item = pendingUninstall;
+    closeUninstallDialog();
+    if (item) void uninstallProject(item);
+  }
+
+  async function uninstallProject(item: InstalledContentItem) {
+    const instance = currentInstance;
+    if (!instance) {
+      setError(t("content.noInstance"));
+      return;
+    }
+    onStatusChange(t("content.uninstalling", { title: item.projectTitle }));
+    await runContentTask(
+      {
+        kind: "uninstall",
+        projectKey: `uninstall:${item.source}:${item.contentType}:${item.projectId}`,
+        title: item.projectTitle,
+        versionId: instance.versionId
+      },
+      () =>
+        invoke("uninstall_installed_content", {
+          gameDir,
+          versionId: instance.versionId,
+          source: item.source,
+          projectId: item.projectId,
+          contentType: item.contentType
+        }),
+      () => t("content.uninstallDone", { title: item.projectTitle })
+    );
+  }
+
+  async function updateAllProjects() {
+    const instance = currentInstance;
+    if (!instance || filteredUpdatableItems.length === 0 || contentTasks.batch) return;
+    const items = filteredUpdatableItems;
+    try {
+      let completed = 0;
+      for (const item of items) {
+        completed += 1;
+        setContentBatch({ versionId: instance.versionId, current: completed, total: items.length });
+        onStatusChange(
+          t("content.updatingProgress", { title: item.projectTitle, current: completed, total: items.length })
+        );
+        const success = await installProject({
+          source: item.source as OnlineContentSource,
+          projectId: item.projectId,
+          projectType: item.contentType,
+          title: item.projectTitle
+        });
+        if (!success) return;
+      }
+      notifySuccess(t("content.updateAllDone", { count: items.length }));
+    } finally {
+      setContentBatch(null);
+    }
+  }
+
+  async function handleWorldImport() {
+    const instance = currentInstance;
+    if (!instance) {
+      setError(t("content.noInstance"));
+      return;
+    }
+    const selected = await openFileDialog({
+      multiple: false,
+      filters: [{ name: "ZIP", extensions: ["zip"] }]
+    });
+    if (typeof selected !== "string" || !selected) return;
+    if (!selected.toLowerCase().endsWith(".zip")) {
+      setError(t("content.worldZipRequired"));
+      return;
+    }
+    const archiveName = selected.split(/[\\/]/).pop() ?? "world.zip";
+    onStatusChange(t("content.importingWorld"));
+    await runContentTask(
+      { kind: "world-import", projectKey: `world-import:${selected}`, title: archiveName, versionId: instance.versionId },
+      // Pass the picked path instead of streaming the whole ZIP over IPC.
+      () =>
+        invoke<WorldInstallResult>("import_world_archive", {
+          gameDir,
+          versionId: instance.versionId,
+          archiveName,
+          archivePath: selected
+        }),
+      (result) => t("content.worldImportDone", { title: result.projectTitle })
+    );
+  }
+
+  useEffect(() => {
+    // A new selection invalidates any search still in flight.
+    searchRequestRef.current += 1;
+    setLoading(false);
+    setResults([]);
+    setError(null);
+    setHasSearched(false);
+    setRightTab("search");
+  }, [currentInstance?.id, currentInstance?.versionId, contentType, source]);
+
+  // Re-read the installed list on selection change and whenever a content task
+  // that wrote to this instance ends (also one started before a page switch).
+  const currentRevision = currentInstance ? contentTasks.revisions[currentInstance.versionId] ?? 0 : 0;
+  useEffect(() => {
+    void refreshInstalledState(currentInstance);
+  }, [currentInstance, currentRevision]);
+
+  useEffect(() => {
+    if ((!currentInstance && !modpackMode) || worldImportMode || query.trim()) {
+      if (worldImportMode) {
+        setResults([]);
+        setHasSearched(false);
+      }
+      return;
+    }
+    void loadTrendingProjects();
+  }, [currentInstance?.id, currentInstance?.versionId, contentType, source, worldImportMode]);
 
   return (
     <div className="page-shell h-full overflow-y-auto">
@@ -974,7 +997,7 @@ function ContentPage({
           {(worldImportMode || filteredUpdatableItems.length > 0) && (
             <div className="mb-5 flex flex-wrap justify-end gap-2">
               {worldImportMode && (
-                <Button variant="primary" size="md" className="!rounded-[10px] gap-2" disabled={busy || importingWorld || !currentInstance} onClick={() => void handleWorldImport()}>
+                <Button variant="primary" size="md" className="!rounded-[10px] gap-2" disabled={busy || instanceBusy || !currentInstance} onClick={() => void handleWorldImport()}>
                   <Download size={16} />
                   {importingWorld ? t("content.importingWorld") : t("content.selectZipFile")}
                 </Button>
@@ -985,7 +1008,7 @@ function ContentPage({
                   variant="secondary"
                   size="sm"
                   className="!rounded-[10px] gap-2 border-amber-500/25 bg-amber-500/8 text-amber-200 hover:bg-amber-500/12"
-                  disabled={busy || batchUpdating || checkingUpdates}
+                  disabled={busy || instanceBusy || checkingUpdates}
                   onClick={() => void updateAllProjects()}
                 >
                   <Download size={14} />
@@ -996,42 +1019,66 @@ function ContentPage({
             </div>
           )}
 
-          {error && (
-            <div className="notice notice-danger mb-5">
+          {displayedError && (
+            <div className="notice notice-danger mb-5" role="alert">
               <X size={16} className="mt-0.5 shrink-0 text-[var(--accent-danger)]" />
-              <div>
-                <p className="notice-text !mt-0">{error}</p>
+              <div className="min-w-0 flex-1">
+                <p className="notice-text !mt-0">{displayedError}</p>
               </div>
+              <button
+                type="button"
+                className="icon-button"
+                onClick={() => {
+                  setError(null);
+                  clearContentTaskError();
+                }}
+                aria-label={t("common.dismiss")}
+                title={t("common.dismiss")}
+              >
+                <X size={14} />
+              </button>
             </div>
           )}
 
-          {modpackProgress && installingProjectId === modpackProgress.projectKey && (
+          {batchUpdating && contentTasks.batch && (
+            <p className="mb-3 text-xs text-[var(--text-muted)]">
+              {t("content.batchProgress", { current: contentTasks.batch.current, total: contentTasks.batch.total })}
+            </p>
+          )}
+
+          {modpackTask && (
             <Card variant="frost" className="page-card page-card-compact mb-5 rounded-[10px]" interactive={false}>
               <div className="flex items-center gap-3">
                 <Layers size={16} className="shrink-0 text-[var(--text-secondary)]" />
                 <div className="min-w-0 flex-1">
                   <div className="flex flex-wrap items-center gap-2">
                     <span className="badge badge-accent normal-case tracking-normal">
-                      {t(MODPACK_STAGE_LABEL_KEYS[modpackProgress.stage] ?? "content.modpack.stage.files")}
+                      {t(MODPACK_STAGE_LABEL_KEYS[modpackTask.modpackProgress?.stage ?? "catalog"] ?? "content.modpack.stage.files")}
                     </span>
                     <p className="truncate text-xs text-[var(--text-secondary)]">
-                      {t("content.modpack.stageProgress", {
-                        stage: t(MODPACK_STAGE_LABEL_KEYS[modpackProgress.stage] ?? "content.modpack.stage.files")
-                      })}
+                      {modpackTask.title}
                     </p>
                   </div>
                   <div className="progressTrack">
-                    <div
-                      className="progressFill"
-                      style={{ width: `${modpackProgress.percent ?? (modpackProgress.total > 0 ? Math.round((modpackProgress.current / modpackProgress.total) * 100) : 0)}%` }}
-                    />
+                    <div className="progressFill" style={{ width: `${modpackPercent(modpackTask.modpackProgress)}%` }} />
                   </div>
                 </div>
-                {modpackProgress.total > 0 && (
+                {modpackTask.modpackProgress && modpackTask.modpackProgress.total > 0 && (
                   <span className="shrink-0 text-xs text-[var(--text-muted)] text-data">
-                    {modpackProgress.percent != null ? `${modpackProgress.percent}%` : `${modpackProgress.current}/${modpackProgress.total}`}
+                    {modpackTask.modpackProgress.percent != null
+                      ? `${modpackTask.modpackProgress.percent}%`
+                      : `${modpackTask.modpackProgress.current}/${modpackTask.modpackProgress.total}`}
                   </span>
                 )}
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="shrink-0"
+                  disabled={modpackTask.cancelling}
+                  onClick={() => void cancelContentTask(modpackTask.id)}
+                >
+                  {modpackTask.cancelling ? t("dialog.cancelling") : t("common.cancel")}
+                </Button>
               </div>
             </Card>
           )}
@@ -1058,8 +1105,9 @@ function ContentPage({
                   const canUpdate = updateState?.status === "update-available";
                   const isInstalled = installedMap.has(`${item.source}:${item.projectType}:${item.projectId}`);
                   const itemKey = `${item.source}:${item.projectType}:${item.projectId}`;
-                  const actionBusy = busy || Boolean(installingProjectId) || Boolean(uninstallingProjectId);
-                  const installProgress = contentInstallProgress?.projectKey === itemKey ? contentInstallProgress : null;
+                  const itemTask = taskFor(itemKey);
+                  const actionBusy = busy || (modpackMode ? Boolean(itemTask) : instanceBusy);
+                  const installProgress = itemTask ? itemTask.progress ?? { projectKey: itemKey, downloadedBytes: 0, totalBytes: null, percent: null } : null;
                   return (
                     <Card key={itemKey} variant="frost" className={`page-card page-card-compact rounded-[10px] ${isInstalled ? "border-[rgba(var(--accent-rgb),0.28)]" : ""}`} interactive={false}>
                       <div className="flex gap-4">
@@ -1089,7 +1137,19 @@ function ContentPage({
                             )}
                           </div>
                         </div>
-                        <div className="flex shrink-0 items-center">
+                        <div className="flex shrink-0 items-center gap-2">
+                          {itemTask && itemTask.kind !== "uninstall" && (
+                            <button
+                              type="button"
+                              className="icon-button"
+                              disabled={itemTask.cancelling}
+                              onClick={() => void cancelContentTask(itemTask.id)}
+                              aria-label={t("common.cancel")}
+                              title={t("common.cancel")}
+                            >
+                              <X size={14} />
+                            </button>
+                          )}
                           <Button
                             variant={isInstalled && !canUpdate ? "outline" : "primary"}
                             size="sm"
@@ -1133,8 +1193,9 @@ function ContentPage({
                   const canUpdate = updateState?.status === "update-available";
                   const supportsOnlineUpdate = item.source !== "local";
                   const itemKey = `${item.source}:${item.contentType}:${item.projectId}`;
-                  const isItemBusy = busy || Boolean(installingProjectId) || Boolean(uninstallingProjectId);
-                  const installProgress = contentInstallProgress?.projectKey === itemKey ? contentInstallProgress : null;
+                  const itemTask = taskFor(itemKey);
+                  const isItemBusy = busy || instanceBusy;
+                  const installProgress = itemTask ? itemTask.progress ?? { projectKey: itemKey, downloadedBytes: 0, totalBytes: null, percent: null } : null;
                   const installedDate = formatInstalledDate(item.installedAtEpochSec);
                   const typeIcon = CONTENT_TYPES.find((entry) => entry.id === item.contentType)?.icon ?? <Archive size={16} />;
                   return (
@@ -1210,7 +1271,7 @@ function ContentPage({
       <UninstallConfirmDialog
         item={pendingUninstall}
         closing={uninstallDialogClosing}
-        busy={busy || Boolean(uninstallingProjectId)}
+        busy={busy || instanceBusy}
         onCancel={closeUninstallDialog}
         onConfirm={confirmUninstall}
       />

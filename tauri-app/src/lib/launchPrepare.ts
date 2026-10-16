@@ -222,6 +222,8 @@ export function mapLaunchPreparePhaseKey(phase?: string): LaunchPreparePhaseKey 
   if (phase === "optifine") return "optifine";
   if (phase === "mods") return "mods";
   if (phase === "runtime") return "runtime";
+  // Extreme's native package download stands in for the instance check.
+  if (phase === "native") return "check-instance";
   return null;
 }
 

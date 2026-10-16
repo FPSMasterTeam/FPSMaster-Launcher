@@ -19,7 +19,7 @@ export default function InstallDialog({ dialog, onClose, onCancel }: InstallDial
         <div className="panelHead">
           <h2 id="install-dialog-title" className="flex items-center gap-2">
             {!dialog.canClose ? <span className="installDialogSpinner minecraft-inline-spinner" aria-hidden="true" /> : null}
-            {t("dialog.installing", { version: dialog.versionId })}
+            {dialog.title ?? t("dialog.installing", { version: dialog.versionId })}
           </h2>
           <span className="mutedPill">{t("dialog.session", { id: dialog.sessionId.slice(-6) })}</span>
         </div>

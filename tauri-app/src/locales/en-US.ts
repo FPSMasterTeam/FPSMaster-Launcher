@@ -802,7 +802,21 @@ const enUS = {
   "launch.prepare.cancelling": "Cancelling...",
   "home.quickLaunch": "Quick launch",
   "home.quickLaunchHint": "Skip update checks and start the installed version",
-  "home.running": "Running"
+  "home.running": "Running",
+  "content.cancelled": "Cancelled: {title}",
+  "common.dismiss": "Dismiss",
+  "content.batchProgress": "Updating {current} of {total}",
+  "launch.warning.contentInstalling": "Content is still being installed into {name}. Wait for it to finish, or cancel it on the Content page.",
+  "repair.title": "Repairing {name}",
+  "repair.phase.native": "Client package",
+  "repair.done": "{name} has been repaired.",
+  "close.busy.title": "Downloads are still running",
+  "close.busy.message": "Closing now cancels them and may leave files half-downloaded (they are checked again next time). Minimize to the tray to keep downloading?",
+  "close.busy.minimize": "Minimize to tray",
+  "close.busy.quit": "Cancel and quit",
+  "close.busy.stay": "Keep open",
+  "settings.launcherUpdateCancel": "Cancel download",
+  "settings.launcherUpdateCancelled": "The update download was cancelled."
 } as const;
 
 export default enUS;

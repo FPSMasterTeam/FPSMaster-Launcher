@@ -82,6 +82,7 @@ type SettingsPageProps = {
   onLogoutLauncherAccount: () => void;
   onRefreshLauncherUpdate: () => void;
   onInstallLauncherUpdate: () => void;
+  onCancelLauncherUpdate: () => void;
   onChange: (next: Settings) => void;
   onClampMemory: (input: string) => void;
   onReset: () => void;
@@ -101,6 +102,7 @@ function SettingsPage({
   onLogoutLauncherAccount,
   onRefreshLauncherUpdate,
   onInstallLauncherUpdate,
+  onCancelLauncherUpdate,
   onChange,
   onClampMemory,
   onReset
@@ -1491,6 +1493,11 @@ function SettingsPage({
                         ? t("settings.launcherUpdateDownloadingProgress", { percent: launcherUpdateProgressPercent })
                         : t("settings.launcherUpdatePreparing")
                       : t("settings.launcherUpdateInstall")}
+                  </Button>
+                )}
+                {launcherUpdateDownloading && (
+                  <Button variant="ghost" size="sm" onClick={onCancelLauncherUpdate}>
+                    {t("settings.launcherUpdateCancel")}
                   </Button>
                 )}
                 {!launcherUpdateAvailable && hasLauncherUpdateNotes && (

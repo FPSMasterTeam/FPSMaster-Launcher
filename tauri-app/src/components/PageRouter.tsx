@@ -92,6 +92,7 @@ export type PageRouterContext = {
   launcherUpdateDownload: DownloadedLauncherUpdate | null;
   onRefreshLauncherUpdate: () => void;
   onInstallLauncherUpdate: () => void;
+  onCancelLauncherUpdate: () => void;
   // install wizard
   catalogLoading: boolean;
   catalogCount: number;
@@ -286,6 +287,7 @@ export default function PageRouter({ ctx }: { ctx: PageRouterContext }) {
           launcherUpdateProgressPercent={ctx.launcherUpdateProgressPercent}
           launcherUpdateDownload={ctx.launcherUpdateDownload}
           onInstallLauncherUpdate={ctx.onInstallLauncherUpdate}
+          onCancelLauncherUpdate={ctx.onCancelLauncherUpdate}
         />
       );
     default:
@@ -304,6 +306,7 @@ export default function PageRouter({ ctx }: { ctx: PageRouterContext }) {
           onLogoutLauncherAccount={ctx.onLogoutLauncherAccount}
           onRefreshLauncherUpdate={ctx.onRefreshLauncherUpdate}
           onInstallLauncherUpdate={ctx.onInstallLauncherUpdate}
+          onCancelLauncherUpdate={ctx.onCancelLauncherUpdate}
           onChange={ctx.onChangeSettings}
           onClampMemory={ctx.onClampMemory}
           onReset={ctx.onResetSettings}

@@ -31,7 +31,7 @@ import type {
 
 export function createPhaseState(
   title: string,
-  sourcePhase: "vanilla" | "forge" | "fabric" | "optifine"
+  sourcePhase: InstallPhaseState["sourcePhase"]
 ): InstallPhaseState {
   return {
     title,

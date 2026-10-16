@@ -797,7 +797,21 @@ const zhCN: EnUSTranslations = {
   "launch.prepare.cancelling": "正在取消...",
   "home.quickLaunch": "快速启动",
   "home.quickLaunchHint": "跳过更新检查，直接启动已安装的版本",
-  "home.running": "运行中"
+  "home.running": "运行中",
+  "content.cancelled": "已取消：{title}",
+  "common.dismiss": "关闭",
+  "content.batchProgress": "正在更新第 {current}/{total} 项",
+  "launch.warning.contentInstalling": "{name} 正在安装内容，请等待完成，或在资源页取消后再启动。",
+  "repair.title": "正在修复 {name}",
+  "repair.phase.native": "客户端包",
+  "repair.done": "{name} 已修复完成。",
+  "close.busy.title": "仍有下载正在进行",
+  "close.busy.message": "现在关闭会取消下载，未完成的文件需要下次重新校验。是否最小化到托盘继续下载？",
+  "close.busy.minimize": "最小化到托盘",
+  "close.busy.quit": "取消下载并退出",
+  "close.busy.stay": "返回",
+  "settings.launcherUpdateCancel": "取消下载",
+  "settings.launcherUpdateCancelled": "已取消更新下载。"
 } as const;
 
 export default zhCN;

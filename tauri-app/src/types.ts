@@ -281,7 +281,8 @@ export type ModpackInstallResult = {
 
 export type InstallPhaseState = {
   title: string;
-  sourcePhase: "vanilla" | "forge" | "fabric" | "optifine";
+  // Backend `phase` this row tracks; "native" is the Extreme client package.
+  sourcePhase: "vanilla" | "forge" | "fabric" | "optifine" | "native";
   status: PhaseStatus;
   stage: string;
   message: string;
@@ -299,6 +300,8 @@ export type InstallPhaseState = {
 export type InstallDialogState = {
   open: boolean;
   sessionId: string;
+  /** Overrides the "Installing <version>" heading (repair uses its own). */
+  title?: string;
   versionId: string;
   loader: Loader;
   canClose: boolean;

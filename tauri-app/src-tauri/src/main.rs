@@ -1762,6 +1762,9 @@ fn import_instance_archive_blocking(
     })
 }
 
+/// Reinstalls an instance's runtime. Honors the user's download source and
+/// thread count, reports progress and is cancellable under `ipc_session`
+/// (launcher-ui-12).
 fn repair_instance_runtime_blocking(
     window: tauri::Window,
     game_dir: String,
@@ -1769,6 +1772,9 @@ fn repair_instance_runtime_blocking(
     loader: String,
     base_version: String,
     loader_version: Option<String>,
+    download_source: Option<&str>,
+    download_threads: Option<i32>,
+    ipc_session: Option<&str>,
 ) -> Result<InstanceRepairResult, String> {
     let normalized_version_id = normalize_version_identifier(version_id.trim())?;
     let normalized_loader = normalize_loader_kind(&loader)?;
@@ -1786,13 +1792,14 @@ fn repair_instance_runtime_blocking(
         )
     })?;
 
+    let threads = normalize_download_threads(download_threads);
     let vanilla = minecraft_core::install_vanilla(
         Some(&window),
         &game_dir_path,
         &normalized_base_version,
-        None,
-        normalize_download_threads(Some(DEFAULT_DOWNLOAD_THREADS)),
-        None,
+        download_source,
+        threads,
+        ipc_session,
     )?;
     let mut source_version_id = vanilla.version_id;
     let mut resolved_loader_version = loader_version
@@ -1801,8 +1808,11 @@ fn repair_instance_runtime_blocking(
 
     if normalized_loader == "fabric" {
         if resolved_loader_version.is_none() {
-            let loader_versions =
-                list_fabric_loaders_blocking_core(Some(&window), &normalized_base_version, None)?;
+            let loader_versions = list_fabric_loaders_blocking_core(
+                Some(&window),
+                &normalized_base_version,
+                download_source,
+            )?;
             resolved_loader_version = loader_versions
                 .into_iter()
                 .find(|value| !value.trim().is_empty());
@@ -1813,19 +1823,23 @@ fn repair_instance_runtime_blocking(
                 normalized_base_version
             )
         })?;
-        let fabric = install_fabric_blocking_core(
+        let fabric = minecraft_core::install_fabric(
             Some(&window),
             &game_dir_path,
             &normalized_base_version,
             &selected_loader_version,
-            None,
-            Some(DEFAULT_DOWNLOAD_THREADS),
+            download_source,
+            threads,
+            ipc_session,
         )?;
         source_version_id = fabric.profile_id;
     } else if normalized_loader == "forge" {
         if resolved_loader_version.is_none() {
-            let forge_versions =
-                list_forge_versions_blocking_core(Some(&window), &normalized_base_version, None)?;
+            let forge_versions = list_forge_versions_blocking_core(
+                Some(&window),
+                &normalized_base_version,
+                download_source,
+            )?;
             resolved_loader_version = forge_versions
                 .into_iter()
                 .find(|value| !value.trim().is_empty());
@@ -1835,18 +1849,19 @@ fn repair_instance_runtime_blocking(
             .ok_or_else(|| format!("No forge version available for {}", normalized_base_version))?;
         let jdk = ensure_jdk_blocking(
             window.clone(),
-            &downloader::CancelToken::new(None),
+            &downloader::CancelToken::new(ipc_session),
             game_dir_path.to_string_lossy().to_string(),
             normalized_base_version.clone(),
-            Some(DEFAULT_DOWNLOAD_THREADS),
+            Some(threads as i32),
         )?;
-        let forge = install_forge_blocking_core(
+        let forge = minecraft_core::install_forge(
             Some(&window),
             &game_dir_path,
             &selected_loader_version,
-            &jdk.java_path,
-            None,
-            Some(DEFAULT_DOWNLOAD_THREADS),
+            Path::new(&jdk.java_path),
+            download_source,
+            threads,
+            ipc_session,
         )?;
         source_version_id = forge.profile_id;
         resolved_loader_version = Some(forge.forge_version);
@@ -1925,16 +1940,24 @@ async fn repair_instance_runtime(
     loader: String,
     base_version: String,
     loader_version: Option<String>,
+    download_source: Option<String>,
+    download_threads: Option<i32>,
+    ipc_session: Option<String>,
 ) -> Result<InstanceRepairResult, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        repair_instance_runtime_blocking(
+        let result = repair_instance_runtime_blocking(
             window,
             game_dir,
             version_id,
             loader,
             base_version,
             loader_version,
-        )
+            download_source.as_deref(),
+            download_threads,
+            ipc_session.as_deref(),
+        );
+        clear_install_cancel(ipc_session.as_deref());
+        result
     })
     .await
     .map_err(|e| format!("Failed to join instance repair task: {e}"))
@@ -2298,9 +2321,10 @@ async fn install_modrinth_project(
     project_type: String,
     game_version: String,
     loader: Option<String>,
+    ipc_session: Option<String>,
 ) -> Result<ModrinthInstallResult, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        install_modrinth_project_blocking(
+        let result = install_modrinth_project_blocking(
             Some(window),
             game_dir,
             version_id,
@@ -2309,7 +2333,10 @@ async fn install_modrinth_project(
             project_type,
             game_version,
             loader,
-        )
+            ipc_session.as_deref(),
+        );
+        clear_install_cancel(ipc_session.as_deref());
+        result
     })
     .await
     .map_err(|e| format!("Failed to join Modrinth install task: {e}"))
@@ -2387,9 +2414,10 @@ async fn install_curseforge_project(
     game_version: String,
     loader: Option<String>,
     api_key: String,
+    ipc_session: Option<String>,
 ) -> Result<ModrinthInstallResult, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        install_curseforge_project_blocking(
+        let result = install_curseforge_project_blocking(
             Some(window),
             game_dir,
             version_id,
@@ -2399,7 +2427,10 @@ async fn install_curseforge_project(
             game_version,
             loader,
             api_key,
-        )
+            ipc_session.as_deref(),
+        );
+        clear_install_cancel(ipc_session.as_deref());
+        result
     })
     .await
     .map_err(|e| format!("Failed to join CurseForge install task: {e}"))
@@ -2548,6 +2579,7 @@ fn install_modrinth_project_blocking(
     project_type: String,
     game_version: String,
     loader: Option<String>,
+    ipc_session: Option<&str>,
 ) -> Result<ModrinthInstallResult, String> {
     let normalized_project_type = normalize_content_project_type(&project_type)?;
     if normalized_project_type == "modpack" {
@@ -2603,6 +2635,7 @@ fn install_modrinth_project_blocking(
         &download_path,
         window.as_ref(),
         Some(&project_key),
+        ipc_session,
     )
     .map_err(|err| format!("Failed to download Modrinth file {}: {err}", file.filename))?;
 
@@ -2787,6 +2820,7 @@ fn install_curseforge_project_blocking(
     game_version: String,
     loader: Option<String>,
     api_key: String,
+    ipc_session: Option<&str>,
 ) -> Result<ModrinthInstallResult, String> {
     let normalized_project_type = normalize_content_project_type(&project_type)?;
     if normalized_project_type == "modpack" {
@@ -2857,6 +2891,7 @@ fn install_curseforge_project_blocking(
         &download_path,
         window.as_ref(),
         Some(&project_key),
+        ipc_session,
     )
     .map_err(|err| {
         format!(
@@ -3698,6 +3733,7 @@ fn install_fabric_api_blocking(
         &download_path,
         window,
         Some("fabric-api"),
+        ipc_session,
     ) {
         let _ = fs::remove_file(&download_path);
         return Err(format!(
@@ -6100,13 +6136,16 @@ fn emit_content_install_progress(
 
 /// Content downloads (Modrinth/CurseForge/Fabric API). They have no install
 /// session, so they are only cancellable through `cancel_all_downloads`.
+/// `ipc_session` lets cancel_install(session) stop this download; without one
+/// only cancel_all_downloads can.
 fn download_file_quiet_with_progress_blocking(
     url: &str,
     target: &Path,
     window: Option<&tauri::Window>,
     project_key: Option<&str>,
+    ipc_session: Option<&str>,
 ) -> Result<(), String> {
-    let cancel = downloader::CancelToken::new(None);
+    let cancel = downloader::CancelToken::new(ipc_session);
     download_file_with_progress_callback_blocking(&cancel, url, target, &|downloaded, total| {
         if let Some(key) = project_key {
             emit_content_install_progress(window, key, downloaded, total);
@@ -6882,6 +6921,7 @@ async fn install_native_app(
     version_tag: Option<String>,
     checksum: Option<String>,
     ipc_session: Option<String>,
+    force: Option<bool>,
 ) -> Result<NativeAppInstallResult, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let result = install_native_app_blocking(
@@ -6891,6 +6931,7 @@ async fn install_native_app(
             download_url,
             version_tag,
             checksum,
+            force.unwrap_or(false),
         );
         clear_install_cancel(ipc_session.as_deref());
         result
@@ -6901,6 +6942,8 @@ async fn install_native_app(
     .inspect_err(|e| log_command_error("install_native_app", e))
 }
 
+/// `force` reinstalls even when the marker says the package is current: the
+/// "repair" path for a binary that is present but broken.
 fn install_native_app_blocking(
     ipc_session: Option<&str>,
     game_dir: String,
@@ -6908,6 +6951,7 @@ fn install_native_app_blocking(
     download_url: String,
     version_tag: Option<String>,
     checksum: Option<String>,
+    force: bool,
 ) -> Result<NativeAppInstallResult, String> {
     if !is_native_app_version_id(&version_id) {
         return Err(format!("{version_id} is not a native-app distributable"));
@@ -6931,7 +6975,7 @@ fn install_native_app_blocking(
     let binary_path = install_dir.join(native_app_binary_name());
 
     // Up to date? Same tag + checksum and the binary is present → skip.
-    if binary_path.exists() {
+    if !force && binary_path.exists() {
         if let Ok(bytes) = fs::read(&marker_path) {
             if let Ok(marker) = serde_json::from_slice::<NativeAppInstallMarker>(&bytes) {
                 if marker.version_tag == normalized_tag
@@ -6956,10 +7000,23 @@ fn install_native_app_blocking(
     ));
 
     let cancel = downloader::CancelToken::new(ipc_session);
+    let started = std::time::Instant::now();
+    let archive_name = archive_path
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    // Without this the dialog sat at a fixed 20% for the whole multi-hundred-MB
+    // download (launcher-ui-13).
+    let on_progress = |done: u64, total: Option<u64>| {
+        let elapsed = started.elapsed().as_secs_f64();
+        let rate = if elapsed > 0.5 { (done as f64 / elapsed) as u64 } else { 0 };
+        emit_install_bytes_progress(ipc_session, "native", done, total, rate, &archive_name);
+    };
     downloader::download(
         &downloader::Request::single(&normalized_url, &archive_path, &cancel)
             .sha256(Some(normalized_checksum.as_str()))
-            .max_parts(normalize_download_threads(Some(DEFAULT_DOWNLOAD_THREADS))),
+            .max_parts(normalize_download_threads(Some(DEFAULT_DOWNLOAD_THREADS)))
+            .on_progress(&on_progress),
     )
     .map_err(|err| format!("Failed to download {version_id}: {err}"))?;
 
@@ -8731,34 +8788,6 @@ async fn install_fabric(
     .inspect_err(|e| log_command_error("install_fabric", e))
 }
 
-fn install_fabric_blocking_core(
-    window: Option<&tauri::Window>,
-    game_dir: &Path,
-    game_version: &str,
-    loader_version: &str,
-    download_source: Option<&str>,
-    download_threads: Option<i32>,
-) -> Result<FabricInstallResult, String> {
-    let normalized_game_version = game_version.trim();
-    if normalized_game_version.is_empty() {
-        return Err("Game version cannot be empty".to_string());
-    }
-    let normalized_loader_version = loader_version.trim();
-    if normalized_loader_version.is_empty() {
-        return Err("Loader version cannot be empty".to_string());
-    }
-    let normalized_download_threads = normalize_download_threads(download_threads);
-    minecraft_core::install_fabric(
-        window,
-        game_dir,
-        normalized_game_version,
-        normalized_loader_version,
-        download_source,
-        normalized_download_threads,
-        None,
-    )
-}
-
 #[tauri::command]
 async fn list_forge_versions(
     window: tauri::Window,
@@ -9150,6 +9179,39 @@ fn emit_log(window: Option<&tauri::Window>, level: &str, message: &str) {
 /// `.inspect_err(|e| log_command_error("launch_vanilla", e))`.
 fn log_command_error(command: &str, err: &str) {
     emit_log(None, "error", &format!("命令 {command} 执行失败: {err}"));
+}
+
+/// Byte progress of one download on the "install" channel, which both the
+/// launch-prepare and the install/repair dialogs consume.
+fn emit_install_bytes_progress(
+    session: Option<&str>,
+    phase: &str,
+    done: u64,
+    total: Option<u64>,
+    bytes_per_second: u64,
+    message: &str,
+) {
+    let Some(session) = session.filter(|value| !value.trim().is_empty()) else {
+        return;
+    };
+    let mut payload = serde_json::json!({
+        "channel": "install",
+        "event": "progress",
+        "phase": phase,
+        "stage": "download",
+        "session": session.trim(),
+        "message": message,
+    });
+    if let Some(total) = total.filter(|value| *value > 0) {
+        let eta = (bytes_per_second > 0).then(|| total.saturating_sub(done) / bytes_per_second);
+        payload["bytesDone"] = done.min(total).into();
+        payload["bytesTotal"] = total.into();
+        payload["bytesPerSecond"] = bytes_per_second.into();
+        if let Some(eta) = eta {
+            payload["etaSeconds"] = eta.into();
+        }
+    }
+    push_ui_log("core", "stderr", &format!("[ipc]{payload}"));
 }
 
 pub(crate) fn emit_launch_prepare_ipc(
