@@ -21,7 +21,7 @@ export function resolvePresetAccessState(
   versionMap: LauncherVersionMap,
   // For NOVA, the entry for the picked game version (Nova has several); ignored for other products.
   novaVersion?: LauncherVersion | null
-): { state: "ok" | "pending-release"; versionTag?: string | null; changelog?: string | null; lastError?: string | null } {
+): { state: "ok" | "pending-release"; versionTag?: string | null; changelog?: string | null } {
   if (!instance.preset || !instance.launcherVersionType) {
     return { state: "ok" };
   }
@@ -29,16 +29,13 @@ export function resolvePresetAccessState(
     return { state: "ok" };
   }
   // NOVA and EXTREME are gated: each resolves against its own catalog entry, which is only
-  // present once released. NOVA resolves
-  // against the picked game version's entry; EXTREME against its single product entry.
+  // present once released. NOVA resolves against the picked game version's entry; EXTREME
+  // against its single product entry. The caller words the message (it knows whether the
+  // catalog actually loaded).
   const version =
     instance.launcherVersionType === "NOVA" ? (novaVersion ?? null) : versionMap[instance.launcherVersionType];
   if (!version) {
-    const label = instance.launcherVersionType === "EXTREME" ? "Extreme" : "Nova";
-    return {
-      state: "pending-release",
-      lastError: `${label} has not been released yet.`
-    };
+    return { state: "pending-release" };
   }
   return {
     state: "ok",

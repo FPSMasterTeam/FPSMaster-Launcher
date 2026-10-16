@@ -71,7 +71,9 @@ export type PageRouterContext = {
   launchProgressPercent: number | null;
   launchProgressText: string;
   onLaunch: () => void;
+  onQuickLaunch: () => void;
   onLaunchToServer: (serverAddress: string) => void;
+  gameRunning: boolean;
   // minecraft accounts
   minecraftAccounts: MinecraftAccount[];
   currentMinecraftAccount: MinecraftAccount | null;
@@ -162,6 +164,8 @@ export default function PageRouter({ ctx }: { ctx: PageRouterContext }) {
           minecraftAccountRequired={ctx.minecraftAccountRequired}
           onSelect={ctx.onSelect}
           onLaunch={ctx.onLaunch}
+          onQuickLaunch={ctx.onQuickLaunch}
+          gameRunning={ctx.gameRunning}
           onLaunchToServer={ctx.onLaunchToServer}
           onOpenSettings={ctx.onGoSettings}
           onOpenServers={ctx.onGoServers}
@@ -176,7 +180,7 @@ export default function PageRouter({ ctx }: { ctx: PageRouterContext }) {
         <ServersPage
           servers={ctx.launcherServers}
           currentInstance={ctx.current}
-          busy={ctx.busy}
+          busy={ctx.busy || ctx.gameRunning}
           launching={ctx.launching}
           launchProgressPercent={ctx.launchProgressPercent}
           launchProgressText={ctx.launchProgressText}

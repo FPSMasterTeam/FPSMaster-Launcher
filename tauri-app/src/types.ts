@@ -175,6 +175,21 @@ export type FabricInstallResult = { profileId: string };
 export type ForgeInstallResult = { profileId: string; forgeVersion: string };
 export type JdkEnsureResult = { javaPath: string };
 
+// get_offline_launch_readiness: purely local check of an installed instance.
+export type OfflineLaunchReadiness = {
+  versionId: string;
+  ready: boolean;
+  baseVersion?: string | null;
+  loader?: string | null;
+  loaderVersion?: string | null;
+  optifineVersion?: string | null;
+  javaMajor?: number | null;
+  javaPath?: string | null;
+  missing: string[];
+  corrupted: string[];
+  error?: string | null;
+};
+
 export type LauncherLoginPrefs = {
   usernameOrEmail: string;
   password: string;
@@ -342,6 +357,9 @@ export type LaunchPrepareDialogState = {
   instanceName: string;
   versionId: string;
   canClose: boolean;
+  cancelling: boolean;
+  /** The launch failed on the network but the installed files can start offline. */
+  offlineAvailable: boolean;
   errorText: string;
   phases: LaunchPreparePhaseState[];
 };

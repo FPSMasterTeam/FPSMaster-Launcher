@@ -3776,6 +3776,7 @@ button:disabled {
 .modalActions {
   margin-top: 14px;
   display: flex;
+  gap: 10px;
   justify-content: flex-end;
   flex: 0 0 auto;
 }

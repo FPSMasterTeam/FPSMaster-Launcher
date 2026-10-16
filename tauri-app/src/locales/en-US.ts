@@ -783,7 +783,26 @@ const enUS = {
   "error.catalog.unavailable": "The release service is temporarily unavailable. Please try again in a moment.",
   "error.download.integrity": "A downloaded file failed verification. It will be downloaded again on the next attempt.",
   "error.disk.full": "The disk is full. Free up space and try again.",
-  "error.cancelled": "Cancelled."
+  "error.cancelled": "Cancelled.",
+  "launch.error.notReleased": "{name} has not been released yet.",
+  "launch.error.catalogUnavailable": "Could not load the release list, and this version is not installed yet: {error}",
+  "launch.error.edgeAotMissing": "This Edge release does not include the Forge-free package yet. Turn Forge back on in the instance settings.",
+  "launch.error.noLoaderVersion": "No {loader} version is available for Minecraft {version}.",
+  "launch.warning.catalogUnavailable": "The release list is unavailable right now, so update checks are skipped and the installed version starts.",
+  "launch.warning.updateSkipped": "The update for {name} could not be downloaded, so the installed version starts.",
+  "launch.warning.contentUpdateSkipped": "{count} content update(s) failed; the installed files are used.",
+  "launch.offline.title": "Offline launch",
+  "launch.offline.notReady": "Some files are missing, so a full preparation runs (this needs the network).",
+  "launch.offline.retry": "Launch without updating",
+  "launch.offline.hint": "The network is unavailable, but this instance is fully installed and can start without checking for updates.",
+  "launch.progress.checkOffline": "Checking installed files",
+  "launch.info.alreadyLaunching": "A launch is already in progress.",
+  "launch.info.cancelled": "Launch cancelled.",
+  "launch.prepare.cancel": "Cancel",
+  "launch.prepare.cancelling": "Cancelling...",
+  "home.quickLaunch": "Quick launch",
+  "home.quickLaunchHint": "Skip update checks and start the installed version",
+  "home.running": "Running"
 } as const;
 
 export default enUS;

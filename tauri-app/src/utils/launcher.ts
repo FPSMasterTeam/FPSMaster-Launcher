@@ -88,6 +88,8 @@ export function createLaunchPrepareDialogState(
     instanceName,
     versionId,
     canClose: false,
+    cancelling: false,
+    offlineAvailable: false,
     errorText: "",
     phases: [
       createLaunchPreparePhaseState("login", phaseTitles.login, waitingText),

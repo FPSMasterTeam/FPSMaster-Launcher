@@ -778,7 +778,26 @@ const zhCN: EnUSTranslations = {
   "error.catalog.unavailable": "版本服务暂时不可用，请稍后重试。",
   "error.download.integrity": "下载的文件校验失败，下次尝试时会重新下载。",
   "error.disk.full": "磁盘空间不足，请清理后重试。",
-  "error.cancelled": "已取消。"
+  "error.cancelled": "已取消。",
+  "launch.error.notReleased": "{name} 尚未发布。",
+  "launch.error.catalogUnavailable": "无法获取版本列表，且该版本尚未安装：{error}",
+  "launch.error.edgeAotMissing": "当前 Edge 版本尚未提供无 Forge 运行包，请在实例设置中重新开启 Forge。",
+  "launch.error.noLoaderVersion": "没有适用于 Minecraft {version} 的 {loader} 版本。",
+  "launch.warning.catalogUnavailable": "暂时无法获取版本列表，已跳过更新检查，直接启动已安装的版本。",
+  "launch.warning.updateSkipped": "{name} 的更新下载失败，已改为启动已安装的版本。",
+  "launch.warning.contentUpdateSkipped": "{count} 项内容更新失败，已沿用已安装的文件。",
+  "launch.offline.title": "离线启动",
+  "launch.offline.notReady": "部分文件缺失，需要联网完成完整准备。",
+  "launch.offline.retry": "跳过更新直接启动",
+  "launch.offline.hint": "网络不可用，但该实例已完整安装，可以跳过更新检查直接启动。",
+  "launch.progress.checkOffline": "正在检查已安装的文件",
+  "launch.info.alreadyLaunching": "正在启动中，请稍候。",
+  "launch.info.cancelled": "已取消启动。",
+  "launch.prepare.cancel": "取消",
+  "launch.prepare.cancelling": "正在取消...",
+  "home.quickLaunch": "快速启动",
+  "home.quickLaunchHint": "跳过更新检查，直接启动已安装的版本",
+  "home.running": "运行中"
 } as const;
 
 export default zhCN;

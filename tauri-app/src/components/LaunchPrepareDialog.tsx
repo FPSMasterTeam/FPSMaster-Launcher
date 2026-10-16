@@ -1,5 +1,6 @@
 import { useState } from "react";
 import Card from "./Card";
+import ModalFrame from "./ModalFrame";
 import { useI18n } from "../i18n";
 import { formatByteSize, formatEta, phasePercent } from "../lib/launchPrepare";
 import type {
@@ -12,6 +13,8 @@ import type {
 type LaunchPrepareDialogProps = {
   dialog: LaunchPrepareDialogState;
   onClose: () => void;
+  onCancel: () => void;
+  onRetryOffline: () => void;
 };
 
 // Maps every phase onto one of four macro steps used to estimate overall progress:
@@ -33,7 +36,7 @@ const MACRO_STEP: Record<LaunchPreparePhaseKey, number> = {
 const MACRO_TOTAL = 4;
 const MAX_VISIBLE_ITEMS = 6;
 
-export default function LaunchPrepareDialog({ dialog, onClose }: LaunchPrepareDialogProps) {
+export default function LaunchPrepareDialog({ dialog, onClose, onCancel, onRetryOffline }: LaunchPrepareDialogProps) {
   const { t } = useI18n();
   const activePhase =
     dialog.phases.find((phase) => phase.status === "running") ??
@@ -59,11 +62,11 @@ export default function LaunchPrepareDialog({ dialog, onClose }: LaunchPrepareDi
   const hasError = dialog.errorText !== "";
 
   return (
-    <section className="modalOverlay">
+    <ModalFrame labelledBy="launch-prepare-title" onEscape={dialog.canClose ? onClose : undefined}>
       <Card variant="strong" className="w-full max-w-[560px] rounded-[10px] p-5 md:p-6" interactive={false}>
         <div className="panelHead">
           <div>
-            <h2>{t("launch.prepare.title", { name: dialog.instanceName })}</h2>
+            <h2 id="launch-prepare-title">{t("launch.prepare.title", { name: dialog.instanceName })}</h2>
             <p className="minorHint mt-1">{dialog.versionId || activePhase?.title || t("launch.progress.preparing")}</p>
           </div>
           <span className="mutedPill">{t("dialog.session", { id: dialog.sessionId.slice(-6) })}</span>
@@ -141,15 +144,29 @@ export default function LaunchPrepareDialog({ dialog, onClose }: LaunchPrepareDi
           )}
         </div>
 
-        {hasError && <pre className="errorBox">{dialog.errorText}</pre>}
+        {hasError && <pre className="errorBox" role="alert">{dialog.errorText}</pre>}
+        {hasError && dialog.offlineAvailable && <p className="minorHint mt-3">{t("launch.offline.hint")}</p>}
 
         <div className="modalActions">
-          <button className="primaryAction" disabled={!dialog.canClose} onClick={onClose} type="button">
-            {dialog.canClose ? t("dialog.confirm") : t("launch.prepare.running")}
-          </button>
+          {dialog.canClose ? (
+            <>
+              {dialog.offlineAvailable && (
+                <button className="ghostButton" onClick={onRetryOffline} type="button">
+                  {t("launch.offline.retry")}
+                </button>
+              )}
+              <button className="primaryAction" onClick={onClose} type="button">
+                {t("dialog.confirm")}
+              </button>
+            </>
+          ) : (
+            <button className="primaryAction" disabled={dialog.cancelling} onClick={onCancel} type="button">
+              {dialog.cancelling ? t("launch.prepare.cancelling") : t("launch.prepare.cancel")}
+            </button>
+          )}
         </div>
       </Card>
-    </section>
+    </ModalFrame>
   );
 }
 

@@ -1,6 +1,7 @@
 import { memo } from "react";
 import Button from "./Button";
 import Card from "./Card";
+import ModalFrame from "./ModalFrame";
 import { useI18n } from "../i18n";
 
 type LaunchErrorDialogProps = {
@@ -12,9 +13,13 @@ type LaunchErrorDialogProps = {
 function LaunchErrorDialog({ message, onConfirm }: LaunchErrorDialogProps) {
   const { t } = useI18n();
   return (
-    <div className="fixed inset-0 z-[95] flex items-center justify-center bg-[var(--bg-primary)]/82 p-6">
+    <ModalFrame
+      labelledBy="launch-error-title"
+      onEscape={onConfirm}
+      overlayClassName="fixed inset-0 z-[95] flex items-center justify-center bg-[var(--bg-primary)]/82 p-6"
+    >
       <Card variant="frost" className="w-full max-w-lg rounded-[10px] p-6" interactive={false}>
-        <h3 className="text-xl font-semibold text-[var(--accent-danger)]">{t("launch.error.title")}</h3>
+        <h3 id="launch-error-title" className="text-xl font-semibold text-[var(--accent-danger)]">{t("launch.error.title")}</h3>
         <p className="mt-2 text-sm text-[var(--text-secondary)]">{t("launch.error.subtitle")}</p>
         <div className="mt-4 rounded-[8px] border border-[#ff6b8f]/25 bg-[#ff6b8f]/10 px-4 py-3">
           <p className="text-sm leading-6 text-[var(--text-primary)] break-all">{message}</p>
@@ -25,7 +30,7 @@ function LaunchErrorDialog({ message, onConfirm }: LaunchErrorDialogProps) {
           </Button>
         </div>
       </Card>
-    </div>
+    </ModalFrame>
   );
 }
 

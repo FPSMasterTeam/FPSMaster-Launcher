@@ -6,6 +6,7 @@ import {
   Check,
   ChevronRight,
   Clock,
+  FastForward,
   Gamepad2,
   Lock,
   Play,
@@ -62,6 +63,8 @@ type HomePageProps = {
   minecraftAccountRequired: boolean;
   onSelect: (id: string) => void;
   onLaunch: () => void;
+  onQuickLaunch: () => void;
+  gameRunning: boolean;
   onLaunchToServer: (serverAddress: string) => void;
   onOpenSettings: () => void;
   onOpenServers: () => void;
@@ -102,6 +105,8 @@ function HomePage({
   minecraftAccountRequired,
   onSelect,
   onLaunch,
+  onQuickLaunch,
+  gameRunning,
   onLaunchToServer,
   onOpenSettings,
   onOpenServers,
@@ -192,7 +197,8 @@ function HomePage({
   const activeNewsContent = (activeNews?.content ?? activeNews?.summary ?? "").trim();
 
   const instanceLaunchable = Boolean(selectedInstance) && canAccessInstance(selectedInstance as Instance, user);
-  const quickJoinDisabled = busy || launching || !instanceLaunchable;
+  const quickJoinDisabled = busy || launching || gameRunning || !instanceLaunchable;
+  const launchDisabled = busy || gameRunning || !selectedInstance || !instanceLaunchable;
   const launchAsName = currentMinecraftAccount?.username ?? t("nav.player");
   const isOfflineAccount = !currentMinecraftAccount || currentMinecraftAccount.type === "offline";
   const quickServers = useMemo(() => launcherServers.slice(0, 10), [launcherServers]);
@@ -376,10 +382,22 @@ function HomePage({
                 {t("home.loadout.change")}
               </button>
               <Button
+                variant="secondary"
+                size="md"
+                className="min-h-[46px] shrink-0 justify-center gap-2 !rounded-[var(--radius-lg)]"
+                disabled={launchDisabled}
+                title={t("home.quickLaunchHint")}
+                aria-label={t("home.quickLaunchHint")}
+                onClick={onQuickLaunch}
+              >
+                <FastForward size={15} />
+                {t("home.quickLaunch")}
+              </Button>
+              <Button
                 variant="primary"
                 size="md"
                 className="cta-glow min-h-[46px] min-w-[164px] justify-center !rounded-[var(--radius-lg)]"
-                disabled={busy || !selectedInstance || !instanceLaunchable}
+                disabled={launchDisabled}
                 launchProgress={launching}
                 launchProgressPercent={launchProgressPercent}
                 liquidGlass
@@ -389,7 +407,9 @@ function HomePage({
                   <Play fill="currentColor" size={15} />
                   {launching
                     ? `${t("home.launching")}${typeof launchProgressPercent === "number" ? ` ${launchProgressPercent}%` : ""}`
-                    : t("home.launch")}
+                    : gameRunning
+                      ? t("home.running")
+                      : t("home.launch")}
                 </span>
               </Button>
             </div>
@@ -740,7 +760,7 @@ function HomePage({
           }
         }}
         currentInstance={current}
-        busy={busy}
+        busy={busy || gameRunning}
         launching={launching}
         launchProgressPercent={launchProgressPercent}
       />
