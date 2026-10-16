@@ -5,6 +5,8 @@ export type PhaseStatus = "pending" | "running" | "done" | "error";
 export type Locale = "en-US" | "zh-CN";
 export type ThemeMode = "dark" | "light";
 export type DownloadSource =
+  // Whichever of Mojang / BMCLAPI the last probe found faster (never blocks).
+  | "auto"
   | "official-only"
   | "mirror-only"
   | "mirror-first"

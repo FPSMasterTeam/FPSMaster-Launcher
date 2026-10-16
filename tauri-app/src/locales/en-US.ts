@@ -900,7 +900,17 @@ const enUS = {
   "crash.uploadConsent": "Agree and send",
   "crash.uploadDone": "Sent. Thank you!",
   "crash.uploadFailed": "Sending failed: {error}",
-  "crash.close": "Close"
+  "crash.close": "Close",
+  "settings.downloadSource.auto": "Auto (fastest)",
+  "settings.downloadSourceHint": "Auto picks whichever of Mojang and BMCLAPI answered faster, and falls back to the other one when a download fails.",
+  "settings.sourceProbe": "Download source speed test",
+  "settings.sourceProbeHint": "Measures latency and speed of each source from this network.",
+  "settings.sourceProbeRun": "Test now",
+  "settings.sourceProbeRunning": "Testing...",
+  "settings.sourceProbeApply": "Use {source}",
+  "settings.sourceProbeOk": "OK",
+  "settings.sourceProbeFailed": "Failed",
+  "settings.sourceProbeStats": "{latency} ms · {speed}"
 } as const;
 
 export default enUS;

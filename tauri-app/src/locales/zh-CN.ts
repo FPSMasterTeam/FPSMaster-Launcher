@@ -895,7 +895,17 @@ const zhCN: EnUSTranslations = {
   "crash.uploadConsent": "同意并发送",
   "crash.uploadDone": "已发送，感谢反馈！",
   "crash.uploadFailed": "发送失败：{error}",
-  "crash.close": "关闭"
+  "crash.close": "关闭",
+  "settings.downloadSource.auto": "自动（选择更快的源）",
+  "settings.downloadSourceHint": "自动会选用 Mojang 和 BMCLAPI 中响应更快的一个，下载失败时换用另一个。",
+  "settings.sourceProbe": "下载源测速",
+  "settings.sourceProbeHint": "在当前网络下测量各下载源的延迟和速度。",
+  "settings.sourceProbeRun": "开始测速",
+  "settings.sourceProbeRunning": "正在测速...",
+  "settings.sourceProbeApply": "改用{source}",
+  "settings.sourceProbeOk": "正常",
+  "settings.sourceProbeFailed": "失败",
+  "settings.sourceProbeStats": "{latency} ms · {speed}"
 } as const;
 
 export default zhCN;

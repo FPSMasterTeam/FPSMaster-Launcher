@@ -289,6 +289,7 @@ function parseLocale(input: unknown): Locale {
 
 function parseDownloadSource(input: unknown): DownloadSource {
   if (
+    input === "auto" ||
     input === "official-only" ||
     input === "mirror-only" ||
     input === "mirror-first" ||

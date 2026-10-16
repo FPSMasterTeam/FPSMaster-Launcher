@@ -5,6 +5,7 @@ import {
   EyeOff,
   Film,
   FolderOpen,
+  Gauge,
   Globe,
   ImagePlus,
   LogOut,
@@ -35,7 +36,8 @@ import Button from "../components/Button";
 import ChangelogNotes from "../components/ChangelogNotes";
 import LiquidGlass from "../components/LiquidGlass";
 import Select from "../components/Select";
-import { VISUAL_PROFILE_PRESETS, resolveVisualProfile } from "../constants";
+import { LAUNCHER_API_BASE_URL, VISUAL_PROFILE_PRESETS, resolveVisualProfile } from "../constants";
+import { notifyError } from "../lib/toast";
 import { LOCALE_OPTIONS, useI18n } from "../i18n";
 import { describeApiError } from "../lib/launcherError";
 import type {
@@ -47,6 +49,7 @@ import type {
   LauncherAppUpdateInfo,
   LauncherUser,
   Settings,
+  SourceProbeReport,
   ThemeAccent,
   ThemeMode,
   VisualProfile
@@ -115,6 +118,8 @@ function SettingsPage({
   const [customAccentDraft, setCustomAccentDraft] = useState(settings.customAccentHex);
   const [showLauncherUpdateNotes, setShowLauncherUpdateNotes] = useState(false);
   const [curseforgeKeyVisible, setCurseforgeKeyVisible] = useState(false);
+  const [probing, setProbing] = useState(false);
+  const [probeReport, setProbeReport] = useState<SourceProbeReport | null>(null);
   const backgroundInputRef = useRef<HTMLInputElement>(null);
   const backgroundVideoInputRef = useRef<HTMLInputElement>(null);
   const backgroundAccentRequestRef = useRef(0);
@@ -190,6 +195,7 @@ function SettingsPage({
 
   const themeModes: ThemeMode[] = ["dark", "light"];
   const downloadSources: DownloadSource[] = [
+    "auto",
     "official-only",
     "mirror-only",
     "mirror-first",
@@ -213,6 +219,19 @@ function SettingsPage({
   const activeBackgroundVideoUrl = resolveBackgroundVideoUrl(settings);
   const hasBackgroundImage = activeBackgroundUrl.trim() !== "";
   const hasBackground = hasBackgroundImage || activeBackgroundVideoUrl !== "";
+
+  // Measures Mojang, BMCLAPI and the FPSMaster API; the Rust side also keeps
+  // the result for the "auto" source.
+  async function probeSources() {
+    setProbing(true);
+    try {
+      setProbeReport(await invoke<SourceProbeReport>("probe_download_sources", { apiBaseUrl: LAUNCHER_API_BASE_URL }));
+    } catch (error) {
+      notifyError(describeApiError(error, t), t("settings.sourceProbe"));
+    } finally {
+      setProbing(false);
+    }
+  }
 
   async function requestBackgroundAccent(
     targetSettings: Settings,
@@ -711,6 +730,7 @@ function SettingsPage({
               <div className="settings-row">
                 <div className="settings-row-main">
                   <p className="settings-row-title">{t("settings.downloadSource")}</p>
+                  <p className="settings-row-hint">{t("settings.downloadSourceHint")}</p>
                 </div>
                 <div className="settings-row-control w-56">
                   <Select
@@ -731,6 +751,52 @@ function SettingsPage({
                     </Select.Content>
                   </Select>
                 </div>
+              </div>
+
+              <div className="settings-row flex-wrap">
+                <div className="settings-row-main">
+                  <p className="settings-row-title">{t("settings.sourceProbe")}</p>
+                  <p className="settings-row-hint">{t("settings.sourceProbeHint")}</p>
+                </div>
+                <div className="settings-row-control flex flex-wrap items-center gap-2">
+                  <Button variant="secondary" size="sm" className="gap-2" disabled={probing} onClick={() => void probeSources()}>
+                    <Gauge size={14} />
+                    {probing ? t("settings.sourceProbeRunning") : t("settings.sourceProbeRun")}
+                  </Button>
+                  {probeReport && settings.downloadSource !== probeReport.recommended && settings.downloadSource !== "auto" && (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => onChange({ ...settings, downloadSource: probeReport.recommended })}
+                    >
+                      {t("settings.sourceProbeApply", {
+                        source: t(`settings.downloadSource.${probeReport.recommended}` as const)
+                      })}
+                    </Button>
+                  )}
+                </div>
+                {probeReport && (
+                  <ul className="mt-3 grid w-full gap-1.5 text-xs" aria-live="polite">
+                    {probeReport.sources.map((source) => (
+                      <li key={source.id} className="flex flex-wrap items-center gap-2">
+                        <span className={`badge normal-case tracking-normal ${source.ok ? "badge-success" : "badge-danger"}`}>
+                          {source.ok ? t("settings.sourceProbeOk") : t("settings.sourceProbeFailed")}
+                        </span>
+                        <span className="font-medium text-[var(--text-primary)]">{t(`diagnostics.source.${source.id === "fpsmaster-api" ? "api" : source.id}` as const)}</span>
+                        {source.ok ? (
+                          <span className="text-data text-[var(--text-muted)]">
+                            {t("settings.sourceProbeStats", {
+                              latency: source.latencyMs ?? "-",
+                              speed: source.bytesPerSecond ? `${formatFileSize(source.bytesPerSecond)}/s` : "-"
+                            })}
+                          </span>
+                        ) : (
+                          <span className="text-[var(--text-muted)]">{source.error ? describeApiError(source.error, t) : ""}</span>
+                        )}
+                      </li>
+                    ))}
+                  </ul>
+                )}
               </div>
 
               <div className="settings-row">

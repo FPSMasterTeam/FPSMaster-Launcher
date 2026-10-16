@@ -48,7 +48,7 @@ export const NEWS_ITEMS: readonly NewsItem[] = [
 export const DEFAULT_SETTINGS: Settings = {
   gameDir: "",
   playerName: "",
-  downloadSource: "mirror-first",
+  downloadSource: "auto",
   downloadThreads: 16,
   launcherUpdateChannel: "beta",
   maxMemoryMb: 4096,
