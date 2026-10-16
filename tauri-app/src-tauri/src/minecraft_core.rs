@@ -1366,6 +1366,7 @@ pub(crate) fn install_forge(
         "Running forge installer (first attempt)",
     );
     let first = run_forge_installer(
+        ipc_session,
         game_dir,
         java_executable,
         &installer_path,
@@ -1390,6 +1391,7 @@ pub(crate) fn install_forge(
             "Retry forge installer with fallback args",
         );
         let fallback = run_forge_installer(
+            ipc_session,
             game_dir,
             java_executable,
             &installer_path,
@@ -1681,6 +1683,7 @@ fn install_standalone_optifine(
         let patch_output = crate::downloader::with_suffix(&patched_path, ".patching");
         let _ = fs::remove_file(&patch_output);
         run_optifine_patcher(
+            ipc_session,
             game_dir,
             java_executable,
             &base_jar,
@@ -1898,6 +1901,7 @@ fn download_standard_launchwrapper(
 }
 
 fn run_optifine_patcher(
+    ipc_session: Option<&str>,
     game_dir: &Path,
     java_executable: &Path,
     base_jar: &Path,
@@ -1913,7 +1917,35 @@ fn run_optifine_patcher(
         .arg(base_jar)
         .arg(installer_path)
         .arg(output_path)
-        .current_dir(game_dir)
+        .current_dir(game_dir);
+    let output = run_install_subprocess(command, ipc_session, "OptiFine patch stage").map_err(
+        |error| format!("{error} (Java runtime {})", java_executable.display()),
+    )?;
+    if output.exit_code != 0 {
+        return Err(format!(
+            "OptiFine patch stage failed with exit code {}: {}",
+            output.exit_code,
+            bounded_process_output(&output.output)
+        ));
+    }
+    Ok(())
+}
+
+/// Hard ceiling for an installer subprocess. The Forge installer downloads
+/// its own libraries; a stalled maven connection used to hang the install
+/// dialog forever with no way to cancel (launcher-core-12).
+const INSTALL_SUBPROCESS_TIMEOUT: Duration = Duration::from_secs(15 * 60);
+
+/// Runs an installer JVM with piped output, killing it when the install
+/// session is cancelled or the timeout expires. Output is drained on
+/// background threads so a chatty process cannot block on a full pipe.
+fn run_install_subprocess(
+    mut command: std::process::Command,
+    ipc_session: Option<&str>,
+    label: &str,
+) -> Result<ProcessOutput, String> {
+    command
+        .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
     #[cfg(windows)]
@@ -1921,22 +1953,61 @@ fn run_optifine_patcher(
         use std::os::windows::process::CommandExt;
         command.creation_flags(0x0800_0000);
     }
-    let output = command.output().map_err(|error| {
-        format!(
-            "OptiFine patch stage could not start Java runtime {}: {error}",
-            java_executable.display()
-        )
-    })?;
-    if !output.status.success() {
-        let mut detail = String::from_utf8_lossy(&output.stdout).to_string();
-        detail.push_str(&String::from_utf8_lossy(&output.stderr));
-        return Err(format!(
-            "OptiFine patch stage failed with exit code {}: {}",
-            output.status.code().unwrap_or(-1),
-            bounded_process_output(&detail)
-        ));
+    let mut child = command
+        .spawn()
+        .map_err(|error| format!("{label} could not start: {error}"))?;
+    let drain = |stream: Option<Box<dyn Read + Send>>| {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        thread::spawn(move || {
+            let mut buffer = Vec::new();
+            if let Some(mut stream) = stream {
+                let _ = stream.read_to_end(&mut buffer);
+            }
+            let _ = sender.send(buffer);
+        });
+        receiver
+    };
+    let stdout = drain(child.stdout.take().map(|s| Box::new(s) as Box<dyn Read + Send>));
+    let stderr = drain(child.stderr.take().map(|s| Box::new(s) as Box<dyn Read + Send>));
+    let started = Instant::now();
+    let outcome = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break Ok(status.code().unwrap_or(-1)),
+            Ok(None) => {}
+            Err(error) => break Err(format!("{label} could not be monitored: {error}")),
+        }
+        if let Err(cancelled) = install_cancel_error(ipc_session) {
+            break Err(cancelled);
+        }
+        if started.elapsed() >= INSTALL_SUBPROCESS_TIMEOUT {
+            break Err(format!(
+                "{label} did not finish within {} minutes",
+                INSTALL_SUBPROCESS_TIMEOUT.as_secs() / 60
+            ));
+        }
+        thread::sleep(Duration::from_millis(200));
+    };
+    // After a kill, a grandchild may still hold the pipes open; do not wait
+    // for it beyond a short grace period.
+    let collect = |receiver: std::sync::mpsc::Receiver<Vec<u8>>| {
+        if outcome.is_err() {
+            receiver
+                .recv_timeout(Duration::from_secs(2))
+                .unwrap_or_default()
+        } else {
+            receiver.recv().unwrap_or_default()
+        }
+    };
+    if outcome.is_err() {
+        let _ = child.kill();
+        let _ = child.wait();
     }
-    Ok(())
+    let mut text = String::from_utf8_lossy(&collect(stdout)).to_string();
+    text.push_str(&String::from_utf8_lossy(&collect(stderr)));
+    outcome.map(|exit_code| ProcessOutput {
+        exit_code,
+        output: text,
+    })
 }
 
 fn replace_file(source: &Path, target: &Path) -> io::Result<()> {
@@ -4059,6 +4130,7 @@ fn install_forge_old_profile(
 }
 
 fn run_forge_installer(
+    ipc_session: Option<&str>,
     game_dir: &Path,
     java_executable: &Path,
     installer_path: &Path,
@@ -4071,26 +4143,11 @@ fn run_forge_installer(
         .arg(installer_path);
     command.args(args);
     command.current_dir(game_dir);
-    command.stdout(std::process::Stdio::piped());
-    command.stderr(std::process::Stdio::piped());
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        command.creation_flags(0x0800_0000);
-    }
-    let output = command.output().map_err(|e| {
-        format!(
-            "Failed to run forge installer {}: {e}",
-            installer_path.display()
-        )
-    })?;
-    let mut text = String::new();
-    text.push_str(&String::from_utf8_lossy(&output.stdout));
-    text.push_str(&String::from_utf8_lossy(&output.stderr));
-    Ok(ProcessOutput {
-        exit_code: output.status.code().unwrap_or(-1),
-        output: text,
-    })
+    run_install_subprocess(
+        command,
+        ipc_session,
+        &format!("Forge installer {}", installer_path.display()),
+    )
 }
 
 fn select_forge_profile_id_after_install(
@@ -5282,6 +5339,30 @@ mod tests {
         should_omit_resolved_arg, DownloadSource, MavenCoordinates, StandaloneOptiFineOverlay,
         VanillaLaunchRequest,
     };
+
+    #[cfg(unix)]
+    #[test]
+    fn install_subprocess_is_killed_on_cancel() {
+        let session = "subprocess-cancel-test";
+        let mut command = std::process::Command::new("sh");
+        command.arg("-c").arg("echo started; sleep 30");
+        let canceller = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            crate::request_install_cancel(session).unwrap();
+        });
+        let started = std::time::Instant::now();
+        let result = super::run_install_subprocess(command, Some(session), "test");
+        canceller.join().unwrap();
+        crate::clear_install_cancel(Some(session));
+        assert_eq!(result.unwrap_err(), "Installation cancelled");
+        assert!(started.elapsed() < std::time::Duration::from_secs(10));
+
+        let mut ok = std::process::Command::new("sh");
+        ok.arg("-c").arg("echo out; echo err 1>&2; exit 3");
+        let output = super::run_install_subprocess(ok, None, "test").unwrap();
+        assert_eq!(output.exit_code, 3);
+        assert!(output.output.contains("out") && output.output.contains("err"));
+    }
     use serde_json::json;
     use std::fs;
     use std::path::{Path, PathBuf};
