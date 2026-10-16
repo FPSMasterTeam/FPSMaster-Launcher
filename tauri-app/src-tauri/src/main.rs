@@ -1203,11 +1203,26 @@ fn terminate_game_process_blocking(pid: i64, force: Option<bool>) -> Result<bool
         return Err("Invalid pid".to_string());
     }
 
+    // Only processes this launcher started may be killed, and only while the
+    // pid still belongs to them: a stale pid from the UI could otherwise hit an
+    // unrelated process (and its whole tree on Windows) after pid reuse
+    // (launcher-core-16).
+    let launched_at = game_runtime_starts()
+        .lock()
+        .ok()
+        .and_then(|store| store.get(&pid).copied())
+        .ok_or_else(|| format!("Process {pid} was not started by the launcher"))?;
     let hard = force.unwrap_or(true);
     let running_before = query_process_memory_kb(pid)?.is_some();
     if !running_before {
         clear_runtime_pid(pid);
         return Ok(false);
+    }
+    if !process_started_before(pid, launched_at) {
+        clear_runtime_pid(pid);
+        return Err(format!(
+            "Process {pid} is no longer the game started by the launcher"
+        ));
     }
 
     #[cfg(windows)]
@@ -6067,12 +6082,33 @@ fn normalize_manifest_relative_path(raw: &str) -> Result<PathBuf, String> {
     Ok(relative)
 }
 
+const BACKUP_DIR_PREFIX: &str = ".fpsmaster-launcher-backup-";
+
+/// Best-effort removal of backups a previous swap could not delete (typically
+/// a file held open by antivirus or the indexer at the time).
+fn remove_stale_backup_dirs(parent_dir: &Path) {
+    let Ok(entries) = fs::read_dir(parent_dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        if entry
+            .file_name()
+            .to_string_lossy()
+            .starts_with(BACKUP_DIR_PREFIX)
+            && entry.path().is_dir()
+        {
+            let _ = fs::remove_dir_all(entry.path());
+        }
+    }
+}
+
 fn replace_directory_with_stage(target_dir: &Path, stage_dir: &Path) -> Result<(), String> {
     let parent_dir = target_dir
         .parent()
         .ok_or_else(|| format!("Invalid target directory: {}", target_dir.display()))?;
+    remove_stale_backup_dirs(parent_dir);
     let backup_dir = parent_dir.join(format!(
-        ".fpsmaster-launcher-backup-{}-{}",
+        "{BACKUP_DIR_PREFIX}{}-{}",
         std::process::id(),
         now_epoch_millis()
     ));
@@ -6108,13 +6144,20 @@ fn replace_directory_with_stage(target_dir: &Path, stage_dir: &Path) -> Result<(
         ));
     }
 
+    // The new directory is live at this point. Failing to delete the old copy
+    // must not turn a successful update into "install failed"
+    // (launcher-core-18); the next swap in this directory retries the cleanup.
     if had_existing {
-        fs::remove_dir_all(&backup_dir).map_err(|e| {
-            format!(
-                "Failed to remove backup directory {}: {e}",
-                backup_dir.display()
-            )
-        })?;
+        if let Err(error) = fs::remove_dir_all(&backup_dir) {
+            push_ui_log(
+                "core",
+                "warn",
+                &format!(
+                    "Updated {}, but the old copy could not be removed yet: {error}",
+                    redact_path_for_log(target_dir)
+                ),
+            );
+        }
     }
 
     Ok(())
@@ -6703,14 +6746,18 @@ fn preserve_native_app_user_data(install_dir: &Path, stage_dir: &Path) -> Result
     for name in ["mods", "resourcepacks", "local_assets"] {
         copy_directory_contents(&install_dir.join(name), &stage_dir.join(name))?;
     }
-    let settings = install_dir.join("fpsmaster_options.txt");
-    if settings.is_file() {
-        fs::copy(&settings, stage_dir.join("fpsmaster_options.txt")).map_err(|e| {
-            format!(
-                "Failed to preserve native app settings {}: {e}",
-                settings.display()
-            )
-        })?;
+    // Extreme keeps these in its working directory (the install dir):
+    // settings, and the single-player world list (crates/fpsmaster_app/src/worlds.rs).
+    for file_name in ["fpsmaster_options.txt", "fpsmaster_worlds.json"] {
+        let source = install_dir.join(file_name);
+        if source.is_file() {
+            fs::copy(&source, stage_dir.join(file_name)).map_err(|e| {
+                format!(
+                    "Failed to preserve native app user data {}: {e}",
+                    source.display()
+                )
+            })?;
+        }
     }
     Ok(())
 }
@@ -6896,9 +6943,16 @@ fn prepare_extreme_assets_blocking(game_dir: String, version_id: String) -> Resu
     let install_dir = native_app_install_dir(&game_dir_path, &version_id);
     let assets_root = install_dir.join("local_assets").join("minecraft-1.8.9");
     let assets_minecraft = assets_root.join("assets").join("minecraft");
-    if assets_minecraft.is_dir() {
+    // A directory alone does not prove the extraction finished: an interrupted
+    // run used to leave a partial tree that was then reused forever
+    // (launcher-core-15). Extraction goes to a staging dir and the marker is
+    // written last.
+    if assets_root.join(EXTREME_ASSETS_MARKER).is_file() && assets_minecraft.is_dir() {
         return Ok(assets_minecraft.to_string_lossy().to_string());
     }
+    let final_root = assets_root;
+    let assets_root = downloader::with_suffix(&final_root, ".staging");
+    let _ = fs::remove_dir_all(&assets_root);
 
     // The launcher installs vanilla clients under versions/<id>/<id>.jar.
     let jar_path = game_dir_path
@@ -6964,11 +7018,26 @@ fn prepare_extreme_assets_blocking(game_dir: String, version_id: String) -> Resu
         }
         extracted += 1;
     }
-    if extracted == 0 || !assets_minecraft.is_dir() {
+    if extracted == 0 || !assets_root.join("assets").join("minecraft").is_dir() {
+        let _ = fs::remove_dir_all(&assets_root);
         return Err("Client jar contained no assets/minecraft resources".to_string());
     }
+    fs::write(
+        assets_root.join(EXTREME_ASSETS_MARKER),
+        format!("{{\"entries\":{extracted}}}\n"),
+    )
+    .map_err(|e| format!("Failed to write assets marker: {e}"))?;
+    if final_root.exists() {
+        fs::remove_dir_all(&final_root)
+            .map_err(|e| format!("Failed to replace {}: {e}", final_root.display()))?;
+    }
+    fs::rename(&assets_root, &final_root)
+        .map_err(|e| format!("Failed to activate {}: {e}", final_root.display()))?;
     Ok(assets_minecraft.to_string_lossy().to_string())
 }
+
+const EXTREME_ASSETS_MARKER: &str = ".fpsmaster-assets.json";
+
 
 #[tauri::command]
 async fn launch_native_app(
@@ -7805,6 +7874,27 @@ fn query_process_memory_kb(pid: i64) -> Result<Option<u64>, String> {
     Ok(system
         .process(sys_pid)
         .map(|process| process.memory() / 1024))
+}
+
+/// Whether the process currently holding `pid` already existed when we
+/// launched the game (a few seconds of slack for clock granularity). A later
+/// start time means the pid was reused by another program.
+fn process_started_before(pid: i64, launched_at: std::time::Instant) -> bool {
+    let Ok(pid_u32) = u32::try_from(pid) else {
+        return false;
+    };
+    let sys_pid = sysinfo::Pid::from_u32(pid_u32);
+    let mut system = lock_recover(process_memory_sampler());
+    system.refresh_processes_specifics(
+        sysinfo::ProcessesToUpdate::Some(&[sys_pid]),
+        true,
+        sysinfo::ProcessRefreshKind::nothing(),
+    );
+    let Some(process) = system.process(sys_pid) else {
+        return false;
+    };
+    let launched_epoch = now_epoch_seconds().saturating_sub(launched_at.elapsed().as_secs());
+    process.start_time() <= launched_epoch + 5
 }
 
 fn process_memory_sampler() -> &'static Mutex<sysinfo::System> {
@@ -10206,6 +10296,7 @@ mod tests {
         fs::write(installed.join("resourcepacks/user.zip"), "user pack").unwrap();
         fs::write(installed.join("local_assets/asset.bin"), "asset").unwrap();
         fs::write(installed.join("fpsmaster_options.txt"), "user settings").unwrap();
+        fs::write(installed.join("fpsmaster_worlds.json"), "[worlds]").unwrap();
         fs::write(staged.join("resourcepacks/bundled.zip"), "bundled pack").unwrap();
 
         preserve_native_app_user_data(&installed, &staged).expect("user data should be preserved");
@@ -10229,6 +10320,10 @@ mod tests {
         assert_eq!(
             fs::read_to_string(staged.join("fpsmaster_options.txt")).unwrap(),
             "user settings"
+        );
+        assert_eq!(
+            fs::read_to_string(staged.join("fpsmaster_worlds.json")).unwrap(),
+            "[worlds]"
         );
     }
 
@@ -10604,6 +10699,17 @@ mod tests {
         assert!(!assets_root.join("minecraft").join("evil2.txt").exists());
         assert!(!assets_root.join("outside.txt").exists());
         assert!(!assets_root.join("META-INF").exists());
+
+        // A tree without the completion marker (interrupted run) is rebuilt.
+        let lang = assets_root.join("assets/minecraft/lang/en_US.lang");
+        fs::remove_file(&lang).unwrap();
+        fs::remove_file(assets_root.join(super::EXTREME_ASSETS_MARKER)).unwrap();
+        prepare_extreme_assets_blocking(
+            game_dir.to_string_lossy().to_string(),
+            "extreme-test".to_string(),
+        )
+        .expect("re-extraction should succeed");
+        assert_eq!(fs::read_to_string(&lang).unwrap(), "key=value");
 
         assert!(prepare_extreme_assets_blocking(
             game_dir.to_string_lossy().to_string(),
