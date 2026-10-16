@@ -875,8 +875,10 @@ fn is_autostart_launch() -> bool {
 struct LauncherRuntimeState {
     minimize_to_tray: AtomicBool,
     telemetry_session: Mutex<Option<LauncherTelemetrySession>>,
-    heartbeat_running: AtomicBool,
-    heartbeat_stop: Arc<AtomicBool>,
+    /// The one live heartbeat loop. Each start creates its own handle, so a
+    /// stop followed by a quick start can never revive an older thread
+    /// (launcher-core-5: a shared stop flag was reset by the next start).
+    heartbeat: Mutex<Option<Arc<HeartbeatHandle>>>,
 }
 
 impl Default for LauncherRuntimeState {
@@ -884,9 +886,31 @@ impl Default for LauncherRuntimeState {
         Self {
             minimize_to_tray: AtomicBool::new(true),
             telemetry_session: Mutex::new(None),
-            heartbeat_running: AtomicBool::new(false),
-            heartbeat_stop: Arc::new(AtomicBool::new(false)),
+            heartbeat: Mutex::new(None),
         }
+    }
+}
+
+#[derive(Default)]
+struct HeartbeatHandle {
+    stopped: Mutex<bool>,
+    wake: std::sync::Condvar,
+}
+
+impl HeartbeatHandle {
+    fn stop(&self) {
+        *lock_recover(&self.stopped) = true;
+        self.wake.notify_all();
+    }
+
+    /// Sleeps up to `duration`; returns `true` once the handle was stopped.
+    fn wait_stopped(&self, duration: Duration) -> bool {
+        let guard = lock_recover(&self.stopped);
+        let (guard, _) = self
+            .wake
+            .wait_timeout_while(guard, duration, |stopped| !*stopped)
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        *guard
     }
 }
 
@@ -2013,64 +2037,55 @@ fn post_launcher_heartbeat(session: &LauncherTelemetrySession) -> Result<(), Str
 #[tauri::command]
 fn start_launcher_heartbeat(app: tauri::AppHandle) -> Result<(), String> {
     let state = app.state::<LauncherRuntimeState>();
-    // Check if already running
-    if state.heartbeat_running.load(Ordering::Relaxed) {
-        return Ok(());
-    }
-
-    // Get session
-    let session = state
+    if state
         .telemetry_session
         .lock()
         .map_err(|e| format!("Failed to lock telemetry session: {e}"))?
-        .clone()
-        .ok_or("No telemetry session cached")?;
+        .is_none()
+    {
+        return Err("No telemetry session cached".to_string());
+    }
+    let handle = {
+        let mut slot = lock_recover(&state.heartbeat);
+        if slot.is_some() {
+            return Ok(());
+        }
+        let handle = Arc::new(HeartbeatHandle::default());
+        *slot = Some(Arc::clone(&handle));
+        handle
+    };
 
-    // Set running flag
-    state.heartbeat_running.store(true, Ordering::Relaxed);
-    state.heartbeat_stop.store(false, Ordering::Relaxed);
-
-    let stop_flag = state.heartbeat_stop.clone();
     let app_handle = app.clone();
-
     thread::spawn(move || {
-        let interval = Duration::from_secs(90); // Base interval: 90 seconds
-        let mut counter = 0u32;
-
+        let interval = Duration::from_secs(90);
         loop {
-            if stop_flag.load(Ordering::Relaxed) {
+            // Read the session on every beat: after a re-login the cached
+            // session changes, and a snapshot taken at start would keep
+            // reporting the previous account.
+            let session = app_handle
+                .state::<LauncherRuntimeState>()
+                .telemetry_session
+                .lock()
+                .ok()
+                .and_then(|guard| guard.clone());
+            let Some(session) = session else {
                 break;
-            }
-
-            // Send heartbeat
+            };
             if let Err(err) = post_launcher_heartbeat(&session) {
                 push_ui_log("launcher", "warn", &format!("heartbeat failed: {}", err));
             }
-
-            // Sleep with jitter
-            let jitter = (rand::random::<u64>() % 15) as u64; // 0-14 seconds jitter
-            let sleep_duration = interval + Duration::from_secs(jitter);
-            thread::sleep(sleep_duration);
-
-            counter += 1;
-            // Every 10 heartbeats (~15 minutes), verify session still exists
-            if counter >= 10 {
-                counter = 0;
-                let still_valid = app_handle
-                    .state::<LauncherRuntimeState>()
-                    .heartbeat_running
-                    .load(Ordering::Relaxed);
-                if !still_valid {
-                    break;
-                }
+            let jitter = Duration::from_secs(rand::random::<u64>() % 15);
+            if handle.wait_stopped(interval + jitter) {
+                break;
             }
         }
-
-        // Clear running flag when stopped
-        let _ = app
-            .state::<LauncherRuntimeState>()
-            .heartbeat_running
-            .compare_exchange(true, false, Ordering::Relaxed, Ordering::Relaxed);
+        // Only clear the slot if it still belongs to this loop.
+        let state = app_handle.state::<LauncherRuntimeState>();
+        let mut slot = lock_recover(&state.heartbeat);
+        if slot.as_ref().is_some_and(|current| Arc::ptr_eq(current, &handle)) {
+            *slot = None;
+        }
+        drop(slot);
     });
 
     Ok(())
@@ -2078,12 +2093,11 @@ fn start_launcher_heartbeat(app: tauri::AppHandle) -> Result<(), String> {
 
 #[tauri::command]
 fn stop_launcher_heartbeat(app: tauri::AppHandle) {
-    app.state::<LauncherRuntimeState>()
-        .heartbeat_stop
-        .store(true, Ordering::Relaxed);
-    app.state::<LauncherRuntimeState>()
-        .heartbeat_running
-        .store(false, Ordering::Relaxed);
+    let state = app.state::<LauncherRuntimeState>();
+    let handle = lock_recover(&state.heartbeat).take();
+    if let Some(handle) = handle {
+        handle.stop();
+    }
 }
 
 #[tauri::command]
@@ -9894,6 +9908,21 @@ mod tests {
     use std::io::Write;
     use std::path::Path;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn heartbeat_stop_wakes_sleeping_loop_immediately() {
+        let handle = std::sync::Arc::new(super::HeartbeatHandle::default());
+        let waiter = std::sync::Arc::clone(&handle);
+        let started = std::time::Instant::now();
+        let thread = std::thread::spawn(move || waiter.wait_stopped(std::time::Duration::from_secs(60)));
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        handle.stop();
+        assert!(thread.join().unwrap());
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
+        // A fresh handle (next start) is independent of the stopped one.
+        let next = super::HeartbeatHandle::default();
+        assert!(!next.wait_stopped(std::time::Duration::from_millis(10)));
+    }
 
     #[test]
     fn runtime_without_completion_marker_is_not_reused() {
