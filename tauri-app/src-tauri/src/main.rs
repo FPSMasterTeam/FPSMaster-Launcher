@@ -19,7 +19,10 @@ use microsoft_auth::{
     get_minecraft_auth_config, lookup_minecraft_skin_url, poll_minecraft_device_login,
     refresh_minecraft_account, start_minecraft_browser_login, start_minecraft_device_login,
 };
-use secure_storage::{secure_storage_delete, secure_storage_get, secure_storage_set};
+use secure_storage::{
+    secure_storage_delete, secure_storage_get, secure_storage_set, secure_storage_set_file_fallback,
+    secure_storage_status,
+};
 
 use base64::Engine;
 use minecraft_core::{lock_recover, VanillaLaunchRequest};
@@ -11222,7 +11225,9 @@ fn main() {
             terminate_game_process,
             secure_storage_get,
             secure_storage_set,
-            secure_storage_delete
+            secure_storage_delete,
+            secure_storage_status,
+            secure_storage_set_file_fallback
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
