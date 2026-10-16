@@ -905,7 +905,25 @@ const zhCN: EnUSTranslations = {
   "settings.sourceProbeApply": "改用{source}",
   "settings.sourceProbeOk": "正常",
   "settings.sourceProbeFailed": "失败",
-  "settings.sourceProbeStats": "{latency} ms · {speed}"
+  "settings.sourceProbeStats": "{latency} ms · {speed}",
+  "instanceFiles.disabledSuffix": "（已禁用）",
+  "instanceFiles.enableMod": "启用模组",
+  "instanceFiles.disableMod": "禁用模组",
+  "instanceFiles.delete": "删除",
+  "account.memberBadge": "普通会员",
+  "account.proBadge": "Pro 会员",
+  "errorBoundary.title": "出了点问题",
+  "errorBoundary.description": "界面渲染时发生错误。你可以尝试重新加载，如果问题持续，请重启启动器。",
+  "errorBoundary.reload": "重新加载",
+  "settings.resetConfirm": "确定将启动器偏好恢复为默认值吗？游戏目录和 CurseForge API Key 会保留。",
+  "autostart.title": "开机时自动启动 FPSMaster？",
+  "autostart.message": "启动器可以在开机登录后于托盘中启动，随时可用。之后也可以在设置中更改。",
+  "autostart.enable": "开机自动启动",
+  "autostart.decline": "不用了",
+  "tray.minimizedNotice": "启动器已最小化到系统托盘，仍在后台运行。如需关闭即退出，请在设置中关闭“最小化到托盘”。",
+  "settings.backgroundSaveFailed": "无法保存设置：{error}",
+  "settings.backgroundImportFailed": "无法使用这张图片：{error}",
+  "settings.backgroundImagePick": "选择背景图片"
 } as const;
 
 export default zhCN;

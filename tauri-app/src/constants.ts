@@ -25,7 +25,11 @@ export const STORAGE_KEYS = {
   selectedMinecraftAccount: "fpsmaster.selectedMinecraftAccount",
   // Which Minecraft game version the user picked inside the Nova region (Nova stays one preset,
   // this sub-selection drives the launched MC version + matching mod jar).
-  selectedNovaGameVersion: "fpsmaster.selectedNovaGameVersion"
+  selectedNovaGameVersion: "fpsmaster.selectedNovaGameVersion",
+  // "1" once the user answered the start-with-computer question.
+  autostartPrompted: "fpsmaster.autostartPrompted",
+  // "1" once the user was told that closing only hides the launcher to the tray.
+  trayNoticeShown: "fpsmaster.trayNoticeShown"
 } as const;
 
 // Default/fallback Nova game version highlighted in the picker when the catalog hasn't loaded yet.
@@ -54,7 +58,9 @@ export const DEFAULT_SETTINGS: Settings = {
   maxMemoryMb: 4096,
   hideMainOnLaunch: true,
   minimizeToTray: true,
-  launchOnStartup: true,
+  // Off until the user opts in (asked once, see the autostart prompt): it used
+  // to be registered silently on first run (launcher-ui-14).
+  launchOnStartup: false,
   language: "en-US",
   themeMode: "dark",
   themeAccent: "emerald",

@@ -910,7 +910,25 @@ const enUS = {
   "settings.sourceProbeApply": "Use {source}",
   "settings.sourceProbeOk": "OK",
   "settings.sourceProbeFailed": "Failed",
-  "settings.sourceProbeStats": "{latency} ms · {speed}"
+  "settings.sourceProbeStats": "{latency} ms · {speed}",
+  "instanceFiles.disabledSuffix": "(disabled)",
+  "instanceFiles.enableMod": "Enable mod",
+  "instanceFiles.disableMod": "Disable mod",
+  "instanceFiles.delete": "Delete",
+  "account.memberBadge": "Member",
+  "account.proBadge": "Pro member",
+  "errorBoundary.title": "Something went wrong",
+  "errorBoundary.description": "The interface hit an error while rendering. Try reloading; if it keeps happening, restart the launcher.",
+  "errorBoundary.reload": "Reload",
+  "settings.resetConfirm": "Reset launcher preferences to their defaults? Your game directory and CurseForge API key are kept.",
+  "autostart.title": "Start FPSMaster with your computer?",
+  "autostart.message": "The launcher can start in the tray when you sign in to your computer, so it is ready right away. You can change this anytime in Settings.",
+  "autostart.enable": "Start automatically",
+  "autostart.decline": "No thanks",
+  "tray.minimizedNotice": "The launcher keeps running in the system tray. Turn off \"Minimize to tray\" in Settings to quit on close.",
+  "settings.backgroundSaveFailed": "Could not save the settings: {error}",
+  "settings.backgroundImportFailed": "Could not use this image: {error}",
+  "settings.backgroundImagePick": "Choose a background image"
 } as const;
 
 export default enUS;

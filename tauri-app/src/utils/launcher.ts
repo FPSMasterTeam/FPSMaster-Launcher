@@ -381,14 +381,20 @@ export function resolveBackgroundAssetUrl(settings: Settings): string {
   if (settings.backgroundSource === "web-random") {
     return settings.backgroundWebUrl;
   }
-  if (settings.backgroundSource === "system") {
-    const value = settings.backgroundImage.trim();
-    if (!value) {
-      return "";
-    }
-    return value.startsWith("data:") ? value : convertFileSrc(value);
+  // "local" and "system" store a file path (see import_background_image);
+  // older settings and the browser-dev fallback still hold a data URL.
+  const value = settings.backgroundImage.trim();
+  if (!value) {
+    return "";
   }
-  return settings.backgroundImage;
+  if (/^(data|blob|https?|asset):/i.test(value)) {
+    return value;
+  }
+  try {
+    return convertFileSrc(value);
+  } catch {
+    return "";
+  }
 }
 
 // Playable URL for the local background video. Absolute paths go through the

@@ -1,4 +1,6 @@
 import { Component, type ErrorInfo, type ReactNode } from "react";
+import { createTranslator } from "../i18n";
+import { loadSettings } from "../utils/launcher";
 
 type ErrorBoundaryProps = {
   children: ReactNode;
@@ -33,11 +35,14 @@ export default class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBo
     if (this.props.fallback) {
       return this.props.fallback;
     }
+    // Rendered outside the I18nProvider (it wraps the whole app), so read the
+    // stored language directly.
+    const t = createTranslator(loadSettings().language);
     return (
       <div className="flex h-screen w-screen flex-col items-center justify-center gap-4 bg-[var(--bg-primary)] px-6 text-center text-[var(--text-primary)]">
-        <h1 className="text-lg font-semibold">出了点问题</h1>
+        <h1 className="text-lg font-semibold">{t("errorBoundary.title")}</h1>
         <p className="max-w-md text-sm text-[var(--text-muted)]">
-          界面渲染时发生错误。你可以尝试重新加载，如果问题持续，请重启启动器。
+          {t("errorBoundary.description")}
         </p>
         <pre className="max-h-40 max-w-md overflow-auto rounded-lg border border-white/10 bg-black/30 p-3 text-left text-xs text-[var(--text-muted)]">
           {this.state.error.message}
@@ -47,7 +52,7 @@ export default class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBo
           onClick={this.handleReload}
           className="rounded-[8px] border border-[#25b87a]/50 bg-[var(--mc-grass)] px-5 py-2.5 text-sm font-medium text-white transition-colors hover:bg-[var(--mc-grass-dark)]"
         >
-          重新加载
+          {t("errorBoundary.reload")}
         </button>
       </div>
     );

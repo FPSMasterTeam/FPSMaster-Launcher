@@ -429,18 +429,20 @@ function InstanceSettingsPage({
                         <span className={`min-w-0 flex-1 truncate text-sm ${entry.disabled ? "text-[var(--text-muted)]" : "text-[var(--text-primary)]"}`}>
                           {entry.name}
                           {entry.disabled && (
-                            <span className="ml-2 text-[11px] text-[var(--text-muted)]">(已禁用)</span>
+                            <span className="ml-2 text-[11px] text-[var(--text-muted)]">{t("instanceFiles.disabledSuffix")}</span>
                           )}
                         </span>
 
                         {/* Actions */}
-                        <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                        {/* Also revealed on keyboard focus, not only on hover. */}
+                        <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 focus-within:opacity-100 transition-opacity">
                           {isMods && (
                             <button
                               type="button"
                               onClick={() => toggleModDisabled(entry.name, entry.disabled ?? false)}
                               className="flex h-7 w-7 items-center justify-center rounded-lg text-[var(--text-muted)] transition-colors hover:bg-[var(--bg-elevated)] hover:text-[var(--text-primary)]"
-                              title={entry.disabled ? "启用模组" : "禁用模组"}
+                              title={entry.disabled ? t("instanceFiles.enableMod") : t("instanceFiles.disableMod")}
+                              aria-label={entry.disabled ? t("instanceFiles.enableMod") : t("instanceFiles.disableMod")}
                             >
                               {entry.disabled ? <Check size={12} /> : <Ban size={12} />}
                             </button>
@@ -449,7 +451,8 @@ function InstanceSettingsPage({
                             type="button"
                             onClick={() => deleteEntry(activeTab, entry.name)}
                             className="flex h-7 w-7 items-center justify-center rounded-lg text-[var(--text-muted)] transition-colors hover:bg-[var(--accent-danger)]/10 hover:text-[var(--accent-danger)]"
-                            title="删除"
+                            title={t("instanceFiles.delete")}
+                            aria-label={t("instanceFiles.delete")}
                           >
                             <Trash2 size={12} />
                           </button>

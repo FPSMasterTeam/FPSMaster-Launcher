@@ -11,7 +11,7 @@ import LaunchErrorDialog from "./components/LaunchErrorDialog";
 import LaunchPrepareDialog from "./components/LaunchPrepareDialog";
 import Sidebar from "./components/Sidebar";
 import ToastViewport from "./components/ToastViewport";
-import CloseConfirmDialog from "./components/CloseConfirmDialog";
+import ChoiceDialog from "./components/ChoiceDialog";
 import CrashDialog from "./components/CrashDialog";
 import WindowTitleBar from "./components/WindowTitleBar";
 import {
@@ -254,6 +254,10 @@ function Launcher() {
   const [minecraftAccountPromptOpen, setMinecraftAccountPromptOpen] = useState(false);
   const [closeConfirmOpen, setCloseConfirmOpen] = useState(false);
   const [crashReport, setCrashReport] = useState<GameExitEvent | null>(null);
+  const [autostartPromptOpen, setAutostartPromptOpen] = useState(
+    () => localStorage.getItem(STORAGE_KEYS.autostartPrompted) !== "1"
+  );
+  const [trayNoticeOpen, setTrayNoticeOpen] = useState(false);
 
   const logCursorRef = useRef<number | null>(null);
   const pollingRef = useRef(false);
@@ -360,11 +364,19 @@ function Launcher() {
   }, []);
 
   useEffect(() => {
-    localStorage.setItem(STORAGE_KEYS.instances, JSON.stringify(instances));
+    persistLocal(STORAGE_KEYS.instances, instances);
   }, [instances]);
 
+  // Debounced: dragging an appearance slider used to serialize and write the
+  // whole settings object on every frame. Flushed when the page goes away.
   useEffect(() => {
-    localStorage.setItem(STORAGE_KEYS.settings, JSON.stringify(settings));
+    const flush = () => persistLocal(STORAGE_KEYS.settings, settings);
+    const timer = window.setTimeout(flush, 250);
+    window.addEventListener("pagehide", flush);
+    return () => {
+      window.clearTimeout(timer);
+      window.removeEventListener("pagehide", flush);
+    };
   }, [settings]);
 
   useEffect(() => {
@@ -2949,6 +2961,11 @@ function Launcher() {
 
   async function closeLauncherWindow() {
     if (settings.minimizeToTray) {
+      // First time only: say where the window went before it disappears.
+      if (localStorage.getItem(STORAGE_KEYS.trayNoticeShown) !== "1") {
+        setTrayNoticeOpen(true);
+        return;
+      }
       await invoke("hide_main_window");
       return;
     }
@@ -2959,6 +2976,18 @@ function Launcher() {
       return;
     }
     await getCurrentWindow().close();
+  }
+
+  function answerAutostartPrompt(enabled: boolean) {
+    localStorage.setItem(STORAGE_KEYS.autostartPrompted, "1");
+    setAutostartPromptOpen(false);
+    setSettings((prev) => ({ ...prev, launchOnStartup: enabled }));
+  }
+
+  async function acknowledgeTrayNotice() {
+    localStorage.setItem(STORAGE_KEYS.trayNoticeShown, "1");
+    setTrayNoticeOpen(false);
+    await invoke("hide_main_window");
   }
 
   async function resolveCloseConfirm(choice: "minimize" | "quit" | "stay") {
@@ -3089,16 +3118,22 @@ function Launcher() {
   const onRefreshLauncherUpdate = useStableCallback(() => void launcherUpdate.refresh(false));
   const onInstallLauncherUpdate = useStableCallback(() => void launcherUpdate.install());
   const onCancelLauncherUpdate = useStableCallback(() => void launcherUpdate.cancel());
-  const onSettingsReset = useStableCallback(() =>
+  // Resets preferences only: the game directory (where the installed games
+  // live) and the CurseForge key survive, and nothing happens without a
+  // confirmation (launcher-ui-19).
+  const onSettingsReset = useStableCallback(() => {
+    if (!window.confirm(t("settings.resetConfirm"))) return;
     setSettings({
       ...DEFAULT_SETTINGS,
-      gameDir: defaultGameDir,
+      gameDir: settings.gameDir || defaultGameDir,
+      curseforgeApiKey: settings.curseforgeApiKey,
+      playerName: settings.playerName,
       language: settings.language,
       themeMode: settings.themeMode,
       themeAccent: settings.themeAccent,
       customAccentHex: settings.customAccentHex
-    })
-  );
+    });
+  });
 
   const routerContext: PageRouterContext = {
     page,
@@ -3310,14 +3345,65 @@ function Launcher() {
           />
         )}
 
+        {authenticated && autostartPromptOpen && !crashReport && (
+          <ChoiceDialog
+            id="autostart-prompt"
+            title={t("autostart.title")}
+            message={t("autostart.message")}
+            onDismiss={() => answerAutostartPrompt(false)}
+            actions={[
+              { label: t("autostart.decline"), variant: "ghost", onClick: () => answerAutostartPrompt(false) },
+              { label: t("autostart.enable"), variant: "primary", onClick: () => answerAutostartPrompt(true) }
+            ]}
+          />
+        )}
+
+        {trayNoticeOpen && (
+          <ChoiceDialog
+            id="tray-notice"
+            title={t("settings.minimizeToTray")}
+            message={t("tray.minimizedNotice")}
+            onDismiss={() => setTrayNoticeOpen(false)}
+            actions={[{ label: t("dialog.confirm"), variant: "primary", onClick: () => void acknowledgeTrayNotice() }]}
+          />
+        )}
+
         {closeConfirmOpen && (
-          <CloseConfirmDialog onChoose={(choice) => void resolveCloseConfirm(choice)} />
+          <ChoiceDialog
+            id="close-confirm"
+            title={t("close.busy.title")}
+            message={t("close.busy.message")}
+            onDismiss={() => void resolveCloseConfirm("stay")}
+            actions={[
+              { label: t("close.busy.stay"), variant: "ghost", onClick: () => void resolveCloseConfirm("stay") },
+              { label: t("close.busy.quit"), variant: "danger", onClick: () => void resolveCloseConfirm("quit") },
+              { label: t("close.busy.minimize"), variant: "primary", onClick: () => void resolveCloseConfirm("minimize") }
+            ]}
+          />
         )}
 
         <ToastViewport />
       </div>
     </I18nProvider>
   );
+}
+
+// localStorage writes can throw (QuotaExceededError). Uncaught in an effect
+// that took the whole UI down to the error boundary (launcher-ui-2); now the
+// previous value stays and the user is told once per session.
+let localSaveFailureReported = false;
+function persistLocal(key: string, value: unknown) {
+  try {
+    localStorage.setItem(key, JSON.stringify(value));
+  } catch (error) {
+    console.error(`[storage] failed to save ${key}:`, error);
+    if (!localSaveFailureReported) {
+      localSaveFailureReported = true;
+      notifyError(
+        createTranslator(loadSettings().language)("settings.backgroundSaveFailed", { error: String(error) })
+      );
+    }
+  }
 }
 
 function PageFallback() {

@@ -297,6 +297,32 @@ function SettingsPage({
     }
   }
 
+  // The image is copied into the launcher's data folder and only its path is
+  // stored: a multi-MB data URL in localStorage exceeded the quota and took the
+  // whole UI down (launcher-ui-2). Browser dev has no dialog: fall back to the
+  // hidden <input type=file>, which still stores a data URL.
+  async function handlePickBackgroundImage() {
+    let selected: string | string[] | null;
+    try {
+      selected = await open({
+        multiple: false,
+        title: t("settings.backgroundImagePick"),
+        filters: [{ name: "Image", extensions: ["png", "jpg", "jpeg", "webp", "gif", "bmp"] }]
+      });
+    } catch {
+      backgroundInputRef.current?.click();
+      return;
+    }
+    if (!selected || typeof selected !== "string") return;
+    try {
+      const storedPath = await invoke<string>("import_background_image", { sourcePath: selected });
+      applyBackgroundSettings({ ...settings, backgroundSource: "local", backgroundImage: storedPath });
+      setBackgroundError("");
+    } catch (error) {
+      setBackgroundError(t("settings.backgroundImportFailed", { error: describeApiError(error, t) }));
+    }
+  }
+
   // Prefers the native file dialog (returns a persistent absolute path); when
   // Tauri is unavailable (browser dev), falls back to a hidden <input type=file>
   // whose object URL lives until the window closes.
@@ -1295,7 +1321,7 @@ function SettingsPage({
                         variant="secondary"
                         size="sm"
                         className="flex-1 gap-2"
-                        onClick={() => backgroundInputRef.current?.click()}
+                        onClick={() => void handlePickBackgroundImage()}
                       >
                         <ImagePlus size={14} />
                         {t("settings.backgroundUpload")}

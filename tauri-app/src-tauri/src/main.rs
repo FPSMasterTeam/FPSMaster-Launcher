@@ -2050,13 +2050,67 @@ fn get_default_game_dir() -> Result<String, String> {
         .to_string())
 }
 
+/// Copies the current system wallpaper into the launcher's background folder
+/// and returns that path (see `import_background_image_into`).
 #[tauri::command]
-fn get_system_wallpaper() -> Result<Option<String>, String> {
-    let path = match get_system_wallpaper_path()? {
-        Some(path) => path,
-        None => return Ok(None),
+async fn get_system_wallpaper(app: tauri::AppHandle) -> Result<Option<String>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let path = match get_system_wallpaper_path()? {
+            Some(path) => path,
+            None => return Ok(None),
+        };
+        import_background_image_into(&app, Path::new(&path)).map(Some)
+    })
+    .await
+    .map_err(|e| format!("Failed to join wallpaper task: {e}"))?
+}
+
+/// Copies a user-picked image into the launcher's background folder.
+#[tauri::command]
+async fn import_background_image(app: tauri::AppHandle, source_path: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        import_background_image_into(&app, Path::new(source_path.trim()))
+    })
+    .await
+    .map_err(|e| format!("Failed to join background import task: {e}"))?
+}
+
+/// Settings keep only a file path to the background: a base64 data URL in
+/// localStorage overflowed its ~5 MB quota and crashed the UI (launcher-ui-2).
+/// The copy lives under `<appData>/backgrounds/`, which the asset protocol
+/// scope allows, so images from any drive display and survive the original
+/// being moved. Older copies are removed; only one background is active.
+fn import_background_image_into(app: &tauri::AppHandle, source: &Path) -> Result<String, String> {
+    const MAX_BYTES: u64 = 32 * 1024 * 1024;
+    let size = fs::metadata(source)
+        .map_err(|e| format!("Failed to read background image {}: {e}", source.display()))?
+        .len();
+    if size > MAX_BYTES {
+        return Err(format!("Background image is larger than 32 MB: {}", source.display()));
+    }
+    let bytes = fs::read(source)
+        .map_err(|e| format!("Failed to read background image {}: {e}", source.display()))?;
+    let extension = match detect_image_mime(source, &bytes)? {
+        "image/jpeg" => "jpg",
+        "image/png" => "png",
+        "image/gif" => "gif",
+        "image/bmp" => "bmp",
+        _ => "webp",
     };
-    Ok(Some(read_image_file_as_data_url(Path::new(&path))?))
+    let dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("Failed to resolve the app data directory: {e}"))?
+        .join("backgrounds");
+    fs::create_dir_all(&dir).map_err(|e| format!("Failed to create {}: {e}", dir.display()))?;
+    if let Ok(entries) = fs::read_dir(&dir) {
+        for entry in entries.flatten() {
+            let _ = fs::remove_file(entry.path());
+        }
+    }
+    let target = dir.join(format!("background-{}.{extension}", now_epoch_millis()));
+    fs::write(&target, &bytes).map_err(|e| format!("Failed to write {}: {e}", target.display()))?;
+    Ok(strip_windows_verbatim_prefix(&target).to_string_lossy().to_string())
 }
 
 // Runs on the blocking pool: as a sync command it ran on the main thread and
@@ -11677,13 +11731,6 @@ fn normalize_system_wallpaper_path(path: String) -> Result<Option<String>, Strin
     ))
 }
 
-fn read_image_file_as_data_url(path: &Path) -> Result<String, String> {
-    let bytes = fs::read(path).map_err(|e| format!("Failed to read wallpaper image: {e}"))?;
-    let mime = detect_image_mime(path, &bytes)?;
-    let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
-    Ok(format!("data:{mime};base64,{encoded}"))
-}
-
 fn detect_image_mime(path: &Path, bytes: &[u8]) -> Result<&'static str, String> {
     if bytes.len() >= 3 && bytes[0] == 0xFF && bytes[1] == 0xD8 && bytes[2] == 0xFF {
         return Ok("image/jpeg");
@@ -12061,6 +12108,7 @@ fn main() {
             toggle_mod_disabled,
             get_default_game_dir,
             get_system_wallpaper,
+            import_background_image,
             extract_background_theme_accent,
             show_main_window,
             hide_main_window,
