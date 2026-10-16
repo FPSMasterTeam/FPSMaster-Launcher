@@ -8569,11 +8569,14 @@ async fn list_forge_versions(
     download_source: Option<String>,
 ) -> Result<Vec<String>, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        list_forge_versions_blocking_core(
-            Some(&window),
-            game_version.trim(),
-            download_source.as_deref(),
-        )
+        let cache_key = format!("forge-{}", game_version.trim());
+        with_metadata_cache(Some(&window), &cache_key, || {
+            list_forge_versions_blocking_core(
+                Some(&window),
+                game_version.trim(),
+                download_source.as_deref(),
+            )
+        })
     })
     .await
     .map_err(|e| format!("Failed to join forge version listing task: {e}"))
@@ -8593,6 +8596,159 @@ fn list_forge_versions_blocking_core(
     minecraft_core::list_forge_versions(window, normalized_game_version, download_source)
 }
 
+/// Last successful result of a catalog lookup, kept on disk so an installed
+/// instance still launches when Forge/OptiFine metadata hosts are unreachable
+/// (launcher-ui-3). Errors are only replaced by the cached value, never hidden:
+/// the fallback is logged.
+fn with_metadata_cache<T, F>(window: Option<&tauri::Window>, key: &str, fetch: F) -> Result<T, String>
+where
+    T: Serialize + serde::de::DeserializeOwned,
+    F: FnOnce() -> Result<T, String>,
+{
+    let cache_path = window
+        .and_then(|window| window.app_handle().path().app_cache_dir().ok())
+        .map(|dir| dir.join("metadata").join(format!("{}.json", sanitize_file_name(key))));
+    cached_metadata_lookup(cache_path.as_deref(), window, key, fetch)
+}
+
+fn cached_metadata_lookup<T, F>(
+    cache_path: Option<&Path>,
+    window: Option<&tauri::Window>,
+    key: &str,
+    fetch: F,
+) -> Result<T, String>
+where
+    T: Serialize + serde::de::DeserializeOwned,
+    F: FnOnce() -> Result<T, String>,
+{
+    match fetch() {
+        Ok(value) => {
+            if let Some(path) = cache_path {
+                if let Some(parent) = path.parent() {
+                    let _ = fs::create_dir_all(parent);
+                }
+                if let Ok(bytes) = serde_json::to_vec(&value) {
+                    let _ = fs::write(path, bytes);
+                }
+            }
+            Ok(value)
+        }
+        Err(error) => {
+            let cached = cache_path
+                .and_then(|path| fs::read(path).ok())
+                .and_then(|bytes| serde_json::from_slice::<T>(&bytes).ok());
+            match cached {
+                Some(value) => {
+                    emit_log(
+                        window,
+                        "warn",
+                        &format!("{key}: network lookup failed ({error}); using the cached list"),
+                    );
+                    Ok(value)
+                }
+                None => Err(error),
+            }
+        }
+    }
+}
+
+/// What an installed instance needs for a launch without any network access.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct OfflineLaunchReadiness {
+    version_id: String,
+    /// Everything needed to start is on disk: the UI may skip Forge/OptiFine
+    /// catalog lookups and content update checks and launch directly.
+    ready: bool,
+    base_version: Option<String>,
+    loader: Option<String>,
+    loader_version: Option<String>,
+    optifine_version: Option<String>,
+    java_major: Option<i32>,
+    java_path: Option<String>,
+    missing: Vec<String>,
+    corrupted: Vec<String>,
+    error: Option<String>,
+}
+
+fn get_offline_launch_readiness_blocking(
+    game_dir: String,
+    version_id: String,
+) -> Result<OfflineLaunchReadiness, String> {
+    let version_id = version_id.trim().to_string();
+    ensure_safe_child_name(&version_id, "Version id")?;
+    let game_dir_path = resolve_game_dir_path(&game_dir)?;
+    let mut readiness = OfflineLaunchReadiness {
+        version_id: version_id.clone(),
+        ready: false,
+        base_version: None,
+        loader: None,
+        loader_version: None,
+        optifine_version: None,
+        java_major: None,
+        java_path: None,
+        missing: Vec::new(),
+        corrupted: Vec::new(),
+        error: None,
+    };
+    if is_native_app_version_id(&version_id) {
+        let install_dir = native_app_install_dir(&game_dir_path, &version_id);
+        let binary = install_dir.join(native_app_binary_name());
+        readiness.ready = binary.is_file() && native_app_marker_path(&install_dir).is_file();
+        if !binary.is_file() {
+            readiness.missing.push(native_app_binary_name().to_string());
+        }
+        return Ok(readiness);
+    }
+    let version_dir = game_dir_path.join("versions").join(&version_id);
+    if let Ok(metadata) =
+        parse_instance_profile_metadata(&version_dir.join(format!("{version_id}.json")))
+    {
+        readiness.base_version = Some(metadata.base_version);
+        readiness.loader = Some(metadata.loader);
+        readiness.loader_version = metadata.loader_version;
+    }
+    readiness.optifine_version = minecraft_core::installed_optifine_version(&version_dir);
+    let inspection = match minecraft_core::inspect_instance_files(&game_dir_path, &version_id, false)
+    {
+        Ok(inspection) => inspection,
+        Err(error) => {
+            readiness.error = Some(error);
+            return Ok(readiness);
+        }
+    };
+    let major = inspection.java_major.max(8);
+    readiness.java_major = Some(major);
+    let runtime_root = managed_jdk_runtime_root(
+        &game_dir_path,
+        major,
+        minecraft_core::macos_requires_x64_runtime(&game_dir_path, &version_id),
+    );
+    match verify_runtime_install(&runtime_root, false) {
+        Ok(java) => readiness.java_path = Some(java.to_string_lossy().to_string()),
+        Err(error) => readiness.missing.push(format!("java {major}: {error}")),
+    }
+    readiness.missing.extend(inspection.missing);
+    readiness.corrupted = inspection.corrupted;
+    readiness.ready = readiness.missing.is_empty() && readiness.corrupted.is_empty();
+    Ok(readiness)
+}
+
+/// Offline/quick launch support: a purely local check of an installed instance.
+#[tauri::command]
+async fn get_offline_launch_readiness(
+    game_dir: String,
+    version_id: String,
+) -> Result<OfflineLaunchReadiness, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        get_offline_launch_readiness_blocking(game_dir, version_id)
+    })
+    .await
+    .map_err(|e| format!("Failed to join offline readiness task: {e}"))
+    .and_then(std::convert::identity)
+    .inspect_err(|e| log_command_error("get_offline_launch_readiness", e))
+}
+
 #[tauri::command]
 async fn list_optifine_versions(
     window: tauri::Window,
@@ -8607,13 +8763,19 @@ async fn list_optifine_versions(
             return Err("Game version cannot be empty".to_string());
         }
         let normalized_loader = normalize_loader_kind(&loader)?;
-        minecraft_core::list_optifine_versions(
-            Some(&window),
-            &normalized_game_version,
-            &normalized_loader,
-            loader_version.as_deref(),
-            download_source.as_deref(),
-        )
+        let cache_key = format!(
+            "optifine-{normalized_game_version}-{normalized_loader}-{}",
+            loader_version.as_deref().unwrap_or("")
+        );
+        with_metadata_cache(Some(&window), &cache_key, || {
+            minecraft_core::list_optifine_versions(
+                Some(&window),
+                &normalized_game_version,
+                &normalized_loader,
+                loader_version.as_deref(),
+                download_source.as_deref(),
+            )
+        })
     })
     .await
     .map_err(|e| format!("Failed to join OptiFine version listing task: {e}"))
@@ -10292,6 +10454,28 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
+    fn metadata_lookup_falls_back_to_last_good_result() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("metadata").join("forge-1.8.9.json");
+        let fresh: Result<Vec<String>, String> =
+            super::cached_metadata_lookup(Some(&path), None, "forge", || Ok(vec!["11.15".into()]));
+        assert_eq!(fresh.unwrap(), vec!["11.15".to_string()]);
+        let offline: Result<Vec<String>, String> =
+            super::cached_metadata_lookup(Some(&path), None, "forge", || Err("offline".into()));
+        assert_eq!(offline.unwrap(), vec!["11.15".to_string()]);
+        let no_cache: Result<Vec<String>, String> = super::cached_metadata_lookup(
+            Some(&temp.path().join("none.json")),
+            None,
+            "forge",
+            || Err("offline".into()),
+        );
+        assert_eq!(no_cache.unwrap_err(), "offline");
+        assert_eq!(super::parse_managed_runtime_name("jdk-17"), Some((17, false)));
+        assert_eq!(super::parse_managed_runtime_name("jdk-8-x64"), Some((8, true)));
+        assert_eq!(super::parse_managed_runtime_name("jdk-x"), None);
+    }
+
+    #[test]
     fn launch_command_result_hides_credentials() {
         let redacted = super::redact_launch_secrets(vec![
             "java".to_string(),
@@ -11506,6 +11690,7 @@ fn main() {
             secure_storage_status,
             secure_storage_set_file_fallback,
             repair_java_runtime,
+            get_offline_launch_readiness,
             diagnostics::run_health_check,
             diagnostics::export_support_bundle,
             diagnostics::upload_game_crash_report,

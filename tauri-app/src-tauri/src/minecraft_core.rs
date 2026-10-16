@@ -1956,6 +1956,15 @@ fn read_standalone_optifine_overlay(
     Ok(Some(marker))
 }
 
+/// Version of the standalone OptiFine overlay installed for `version_dir`, if
+/// its files are complete. Read-only; used for offline launch readiness.
+pub(crate) fn installed_optifine_version(version_dir: &Path) -> Option<String> {
+    let overlay = read_standalone_optifine_overlay(version_dir).ok()??;
+    let dir = version_dir.join("optifine");
+    (dir.join(&overlay.optifine_jar).is_file() && dir.join(&overlay.launchwrapper_jar).is_file())
+        .then_some(overlay.optifine_version)
+}
+
 fn optifine_installer_has_patcher(installer_path: &Path) -> Result<bool, String> {
     let file = fs::File::open(installer_path).map_err(|error| {
         format!(
@@ -5479,6 +5488,53 @@ mod tests {
         should_omit_resolved_arg, DownloadSource, MavenCoordinates, StandaloneOptiFineOverlay,
         VanillaLaunchRequest,
     };
+
+    #[test]
+    fn instance_inspection_reports_missing_files_offline() {
+        let temp = tempfile::tempdir().unwrap();
+        let game_dir = temp.path();
+        let version_dir = game_dir.join("versions").join("1.8.9");
+        fs::create_dir_all(&version_dir).unwrap();
+        fs::write(version_dir.join("1.8.9.jar"), "client").unwrap();
+        fs::write(
+            version_dir.join("1.8.9.json"),
+            serde_json::json!({
+                "id": "1.8.9",
+                "mainClass": "net.minecraft.client.main.Main",
+                "javaVersion": { "majorVersion": 8, "component": "jre-legacy" },
+                "assetIndex": { "id": "1.8" },
+                "libraries": [{
+                    "name": "com.example:lib:1.0",
+                    "downloads": { "artifact": {
+                        "path": "com/example/lib/1.0/lib-1.0.jar",
+                        "url": "https://example.invalid/lib-1.0.jar",
+                        "size": 3
+                    }}
+                }]
+            })
+            .to_string(),
+        )
+        .unwrap();
+        fs::create_dir_all(game_dir.join("assets/indexes")).unwrap();
+        fs::write(
+            game_dir.join("assets/indexes/1.8.json"),
+            r#"{"objects":{"a":{"hash":"abcdef","size":1}}}"#,
+        )
+        .unwrap();
+
+        let report = super::inspect_instance_files(game_dir, "1.8.9", false).unwrap();
+        assert_eq!(report.java_major, 8);
+        assert!(report.missing.iter().any(|path| path.ends_with("lib-1.0.jar")), "{report:?}");
+        assert!(report.missing.iter().any(|path| path.ends_with("ab/abcdef")), "{report:?}");
+
+        let library = game_dir.join("libraries/com/example/lib/1.0/lib-1.0.jar");
+        fs::create_dir_all(library.parent().unwrap()).unwrap();
+        fs::write(&library, "abc").unwrap();
+        fs::create_dir_all(game_dir.join("assets/objects/ab")).unwrap();
+        fs::write(game_dir.join("assets/objects/ab/abcdef"), "x").unwrap();
+        let report = super::inspect_instance_files(game_dir, "1.8.9", false).unwrap();
+        assert!(report.missing.is_empty() && report.corrupted.is_empty(), "{report:?}");
+    }
 
     #[test]
     fn platform_token_goes_to_env_for_presets_only() {
