@@ -1332,8 +1332,28 @@ fn list_installed_versions(game_dir: String) -> Result<Vec<String>, String> {
     Ok(installed)
 }
 
+// Runs on the blocking pool: as a sync command it ran on the main thread and
+// froze the window for the whole copy/compress/fetch (launcher-core-6).
 #[tauri::command]
-fn rename_version_profile(
+async fn rename_version_profile(
+    game_dir: String,
+    from_version_id: String,
+    to_version_id: String,
+) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        rename_version_profile_blocking(
+            game_dir,
+            from_version_id,
+            to_version_id,
+        )
+    })
+    .await
+    .map_err(|e| format!("Failed to join rename_version_profile task: {e}"))
+    .and_then(std::convert::identity)
+    .inspect_err(|e| log_command_error("rename_version_profile", e))
+}
+
+fn rename_version_profile_blocking(
     game_dir: String,
     from_version_id: String,
     to_version_id: String,
@@ -1346,6 +1366,9 @@ fn rename_version_profile(
     if from_id == to_id {
         return Ok(to_id.to_string());
     }
+    // Both ids are joined under versions/ and the source may be deleted below.
+    ensure_safe_child_name(from_id, "Source version id")?;
+    ensure_safe_child_name(to_id, "Target version id")?;
 
     let game_dir_path = resolve_game_dir_path(&game_dir)?;
     let versions_dir = game_dir_path.join("versions");
@@ -1427,8 +1450,28 @@ fn is_native_app_version_id(version_id: &str) -> bool {
     matches!(version_id, "FPSMaster-Extreme")
 }
 
+// Runs on the blocking pool: as a sync command it ran on the main thread and
+// froze the window for the whole copy/compress/fetch (launcher-core-6).
 #[tauri::command]
-fn duplicate_instance_storage(
+async fn duplicate_instance_storage(
+    game_dir: String,
+    source_version_id: String,
+    target_version_id: String,
+) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        duplicate_instance_storage_blocking(
+            game_dir,
+            source_version_id,
+            target_version_id,
+        )
+    })
+    .await
+    .map_err(|e| format!("Failed to join duplicate_instance_storage task: {e}"))
+    .and_then(std::convert::identity)
+    .inspect_err(|e| log_command_error("duplicate_instance_storage", e))
+}
+
+fn duplicate_instance_storage_blocking(
     game_dir: String,
     source_version_id: String,
     target_version_id: String,
@@ -1441,6 +1484,8 @@ fn duplicate_instance_storage(
     if source_id == target_id {
         return Err("Source and target version ids must be different".to_string());
     }
+    ensure_safe_child_name(source_id, "Source version id")?;
+    ensure_safe_child_name(target_id, "Target version id")?;
 
     let game_dir_path = resolve_game_dir_path(&game_dir)?;
     let versions_dir = game_dir_path.join("versions");
@@ -1466,16 +1511,34 @@ fn duplicate_instance_storage(
     Ok(target_id.to_string())
 }
 
+// Runs on the blocking pool: as a sync command it ran on the main thread and
+// froze the window for the whole copy/compress/fetch (launcher-core-6).
 #[tauri::command]
-fn export_instance_archive(
+async fn export_instance_archive(
+    game_dir: String,
+    version_id: String,
+    archive_name: Option<String>,
+) -> Result<InstanceExportResult, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        export_instance_archive_blocking(
+            game_dir,
+            version_id,
+            archive_name,
+        )
+    })
+    .await
+    .map_err(|e| format!("Failed to join export_instance_archive task: {e}"))
+    .and_then(std::convert::identity)
+    .inspect_err(|e| log_command_error("export_instance_archive", e))
+}
+
+fn export_instance_archive_blocking(
     game_dir: String,
     version_id: String,
     archive_name: Option<String>,
 ) -> Result<InstanceExportResult, String> {
     let normalized_version_id = version_id.trim();
-    if normalized_version_id.is_empty() {
-        return Err("Version id cannot be empty".to_string());
-    }
+    ensure_safe_child_name(normalized_version_id, "Version id")?;
 
     let game_dir_path = resolve_game_dir_path(&game_dir)?;
     let source_dir = game_dir_path.join("versions").join(normalized_version_id);
@@ -1563,7 +1626,7 @@ fn import_instance_archive_blocking(
     })?;
     let _stage_cleanup = StagingDirectoryCleanup(stage_root.clone());
 
-    let extracted_entries = extract_archive_to_stage(&archive_data, &stage_root, "instance")?;
+    let extracted_entries = extract_archive_to_stage(archive_data.open()?, &stage_root, "instance")?;
     if extracted_entries == 0 {
         let _ = fs::remove_dir_all(&stage_root);
         return Err("Instance archive does not contain importable files".to_string());
@@ -1886,8 +1949,28 @@ fn get_system_wallpaper() -> Result<Option<String>, String> {
     Ok(Some(read_image_file_as_data_url(Path::new(&path))?))
 }
 
+// Runs on the blocking pool: as a sync command it ran on the main thread and
+// froze the window for the whole copy/compress/fetch (launcher-core-6).
 #[tauri::command]
-fn extract_background_theme_accent(
+async fn extract_background_theme_accent(
+    background_source: String,
+    background_image: String,
+    background_web_url: String,
+) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        extract_background_theme_accent_blocking(
+            background_source,
+            background_image,
+            background_web_url,
+        )
+    })
+    .await
+    .map_err(|e| format!("Failed to join extract_background_theme_accent task: {e}"))
+    .and_then(std::convert::identity)
+    .inspect_err(|e| log_command_error("extract_background_theme_accent", e))
+}
+
+fn extract_background_theme_accent_blocking(
     background_source: String,
     background_image: String,
     background_web_url: String,
@@ -2460,24 +2543,19 @@ fn install_modrinth_project_blocking(
         version.version_number.clone()
     };
     if normalized_project_type == "world" {
-        let archive_bytes = fs::read(&download_path).map_err(|e| {
-            format!(
-                "Failed to read downloaded Modrinth world archive {}: {e}",
-                download_path.display()
-            )
-        })?;
-        let _ = fs::remove_file(&download_path);
         let world_result = install_world_archive_with_metadata(
             game_dir.clone(),
             normalized_version_id.clone(),
             file.filename.clone(),
-            archive_bytes,
+            ArchivePayload::File(download_path.clone()),
             Some(project_title.trim().to_string()),
             "modrinth".to_string(),
             Some(normalized_project_id.clone()),
             Some(project_title.trim().to_string()),
             Some((version.id.clone(), resolved_version_number.clone())),
-        )?;
+        );
+        let _ = fs::remove_file(&download_path);
+        let world_result = world_result?;
         return Ok(ModrinthInstallResult {
             source: "modrinth".to_string(),
             project_id: normalized_project_id,
@@ -2701,24 +2779,19 @@ fn install_curseforge_project_blocking(
 
     let version_label = resolve_curseforge_version_label(&file);
     if normalized_project_type == "world" {
-        let archive_bytes = fs::read(&download_path).map_err(|e| {
-            format!(
-                "Failed to read downloaded CurseForge world archive {}: {e}",
-                download_path.display()
-            )
-        })?;
-        let _ = fs::remove_file(&download_path);
         let world_result = install_world_archive_with_metadata(
             game_dir.clone(),
             normalized_version_id.clone(),
             file.file_name.clone(),
-            archive_bytes,
+            ArchivePayload::File(download_path.clone()),
             Some(project_title.trim().to_string()),
             "curseforge".to_string(),
             Some(normalized_project_id.clone()),
             Some(project_title.trim().to_string()),
             Some((file.id.to_string(), version_label.clone())),
-        )?;
+        );
+        let _ = fs::remove_file(&download_path);
+        let world_result = world_result?;
         return Ok(ModrinthInstallResult {
             source: "curseforge".to_string(),
             project_id: normalized_project_id,
@@ -2879,17 +2952,13 @@ fn install_world_archive_with_metadata(
     game_dir: String,
     version_id: String,
     archive_name: String,
-    archive_data: Vec<u8>,
+    archive_data: ArchivePayload,
     world_name: Option<String>,
     source: String,
     project_id_override: Option<String>,
     project_title_override: Option<String>,
     version_label_override: Option<(String, String)>,
 ) -> Result<WorldInstallResult, String> {
-    if archive_data.is_empty() {
-        return Err("World archive cannot be empty".to_string());
-    }
-
     let game_dir_path = resolve_game_dir_path(&game_dir)?;
     let runtime_root = resolve_version_runtime_dir(&game_dir_path, version_id.trim())?;
     let saves_dir = runtime_root.join("saves");
@@ -2922,7 +2991,7 @@ fn install_world_archive_with_metadata(
     })?;
     let _stage_cleanup = StagingDirectoryCleanup(stage_root.clone());
 
-    let extracted_entries = extract_world_archive_to_stage(&archive_data, &stage_root)?;
+    let extracted_entries = extract_world_archive_to_stage(archive_data.open()?, &stage_root)?;
     if extracted_entries == 0 {
         let _ = fs::remove_dir_all(&stage_root);
         return Err("World archive does not contain importable files".to_string());
@@ -5354,11 +5423,33 @@ impl Drop for StagingDirectoryCleanup {
 /// Resolve the ZIP payload for an import command. Callers may pass either the
 /// raw bytes (legacy IPC shape) or a filesystem path picked through the native
 /// dialog; the path form avoids serializing whole archives across IPC.
+/// An import archive. When the frontend hands over a path the archive is read
+/// straight from disk; it used to be `fs::read` into memory first, so a 4 GB
+/// instance export cost 4 GB of RAM to import (launcher-core-13).
+enum ArchivePayload {
+    File(PathBuf),
+    Bytes(Vec<u8>),
+}
+
+trait ReadSeek: Read + std::io::Seek {}
+impl<T: Read + std::io::Seek> ReadSeek for T {}
+
+impl ArchivePayload {
+    fn open(&self) -> Result<Box<dyn ReadSeek + '_>, String> {
+        match self {
+            Self::File(path) => fs::File::open(path)
+                .map(|file| Box::new(BufReader::new(file)) as Box<dyn ReadSeek>)
+                .map_err(|e| format!("Failed to open archive {}: {e}", path.display())),
+            Self::Bytes(bytes) => Ok(Box::new(Cursor::new(bytes.as_slice()))),
+        }
+    }
+}
+
 fn resolve_archive_payload(
     archive_data: Option<Vec<u8>>,
     archive_path: Option<&str>,
     archive_label: &str,
-) -> Result<Vec<u8>, String> {
+) -> Result<ArchivePayload, String> {
     if let Some(path_raw) = archive_path
         .map(str::trim)
         .filter(|value| !value.is_empty())
@@ -5367,20 +5458,23 @@ fn resolve_archive_payload(
         if !path.is_file() {
             return Err(format!("{archive_label} archive path is not a file"));
         }
-        return fs::read(path).map_err(|e| format!("Failed to read {archive_label} archive: {e}"));
+        if fs::metadata(path).map(|meta| meta.len()).unwrap_or(0) == 0 {
+            return Err(format!("{archive_label} archive cannot be empty"));
+        }
+        return Ok(ArchivePayload::File(path.to_path_buf()));
     }
     archive_data
         .filter(|data| !data.is_empty())
+        .map(ArchivePayload::Bytes)
         .ok_or_else(|| format!("{archive_label} archive cannot be empty"))
 }
 
 fn extract_archive_to_stage(
-    archive_data: &[u8],
+    archive_data: impl Read + std::io::Seek,
     stage_root: &Path,
     archive_label: &str,
 ) -> Result<usize, String> {
-    let cursor = Cursor::new(archive_data);
-    let mut archive = zip::ZipArchive::new(cursor)
+    let mut archive = zip::ZipArchive::new(archive_data)
         .map_err(|e| format!("Invalid {archive_label} archive ZIP: {e}"))?;
     zip_budget::IMPORT_ARCHIVE_BUDGET.check_archive(&mut archive, archive_label)?;
     let mut budget = zip_budget::IMPORT_ARCHIVE_BUDGET.tracker();
@@ -5645,10 +5739,12 @@ fn detect_loader_version_from_profile_id(
     None
 }
 
-fn extract_world_archive_to_stage(archive_data: &[u8], stage_root: &Path) -> Result<usize, String> {
-    let cursor = Cursor::new(archive_data);
+fn extract_world_archive_to_stage(
+    archive_data: impl Read + std::io::Seek,
+    stage_root: &Path,
+) -> Result<usize, String> {
     let mut archive =
-        zip::ZipArchive::new(cursor).map_err(|e| format!("Invalid world archive ZIP: {e}"))?;
+        zip::ZipArchive::new(archive_data).map_err(|e| format!("Invalid world archive ZIP: {e}"))?;
     zip_budget::IMPORT_ARCHIVE_BUDGET.check_archive(&mut archive, "world")?;
     let mut budget = zip_budget::IMPORT_ARCHIVE_BUDGET.tracker();
     let mut extracted_entries = 0usize;
@@ -7176,8 +7272,28 @@ fn resolve_instance_section_dir(
     Ok(resolve_version_runtime_dir(game_dir, version_id)?.join(normalized))
 }
 
+// Runs on the blocking pool: as a sync command it ran on the main thread and
+// froze the window for the whole copy/compress/fetch (launcher-core-6).
 #[tauri::command]
-fn list_instance_section_entries(
+async fn list_instance_section_entries(
+    game_dir: String,
+    version_id: String,
+    section: String,
+) -> Result<Vec<InstanceSectionEntry>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        list_instance_section_entries_blocking(
+            game_dir,
+            version_id,
+            section,
+        )
+    })
+    .await
+    .map_err(|e| format!("Failed to join list_instance_section_entries task: {e}"))
+    .and_then(std::convert::identity)
+    .inspect_err(|e| log_command_error("list_instance_section_entries", e))
+}
+
+fn list_instance_section_entries_blocking(
     game_dir: String,
     version_id: String,
     section: String,
@@ -10395,7 +10511,7 @@ mod tests {
             writer.finish().expect("zip should be finalized");
         }
 
-        let extracted = extract_archive_to_stage(&buffer, &stage_root, "instance")
+        let extracted = extract_archive_to_stage(std::io::Cursor::new(&buffer), &stage_root, "instance")
             .expect("extraction should succeed");
         assert_eq!(extracted, 1, "only the safe entry should be extracted");
         assert_eq!(
@@ -10474,14 +10590,20 @@ mod tests {
         let archive = temp.path().join("world.zip");
         fs::write(&archive, b"zip bytes").expect("archive should be written");
 
+        let read_all = |payload: super::ArchivePayload| {
+            let mut bytes = Vec::new();
+            std::io::Read::read_to_end(&mut payload.open().unwrap(), &mut bytes).unwrap();
+            bytes
+        };
         let from_path =
             resolve_archive_payload(None, Some(archive.to_string_lossy().as_ref()), "World")
                 .expect("path payload should be read");
-        assert_eq!(from_path, b"zip bytes");
+        assert!(matches!(from_path, super::ArchivePayload::File(_)));
+        assert_eq!(read_all(from_path), b"zip bytes");
 
         let from_data = resolve_archive_payload(Some(vec![1, 2, 3]), None, "World")
             .expect("byte payload should pass through");
-        assert_eq!(from_data, vec![1, 2, 3]);
+        assert_eq!(read_all(from_data), vec![1, 2, 3]);
 
         assert!(resolve_archive_payload(None, None, "World").is_err());
         assert!(resolve_archive_payload(Some(Vec::new()), None, "World").is_err());
@@ -10757,7 +10879,7 @@ fn load_remote_image_bytes(url: &str) -> Result<Vec<u8>, String> {
     if url.is_empty() {
         return Err("Background image URL is empty".to_string());
     }
-    let client = build_blocking_http_client()?;
+    let client = build_api_http_client()?;
     let response = client
         .get(url)
         .header(reqwest::header::ACCEPT, "image/*,*/*;q=0.8")
