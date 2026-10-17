@@ -8,7 +8,7 @@
 #      extracts the CRT DLLs from its MSIs with an administrative install
 #   3. copies UCRT app-local files from the Windows SDK
 #
-# Output: src-tauri/win7-runtime/*.dll plus vc_redist.x64.exe (and KB2999226 when available).
+# Output: src-tauri/win7-runtime/*.dll plus vc_redist.x64.exe and Windows6.1-KB2999226-x64.msu.
 
 [CmdletBinding()]
 param(
@@ -202,19 +202,27 @@ Write-Host "UCRT:     $ucrtDir"
 Copy-Item -Path (Join-Path $crtDir "*.dll") -Destination $OutputDir -Force
 Copy-Item -Path (Join-Path $ucrtDir "*.dll") -Destination $OutputDir -Force
 
-$kbUrl = "https://download.windowsupdate.com/d/msdownload/update/software/updt/2015/11/windows6.1-kb2999226-x64_7da58c4d261ad48a1367c60c81481ea2a8bae7e3.msu"
+# Microsoft Download Center, "Update for Windows 7 for x64-based Systems (KB2999226)", id=49093.
+# The old download.windowsupdate.com path now 404s. The installer verification step requires this
+# file, so a failed or altered download stops the build instead of being skipped.
+$kbUrl = "https://download.microsoft.com/download/1/1/5/11565a9a-ea09-4f0a-a57e-520d5d138140/Windows6.1-KB2999226-x64.msu"
+$kbSha256 = "43234D2986CA9B0DE75D5183977964D161A8395C3396279DDFC9B20698E5BC34"
 $kbPath = Join-Path $OutputDir "Windows6.1-KB2999226-x64.msu"
-try {
-    Write-Host "Downloading Universal CRT update KB2999226 (optional)"
-    Invoke-WebRequest -Uri $kbUrl -OutFile $kbPath
-    if ((Get-Item $kbPath).Length -lt 100KB) {
-        throw "KB2999226 download looks truncated"
+Write-Host "Downloading Universal CRT update KB2999226"
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+for ($attempt = 1; $attempt -le 3; $attempt++) {
+    try {
+        Invoke-WebRequest -Uri $kbUrl -OutFile $kbPath -UseBasicParsing
+        break
+    } catch {
+        if ($attempt -eq 3) { throw "KB2999226 download failed after 3 attempts: $_" }
+        Write-Warning "KB2999226 download attempt $attempt failed: $_"
+        Start-Sleep -Seconds (5 * $attempt)
     }
-} catch {
-    Write-Warning "KB2999226 could not be downloaded; app-local UCRT DLLs still cover launch. $_"
-    if (Test-Path $kbPath) {
-        Remove-Item $kbPath -Force
-    }
+}
+$kbHash = (Get-FileHash -Path $kbPath -Algorithm SHA256).Hash
+if ($kbHash -ne $kbSha256) {
+    throw "KB2999226 checksum mismatch: expected $kbSha256, got $kbHash"
 }
 
 Remove-Item -Path $workDir -Recurse -Force -ErrorAction SilentlyContinue
@@ -229,7 +237,8 @@ $required = @(
     "api-ms-win-crt-stdio-l1-1-0.dll",
     "api-ms-win-crt-locale-l1-1-0.dll",
     "api-ms-win-crt-heap-l1-1-0.dll",
-    "vc_redist.x64.exe"
+    "vc_redist.x64.exe",
+    "Windows6.1-KB2999226-x64.msu"
 )
 
 foreach ($name in $required) {

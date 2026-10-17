@@ -9,7 +9,7 @@ The script copies:
 - Universal CRT app-local files from the Windows SDK (`ucrtbase.dll` and
   `api-ms-win-*.dll`)
 - `vc_redist.x64.exe` for an optional system-wide install
-- `Windows6.1-KB2999226-x64.msu` when Microsoft's download is reachable
+- `Windows6.1-KB2999226-x64.msu`（必需，下载后校验 SHA-256）
 
 The NSIS hook then copies every `*.dll` next to `fpsmaster-launcher.exe`.
 On Windows 7 the UCRT API-set forwarders only resolve `ucrtbase.dll` from the
