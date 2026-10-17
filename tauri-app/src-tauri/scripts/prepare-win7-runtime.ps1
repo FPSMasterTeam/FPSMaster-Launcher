@@ -124,14 +124,17 @@ function Extract-VcRedistCrtDir {
     $layoutDir = Join-Path $ExtractRoot "vc_redist"
     New-Item -ItemType Directory -Force -Path $layoutDir | Out-Null
     Write-Host "Laying out $VcRedistPath to $layoutDir"
-    $exitCode = Invoke-Quiet -FilePath $VcRedistPath -ArgumentList @("/layout", "`"$layoutDir`"", "/quiet", "/norestart")
-    if ($exitCode -ne 0) {
-        throw "vc_redist /layout exited with code $exitCode"
-    }
-
+    $burnLog = Join-Path $ExtractRoot "vc_redist_layout.log"
+    $exitCode = Invoke-Quiet -FilePath $VcRedistPath -ArgumentList @("/layout", "`"$layoutDir`"", "/quiet", "/norestart", "/log", "`"$burnLog`"")
     $msis = @(Get-ChildItem -Path $layoutDir -Recurse -Filter "*.msi" -File -ErrorAction SilentlyContinue)
-    if (-not $msis) {
-        throw "vc_redist /layout produced no MSI packages under $layoutDir"
+    if ($exitCode -ne 0 -or -not $msis) {
+        Write-Host "----- files under $ExtractRoot -----"
+        Get-ChildItem -Path $ExtractRoot -Recurse -File -ErrorAction SilentlyContinue | ForEach-Object { Write-Host "$($_.FullName) $($_.Length)" }
+        Get-ChildItem -Path (Split-Path -Parent $burnLog) -Filter "vc_redist_layout*.log" -File -ErrorAction SilentlyContinue | ForEach-Object {
+            Write-Host "----- $($_.Name) (tail) -----"
+            Get-Content $_.FullName -Tail 60 | ForEach-Object { Write-Host $_ }
+        }
+        throw "vc_redist /layout exited with code $exitCode and produced $($msis.Count) MSI packages"
     }
     foreach ($msiFile in $msis) {
         $msiOut = Join-Path $ExtractRoot ("msi_" + $msiFile.BaseName)
