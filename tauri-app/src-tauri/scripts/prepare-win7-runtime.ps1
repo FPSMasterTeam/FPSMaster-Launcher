@@ -101,6 +101,8 @@ function Invoke-Quiet {
     )
 
     $process = Start-Process -FilePath $FilePath -ArgumentList $ArgumentList -PassThru -NoNewWindow
+    # Without holding the handle, ExitCode reads back as $null once the process has exited.
+    $null = $process.Handle
     if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
         $process.Kill()
         throw "$FilePath $($ArgumentList -join ' ') did not finish within ${TimeoutSeconds}s"
