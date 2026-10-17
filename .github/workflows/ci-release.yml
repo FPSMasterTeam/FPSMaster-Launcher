@@ -107,7 +107,11 @@ jobs:
             build_script: build:installer:windows
             artifact_glob: tauri-app/src-tauri/target/release/bundle/nsis/*.exe
           - target: windows-x86_64-win7
-            os: windows-latest
+            # windows-latest moved to Visual Studio 2026: its v145 redist has no classic
+            # Microsoft.VC*.CRT folder and its system VC++ 14.5x runtime makes vc_redist 14.44
+            # treat its own packages as obsolete, so nothing can be unpacked. windows-2022 still
+            # carries VS 2022's Microsoft.VC143.CRT (14.4x), the last line that supports Windows 7.
+            os: windows-2022
             build_script: build:installer:windows:win7
             artifact_glob: tauri-app/src-tauri/target/x86_64-win7-windows-msvc/release/bundle/nsis/*.exe
             needs_fixed_runtime: true
@@ -238,6 +242,8 @@ jobs:
         if: matrix.target == 'windows-x86_64-win7'
         working-directory: tauri-app/src-tauri
         shell: pwsh
+        # Backstop: an installer waiting on a UI prompt once held this step for hours.
+        timeout-minutes: 15
         run: powershell -File scripts/prepare-win7-runtime.ps1
 
       - name: Build installer

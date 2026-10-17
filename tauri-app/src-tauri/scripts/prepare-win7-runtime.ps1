@@ -1,12 +1,14 @@
 # Prepare app-local VC++ / Universal CRT files for the Windows 7 installer.
 #
-# windows-latest currently ships Visual Studio 2026 (18). Its Redist\MSVC\v145
-# folder is not the classic x64\Microsoft.VC*.CRT layout, so this script:
-#   1. downloads the VS 2015-2022 x64 redistributable and extracts CRT DLLs
-#   2. falls back to any VS install that still has Microsoft.VC143.CRT (or later)
+# windows-latest ships Visual Studio 2026 (18). Its Redist\MSVC\v145 folder is not the classic
+# x64\Microsoft.VC*.CRT layout, so this script:
+#   1. takes the CRT DLLs from a Visual Studio install that has Microsoft.VC143.CRT (the CI job
+#      runs on windows-2022 for this)
+#   2. otherwise unpacks the downloaded VS 2015-2022 x64 redistributable with Burn's /layout and
+#      extracts the CRT DLLs from its MSIs with an administrative install
 #   3. copies UCRT app-local files from the Windows SDK
 #
-# Output: src-tauri/win7-runtime/*.dll plus vc_redist.x64.exe (and KB2999226 when available).
+# Output: src-tauri/win7-runtime/*.dll plus vc_redist.x64.exe and Windows6.1-KB2999226-x64.msu.
 
 [CmdletBinding()]
 param(
@@ -36,6 +38,9 @@ function Find-CrtDirectoryInTree {
 
     $candidates = @(Get-ChildItem -Path $Root -Recurse -Filter "vcruntime140.dll" -File -ErrorAction SilentlyContinue |
         Where-Object {
+            # Visual Studio's Redist tree also holds x86, arm64, onecore and debug copies under
+            # identically named Microsoft.VC*.CRT folders; only the plain x64 set ships.
+            $_.DirectoryName -notmatch '\\(x86|arm64|arm64ec|onecore|debug_nonredist)\\' -and
             (Test-Path (Join-Path $_.DirectoryName "msvcp140.dll")) -and
             (
                 $_.Directory.Name -like "Microsoft.VC*.CRT" -or
@@ -90,6 +95,25 @@ function Find-VcRedistCrtDirFromVisualStudio {
     return $null
 }
 
+# Runs an installer non-interactively and kills it after $TimeoutSeconds. Every external tool
+# here must stay quiet: on a CI runner a UI prompt never gets an answer and the job hangs for hours.
+function Invoke-Quiet {
+    param(
+        [Parameter(Mandatory = $true)][string]$FilePath,
+        [Parameter(Mandatory = $true)][string[]]$ArgumentList,
+        [int]$TimeoutSeconds = 300
+    )
+
+    $process = Start-Process -FilePath $FilePath -ArgumentList $ArgumentList -PassThru -NoNewWindow
+    # Without holding the handle, ExitCode reads back as $null once the process has exited.
+    $null = $process.Handle
+    if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
+        $process.Kill()
+        throw "$FilePath $($ArgumentList -join ' ') did not finish within ${TimeoutSeconds}s"
+    }
+    return $process.ExitCode
+}
+
 function Extract-VcRedistCrtDir {
     param(
         [Parameter(Mandatory = $true)]
@@ -98,35 +122,31 @@ function Extract-VcRedistCrtDir {
         [string]$ExtractRoot
     )
 
-    $extractDir = Join-Path $ExtractRoot "vc_redist"
-    New-Item -ItemType Directory -Force -Path $extractDir | Out-Null
-    Write-Host "Extracting $VcRedistPath to $extractDir"
-    $process = Start-Process -FilePath $VcRedistPath -ArgumentList @("/quiet", "/norestart", "/extract:$extractDir") -Wait -PassThru -NoNewWindow
-    if ($process.ExitCode -ne 0 -and $process.ExitCode -ne 3010) {
-        Write-Warning "vc_redist /extract exited with code $($process.ExitCode); trying without /quiet"
-        $process = Start-Process -FilePath $VcRedistPath -ArgumentList @("/extract:$extractDir") -Wait -PassThru -NoNewWindow
-        if ($process.ExitCode -ne 0 -and $process.ExitCode -ne 3010) {
-            Write-Warning "vc_redist /extract failed with exit code $($process.ExitCode)"
+    # vc_redist is a WiX Burn bundle. It has no /extract switch (Burn treats an unknown switch as
+    # a plain install and returns 1638 when the runtime is already present); /layout copies the
+    # embedded MSI and CAB payloads to a directory without installing anything.
+    $layoutDir = Join-Path $ExtractRoot "vc_redist"
+    New-Item -ItemType Directory -Force -Path $layoutDir | Out-Null
+    Write-Host "Laying out $VcRedistPath to $layoutDir"
+    $burnLog = Join-Path $ExtractRoot "vc_redist_layout.log"
+    $exitCode = Invoke-Quiet -FilePath $VcRedistPath -ArgumentList @("/layout", "`"$layoutDir`"", "/quiet", "/norestart", "/log", "`"$burnLog`"")
+    $msis = @(Get-ChildItem -Path $layoutDir -Recurse -Filter "*.msi" -File -ErrorAction SilentlyContinue)
+    if ($exitCode -ne 0 -or -not $msis) {
+        Write-Host "----- files under $ExtractRoot -----"
+        Get-ChildItem -Path $ExtractRoot -Recurse -File -ErrorAction SilentlyContinue | ForEach-Object { Write-Host "$($_.FullName) $($_.Length)" }
+        Get-ChildItem -Path (Split-Path -Parent $burnLog) -Filter "vc_redist_layout*.log" -File -ErrorAction SilentlyContinue | ForEach-Object {
+            Write-Host "----- $($_.Name) (tail) -----"
+            Get-Content $_.FullName -Tail 60 | ForEach-Object { Write-Host $_ }
         }
+        throw "vc_redist /layout exited with code $exitCode and produced $($msis.Count) MSI packages"
     }
-
-    $found = Find-CrtDirectoryInTree -Root $extractDir
-    if ($found) {
-        return $found
-    }
-
-    Get-ChildItem -Path $extractDir -Recurse -Filter "*.cab" -File -ErrorAction SilentlyContinue | ForEach-Object {
-        $cabOut = Join-Path $ExtractRoot ("cab_" + $_.BaseName)
-        New-Item -ItemType Directory -Force -Path $cabOut | Out-Null
-        & expand.exe $_.FullName -F:* $cabOut | Out-Null
-    }
-
-    Get-ChildItem -Path $extractDir -Recurse -Filter "*.msi" -File -ErrorAction SilentlyContinue | ForEach-Object {
-        $msiOut = Join-Path $ExtractRoot ("msi_" + $_.BaseName)
+    foreach ($msiFile in $msis) {
+        $msiOut = Join-Path $ExtractRoot ("msi_" + $msiFile.BaseName)
         New-Item -ItemType Directory -Force -Path $msiOut | Out-Null
-        $msi = Start-Process -FilePath "msiexec.exe" -ArgumentList @("/a", $_.FullName, "/qn", "TARGETDIR=$msiOut") -Wait -PassThru -NoNewWindow
-        if ($msi.ExitCode -ne 0) {
-            Write-Warning "msiexec /a $($_.Name) exited with code $($msi.ExitCode)"
+        Write-Host "Administrative install of $($msiFile.Name)"
+        $exitCode = Invoke-Quiet -FilePath "msiexec.exe" -ArgumentList @("/a", "`"$($msiFile.FullName)`"", "/qn", "TARGETDIR=`"$msiOut`"")
+        if ($exitCode -ne 0) {
+            Write-Warning "msiexec /a $($msiFile.Name) exited with code $exitCode"
         }
     }
 
@@ -163,10 +183,13 @@ if ((Get-Item $vcRedistPath).Length -lt 1MB) {
     throw "vc_redist.x64.exe download looks truncated"
 }
 
-$crtDir = Extract-VcRedistCrtDir -VcRedistPath $vcRedistPath -ExtractRoot $workDir
+# Prefer Visual Studio 2022's Microsoft.VC143.CRT (the CI job runs on windows-2022). Unpacking
+# vc_redist only works where the machine's own VC++ runtime is not newer than the bundle; otherwise
+# Burn marks every package obsolete and lays out nothing.
+$crtDir = Find-VcRedistCrtDirFromVisualStudio
 if (-not $crtDir) {
-    Write-Warning "Could not extract CRT DLLs from vc_redist.x64.exe; searching Visual Studio installs"
-    $crtDir = Find-VcRedistCrtDirFromVisualStudio
+    Write-Warning "No Microsoft.VC14x.CRT under Visual Studio; unpacking vc_redist.x64.exe"
+    $crtDir = Extract-VcRedistCrtDir -VcRedistPath $vcRedistPath -ExtractRoot $workDir
 }
 if (-not $crtDir) {
     throw "Could not locate vcruntime140.dll / msvcp140.dll from vc_redist.x64.exe or Visual Studio redistributables"
@@ -179,19 +202,27 @@ Write-Host "UCRT:     $ucrtDir"
 Copy-Item -Path (Join-Path $crtDir "*.dll") -Destination $OutputDir -Force
 Copy-Item -Path (Join-Path $ucrtDir "*.dll") -Destination $OutputDir -Force
 
-$kbUrl = "https://download.windowsupdate.com/d/msdownload/update/software/updt/2015/11/windows6.1-kb2999226-x64_7da58c4d261ad48a1367c60c81481ea2a8bae7e3.msu"
+# Microsoft Download Center, "Update for Windows 7 for x64-based Systems (KB2999226)", id=49093.
+# The old download.windowsupdate.com path now 404s. The installer verification step requires this
+# file, so a failed or altered download stops the build instead of being skipped.
+$kbUrl = "https://download.microsoft.com/download/1/1/5/11565a9a-ea09-4f0a-a57e-520d5d138140/Windows6.1-KB2999226-x64.msu"
+$kbSha256 = "43234D2986CA9B0DE75D5183977964D161A8395C3396279DDFC9B20698E5BC34"
 $kbPath = Join-Path $OutputDir "Windows6.1-KB2999226-x64.msu"
-try {
-    Write-Host "Downloading Universal CRT update KB2999226 (optional)"
-    Invoke-WebRequest -Uri $kbUrl -OutFile $kbPath
-    if ((Get-Item $kbPath).Length -lt 100KB) {
-        throw "KB2999226 download looks truncated"
+Write-Host "Downloading Universal CRT update KB2999226"
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+for ($attempt = 1; $attempt -le 3; $attempt++) {
+    try {
+        Invoke-WebRequest -Uri $kbUrl -OutFile $kbPath -UseBasicParsing
+        break
+    } catch {
+        if ($attempt -eq 3) { throw "KB2999226 download failed after 3 attempts: $_" }
+        Write-Warning "KB2999226 download attempt $attempt failed: $_"
+        Start-Sleep -Seconds (5 * $attempt)
     }
-} catch {
-    Write-Warning "KB2999226 could not be downloaded; app-local UCRT DLLs still cover launch. $_"
-    if (Test-Path $kbPath) {
-        Remove-Item $kbPath -Force
-    }
+}
+$kbHash = (Get-FileHash -Path $kbPath -Algorithm SHA256).Hash
+if ($kbHash -ne $kbSha256) {
+    throw "KB2999226 checksum mismatch: expected $kbSha256, got $kbHash"
 }
 
 Remove-Item -Path $workDir -Recurse -Force -ErrorAction SilentlyContinue
@@ -206,7 +237,8 @@ $required = @(
     "api-ms-win-crt-stdio-l1-1-0.dll",
     "api-ms-win-crt-locale-l1-1-0.dll",
     "api-ms-win-crt-heap-l1-1-0.dll",
-    "vc_redist.x64.exe"
+    "vc_redist.x64.exe",
+    "Windows6.1-KB2999226-x64.msu"
 )
 
 foreach ($name in $required) {
