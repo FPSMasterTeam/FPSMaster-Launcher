@@ -1,10 +1,11 @@
 # Prepare app-local VC++ / Universal CRT files for the Windows 7 installer.
 #
-# windows-latest currently ships Visual Studio 2026 (18). Its Redist\MSVC\v145
-# folder is not the classic x64\Microsoft.VC*.CRT layout, so this script:
-#   1. downloads the VS 2015-2022 x64 redistributable, unpacks its packages with Burn's
-#      /layout and extracts the CRT DLLs from the MSIs with an administrative install
-#   2. falls back to any VS install that still has Microsoft.VC143.CRT (or later)
+# windows-latest ships Visual Studio 2026 (18). Its Redist\MSVC\v145 folder is not the classic
+# x64\Microsoft.VC*.CRT layout, so this script:
+#   1. takes the CRT DLLs from a Visual Studio install that has Microsoft.VC143.CRT (the CI job
+#      runs on windows-2022 for this)
+#   2. otherwise unpacks the downloaded VS 2015-2022 x64 redistributable with Burn's /layout and
+#      extracts the CRT DLLs from its MSIs with an administrative install
 #   3. copies UCRT app-local files from the Windows SDK
 #
 # Output: src-tauri/win7-runtime/*.dll plus vc_redist.x64.exe (and KB2999226 when available).
@@ -37,6 +38,9 @@ function Find-CrtDirectoryInTree {
 
     $candidates = @(Get-ChildItem -Path $Root -Recurse -Filter "vcruntime140.dll" -File -ErrorAction SilentlyContinue |
         Where-Object {
+            # Visual Studio's Redist tree also holds x86, arm64, onecore and debug copies under
+            # identically named Microsoft.VC*.CRT folders; only the plain x64 set ships.
+            $_.DirectoryName -notmatch '\\(x86|arm64|arm64ec|onecore|debug_nonredist)\\' -and
             (Test-Path (Join-Path $_.DirectoryName "msvcp140.dll")) -and
             (
                 $_.Directory.Name -like "Microsoft.VC*.CRT" -or
@@ -179,10 +183,13 @@ if ((Get-Item $vcRedistPath).Length -lt 1MB) {
     throw "vc_redist.x64.exe download looks truncated"
 }
 
-$crtDir = Extract-VcRedistCrtDir -VcRedistPath $vcRedistPath -ExtractRoot $workDir
+# Prefer Visual Studio 2022's Microsoft.VC143.CRT (the CI job runs on windows-2022). Unpacking
+# vc_redist only works where the machine's own VC++ runtime is not newer than the bundle; otherwise
+# Burn marks every package obsolete and lays out nothing.
+$crtDir = Find-VcRedistCrtDirFromVisualStudio
 if (-not $crtDir) {
-    Write-Warning "Could not extract CRT DLLs from vc_redist.x64.exe; searching Visual Studio installs"
-    $crtDir = Find-VcRedistCrtDirFromVisualStudio
+    Write-Warning "No Microsoft.VC14x.CRT under Visual Studio; unpacking vc_redist.x64.exe"
+    $crtDir = Extract-VcRedistCrtDir -VcRedistPath $vcRedistPath -ExtractRoot $workDir
 }
 if (-not $crtDir) {
     throw "Could not locate vcruntime140.dll / msvcp140.dll from vc_redist.x64.exe or Visual Studio redistributables"
