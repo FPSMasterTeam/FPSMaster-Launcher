@@ -2,7 +2,8 @@
 #
 # windows-latest currently ships Visual Studio 2026 (18). Its Redist\MSVC\v145
 # folder is not the classic x64\Microsoft.VC*.CRT layout, so this script:
-#   1. downloads the VS 2015-2022 x64 redistributable and extracts CRT DLLs
+#   1. downloads the VS 2015-2022 x64 redistributable, unpacks its packages with Burn's
+#      /layout and extracts the CRT DLLs from the MSIs with an administrative install
 #   2. falls back to any VS install that still has Microsoft.VC143.CRT (or later)
 #   3. copies UCRT app-local files from the Windows SDK
 #
@@ -90,6 +91,23 @@ function Find-VcRedistCrtDirFromVisualStudio {
     return $null
 }
 
+# Runs an installer non-interactively and kills it after $TimeoutSeconds. Every external tool
+# here must stay quiet: on a CI runner a UI prompt never gets an answer and the job hangs for hours.
+function Invoke-Quiet {
+    param(
+        [Parameter(Mandatory = $true)][string]$FilePath,
+        [Parameter(Mandatory = $true)][string[]]$ArgumentList,
+        [int]$TimeoutSeconds = 300
+    )
+
+    $process = Start-Process -FilePath $FilePath -ArgumentList $ArgumentList -PassThru -NoNewWindow
+    if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
+        $process.Kill()
+        throw "$FilePath $($ArgumentList -join ' ') did not finish within ${TimeoutSeconds}s"
+    }
+    return $process.ExitCode
+}
+
 function Extract-VcRedistCrtDir {
     param(
         [Parameter(Mandatory = $true)]
@@ -98,35 +116,28 @@ function Extract-VcRedistCrtDir {
         [string]$ExtractRoot
     )
 
-    $extractDir = Join-Path $ExtractRoot "vc_redist"
-    New-Item -ItemType Directory -Force -Path $extractDir | Out-Null
-    Write-Host "Extracting $VcRedistPath to $extractDir"
-    $process = Start-Process -FilePath $VcRedistPath -ArgumentList @("/quiet", "/norestart", "/extract:$extractDir") -Wait -PassThru -NoNewWindow
-    if ($process.ExitCode -ne 0 -and $process.ExitCode -ne 3010) {
-        Write-Warning "vc_redist /extract exited with code $($process.ExitCode); trying without /quiet"
-        $process = Start-Process -FilePath $VcRedistPath -ArgumentList @("/extract:$extractDir") -Wait -PassThru -NoNewWindow
-        if ($process.ExitCode -ne 0 -and $process.ExitCode -ne 3010) {
-            Write-Warning "vc_redist /extract failed with exit code $($process.ExitCode)"
-        }
+    # vc_redist is a WiX Burn bundle. It has no /extract switch (Burn treats an unknown switch as
+    # a plain install and returns 1638 when the runtime is already present); /layout copies the
+    # embedded MSI and CAB payloads to a directory without installing anything.
+    $layoutDir = Join-Path $ExtractRoot "vc_redist"
+    New-Item -ItemType Directory -Force -Path $layoutDir | Out-Null
+    Write-Host "Laying out $VcRedistPath to $layoutDir"
+    $exitCode = Invoke-Quiet -FilePath $VcRedistPath -ArgumentList @("/layout", "`"$layoutDir`"", "/quiet", "/norestart")
+    if ($exitCode -ne 0) {
+        throw "vc_redist /layout exited with code $exitCode"
     }
 
-    $found = Find-CrtDirectoryInTree -Root $extractDir
-    if ($found) {
-        return $found
+    $msis = @(Get-ChildItem -Path $layoutDir -Recurse -Filter "*.msi" -File -ErrorAction SilentlyContinue)
+    if (-not $msis) {
+        throw "vc_redist /layout produced no MSI packages under $layoutDir"
     }
-
-    Get-ChildItem -Path $extractDir -Recurse -Filter "*.cab" -File -ErrorAction SilentlyContinue | ForEach-Object {
-        $cabOut = Join-Path $ExtractRoot ("cab_" + $_.BaseName)
-        New-Item -ItemType Directory -Force -Path $cabOut | Out-Null
-        & expand.exe $_.FullName -F:* $cabOut | Out-Null
-    }
-
-    Get-ChildItem -Path $extractDir -Recurse -Filter "*.msi" -File -ErrorAction SilentlyContinue | ForEach-Object {
-        $msiOut = Join-Path $ExtractRoot ("msi_" + $_.BaseName)
+    foreach ($msiFile in $msis) {
+        $msiOut = Join-Path $ExtractRoot ("msi_" + $msiFile.BaseName)
         New-Item -ItemType Directory -Force -Path $msiOut | Out-Null
-        $msi = Start-Process -FilePath "msiexec.exe" -ArgumentList @("/a", $_.FullName, "/qn", "TARGETDIR=$msiOut") -Wait -PassThru -NoNewWindow
-        if ($msi.ExitCode -ne 0) {
-            Write-Warning "msiexec /a $($_.Name) exited with code $($msi.ExitCode)"
+        Write-Host "Administrative install of $($msiFile.Name)"
+        $exitCode = Invoke-Quiet -FilePath "msiexec.exe" -ArgumentList @("/a", "`"$($msiFile.FullName)`"", "/qn", "TARGETDIR=`"$msiOut`"")
+        if ($exitCode -ne 0) {
+            Write-Warning "msiexec /a $($msiFile.Name) exited with code $exitCode"
         }
     }
 
