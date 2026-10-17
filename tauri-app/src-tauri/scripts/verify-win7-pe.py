@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import argparse
+import subprocess
+import shutil
 import json
 import struct
 import sys
@@ -262,8 +264,26 @@ def contains_text(data: bytes, text: str) -> bool:
     return text.encode("ascii") in data or text.encode("utf-16le") in data
 
 
+def installer_listing(path: Path) -> str | None:
+    """File list of an NSIS installer via 7-Zip, which reads NSIS archives natively.
+
+    Searching the raw installer bytes only works while NSIS happens to leave the file-name table
+    uncompressed; with solid LZMA the names vanish and every check fails. Returns None when 7-Zip
+    is unavailable or cannot read the file, so the caller can fall back to the byte search.
+    """
+    candidates = [shutil.which("7z"), r"C:\Program Files\7-Zip\7z.exe"]
+    for exe in candidates:
+        if not exe or not Path(exe).exists():
+            continue
+        result = subprocess.run([exe, "l", "-slt", str(path)], capture_output=True, text=True, errors="replace")
+        if result.returncode == 0 and "Path = " in result.stdout:
+            return result.stdout
+    return None
+
+
 def verify_installer_strings(path: Path) -> list[str]:
-    data = path.read_bytes()
+    listing = installer_listing(path)
+    data = listing.encode("utf-8") if listing is not None else path.read_bytes()
     errors = []
     for needle in (
         "ucrtbase.dll",
