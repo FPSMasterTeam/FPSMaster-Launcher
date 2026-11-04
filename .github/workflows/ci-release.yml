@@ -430,7 +430,11 @@ jobs:
             release-dist/*.dmg
           fail_on_unmatched_files: true
 
-      - name: Upload to Qiniu OSS and notify release API
+      # Legacy channel: launchers released before the final version only learn about updates from
+      # the FPSMaster backend, so the final release must still be registered there while it runs.
+      # Once the backend is shut down, remove the secrets and this step is skipped; the GitHub
+      # Release above plus catalog/catalog.json are the only distribution channel left.
+      - name: Upload to Qiniu OSS and notify release API (legacy, skipped without secrets)
         shell: bash
         env:
           FPSMASTER_CI_API_BASE_URL: ${{ secrets.FPSMASTER_CI_API_BASE_URL }}
@@ -446,13 +450,11 @@ jobs:
           COMMIT_HASH: ${{ needs.resolve.outputs.commit_hash }}
           CHANGELOG: ${{ needs.resolve.outputs.changelog }}
         run: |
-          if [ -z "$FPSMASTER_CI_API_BASE_URL" ] || [ -z "$FPSMASTER_CI_UPLOAD_TOKEN" ]; then
-            echo "Release API secrets are not configured" >&2
-            exit 1
-          fi
-          if [ -z "$QINIU_ACCESS_KEY" ] || [ -z "$QINIU_SECRET_KEY" ] || [ -z "$QINIU_BUCKET" ] || [ -z "$QINIU_S3_ENDPOINT" ] || [ -z "$QINIU_CDN_BASE_URL" ]; then
-            echo "Qiniu OSS secrets are not configured" >&2
-            exit 1
+          if [ -z "$FPSMASTER_CI_API_BASE_URL" ] || [ -z "$FPSMASTER_CI_UPLOAD_TOKEN" ] \
+            || [ -z "$QINIU_ACCESS_KEY" ] || [ -z "$QINIU_SECRET_KEY" ] || [ -z "$QINIU_BUCKET" ] \
+            || [ -z "$QINIU_S3_ENDPOINT" ] || [ -z "$QINIU_CDN_BASE_URL" ]; then
+            echo "::notice::Legacy release API / OSS secrets not configured; skipping (GitHub Release is the distribution channel)."
+            exit 0
           fi
 
           python3 -m pip install --quiet --user boto3
