@@ -1,4 +1,4 @@
-//! Diagnostics: secret redaction, game crash detection and upload, download
+//! Diagnostics: secret redaction, local game crash detection, download
 //! source probing, the one-click health check and the support bundle export.
 //!
 //! Everything here that leaves the machine or lands in a file the user may
@@ -62,6 +62,24 @@ pub(crate) fn redact_secrets(text: &str) -> String {
     let mut output = text.to_string();
     for (regex, replacement) in redaction_rules() {
         output = regex.replace_all(&output, *replacement).into_owned();
+    }
+    output
+}
+
+/// Shareable bundles additionally hide local usernames, home paths and emails.
+fn redact_support_text(text: &str) -> String {
+    static RULES: OnceLock<Vec<(Regex, &'static str)>> = OnceLock::new();
+    let mut output = redact_secrets(text);
+    for (pattern, replacement) in RULES.get_or_init(|| {
+        [
+            (r"(?s)-----BEGIN (?:RSA |EC |OPENSSH |DSA |ENCRYPTED )?PRIVATE KEY-----.*?-----END (?:RSA |EC |OPENSSH |DSA |ENCRYPTED )?PRIVATE KEY-----", "<redacted-private-key>"),
+            (r#"(?i)(?:/Users/|/home/)[^/\\\s"']+"#, "<home>"),
+            (r#"(?i)[a-z]:\\+(?:Users|Documents and Settings)\\+[^\\/\s"']+"#, "<home>"),
+            (r"(?i)\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", "<email>"),
+            (r#"(?i)(--(?:username|uuid)[\s=]+)[^\s"']+"#, "${1}<redacted>"),
+        ].into_iter().map(|(p, r)| (Regex::new(p).expect("valid support redaction"), r)).collect()
+    }) {
+        output = pattern.replace_all(&output, *replacement).into_owned();
     }
     output
 }
@@ -255,10 +273,6 @@ fn recent_crash_files(game_dir: &Path, max_age: Duration) -> Vec<PathBuf> {
     files.sort_by_key(|path| std::cmp::Reverse(modified_at(path)));
     files
 }
-
-// ---------------------------------------------------------------------------
-// Crash upload
-// ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
 // Download source probing
@@ -873,27 +887,28 @@ fn latest_game_log(game_dir: &Path, version_id: Option<&str>) -> Option<PathBuf>
 }
 
 fn export_support_bundle_blocking(
-    app: &AppHandle,
     game_dir: &Path,
     version_id: Option<&str>,
     health_report: Option<Value>,
     target_path: Option<&Path>,
+    system: Value,
+    launcher_log: &str,
 ) -> Result<SupportBundleResult, String> {
     const LOG_TAIL: u64 = 2 * 1024 * 1024;
     let mut files: Vec<(String, String)> = vec![
         (
             "launcher-log.txt".to_string(),
-            redact_secrets(&launcher_log_text()),
+            launcher_log.to_string(),
         ),
         (
             "system-info.json".to_string(),
-            serde_json::to_string_pretty(&system_info(app, game_dir)).unwrap_or_default(),
+            serde_json::to_string_pretty(&system).unwrap_or_default(),
         ),
     ];
     let health = match health_report {
         Some(report) => report,
-        None => serde_json::to_value(run_health_check_blocking(app, game_dir, version_id, false))
-        .unwrap_or(Value::Null),
+        // Export is strictly local. A user can run the health check separately.
+        None => json!({ "notRun": true }),
     };
     files.push((
         "health-check.json".to_string(),
@@ -947,7 +962,7 @@ fn export_support_bundle_blocking(
         .compression_method(zip::CompressionMethod::Deflated);
     for (name, content) in &files {
         zip.start_file(name.as_str(), options)
-            .and_then(|_| zip.write_all(content.as_bytes()).map_err(Into::into))
+            .and_then(|_| zip.write_all(redact_support_text(content).as_bytes()).map_err(Into::into))
             .map_err(|e| format!("Failed to write {name} into the support bundle: {e}"))?;
     }
     zip.finish()
@@ -977,11 +992,12 @@ pub(crate) async fn export_support_bundle(
             .filter(|value| !value.is_empty())
             .map(PathBuf::from);
         export_support_bundle_blocking(
-            &app,
             &game_dir,
             version_id.as_deref(),
             health_report,
             target.as_deref(),
+            system_info(&app, &game_dir),
+            &launcher_log_text(),
         )
     })
     .await
@@ -991,6 +1007,32 @@ pub(crate) async fn export_support_bundle(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn support_zip_is_local_and_redacts_every_entry() {
+        let temp = tempfile::tempdir().unwrap();
+        let instance = temp.path().join("versions/test/logs");
+        fs::create_dir_all(&instance).unwrap();
+        fs::write(instance.join("latest.log"), "--accessToken game-secret /Users/Alice/game").unwrap();
+        let target = temp.path().join("support.zip");
+        let result = export_support_bundle_blocking(
+            temp.path(), Some("test"), None, Some(&target),
+            json!({"gameDir": "/Users/Alice/game", "email": "alice@example.org"}),
+            "Authorization: Bearer launcher-secret",
+        ).unwrap();
+        assert!(result.entries.iter().any(|name| name == "system-info.json"));
+        let mut archive = zip::ZipArchive::new(fs::File::open(target).unwrap()).unwrap();
+        for index in 0..archive.len() {
+            let mut content = String::new();
+            archive.by_index(index).unwrap().read_to_string(&mut content).unwrap();
+            for secret in ["game-secret", "launcher-secret", "Alice", "alice@example.org"] {
+                assert!(!content.contains(secret), "private data leaked in support zip");
+            }
+        }
+        let mut health = String::new();
+        archive.by_name("health-check.json").unwrap().read_to_string(&mut health).unwrap();
+        assert!(health.contains("notRun"));
+    }
 
     #[test]
     fn redacts_tokens_passwords_and_cookies() {
