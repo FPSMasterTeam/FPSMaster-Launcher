@@ -2,11 +2,10 @@
 
 ## 更新日志会出现在哪里
 
-同一份文本会同时出现在这三处，所以它是**给玩家看的**，不是给开发者看的：
+同一份文本会出现在这些位置，所以它是**给玩家看的**，不是给开发者看的：
 
-- 启动器「必须更新」页（`tauri-app/src/pages/MandatoryUpdate.tsx`）
 - 设置 → 关于 → 启动器更新（`tauri-app/src/pages/Settings.tsx`）
-- GitHub Release 正文，以及后端 `GET /api/v1/launcher/app-update` 返回的 `notes`
+- GitHub Release 正文，以及静态目录中的 `notes`
 
 ## 它是从哪来的
 
@@ -16,7 +15,7 @@
 changelog="$(git log -1 --pretty=format:'%s%n%n%b')"
 ```
 
-**所以：打 tag 的那个 commit 的提交信息，就是用户看到的更新日志。** 发版前先把这个 commit 的 message 写好（通常就是版本号 bump 的那个 commit），不要指望之后再改——已经登记到后端的 changelog 不会随 commit 改写而更新。
+**所以：打 tag 的那个 commit 的提交信息，就是用户看到的更新日志。** 发版前先把这个 commit 的 message 写好（通常就是版本号 bump 的那个 commit），不要指望之后再改——已经发布的 Release 和 catalog 不会随 commit 改写而自动更新。
 
 ## 写法要求
 

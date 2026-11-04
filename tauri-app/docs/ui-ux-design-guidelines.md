@@ -23,9 +23,7 @@ This guideline is based on the current launcher implementation, especially:
 - `src/pages/Instances.tsx`
 - `src/pages/Install.tsx`
 - `src/pages/Content.tsx`
-- `src/pages/AccountCenter.tsx`
 - `src/pages/Settings.tsx`
-- `src/pages/MandatoryUpdate.tsx`
 - `src/pages/Monitor.tsx`
 
 ---
