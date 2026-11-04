@@ -1,4 +1,8 @@
 const enUS = {
+  "home.archiveNotice": "FPSMaster is moving to its final, offline-capable release. No FPSMaster account or server is required. Microsoft sign-in and new downloads still need third-party services.",
+  "launch.importJar.action": "Import client jar",
+  "launch.importJar.trust": "Select an Edge/Nova jar for this Minecraft version from a trusted source. This replaces only the managed client package, keeps other mods, and disables automatic client-package updates.",
+  "launch.importJar.prompt": "The client package could not be installed: {error}\n\nImport a local Edge/Nova .jar instead? Only select a file from a source you trust. Imported packages will not be replaced by catalog updates.",
   "app.name": "FPSMaster",
   "secureStorage.unavailableTitle": "System credential store unavailable",
   "secureStorage.unavailableDescription": "The launcher cannot safely read accounts and tokens. Unlock the system keychain or start Secret Service, then retry. Existing account data was not deleted.",

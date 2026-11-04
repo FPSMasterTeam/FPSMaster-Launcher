@@ -1632,51 +1632,6 @@ select:focus-visible {
   transition: width var(--duration-slow) var(--ease-standard);
 }
 
-.home-news-row {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  width: 100%;
-  text-align: left;
-  padding: 12px 14px;
-  border-radius: 8px;
-  border: 1px solid transparent;
-  background: transparent;
-  transition:
-    border-color var(--duration-fast) var(--ease-standard),
-    background-color var(--duration-fast) var(--ease-standard);
-}
-
-.home-news-row:hover {
-  border-color: var(--border-subtle);
-  background: rgba(255, 255, 255, 0.04);
-}
-
-.home-news-empty {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  border-radius: 8px;
-  border: 1px solid var(--border-subtle);
-  background: var(--surface-soft);
-  padding: 16px 18px;
-}
-
-.home-news-empty-action {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 13px;
-  font-weight: 700;
-  color: var(--accent);
-}
-
-.home-news-empty-action:hover {
-  text-decoration: underline;
-}
-
 @media (max-width: 640px) {
   .home-loadout {
     flex-wrap: wrap;
@@ -5520,8 +5475,7 @@ button:disabled {
 :root[data-theme="light"] .toggle-card,
 :root[data-theme="light"] .icon-button,
 :root[data-theme="light"] .toolbar-shell,
-:root[data-theme="light"] .notice,
-:root[data-theme="light"] .home-news-empty {
+:root[data-theme="light"] .notice {
   background: rgba(31, 45, 70, 0.035);
 }
 
@@ -5529,10 +5483,6 @@ button:disabled {
 :root[data-theme="light"] .toggle-card:hover,
 :root[data-theme="light"] .icon-button:hover {
   background: rgba(31, 45, 70, 0.06);
-}
-
-:root[data-theme="light"] .home-news-row:hover {
-  background: rgba(31, 45, 70, 0.05);
 }
 
 :root[data-theme="light"] .home-level-bar {
@@ -6184,43 +6134,6 @@ button:disabled {
   backdrop-filter: none;
 }
 
-/* News list: glassy rows (clickable) and a quiet translucent empty block. */
-:root[data-visual-profile="liquid"] .home-news-row {
-  border-color: var(--liquid-edge);
-  background: var(--liquid-tint);
-  -webkit-backdrop-filter: var(--liquid-filter);
-  backdrop-filter: var(--liquid-filter);
-}
-
-:root[data-visual-profile="liquid"] .home-news-row:hover {
-  border-color: var(--linear-card-edge-hover);
-  background: var(--liquid-sheen), var(--liquid-tint);
-}
-
-:root[data-visual-profile="liquid"] .home-news-empty {
-  border-color: var(--liquid-edge);
-  background: var(--liquid-tint);
-  -webkit-backdrop-filter: var(--liquid-filter);
-  backdrop-filter: var(--liquid-filter);
-}
-
-/* The empty-state action becomes a compact glass chip under liquid (a bare
-   text link would give the lens layers nothing to hold on to). */
-:root[data-visual-profile="liquid"] .home-news-empty-action {
-  min-height: 34px;
-  padding: 0 14px;
-  border: 1px solid var(--liquid-edge);
-  border-radius: var(--radius-control);
-}
-
-:root[data-visual-profile="liquid"] .home-news-empty-action:not(.lg-on) {
-  background: var(--liquid-tint);
-}
-
-:root[data-visual-profile="liquid"] .home-news-empty-action:hover {
-  text-decoration: none;
-}
-
 /* Profile picker tiles are component hosts; re-add the accent active state
    the transparent .lg-on background would otherwise swallow. */
 :root[data-visual-profile="liquid"] .profile-option.lg-on.is-active {
@@ -6249,9 +6162,6 @@ button:disabled {
   :root[data-visual-profile="liquid"] .icon-button,
   :root[data-visual-profile="liquid"] .home-server-icon,
   :root[data-visual-profile="liquid"] .home-server-more,
-  :root[data-visual-profile="liquid"] .home-news-row,
-  :root[data-visual-profile="liquid"] .home-news-empty,
-  :root[data-visual-profile="liquid"] .home-news-empty-action,
   :root[data-visual-profile="liquid"] .app-sidebar-panel,
   :root[data-visual-profile="liquid"] .app-titlebar {
     -webkit-backdrop-filter: none;
@@ -6275,9 +6185,6 @@ button:disabled {
   :root[data-visual-profile="liquid"] .icon-button,
   :root[data-visual-profile="liquid"] .home-server-icon,
   :root[data-visual-profile="liquid"] .home-server-more,
-  :root[data-visual-profile="liquid"] .home-news-row,
-  :root[data-visual-profile="liquid"] .home-news-empty,
-  :root[data-visual-profile="liquid"] .home-news-empty-action,
   :root[data-visual-profile="liquid"] .app-sidebar-panel,
   :root[data-visual-profile="liquid"] .app-titlebar {
     -webkit-backdrop-filter: none;
@@ -6307,9 +6214,6 @@ button:disabled {
   :root[data-visual-profile="liquid"] .icon-button,
   :root[data-visual-profile="liquid"] .home-server-icon,
   :root[data-visual-profile="liquid"] .home-server-more,
-  :root[data-visual-profile="liquid"] .home-news-row,
-  :root[data-visual-profile="liquid"] .home-news-empty,
-  :root[data-visual-profile="liquid"] .home-news-empty-action,
   :root[data-visual-profile="liquid"] .app-sidebar-panel,
   :root[data-visual-profile="liquid"] .app-titlebar {
     -webkit-backdrop-filter: none;

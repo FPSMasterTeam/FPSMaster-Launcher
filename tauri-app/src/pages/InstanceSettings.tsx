@@ -144,6 +144,26 @@ function InstanceSettingsPage({
     }
   }
 
+  async function importClientJar() {
+    if (!instance || !window.confirm(t("launch.importJar.trust"))) return;
+    try {
+      const { open } = await import("@tauri-apps/plugin-dialog");
+      const sourcePath = await open({
+        multiple: false,
+        directory: false,
+        filters: [{ name: "FPSMaster client", extensions: ["jar"] }]
+      });
+      if (typeof sourcePath !== "string") return;
+      await invoke("import_launcher_jar", { gameDir, versionId: effectiveVersionId, sourcePath });
+      await refreshSection("mods", effectiveVersionId);
+    } catch (error) {
+      setSections((prev) => ({
+        ...prev,
+        mods: { ...prev.mods, error: describeApiError(error, t) }
+      }));
+    }
+  }
+
   async function deleteEntry(section: InstanceSection, entryName: string) {
     if (!instance) return;
     if (!window.confirm(t("instanceFiles.deleteConfirm", { name: entryName }))) return;
@@ -377,6 +397,11 @@ function InstanceSettingsPage({
                 <p className="section-subtitle">{effectiveVersionId}</p>
               </div>
               <div className="section-toolbar">
+                {activeTab === "mods" && instance?.preset && (instance.launcherVersionType === "NOVA" || instance.useForge !== false) && (
+                  <Button variant="secondary" size="sm" disabled={busy || state.loading} onClick={() => void importClientJar()}>
+                    {t("launch.importJar.action")}
+                  </Button>
+                )}
                 <Button
                   variant="outline"
                   size="sm"

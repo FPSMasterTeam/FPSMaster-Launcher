@@ -51,14 +51,8 @@ export function tryExtractMessageFromJson(raw: string): string | null {
   }
 }
 
-/** Prefix the Rust side puts on a failed FPSMaster API call (see `api_failure`). */
+/** Prefix the Rust side puts on a failed package manifest call (see `api_failure`). */
 const API_ERROR_PREFIX = "FPSMASTER_API_ERROR ";
-
-/** Host of the launcher's own backend; anything else is a download source. */
-const FPSMASTER_API_HOST = "api.fpsmaster.top";
-
-/** Backend codes that mean "the bearer token is no longer valid". */
-const SESSION_INVALID_CODES = new Set(["UNAUTHORIZED", "AUTHENTICATION_REQUIRED"]);
 
 /** Exact text of `downloader::CANCELLED_MESSAGE`. */
 const CANCELLED_MESSAGE = "installation cancelled";
@@ -93,7 +87,7 @@ export function parseTaggedApiError(raw: string): TaggedApiError | null {
 
 /**
  * What went wrong, as far as the frontend can tell. Every Tauri command returns
- * `Result<_, String>`; FPSMaster API failures carry a tagged JSON payload with
+ * `Result<_, String>`; package manifest failures carry a tagged JSON payload with
  * the backend's stable `code`, everything else is classified from the flattened
  * reqwest / io error chain.
  */
@@ -103,7 +97,6 @@ export type ApiErrorKind =
   | "dns"
   | "tls"
   | "proxy"
-  | "sessionExpired"
   | "forbidden"
   | "notFound"
   | "rateLimited"
@@ -116,19 +109,19 @@ export type ApiErrorKind =
 
 export type ClassifiedApiError = {
   kind: ApiErrorKind;
-  /** Original backend text, kept for log/detail surfaces. */
+  /** Original error text, kept for log/detail surfaces. */
   raw: string;
   /** HTTP status, when known. */
   status: number | null;
-  /** Backend error code (FPSMaster API only). */
+  /** Backend error code (package manifest only). */
   code: string | null;
-  /** Backend message for display (FPSMaster API only). */
+  /** Backend message for display (package manifest only). */
   serverMessage: string | null;
   /** Host the failing request went to, when the error names one. */
   host: string | null;
-  /** True when the failing request targeted the FPSMaster API. */
+  /** True when the failing request targeted the package manifest. */
   fromApi: boolean;
-  /** Which API call failed (Rust `context`), FPSMaster API only. */
+  /** Which API call failed (Rust `context`), package manifest only. */
   context: string | null;
 };
 
@@ -205,7 +198,7 @@ function classified(
     code: extra.code ?? null,
     serverMessage: extra.serverMessage ?? null,
     host,
-    fromApi: extra.fromApi ?? host === FPSMASTER_API_HOST,
+    fromApi: extra.fromApi ?? false,
     context: extra.context ?? null
   };
 }
@@ -215,15 +208,10 @@ function classifyTagged(raw: string, tagged: TaggedApiError): ClassifiedApiError
     status: tagged.status,
     code: tagged.code,
     serverMessage: tagged.message,
-    host: FPSMASTER_API_HOST,
+    host: null,
     fromApi: true,
     context: tagged.context
   };
-  // Only a 401 means the token is dead. A 401 carrying another code (wrong
-  // password on login) is an ordinary business failure with its own message.
-  if (tagged.status === 401 && (tagged.code === null || SESSION_INVALID_CODES.has(tagged.code))) {
-    return classified("sessionExpired", raw, base);
-  }
   if (tagged.status === 429 || tagged.code === "RATE_LIMITED") {
     return classified("rateLimited", raw, base);
   }
@@ -254,10 +242,6 @@ export function classifyApiError(error: unknown): ClassifiedApiError {
   // the wrong thing.
   if (normalized.includes("failed to join") && normalized.includes("task")) {
     return classified("internal", raw);
-  }
-  // The launcher's own pre-flight check for a missing token.
-  if (normalized === "token is required") {
-    return classified("sessionExpired", raw, { fromApi: true, host: FPSMASTER_API_HOST });
   }
   if (/\b(sha1|sha256|sha512|checksum|size) mismatch\b/.test(normalized)) {
     return classified("integrity", raw);
@@ -310,7 +294,7 @@ export function isCancelledError(error: unknown): boolean {
 }
 
 function transportText(kind: ApiErrorKind, item: ClassifiedApiError, t: Translator): string {
-  // FPSMaster API vs a download source matters: the fix for "our server is
+  // package manifest vs a download source matters: the fix for "our server is
   // down" is to wait, the fix for "BMCLAPI is down" is to switch source.
   const host = item.host;
   if (item.fromApi || !host) {
@@ -341,8 +325,6 @@ export function describeApiError(error: unknown, t: Translator): string {
     case "tls":
     case "proxy":
       return transportText(item.kind, item, t);
-    case "sessionExpired":
-      return t("error.auth.rejected");
     case "forbidden":
       return item.fromApi
         ? t("error.http.forbidden")
@@ -398,42 +380,4 @@ export function describeApiError(error: unknown, t: Translator): string {
       return item.raw === "" ? t("error.unknown") : item.raw;
     }
   }
-}
-
-export function normalizeLoginError(error: unknown, t: Translator): string {
-  const item = classifyApiError(error);
-  // Wrong password / banned account: the backend phrased it for the user.
-  if (item.fromApi && item.serverMessage && item.kind !== "server") {
-    return item.serverMessage;
-  }
-  if (item.kind !== "business") {
-    return describeApiError(error, t);
-  }
-  const text = item.raw
-    .replace(/^login request failed:\s*/i, "")
-    .replace(/^login failed:\s*/i, "")
-    .trim();
-  return text === "" ? t("login.failed") : text;
-}
-
-/**
- * True only when the FPSMaster backend confirmed that the bearer token is no
- * longer accepted (HTTP 401 with a session code). Mirror 403s, Mojang 401s and
- * "forbidden" business errors must never log the user out.
- */
-export function isAuthExpiredError(error: unknown): boolean {
-  return classifyApiError(error).kind === "sessionExpired";
-}
-
-/** The backend has no update configured for this platform/channel. */
-export function isLauncherAppUpdateMissing(error: unknown): boolean {
-  const item = classifyApiError(error);
-  if (item.fromApi && item.status === 404) {
-    return true;
-  }
-  const normalized = item.raw.toLowerCase();
-  return (
-    normalized.includes("launcher app update config not found") ||
-    normalized.includes("not configured")
-  );
 }

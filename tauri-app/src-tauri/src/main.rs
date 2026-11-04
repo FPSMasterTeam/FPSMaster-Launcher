@@ -3050,6 +3050,101 @@ fn install_world_archive_with_metadata(
 }
 
 #[tauri::command]
+async fn import_launcher_jar(
+    game_dir: String,
+    version_id: String,
+    source_path: String,
+) -> Result<LauncherModsInstallResult, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        import_launcher_jar_blocking(&game_dir, &version_id, Path::new(&source_path))
+    })
+    .await
+    .map_err(|e| format!("Failed to join local jar import: {e}"))?
+}
+
+fn import_launcher_jar_blocking(
+    game_dir: &str,
+    version_id: &str,
+    source: &Path,
+) -> Result<LauncherModsInstallResult, String> {
+    let is_nova = version_id.starts_with("FPSMaster-Nova-");
+    if version_id != "FPSMaster-Edge" && !is_nova {
+        return Err("Local client import requires an Edge or Nova preset".to_string());
+    }
+    if source.extension().and_then(|s| s.to_str()).is_none_or(|s| !s.eq_ignore_ascii_case("jar")) {
+        return Err("Select a client .jar file".to_string());
+    }
+    // Local import is an explicit trust decision by the user, not a catalog
+    // download. Check product metadata before touching the installed package.
+    let file = fs::File::open(source).map_err(|e| format!("Cannot open local jar: {e}"))?;
+    let mut archive = zip::ZipArchive::new(file).map_err(|e| format!("Invalid client jar: {e}"))?;
+    let metadata_name = if is_nova { "fabric.mod.json" } else { "mcmod.info" };
+    let mut metadata = String::new();
+    archive.by_name(metadata_name)
+        .map_err(|_| format!("Client jar is missing {metadata_name}"))?
+        .take(1024 * 1024)
+        .read_to_string(&mut metadata)
+        .map_err(|e| format!("Cannot read client metadata: {e}"))?;
+    let metadata: serde_json::Value = serde_json::from_str(&metadata)
+        .map_err(|e| format!("Invalid client metadata: {e}"))?;
+    let matches_product = if is_nova {
+        metadata.get("id").and_then(|v| v.as_str()) == Some("fpsmaster")
+    } else {
+        metadata.as_array().is_some_and(|mods| mods.iter().any(|item| {
+            item.get("modid").and_then(|v| v.as_str()) == Some("fpsmaster")
+        }))
+    };
+    if !matches_product {
+        return Err("This jar is not an FPSMaster client for the selected loader".to_string());
+    }
+    drop(archive);
+
+    let game_dir = resolve_game_dir_path(game_dir)?;
+    let mods_dir = resolve_version_runtime_dir(&game_dir, version_id)?.join("mods");
+    fs::create_dir_all(&mods_dir).map_err(|e| format!("Cannot create mods directory: {e}"))?;
+    let marker_path = mods_dir.join(".fpsmaster-launcher-mods.json");
+    let previous = read_mods_marker(&marker_path)?;
+    let checksum = compute_file_sha256_hex(source)?;
+    let target_name = "fpsmaster-local.jar";
+    let target = mods_dir.join(target_name);
+    let managed_target = previous.as_ref().is_some_and(|marker| {
+        marker.files.iter().any(|file| file.path == target_name)
+    });
+    if target.exists() && !managed_target {
+        return Err("A user-owned fpsmaster-local.jar already exists; move it before importing".to_string());
+    }
+    let tag = format!("local:{}", &checksum[..12]);
+    let stage = create_launcher_mods_stage_dir(&mods_dir)?;
+    let result = (|| {
+        let files = stage_launcher_download_package(source, "fpsmaster-local.jar", &stage)?;
+        // Validate the staged copy before replacing anything.
+        let marker = LauncherModsInstallMarker {
+            version_tag: tag.clone(),
+            checksum: Some(checksum),
+            manifest_url: None,
+            download_url: "local:import".to_string(),
+            files: files.clone(),
+            installed_at_epoch_sec: now_epoch_seconds(),
+        };
+        if launcher_package_has_unsupported_runtime_mods(&stage, &marker)? {
+            return Err("Client jar is incompatible with this runtime".to_string());
+        }
+        apply_staged_launcher_package(&mods_dir, &stage, previous.as_ref(), &files, false)?;
+        let content = serde_json::to_string_pretty(&marker).map_err(|e| e.to_string())?;
+        fs::write(&marker_path, content).map_err(|e| format!("Cannot write local package marker: {e}"))?;
+        Ok(LauncherModsInstallResult {
+            target_dir: mods_dir.to_string_lossy().into_owned(),
+            installed_files: files.len(),
+            skipped: false,
+            version_tag: tag,
+            manifest_url: None,
+        })
+    })();
+    let _ = fs::remove_dir_all(&stage);
+    result
+}
+
+#[tauri::command]
 async fn install_launcher_version_mods(
     window: tauri::Window,
     game_dir: String,
@@ -6465,7 +6560,6 @@ async fn build_vanilla_launch_plan(
             java_path: java_executable,
             max_memory_mb,
             server_address: None,
-            fpsmaster_token: None,
         };
         minecraft_core::build_vanilla_launch_plan(
             Some(&window),
@@ -6494,7 +6588,6 @@ async fn launch_vanilla(
     download_source: Option<String>,
     wait_for_exit: Option<bool>,
     server_address: Option<String>,
-    fpsmaster_token: Option<String>,
     use_forge: Option<bool>,
     use_optifine: Option<bool>,
     user_type: Option<String>,
@@ -6513,7 +6606,6 @@ async fn launch_vanilla(
             download_source,
             wait_for_exit,
             server_address,
-            fpsmaster_token,
             use_forge,
             use_optifine,
             user_type,
@@ -6538,7 +6630,6 @@ fn launch_vanilla_blocking(
     download_source: Option<String>,
     wait_for_exit: Option<bool>,
     server_address: Option<String>,
-    fpsmaster_token: Option<String>,
     use_forge: Option<bool>,
     use_optifine: Option<bool>,
     user_type: Option<String>,
@@ -6567,7 +6658,6 @@ fn launch_vanilla_blocking(
         }),
         max_memory_mb,
         server_address: server_address.clone(),
-        fpsmaster_token: fpsmaster_token.clone(),
     };
     // `use_forge == Some(false)` is the explicit "Edge, Forge disabled" AOT path (see
     // FPSMaster-Edge/runtime/README.md); every other case (Nova, or Edge with Forge
@@ -10049,6 +10139,7 @@ fn trim_to_mods_relative_path(path: &Path) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::{
+        import_launcher_jar_blocking, get_launcher_package_state_blocking,
         cleanup_launch_natives_dir, delete_instance_section_entry, ensure_safe_child_name,
         extract_archive_to_stage, fabric_mod_uses_named_namespace, format_quoted_command,
         is_nested_launcher_mod_jar_path, is_unsupported_launcher_runtime_mod_name,
@@ -10415,6 +10506,54 @@ mod tests {
             size: None,
             checksum: None,
         }
+    }
+
+    #[test]
+    fn local_client_import_validates_product_and_preserves_user_mods() {
+        let temp = tempfile::tempdir().unwrap();
+        let game_dir = temp.path().join("game");
+        let source = temp.path().join("nova.jar");
+        write_zip_with_entries(&source, &[("fabric.mod.json", br#"{"id":"fpsmaster"}"#)]);
+        let version_id = "FPSMaster-Nova-1.21.11";
+        let mods = resolve_version_runtime_dir(&game_dir, version_id).unwrap().join("mods");
+        fs::create_dir_all(&mods).unwrap();
+        fs::write(mods.join("user.jar"), b"user-owned").unwrap();
+        let result = import_launcher_jar_blocking(game_dir.to_str().unwrap(), version_id, &source).unwrap();
+        assert!(result.version_tag.starts_with("local:"));
+        assert_eq!(fs::read(mods.join("user.jar")).unwrap(), b"user-owned");
+        let state = get_launcher_package_state_blocking(
+            game_dir.to_string_lossy().into_owned(), version_id.to_string(), None, None, None, None,
+        ).unwrap();
+        assert!(state.installed);
+        assert_eq!(state.version_tag.as_deref(), Some(result.version_tag.as_str()));
+        assert!(import_launcher_jar_blocking(game_dir.to_str().unwrap(), "FPSMaster-Edge", &source).is_err());
+        write_zip_with_entries(&source, &[("fabric.mod.json", br#"{"id":"unrelated"}"#)]);
+        assert!(import_launcher_jar_blocking(game_dir.to_str().unwrap(), version_id, &source).is_err());
+        assert!(mods.join("fpsmaster-local.jar").is_file());
+        assert!(import_launcher_jar_blocking(game_dir.to_str().unwrap(), "../escape", &source).is_err());
+    }
+
+    #[test]
+    fn local_edge_import_accepts_forge_metadata() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("edge.jar");
+        write_zip_with_entries(&source, &[("mcmod.info", br#"[{"modid":"fpsmaster"}]"#)]);
+        let result = import_launcher_jar_blocking(temp.path().to_str().unwrap(), "FPSMaster-Edge", &source).unwrap();
+        assert_eq!(result.installed_files, 1);
+        fs::write(&source, b"not a jar").unwrap();
+        assert!(import_launcher_jar_blocking(temp.path().to_str().unwrap(), "FPSMaster-Edge", &source).is_err());
+    }
+
+    #[test]
+    fn local_import_does_not_overwrite_same_named_user_mod() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("edge.jar");
+        write_zip_with_entries(&source, &[("mcmod.info", br#"[{"modid":"fpsmaster"}]"#)]);
+        let mods = resolve_version_runtime_dir(temp.path(), "FPSMaster-Edge").unwrap().join("mods");
+        fs::create_dir_all(&mods).unwrap();
+        fs::write(mods.join("fpsmaster-local.jar"), b"user-owned").unwrap();
+        assert!(import_launcher_jar_blocking(temp.path().to_str().unwrap(), "FPSMaster-Edge", &source).is_err());
+        assert_eq!(fs::read(mods.join("fpsmaster-local.jar")).unwrap(), b"user-owned");
     }
 
     fn write_accesswidener_jar(path: &Path, first_line: &str) {
@@ -11182,6 +11321,7 @@ fn main() {
             get_launcher_package_state,
             get_edge_aot_package_state,
             install_launcher_version_mods,
+            import_launcher_jar,
             install_edge_aot_package,
             install_fabric_api,
             list_vanilla_versions,

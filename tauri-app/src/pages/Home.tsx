@@ -188,6 +188,8 @@ function HomePage({
           </div>
         </header>
 
+        <p className="mb-5 text-sm text-[var(--text-secondary)]">{t("home.archiveNotice")}</p>
+
         {launcherUpdate && launcherUpdateAvailable && (
           <section className="mb-5">
             <Card variant="frost" className="page-card rounded-[10px]" interactive={false}>

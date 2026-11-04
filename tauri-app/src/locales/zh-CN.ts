@@ -1,6 +1,10 @@
 import type { EnUSTranslations } from "./en-US";
 
 const zhCN: EnUSTranslations = {
+  "home.archiveNotice": "FPSMaster 正在收尾为可离线使用的最终版，无需 FPSMaster 账号或服务器。正版登录和新内容下载仍依赖第三方服务。",
+  "launch.importJar.action": "导入客户端 jar",
+  "launch.importJar.trust": "请选择可信来源、对应当前 Minecraft 版本的 Edge/Nova jar。只替换启动器管理的客户端包，保留其他模组，并停用客户端包自动更新。",
+  "launch.importJar.prompt": "客户端安装失败：{error}\n\n是否改为导入本地 Edge/Nova .jar？请仅选择可信来源的文件。手动导入后，不会再被目录中的更新替换。",
   "app.name": "FPSMaster",
   "secureStorage.unavailableTitle": "无法访问系统凭据存储",
   "secureStorage.unavailableDescription": "启动器无法安全读取账号与令牌。请解锁系统钥匙串或启动 Secret Service 后重试。现有账号数据没有被删除。",

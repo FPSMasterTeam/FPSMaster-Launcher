@@ -37,6 +37,7 @@ import {
 } from "./lib/launchPrepare";
 import { isLauncherVersionCompatible } from "./lib/version";
 import {
+  classifyApiError,
   describeApiError,
   isCancelledError,
   isNetworkError
@@ -997,6 +998,12 @@ function Launcher() {
   ) {
     if (!instance.preset || !instance.launcherVersionType) return;
     const launchSessionId = options.sessionId;
+    // Explicitly imported packages are user-owned, not catalog update targets.
+    const localTag = await installedPresetPackageTag(instance);
+    if (localTag?.startsWith("local:")) {
+      markPresetInstalledFallback(instance, localTag);
+      return;
+    }
 
     // For Nova, `instance` is the game-version-specialised copy (baseVersion = picked MC version,
     // versionId = FPSMaster-Nova-<gameVersion>). Resolve everything against that game version.
@@ -1140,14 +1147,34 @@ function Launcher() {
           : t("app.status.autoInstallModsDone", { count: result.installedFiles })
       );
     } catch (error) {
+      if (isCancelledError(error)) throw error;
       // An update that cannot be downloaded must not block the package already
       // installed (same reasoning as the catalog fallback above).
-      if (isNetworkError(error)) {
+      if (isNetworkError(error) || ["notFound", "forbidden", "server"].includes(classifyApiError(error).kind)) {
         const installedTag = isEdgeNoForge ? null : await installedPresetPackageTag(instance);
         if (installedTag !== null) {
           console.warn("[preset-mods] package update unavailable, launching installed package:", error);
           notifyWarning(t("launch.warning.updateSkipped", { name: instance.name }), t("launch.offline.title"));
           markPresetInstalledFallback(instance, installedTag);
+          return;
+        }
+      }
+      if (!isEdgeNoForge && window.confirm(t("launch.importJar.prompt", {
+        error: describeApiError(error, t)
+      }))) {
+        const { open } = await import("@tauri-apps/plugin-dialog");
+        const sourcePath = await open({
+          multiple: false,
+          directory: false,
+          filters: [{ name: "FPSMaster client", extensions: ["jar"] }]
+        });
+        if (typeof sourcePath === "string") {
+          const imported = await invoke<LauncherModsInstallResult>("import_launcher_jar", {
+            gameDir: settings.gameDir,
+            versionId: instance.versionId,
+            sourcePath
+          });
+          markPresetInstalledFallback(instance, imported.versionTag);
           return;
         }
       }
