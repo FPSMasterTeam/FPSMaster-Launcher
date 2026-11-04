@@ -139,8 +139,7 @@ async function cachedLoaderLookup<T>(key: string, run: () => Promise<T>): Promis
 
 const EMPTY_LAUNCHER_VERSIONS: LauncherVersionMap = {
   EDGE: null,
-  NOVA: null,
-  EXTREME: null
+  NOVA: null
 };
 
 // Nova exposes several Minecraft game versions under one product. We keep the catalog's latest
@@ -693,7 +692,7 @@ function Launcher() {
   }
 
   function pickLatestLauncherVersions(entries: LauncherVersion[]): LauncherVersionMap {
-    const out: LauncherVersionMap = { EDGE: null, NOVA: null, EXTREME: null };
+    const out: LauncherVersionMap = { EDGE: null, NOVA: null };
     const scoreOf = (item: LauncherVersion): number => {
       const raw = item.createdAt ?? "";
       const parsed = Date.parse(raw);
@@ -701,7 +700,7 @@ function Launcher() {
     };
 
     for (const item of entries) {
-      if (item.versionType !== "EDGE" && item.versionType !== "NOVA" && item.versionType !== "EXTREME")
+      if (item.versionType !== "EDGE" && item.versionType !== "NOVA")
         continue;
       if (!isLauncherVersionCompatible(currentLauncherVersion, item.minLauncherVersion)) continue;
       const current = out[item.versionType];
@@ -1698,12 +1697,11 @@ function Launcher() {
   }
 
   function productLabel(instance: Instance): string {
-    if (instance.launcherVersionType === "EXTREME") return "Extreme";
     if (instance.launcherVersionType === "NOVA") return `Nova ${instance.baseVersion}`;
     return instance.name;
   }
 
-  // Release-catalog gate for Nova / Extreme (Edge is always offered). A missing
+  // Release-catalog gate for Nova (Edge is always offered). A missing
   // entry only means "not released" once the catalog actually loaded: when the
   // fetch failed, retry it once and otherwise launch what is installed instead of
   // claiming the product does not exist (launcher-ui-4).
@@ -1751,9 +1749,9 @@ function Launcher() {
     setLaunchingInstanceId(null);
   }
 
-  // The single launch entry point (home, instances, servers, quick join): one
-  // place for the single-instance check, the release gate, the Extreme branch
-  // and offline fallback (launcher-ui-1).
+  // The single launch entry point (home, instances, quick launch): one place
+  // for the single-instance check, the release gate and offline fallback
+  // (launcher-ui-1).
   async function launchInstance(rawTarget: Instance, options: LaunchOptions = {}) {
     if (!requireMinecraftAccountForLaunch()) {
       return;
@@ -1808,11 +1806,7 @@ function Launcher() {
       markLaunchPreparePhase("login", "done", "complete", t("launch.progress.loginCompleted"));
       throwIfLaunchCancelled(sessionId);
 
-      if (target.launcherVersionType === "EXTREME") {
-        launchResult = await runExtremeLaunch(target, readyAccount, sessionId, gate, options);
-      } else {
-        launchResult = await runJavaLaunch(target, readyAccount, sessionId, gate, options);
-      }
+      launchResult = await runJavaLaunch(target, readyAccount, sessionId, gate, options);
       setLaunchProgressPercent(100);
       setLaunchProgressText(t("launch.progress.startingGame"));
       markLaunchPreparePhase("launch", "done", "complete", t("launch.progress.startingGame"));
@@ -1912,82 +1906,6 @@ function Launcher() {
         prepared.launcherVersionType === "EDGE"
           ? prepared.useOptiFine !== false
           : Boolean(prepared.optiFineVersion)
-    });
-  }
-
-  // FPSMaster-Extreme is a native binary, not a Java instance: install the native
-  // tarball (install_native_app), best-effort extract vanilla 1.8.9 assets
-  // (prepare_extreme_assets), then spawn it (launch_native_app). See
-  // MiniCraft/docs/LAUNCHER_INTEGRATION.md.
-  async function runExtremeLaunch(
-    target: Instance,
-    account: MinecraftAccount,
-    sessionId: string,
-    gate: { catalogUnavailable: boolean; versionMap: LauncherVersionMap },
-    options: LaunchOptions
-  ): Promise<LaunchExecutionResult> {
-    const versionId = localVersionIdFor(target);
-    markLaunchPreparePhase("check-instance", "running", "prepare", t("launch.progress.checkInstance"));
-    setLaunchProgressPercent(10);
-    setLaunchProgressText(t("launch.progress.checkInstance"));
-    const skipInstall = options.quick || gate.catalogUnavailable
-      ? Boolean((await readOfflineReadiness(target))?.ready)
-      : false;
-    if (!skipInstall) {
-      const targetVersion = gate.versionMap.EXTREME;
-      if (!targetVersion) {
-        throw new Error(t("launch.error.notReleased", { name: productLabel(target) }));
-      }
-      if (!isLauncherVersionCompatible(currentLauncherVersion, targetVersion.minLauncherVersion)) {
-        throw new Error(
-          t("app.status.launcherUpgradeRequired", { required: targetVersion.minLauncherVersion ?? "-" })
-        );
-      }
-      try {
-        await invoke("install_native_app", {
-          gameDir: settings.gameDir,
-          versionId,
-          downloadUrl: targetVersion.downloadUrl,
-          versionTag: targetVersion.versionName,
-          checksum: targetVersion.checksum,
-          ipcSession: sessionId
-        });
-      } catch (error) {
-        // An update that cannot be downloaded must not block the installed build.
-        if (!isNetworkError(error) || !(await readOfflineReadiness(target))?.ready) {
-          throw error;
-        }
-        console.warn("[launch] Extreme update unavailable, launching the installed build:", error);
-        notifyWarning(t("launch.warning.updateSkipped", { name: target.name }), t("launch.offline.title"));
-      }
-    }
-    markLaunchPreparePhase("check-instance", "done", "complete", t("launch.progress.checkInstance"));
-    throwIfLaunchCancelled(sessionId);
-
-    // Best-effort: without a 1.8.9 client jar the client resolves assets itself.
-    markLaunchPreparePhase("runtime", "running", "prepare", t("launch.progress.prepareRuntime"));
-    setLaunchProgressPercent(70);
-    setLaunchProgressText(t("launch.progress.prepareRuntime"));
-    let assetsPath: string | undefined;
-    try {
-      assetsPath = await invoke<string>("prepare_extreme_assets", { gameDir: settings.gameDir, versionId });
-    } catch (error) {
-      console.warn("[launch] Extreme assets not prepared:", error);
-      assetsPath = undefined;
-    }
-    markLaunchPreparePhase("runtime", "done", "complete", t("launch.progress.prepareRuntime"));
-    throwIfLaunchCancelled(sessionId);
-
-    markLaunchPreparePhase("launch", "running", "prepare", t("launch.progress.buildCommand"));
-    setLaunchProgressPercent(90);
-    setLaunchProgressText(t("launch.progress.buildCommand"));
-    return invoke<LaunchExecutionResult>("launch_native_app", {
-      gameDir: settings.gameDir,
-      versionId,
-      playerName: account.username,
-      assetsPath,
-      serverAddress: options.serverAddress,
-      waitForExit: false
     });
   }
 
@@ -2316,8 +2234,7 @@ function Launcher() {
   }
 
   // Repair reinstalls the runtime through the install dialog so it shows
-  // progress, can be cancelled and uses the chosen download source; Extreme is
-  // a native package and is force-reinstalled instead (launcher-ui-12).
+  // progress, can be cancelled and uses the chosen download source (launcher-ui-12).
   async function repairInstance(id: string) {
     if (busy) {
       notifyInfo(t("launch.info.alreadyLaunching"));
@@ -2331,7 +2248,6 @@ function Launcher() {
       notifyWarning(t("launch.warning.contentInstalling", { name: source.name }));
       return;
     }
-    const isExtreme = source.launcherVersionType === "EXTREME";
     const sessionId = createSessionId();
     setInstallDialog({
       open: true,
@@ -2343,16 +2259,13 @@ function Launcher() {
       cancelling: false,
       errorText: "",
       vanilla: {
-        ...createPhaseState(
-          isExtreme ? t("repair.phase.native") : t("install.phase.vanilla"),
-          isExtreme ? "native" : "vanilla"
-        ),
+        ...createPhaseState(t("install.phase.vanilla"), "vanilla"),
         status: "running",
         stage: "prepare",
         message: t("app.status.instanceRepairing", { name: source.name })
       },
       loaderPhase:
-        isExtreme || source.loader === "vanilla"
+        source.loader === "vanilla"
           ? null
           : createPhaseState(
               source.loader === "forge" ? t("install.phase.forge") : t("install.phase.fabric"),
@@ -2363,53 +2276,36 @@ function Launcher() {
     setBusy(true);
     setStatus(t("app.status.instanceRepairing", { name: source.name }));
     try {
-      if (isExtreme) {
-        const targetVersion =
-          launcherVersions.EXTREME ?? (await refreshLauncherVersions(true)).map?.EXTREME ?? null;
-        if (!targetVersion) {
-          throw new Error(t("launch.error.notReleased", { name: productLabel(source) }));
-        }
-        await invoke("install_native_app", {
-          gameDir: settings.gameDir,
-          versionId: localVersionIdFor(source),
-          downloadUrl: targetVersion.downloadUrl,
-          versionTag: targetVersion.versionName,
-          checksum: targetVersion.checksum,
-          ipcSession: sessionId,
-          force: true
-        });
-      } else {
-        const result = await invoke<InstanceRepairResult>("repair_instance_runtime", {
-          gameDir: settings.gameDir,
-          versionId: source.versionId,
-          loader: source.loader,
-          baseVersion: source.baseVersion,
-          loaderVersion: source.loaderVersion,
-          downloadSource: settings.downloadSource,
-          downloadThreads: settings.downloadThreads,
-          ipcSession: sessionId
-        });
-        const repaired: Instance = {
-          ...source,
-          versionId: result.versionId,
-          baseVersion: result.baseVersion,
-          loader: result.loader,
-          loaderVersion: result.loaderVersion,
-          optiFineVersion: result.optiFineVersion
-        };
-        // Keep the Nova preset generic in state (its versionId/baseVersion are picked at launch);
-        // custom/other-preset instances persist the repaired runtime ids as before.
-        const isNovaPreset = rawSource.preset && rawSource.launcherVersionType === "NOVA";
-        const persistedInstance = isNovaPreset ? rawSource : repaired;
-        setInstances((prev) =>
-          prev.map((item) => (item.id === persistedInstance.id ? persistedInstance : item))
-        );
-        installCtl.setInstalledVersions((prev) =>
-          prev.includes(result.versionId) ? prev : [result.versionId, ...prev]
-        );
-        if (repaired.preset) {
-          await ensurePresetModsReady(repaired, { sessionId });
-        }
+      const result = await invoke<InstanceRepairResult>("repair_instance_runtime", {
+        gameDir: settings.gameDir,
+        versionId: source.versionId,
+        loader: source.loader,
+        baseVersion: source.baseVersion,
+        loaderVersion: source.loaderVersion,
+        downloadSource: settings.downloadSource,
+        downloadThreads: settings.downloadThreads,
+        ipcSession: sessionId
+      });
+      const repaired: Instance = {
+        ...source,
+        versionId: result.versionId,
+        baseVersion: result.baseVersion,
+        loader: result.loader,
+        loaderVersion: result.loaderVersion,
+        optiFineVersion: result.optiFineVersion
+      };
+      // Keep the Nova preset generic in state (its versionId/baseVersion are picked at launch);
+      // custom/other-preset instances persist the repaired runtime ids as before.
+      const isNovaPreset = rawSource.preset && rawSource.launcherVersionType === "NOVA";
+      const persistedInstance = isNovaPreset ? rawSource : repaired;
+      setInstances((prev) =>
+        prev.map((item) => (item.id === persistedInstance.id ? persistedInstance : item))
+      );
+      installCtl.setInstalledVersions((prev) =>
+        prev.includes(result.versionId) ? prev : [result.versionId, ...prev]
+      );
+      if (repaired.preset) {
+        await ensurePresetModsReady(repaired, { sessionId });
       }
       // Re-derive every preset badge (incl. Nova's per-version keys) so a
       // "needs repair" badge does not outlive the repair (launcher-ui-6).
@@ -3054,15 +2950,12 @@ function Launcher() {
           <CrashDialog
             crash={crashReport}
             instanceName={crashInstanceName(crashReport)}
-            onOpenLogs={
-              crashReport.versionId === resolvePresetVersionId("preset-extreme")
-                ? null
-                : () =>
-                    void invoke("open_instance_section", {
-                      gameDir: settings.gameDir,
-                      versionId: crashReport.versionId,
-                      section: "logs"
-                    }).catch((error) => notifyError(describeApiError(error, t)))
+            onOpenLogs={() =>
+              void invoke("open_instance_section", {
+                gameDir: settings.gameDir,
+                versionId: crashReport.versionId,
+                section: "logs"
+              }).catch((error) => notifyError(describeApiError(error, t)))
             }
             onOpenFile={openPathWithSystem}
             onDiagnose={() => diagnoseCrash(crashReport)}

@@ -32,12 +32,6 @@ pub(crate) const IMPORT_ARCHIVE_BUDGET: ZipExtractBudget = ZipExtractBudget {
     max_total_uncompressed_bytes: 8 * GIB,
 };
 
-/// Vanilla client jars scanned for their bundled asset tree.
-pub(crate) const CLIENT_JAR_BUDGET: ZipExtractBudget = ZipExtractBudget {
-    max_entries: 100_000,
-    max_total_uncompressed_bytes: 2 * GIB,
-};
-
 /// Downloaded JRE archives (zip or tar.gz).
 pub(crate) const JRE_ARCHIVE_BUDGET: ZipExtractBudget = ZipExtractBudget {
     max_entries: 50_000,

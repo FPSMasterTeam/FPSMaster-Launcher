@@ -9,8 +9,7 @@ import { formatDuration } from "../utils/launcher";
 type CrashDialogProps = {
   crash: GameExitEvent;
   instanceName: string;
-  /** Instance logs folder; null when the client keeps its logs elsewhere (Extreme). */
-  onOpenLogs: (() => void) | null;
+  onOpenLogs: () => void;
   onOpenFile: (path: string) => void;
   onDiagnose: () => void;
   onClose: () => void;
@@ -66,12 +65,10 @@ export default function CrashDialog({
               {t("crash.openHsErr")}
             </Button>
           )}
-          {onOpenLogs && (
-            <Button size="sm" variant="secondary" className="gap-2" onClick={onOpenLogs}>
-              <FolderOpen size={14} />
-              {t("crash.openLogs")}
-            </Button>
-          )}
+          <Button size="sm" variant="secondary" className="gap-2" onClick={onOpenLogs}>
+            <FolderOpen size={14} />
+            {t("crash.openLogs")}
+          </Button>
           <Button size="sm" variant="secondary" className="gap-2" onClick={onDiagnose}>
             <Stethoscope size={14} />
             {t("crash.diagnose")}

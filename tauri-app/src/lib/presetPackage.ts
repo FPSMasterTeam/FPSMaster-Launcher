@@ -28,12 +28,10 @@ export function resolvePresetAccessState(
   if (instance.launcherVersionType === "EDGE") {
     return { state: "ok" };
   }
-  // NOVA and EXTREME are gated: each resolves against its own catalog entry, which is only
-  // present once released. NOVA resolves against the picked game version's entry; EXTREME
-  // against its single product entry. The caller words the message (it knows whether the
+  // NOVA is gated: it resolves against the picked game version's catalog entry, which is
+  // only present once released. The caller words the message (it knows whether the
   // catalog actually loaded).
-  const version =
-    instance.launcherVersionType === "NOVA" ? (novaVersion ?? null) : versionMap[instance.launcherVersionType];
+  const version = novaVersion ?? null;
   if (!version) {
     return { state: "pending-release" };
   }

@@ -29,7 +29,7 @@ export type BlurMode = "off" | "background" | "frost";
 // Named visual presets. "custom" means the user moved a knob away from a preset.
 // "liquid" is the Apple-style lensed-glass look, reserved for navigation chrome.
 export type VisualProfile = "standard" | "glass" | "liquid" | "custom";
-export type LauncherVersionType = "EDGE" | "NOVA" | "EXTREME";
+export type LauncherVersionType = "EDGE" | "NOVA";
 export type MinecraftAccountType = "offline" | "microsoft";
 export type ContentSource = "modrinth" | "curseforge" | "local";
 export type OnlineContentSource = Exclude<ContentSource, "local">;
@@ -248,8 +248,8 @@ export type ModpackInstallResult = {
 
 export type InstallPhaseState = {
   title: string;
-  // Backend `phase` this row tracks; "native" is the Extreme client package.
-  sourcePhase: "vanilla" | "forge" | "fabric" | "optifine" | "native";
+  // Backend `phase` this row tracks.
+  sourcePhase: "vanilla" | "forge" | "fabric" | "optifine";
   status: PhaseStatus;
   stage: string;
   message: string;

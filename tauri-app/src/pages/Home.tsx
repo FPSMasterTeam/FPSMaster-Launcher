@@ -384,7 +384,7 @@ function HomePage({
 
               <div className="modal-body pr-1">
                 <div className="page-stack">
-                  {/* Edge / Extreme — single-version product regions */}
+                  {/* Edge — single-version product region */}
                   {presetRegions.map((instance) => (
                     <div key={instance.id}>
                       <div className="mb-3 flex items-center gap-2 px-1">
@@ -626,7 +626,6 @@ function NovaVersionRow({
 // Region heading for the single-version products in the launch picker.
 function regionLabel(instance: Instance): string {
   if (instance.launcherVersionType === "EDGE") return "Edge";
-  if (instance.launcherVersionType === "EXTREME") return "Extreme";
   if (instance.launcherVersionType === "NOVA") return "Nova";
   return instance.name;
 }

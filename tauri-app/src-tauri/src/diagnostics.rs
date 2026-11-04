@@ -513,26 +513,6 @@ fn check_java_runtimes(game_dir: &Path, deep: bool, items: &mut Vec<HealthCheckI
 
 fn check_instance(game_dir: &Path, version_id: &str, deep: bool, items: &mut Vec<HealthCheckItem>) {
     let id = format!("instance:{version_id}");
-    if crate::is_native_app_version_id(version_id) {
-        let install_dir = crate::native_app_install_dir(game_dir, version_id);
-        let binary = install_dir.join(crate::native_app_binary_name());
-        let marker = crate::native_app_marker_path(&install_dir);
-        let (status, code) = if binary.is_file() && marker.is_file() {
-            ("ok", "INSTANCE_FILES_OK")
-        } else {
-            ("error", "NATIVE_APP_INCOMPLETE")
-        };
-        items.push(item(
-            id,
-            "instance",
-            status,
-            code,
-            json!({ "versionId": version_id }),
-            install_dir.to_string_lossy(),
-            None,
-        ));
-        return;
-    }
     match minecraft_core::inspect_instance_files(game_dir, version_id, deep) {
         Ok(report) if report.missing.is_empty() && report.corrupted.is_empty() => {
             items.push(item(

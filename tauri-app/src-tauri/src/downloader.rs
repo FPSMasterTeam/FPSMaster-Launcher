@@ -1,7 +1,7 @@
 //! Unified resumable downloader.
 //!
 //! Every file the launcher fetches (JDK archives and Mojang runtime files,
-//! launcher mod packages, Edge AOT / Extreme packages, modpacks, content,
+//! launcher mod packages, Edge AOT packages, modpacks, content,
 //! launcher updates, vanilla libraries/assets) goes through [`download`]. It
 //! owns the policy that used to be re-implemented four times with different
 //! bugs:

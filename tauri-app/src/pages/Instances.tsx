@@ -17,7 +17,7 @@ import type {
 } from "../types";
 import { resolveInstanceIconPath } from "../utils/launcher";
 
-type InstanceScope = "ALL" | "EDGE" | "NOVA" | "VANILLA" | "EXTREME";
+type InstanceScope = "ALL" | "EDGE" | "NOVA" | "VANILLA";
 type InstanceCategory = Exclude<InstanceScope, "ALL">;
 
 type GridTarget = {
@@ -49,7 +49,7 @@ type InstancesPageProps = {
   onOpenInstanceContent: (id: string, gameVersion?: string) => void;
 };
 
-const SCOPES: InstanceScope[] = ["ALL", "EDGE", "NOVA", "EXTREME", "VANILLA"];
+const SCOPES: InstanceScope[] = ["ALL", "EDGE", "NOVA", "VANILLA"];
 
 function InstancesPage({
   instances,
@@ -80,10 +80,6 @@ function InstancesPage({
   );
   const novaPreset = useMemo(
     () => instances.find((item) => item.preset && item.launcherVersionType === "NOVA") ?? null,
-    [instances]
-  );
-  const extremePreset = useMemo(
-    () => instances.find((item) => item.preset && item.launcherVersionType === "EXTREME") ?? null,
     [instances]
   );
   const vanillaInstances = useMemo(() => instances.filter((item) => !item.preset), [instances]);
@@ -119,16 +115,6 @@ function InstancesPage({
       }
     }
 
-    if (extremePreset) {
-      targets.push({
-        key: extremePreset.id,
-        category: "EXTREME",
-        instance: extremePreset,
-        label: "Extreme",
-        subtitle: extremePreset.baseVersion
-      });
-    }
-
     for (const instance of vanillaInstances) {
       targets.push({
         key: instance.id,
@@ -143,7 +129,6 @@ function InstancesPage({
   }, [
     edgePreset,
     novaPreset,
-    extremePreset,
     vanillaInstances,
     novaGameVersions,
     selectedNovaGameVersion,
@@ -155,7 +140,6 @@ function InstancesPage({
       ALL: allTargets.length,
       EDGE: 0,
       NOVA: 0,
-      EXTREME: 0,
       VANILLA: 0
     };
     for (const target of allTargets) {
@@ -222,8 +206,7 @@ function InstancesPage({
     if (scope === "ALL") return t("instances.scope.all");
     if (scope === "EDGE") return t("instances.category.edge");
     if (scope === "NOVA") return t("instances.category.nova");
-    if (scope === "VANILLA") return t("instances.category.vanilla");
-    return t("instances.category.extreme");
+    return t("instances.category.vanilla");
   }
 
   function categoryLabel(category: InstanceCategory): string {
@@ -251,11 +234,7 @@ function InstancesPage({
     isNovaTestingGameVersion(selectedTarget.gameVersion!);
   const selectedCatalogRelease =
     selectedTarget?.catalogVersion ??
-    (selectedTarget?.category === "EDGE"
-      ? launcherVersions.EDGE
-      : selectedTarget?.category === "EXTREME"
-        ? launcherVersions.EXTREME
-        : null);
+    (selectedTarget?.category === "EDGE" ? launcherVersions.EDGE : null);
 
   return (
     <div className="page-shell">
@@ -528,7 +507,7 @@ function InstancesPage({
                 <button
                   type="button"
                   className="instances-detail-icon-btn"
-                  disabled={!selectedCanAccess || selectedTarget.category === "EXTREME"}
+                  disabled={!selectedCanAccess}
                   onClick={() =>
                     onOpenInstanceContent(
                       selectedTarget.instance.id,

@@ -25,7 +25,7 @@ pub struct LauncherVersion {
     #[serde(rename = "versionName")]
     pub version_name: String,
     // Minecraft game version this release targets (e.g. "1.21.11"). Present on nova entries so the
-    // launcher can offer multiple game versions under a single Nova product; null for edge/extreme.
+    // launcher can offer multiple game versions under a single Nova product; null for edge.
     #[serde(rename = "gameVersion", default)]
     pub game_version: Option<String>,
     #[serde(rename = "artifactSourceType", default)]
