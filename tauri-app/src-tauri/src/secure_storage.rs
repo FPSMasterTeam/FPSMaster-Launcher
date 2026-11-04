@@ -22,7 +22,6 @@ const MAX_KEY_LEN: usize = 200;
 const MAX_VALUE_LEN: usize = 256 * 1024;
 const CREDENTIALS_DIR: &str = "credentials-v1";
 const MASTER_KEY_FILE: &str = "master.key";
-const KEYRING_SERVICE: &str = "com.fpsmaster.launcher";
 /// Present when the user agreed to keep the master key in a 0600 file because
 /// the system credential store is unusable (e.g. Linux without Secret Service).
 const FILE_FALLBACK_FLAG: &str = "file-key-fallback.enabled";
@@ -35,8 +34,8 @@ pub(crate) const CODE_STORE_ACCESS_DENIED: &str = "CREDENTIAL_STORE_ACCESS_DENIE
 /// Master keys resolved in this process, by credentials directory. Every
 /// get/set used to hit the keychain, and on macOS each access of an ad-hoc
 /// signed build can raise an authorization prompt (launcher-core-11).
-fn master_key_cache() -> &'static Mutex<HashMap<PathBuf, [u8; KEY_LEN]>> {
-    static CACHE: OnceLock<Mutex<HashMap<PathBuf, [u8; KEY_LEN]>>> = OnceLock::new();
+fn master_key_cache() -> &'static Mutex<HashMap<(String, PathBuf), [u8; KEY_LEN]>> {
+    static CACHE: OnceLock<Mutex<HashMap<(String, PathBuf), [u8; KEY_LEN]>>> = OnceLock::new();
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
@@ -153,15 +152,16 @@ fn load_or_create_file_master_key(dir: &Path, keyring_error: String) -> Result<[
     }
 }
 
-fn load_or_create_master_key(dir: &Path) -> Result<[u8; KEY_LEN], String> {
+fn load_or_create_master_key(dir: &Path, config: &tauri::Config) -> Result<[u8; KEY_LEN], String> {
     let mut cache = master_key_cache()
         .lock()
         .map_err(|_| "Secure storage master key lock is poisoned".to_string())?;
-    if let Some(key) = cache.get(dir) {
+    let cache_key = (config.identifier.clone(), dir.to_path_buf());
+    if let Some(key) = cache.get(&cache_key) {
         return Ok(*key);
     }
     ensure_dir(dir)?;
-    let key = match load_master_key_from_keyring(dir) {
+    let key = match load_master_key_from_keyring(dir, config) {
         Ok(key) => key,
         Err(error) if dir.join(FILE_FALLBACK_FLAG).exists() => {
             crate::push_ui_log(
@@ -173,17 +173,22 @@ fn load_or_create_master_key(dir: &Path) -> Result<[u8; KEY_LEN], String> {
         }
         Err(error) => return Err(error),
     };
-    cache.insert(dir.to_path_buf(), key);
+    cache.insert(cache_key, key);
     Ok(key)
 }
 
-fn load_master_key_from_keyring(dir: &Path) -> Result<[u8; KEY_LEN], String> {
-    let legacy_path = dir.join(MASTER_KEY_FILE);
-    let keyring_user = format!(
+fn keyring_identity<'a>(config: &'a tauri::Config, dir: &Path) -> (&'a str, String) {
+    // Alternate application identifiers must never access production keychain entries.
+    (&config.identifier, format!(
         "secure-storage-master-key-v1-{:x}",
         Sha256::digest(dir.as_os_str().to_string_lossy().as_bytes())
-    );
-    let entry = keyring::Entry::new(KEYRING_SERVICE, &keyring_user)
+    ))
+}
+
+fn load_master_key_from_keyring(dir: &Path, config: &tauri::Config) -> Result<[u8; KEY_LEN], String> {
+    let legacy_path = dir.join(MASTER_KEY_FILE);
+    let (service, keyring_user) = keyring_identity(config, dir);
+    let entry = keyring::Entry::new(service, &keyring_user)
         .map_err(|e| classify_keyring_error("Failed to access the system credential store", &e))?;
 
     let stored = match entry.get_secret() {
@@ -257,7 +262,7 @@ pub(crate) struct SecureStorageStatus {
 pub(crate) fn secure_storage_status_blocking(app: &AppHandle) -> Result<SecureStorageStatus, String> {
     let dir = credentials_dir(app)?;
     let fallback = dir.join(FILE_FALLBACK_FLAG).exists();
-    let result = load_or_create_master_key(&dir);
+    let result = load_or_create_master_key(&dir, app.config());
     let file_key = dir.join(MASTER_KEY_FILE).exists();
     Ok(match result {
         Ok(_) => SecureStorageStatus {
@@ -303,7 +308,7 @@ pub async fn secure_storage_set_file_fallback(
                 .map_err(|e| format!("Failed to disable the file key fallback: {e}"))?;
         }
         if let Ok(mut cache) = master_key_cache().lock() {
-            cache.remove(&dir);
+            cache.remove(&(app.config().identifier.clone(), dir));
         }
         secure_storage_status_blocking(&app)
     })
@@ -365,7 +370,7 @@ pub async fn secure_storage_get(app: AppHandle, key: String) -> Result<Option<St
 fn secure_storage_get_blocking(app: AppHandle, key: String) -> Result<Option<String>, String> {
     let key = validate_key(&key)?;
     let dir = credentials_dir(&app)?;
-    let master = load_or_create_master_key(&dir)?;
+    let master = load_or_create_master_key(&dir, app.config())?;
     let path = entry_path(&dir, key);
     let blob = match fs::read(&path) {
         Ok(v) => v,
@@ -393,7 +398,7 @@ fn secure_storage_set_blocking(app: AppHandle, key: String, value: String) -> Re
         ));
     }
     let dir = credentials_dir(&app)?;
-    let master = load_or_create_master_key(&dir)?;
+    let master = load_or_create_master_key(&dir, app.config())?;
     atomic_write(&entry_path(&dir, key), &encrypt(&master, value.as_bytes())?)
 }
 
@@ -417,6 +422,23 @@ fn secure_storage_delete_blocking(app: AppHandle, key: String) -> Result<(), Str
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn keyring_namespace_follows_identifier_without_changing_production_identity() {
+        let mut config = tauri::Config::default();
+        config.identifier = "com.fpsmaster.launcher".into();
+        let dir = Path::new("/isolated/credentials-v1");
+        let (production_service, production_user) = keyring_identity(&config, dir);
+        assert_eq!(production_service, "com.fpsmaster.launcher");
+        assert_eq!(production_user, format!("secure-storage-master-key-v1-{:x}",
+            Sha256::digest(dir.as_os_str().to_string_lossy().as_bytes())));
+        config.identifier = "com.fpsmaster.launcher.verification".into();
+        let (verification_service, verification_user) = keyring_identity(&config, dir);
+        assert_eq!(verification_service, "com.fpsmaster.launcher.verification");
+        // Even with an accidentally shared directory, the service separates the entries.
+        assert_ne!(verification_service, "com.fpsmaster.launcher");
+        assert_eq!(verification_user, production_user);
+    }
+
     #[test]
     fn crypto_roundtrip_and_random_nonce() {
         let key = [7; KEY_LEN];
