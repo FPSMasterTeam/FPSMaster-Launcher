@@ -33,3 +33,6 @@ test-round
 .idea
 .DS_Store
 *.pid
+
+.DS_Store
+.codegraph/
