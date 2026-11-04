@@ -11,7 +11,6 @@ import {
 } from "../lib/novaTargets";
 import type {
   Instance,
-  LauncherUser,
   LauncherVersion,
   LauncherVersionMap,
   PresetPackageStatus
@@ -41,7 +40,6 @@ type InstancesPageProps = {
   launchingInstanceId: string | null;
   launchProgressPercent: number | null;
   launchProgressText: string;
-  user: LauncherUser | null;
   presetPackageStatuses: Record<string, PresetPackageStatus | undefined>;
   selectedInstanceId: string | null;
   onDelete: (id: string) => void;
@@ -53,14 +51,6 @@ type InstancesPageProps = {
 
 const SCOPES: InstanceScope[] = ["ALL", "EDGE", "NOVA", "EXTREME", "VANILLA"];
 
-function canAccessInstance(_instance: Instance, _user: LauncherUser | null): boolean {
-  // All client instances (Edge/Nova/Extreme) are open to every user. Channel-level entitlements
-  // Catalog entitlement is enforced by the backend (product groups / rollout). Beta and
-  // release client channels are open to every authenticated account.
-  // returns the versions a user may access from /launcher/versions/available.
-  return true;
-}
-
 function InstancesPage({
   instances,
   launcherVersions,
@@ -71,7 +61,6 @@ function InstancesPage({
   launchingInstanceId,
   launchProgressPercent,
   launchProgressText,
-  user,
   presetPackageStatuses,
   selectedInstanceId,
   onDelete,
@@ -252,7 +241,7 @@ function InstancesPage({
   const selectedIcon = selectedTarget ? resolveInstanceIconPath(selectedTarget.instance) : null;
   const selectedPresetStatus = selectedTarget ? presetStatusFor(selectedTarget) : undefined;
   const selectedCanAccess = selectedTarget
-    ? canAccessInstance(selectedTarget.instance, user)
+    ? true
     : false;
   const selectedIsLaunching =
     Boolean(selectedTarget) && busy && launchingInstanceId === selectedTarget!.instance.id;
@@ -323,7 +312,7 @@ function InstancesPage({
               {filteredTargets.map((target) => {
                 const icon = resolveInstanceIconPath(target.instance);
                 const active = target.key === resolvedSelectedKey;
-                const canAccess = canAccessInstance(target.instance, user);
+                const canAccess = true;
                 const presetStatus = presetStatusFor(target);
                 const launching = busy && launchingInstanceId === target.instance.id;
                 const testing =

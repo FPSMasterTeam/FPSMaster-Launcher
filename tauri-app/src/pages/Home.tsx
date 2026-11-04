@@ -1,20 +1,14 @@
 import {
   AlertTriangle,
-  ArrowRight,
-  BarChart3,
-  Calendar,
+  Archive,
   Check,
-  ChevronRight,
-  Clock,
   FastForward,
   Gamepad2,
   Lock,
   Play,
   Search,
   Swords,
-  TrendingUp,
-  X,
-  Zap
+  X
 } from "lucide-react";
 import { createPortal } from "react-dom";
 import { memo, useMemo, useState } from "react";
@@ -23,28 +17,18 @@ import Card from "../components/Card";
 import LiquidGlass from "../components/LiquidGlass";
 import { NOVA_DEFAULT_GAME_VERSION } from "../constants";
 import MinecraftProfileCard from "../components/MinecraftProfileCard";
-import ServerDialog from "../components/ServerDialog";
 import { useI18n } from "../i18n";
 import type {
   DownloadedLauncherUpdate,
   Instance,
   LauncherAppUpdateInfo,
-  LauncherDashboard,
   LauncherVersion,
-  MinecraftAccount,
-  LauncherUser,
-  NewsItem,
-  ServerItem,
-  TelemetryOnlineSummary
+  MinecraftAccount
 } from "../types";
 import { resolveInstanceIconPath } from "../utils/launcher";
 
 type HomePageProps = {
   availableInstances: Instance[];
-  launcherNews: NewsItem[];
-  launcherServers: ServerItem[];
-  launcherOnlineSummary: TelemetryOnlineSummary | null;
-  launcherDashboard: LauncherDashboard | null;
   launcherUpdate: LauncherAppUpdateInfo | null;
   launcherUpdateAvailable: boolean;
   launcherUpdateDownloading: boolean;
@@ -54,7 +38,6 @@ type HomePageProps = {
   launching: boolean;
   launchProgressPercent: number | null;
   launchProgressText: string;
-  user: LauncherUser | null;
   novaGameVersions: Record<string, LauncherVersion>;
   selectedNovaGameVersion: string;
   onSelectNovaGameVersion: (gameVersion: string) => void;
@@ -65,29 +48,15 @@ type HomePageProps = {
   onLaunch: () => void;
   onQuickLaunch: () => void;
   gameRunning: boolean;
-  onLaunchToServer: (serverAddress: string) => void;
   onOpenSettings: () => void;
-  onOpenServers: () => void;
   onSelectMinecraftAccount: (accountId: string) => void;
   onAddOfflineMinecraftAccount: (username: string) => void;
   onSaveMicrosoftMinecraftAccount: (account: MinecraftAccount) => void;
   onDeleteMinecraftAccount: (accountId: string) => void;
 };
 
-function canAccessInstance(_instance: Instance, _user: LauncherUser | null): boolean {
-  // All client instances (Edge/Nova/Extreme) are open to every user. Channel-level entitlements
-  // Catalog entitlement is enforced by the backend (product groups / rollout). Beta and
-  // release client channels are open to every authenticated account.
-  // returns the versions a user may access from /launcher/versions/available.
-  return true;
-}
-
 function HomePage({
   availableInstances,
-  launcherNews,
-  launcherServers,
-  launcherOnlineSummary,
-  launcherDashboard,
   launcherUpdate,
   launcherUpdateAvailable,
   launcherUpdateDownloading,
@@ -96,7 +65,6 @@ function HomePage({
   busy,
   launching,
   launchProgressPercent,
-  user,
   novaGameVersions,
   selectedNovaGameVersion,
   onSelectNovaGameVersion,
@@ -107,9 +75,7 @@ function HomePage({
   onLaunch,
   onQuickLaunch,
   gameRunning,
-  onLaunchToServer,
   onOpenSettings,
-  onOpenServers,
   onSelectMinecraftAccount,
   onAddOfflineMinecraftAccount,
   onSaveMicrosoftMinecraftAccount,
@@ -121,11 +87,6 @@ function HomePage({
   const [pickerOpen, setPickerOpen] = useState(false);
   const [pickerClosing, setPickerClosing] = useState(false);
   const [pickerQuery, setPickerQuery] = useState("");
-  const [activeNews, setActiveNews] = useState<NewsItem | null>(null);
-  const [newsClosing, setNewsClosing] = useState(false);
-  const [activeServer, setActiveServer] = useState<ServerItem | null>(null);
-  const [serverClosing, setServerClosing] = useState(false);
-
   const filteredInstances = useMemo(() => {
     const keyword = pickerQuery.trim().toLowerCase();
     if (keyword === "") return availableInstances;
@@ -194,48 +155,16 @@ function HomePage({
   // Only the default game version (1.21.11) is full-featured; every other Nova version is testing.
   const novaSelectedIsTesting =
     selectedInstance?.launcherVersionType === "NOVA" && selectedNovaGameVersion !== NOVA_DEFAULT_GAME_VERSION;
-  const activeNewsContent = (activeNews?.content ?? activeNews?.summary ?? "").trim();
-
-  const instanceLaunchable = Boolean(selectedInstance) && canAccessInstance(selectedInstance as Instance, user);
-  const quickJoinDisabled = busy || launching || gameRunning || !instanceLaunchable;
+  const instanceLaunchable = Boolean(selectedInstance);
   const launchDisabled = busy || gameRunning || !selectedInstance || !instanceLaunchable;
   const launchAsName = currentMinecraftAccount?.username ?? t("nav.player");
   const isOfflineAccount = !currentMinecraftAccount || currentMinecraftAccount.type === "offline";
-  const quickServers = useMemo(() => launcherServers.slice(0, 10), [launcherServers]);
-
-  const weeklyHours = launcherDashboard?.weeklyPlaytime?.totalHours ?? 0;
-  const sessionCount = launcherDashboard?.stats?.playSessionCount ?? 0;
-  const levelLabel = resolveHomeLevel(user);
-  const experience = typeof user?.experience === "number" ? user.experience : null;
-  const nextLevelNeed = typeof user?.nextLevelNeed === "number" ? user.nextLevelNeed : null;
-  const expPercent =
-    experience !== null && nextLevelNeed && nextLevelNeed > 0
-      ? Math.min(100, Math.round((experience / nextLevelNeed) * 100))
-      : null;
-  const expText = experience !== null && nextLevelNeed ? `${experience}/${nextLevelNeed}` : null;
-
   const closePicker = () => {
     setPickerClosing(true);
     setTimeout(() => {
       setPickerOpen(false);
       setPickerClosing(false);
     }, 180);
-  };
-
-  const closeNews = () => {
-    setNewsClosing(true);
-    setTimeout(() => {
-      setActiveNews(null);
-      setNewsClosing(false);
-    }, 150);
-  };
-
-  const closeServer = () => {
-    setServerClosing(true);
-    setTimeout(() => {
-      setActiveServer(null);
-      setServerClosing(false);
-    }, 150);
   };
 
   return (
@@ -245,19 +174,6 @@ function HomePage({
           <div className="page-header-main">
             <p className="page-eyebrow">{t("home.welcomeBack")}</p>
             <h1 className="page-title">{t("home.loadout.ready")}</h1>
-            {launcherOnlineSummary && (
-              <div className="mt-3 flex flex-wrap items-center gap-2">
-                <span className="badge badge-accent">
-                  {t("home.online.launcher", { count: launcherOnlineSummary.launcher })}
-                </span>
-                <span className="badge badge-muted">
-                  {t("home.online.edge", { count: launcherOnlineSummary.edge })}
-                </span>
-                <span className="badge badge-muted">
-                  {t("home.online.nova", { count: launcherOnlineSummary.nova })}
-                </span>
-              </div>
-            )}
           </div>
           <div className="page-header-actions">
             <MinecraftProfileCard
@@ -416,151 +332,16 @@ function HomePage({
           </LiquidGlass>
         </section>
 
-        {quickServers.length > 0 && (
-          <section className="mb-6">
-            <div className="home-strip-label">
-              <Zap size={13} className="text-[var(--mc-grass)]" />
-              <span>{t("home.quickJoin")}</span>
-            </div>
-            <div className="home-server-strip">
-              {quickServers.map((server) => (
-                <button
-                  key={server.id ?? server.address}
-                  type="button"
-                  className="home-server-icon"
-                  disabled={quickJoinDisabled}
-                  title={`${server.name} · ${server.address}`}
-                  aria-label={server.name}
-                  onClick={() => onLaunchToServer(server.address)}
-                >
-                  {server.iconPath ? (
-                    <img src={server.iconPath} alt={server.name} />
-                  ) : (
-                    server.name.slice(0, 1)
-                  )}
-                </button>
-              ))}
-              <button
-                type="button"
-                className="home-server-more"
-                onClick={onOpenServers}
-                aria-label={t("home.viewAll")}
-              >
-                <ArrowRight size={16} />
-              </button>
-            </div>
-          </section>
-        )}
-
-        {launcherDashboard && (
-          <section className="mb-6">
-            <div className="home-stats-row">
-              <div className="home-stat">
-                <p className="home-stat-label">
-                  <Clock size={12} />
-                  <span>{t("home.stats.weekly")}</span>
-                </p>
-                <p className="home-stat-value text-data">{weeklyHours.toFixed(1)}h</p>
-              </div>
-              <div className="home-stat">
-                <p className="home-stat-label">
-                  <BarChart3 size={12} />
-                  <span>{t("home.profile.sessions")}</span>
-                </p>
-                <p className="home-stat-value text-data">{sessionCount}</p>
-              </div>
-              <div className="home-stat">
-                <p className="home-stat-label">
-                  <TrendingUp size={12} />
-                  <span>{t("home.stats.level")}</span>
-                </p>
-                <div className="flex items-baseline justify-between gap-3">
-                  <p className="home-stat-value text-data">{levelLabel}</p>
-                  {expText && (
-                    <span className="text-data text-[11px] text-[var(--text-muted)]">{expText}</span>
-                  )}
-                </div>
-                {expPercent !== null && (
-                  <div className="home-level-bar mt-2">
-                    <div className="home-level-bar-fill" style={{ width: `${expPercent}%` }} />
-                  </div>
-                )}
-              </div>
-            </div>
-          </section>
-        )}
-
         <section>
-          <div className="section-header">
-            <div className="section-header-main">
-              <h2 className="section-title flex items-center gap-2">
-                <Calendar size={18} className="text-[var(--mc-grass)]" />
-                {t("home.latestNews")}
-              </h2>
-              <p className="section-subtitle">{t("home.news.source")}</p>
+          <Card variant="frost" className="page-card rounded-[10px]" interactive={false}>
+            <div className="notice">
+              <Archive size={18} className="mt-0.5 shrink-0 text-[var(--mc-grass)]" />
+              <div className="min-w-0 flex-1">
+                <p className="notice-title">{t("home.archived.title")}</p>
+                <p className="notice-text whitespace-pre-line">{t("home.archived.body")}</p>
+              </div>
             </div>
-            <div className="section-toolbar">
-              <LiquidGlass
-                as="button"
-                type="button"
-                mode="standard"
-                displacementScale={22}
-                aberrationIntensity={1.4}
-                blur={6}
-                interactive
-                elastic
-                className="segment-chip !min-h-9 px-4"
-                disabled={launcherNews.length === 0}
-                onClick={() => setActiveNews(launcherNews[0] ?? null)}
-              >
-                {t("home.viewAll")}
-              </LiquidGlass>
-            </div>
-          </div>
-          {launcherNews.length > 0 ? (
-            <div className="grid gap-1">
-              {launcherNews.slice(0, 5).map((news) => (
-                <button
-                  key={news.id ?? news.title}
-                  type="button"
-                  className="home-news-row"
-                  onClick={() => setActiveNews(news)}
-                >
-                  <span className={`badge shrink-0 ${news.pinned ? "badge-accent" : "badge-muted"}`}>
-                    {news.pinned ? t("home.news.pinnedTag") : t("home.news.tag")}
-                  </span>
-                  <span className="min-w-0 flex-1 truncate text-sm font-medium text-[var(--text-primary)]">
-                    {news.title}
-                  </span>
-                  {news.publishedAt && (
-                    <span className="text-data shrink-0 text-xs text-[var(--text-muted)]">
-                      {new Date(news.publishedAt).toLocaleDateString()}
-                    </span>
-                  )}
-                  <ChevronRight size={15} className="shrink-0 text-[var(--text-muted)]" />
-                </button>
-              ))}
-            </div>
-          ) : (
-            <div className="home-news-empty">
-              <p className="text-sm text-[var(--text-secondary)]">{t("home.news.emptyTitle")}</p>
-              <LiquidGlass
-                as="button"
-                type="button"
-                mode="standard"
-                displacementScale={20}
-                aberrationIntensity={1.4}
-                blur={6}
-                interactive
-                elastic
-                className="home-news-empty-action"
-                onClick={onOpenServers}
-              >
-                {t("home.news.emptyAction")}
-                <ArrowRight size={14} />
-              </LiquidGlass>
-            </div>
-          )}
+          </Card>
         </section>
       </div>
 
@@ -616,7 +397,7 @@ function HomePage({
                         <InstanceSelectRow
                           instance={instance}
                           active={selectedInstance?.id === instance.id}
-                          selectable={canAccessInstance(instance, user)}
+                          selectable
                           t={t}
                           onSelect={() => {
                             onSelect(instance.id);
@@ -649,7 +430,7 @@ function HomePage({
                             gameVersion={gameVersion}
                             version={version}
                             active={selectedInstance?.id === novaPreset.id && selectedNovaGameVersion === gameVersion}
-                            selectable={canAccessInstance(novaPreset, user)}
+                            selectable
                             testing={gameVersion !== NOVA_DEFAULT_GAME_VERSION}
                             t={t}
                             onSelect={() => {
@@ -678,7 +459,7 @@ function HomePage({
                             key={instance.id}
                             instance={instance}
                             active={selectedInstance?.id === instance.id}
-                            selectable={canAccessInstance(instance, user)}
+                            selectable
                             compact
                             t={t}
                             onSelect={() => {
@@ -705,65 +486,6 @@ function HomePage({
           document.body
         )}
 
-      {(activeNews || newsClosing) &&
-        typeof document !== "undefined" &&
-        activeNews &&
-        createPortal(
-          <div className={`modal-shell ${newsClosing ? "modal-backdrop-animate-out" : "modal-backdrop-animate"}`} onClick={closeNews}>
-            <Card
-              variant="strong"
-              className={`${newsClosing ? "modal-animate-out" : "modal-animate"} modal-card page-card w-full max-w-3xl`}
-              interactive={false}
-              liquidGlass
-              onClick={(e) => e.stopPropagation()}
-            >
-              <div className="modal-header">
-                <div className="min-w-0">
-                  <p className="page-eyebrow">{t("home.news.dialogTitle")}</p>
-                  <h3 className="page-title !mt-1 !text-[28px]">{activeNews.title}</h3>
-                  <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-[var(--text-muted)]">
-                    {activeNews.publishedAt && <span>{new Date(activeNews.publishedAt).toLocaleString()}</span>}
-                    {activeNews.author && <span>{t("home.news.author")} · {activeNews.author}</span>}
-                    {activeNews.category && <span className="badge badge-muted normal-case tracking-normal">{activeNews.category}</span>}
-                  </div>
-                </div>
-                <button
-                  className="modal-close"
-                  onClick={closeNews}
-                  type="button"
-                  aria-label={t("home.news.dialogClose")}
-                >
-                  <X size={16} />
-                </button>
-              </div>
-
-              <div className="modal-body">
-                <div className="surface-panel surface-panel-soft rounded-[10px] p-4">
-                  <p className="text-sm leading-7 whitespace-pre-wrap text-[var(--text-secondary)]">
-                    {activeNewsContent || t("home.news.dialogEmpty")}
-                  </p>
-                </div>
-              </div>
-            </Card>
-          </div>,
-          document.body
-        )}
-
-      <ServerDialog
-        server={activeServer}
-        closing={serverClosing}
-        onClose={closeServer}
-        onLaunch={() => {
-          if (activeServer) {
-            closeServer();
-            onLaunchToServer(activeServer.address);
-          }
-        }}
-        currentInstance={current}
-        busy={busy || gameRunning}
-        launching={launching}
-        launchProgressPercent={launchProgressPercent}
-      />
     </div>
   );
 }
@@ -921,20 +643,6 @@ function compareGameVersions(a: string, b: string): number {
     if (left !== right) return left - right;
   }
   return 0;
-}
-
-function resolveHomeLevel(user: LauncherUser | null): string {
-  const dynamicLevel = user?.level ?? user?.userLevel ?? user?.membershipLevel;
-  if (typeof dynamicLevel === "number" && Number.isFinite(dynamicLevel)) {
-    return `Lv.${Math.max(0, Math.floor(dynamicLevel))}`;
-  }
-  if (typeof dynamicLevel === "string") {
-    const normalized = dynamicLevel.trim();
-    if (normalized) {
-      return /^lv\.?/i.test(normalized) ? normalized : `Lv.${normalized}`;
-    }
-  }
-  return "Lv.1";
 }
 
 function loaderLabel(

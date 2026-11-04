@@ -1,4 +1,4 @@
-export type Page = "home" | "instances" | "install" | "servers" | "content" | "settings" | "instance-settings" | "mandatory-update" | "account-center" | "diagnostics";
+export type Page = "home" | "instances" | "install" | "content" | "settings" | "instance-settings" | "diagnostics";
 export type Loader = "vanilla" | "forge" | "fabric";
 export type OptiFineCompatibilityState = "compatible" | "incompatible" | "unknown";
 export type PhaseStatus = "pending" | "running" | "done" | "error";
@@ -136,34 +136,6 @@ export type Settings = {
   curseforgeApiKey: string;
 };
 
-export type NewsItem = {
-  id?: string;
-  title: string;
-  summary: string;
-  content?: string | null;
-  author?: string | null;
-  category?: string | null;
-  pinned?: boolean;
-  targetClients?: string[];
-  startsAt?: string | null;
-  endsAt?: string | null;
-  severity?: "info" | "success" | "warning" | "critical";
-  publishedAt?: string | null;
-};
-
-export type ServerItem = {
-  id?: string;
-  name: string;
-  address: string;
-  mode: string;
-  iconPath?: string;
-  iconUrl?: string;
-  description?: string;
-  detailedDescription?: string;
-  serverGroup?: string;
-  displayOrder?: number;
-};
-
 export type LaunchExecutionResult = {
   versionId: string;
   pid: number;
@@ -190,13 +162,6 @@ export type OfflineLaunchReadiness = {
   missing: string[];
   corrupted: string[];
   error?: string | null;
-};
-
-export type LauncherLoginPrefs = {
-  usernameOrEmail: string;
-  password: string;
-  rememberPassword: boolean;
-  autoLogin: boolean;
 };
 
 export type UiLogEntry = {
@@ -485,30 +450,6 @@ export type InstalledContentUpdate = {
   checkedAtEpochSec: number;
 };
 
-export type LauncherUser = {
-  id?: string;
-  username?: string;
-  email?: string;
-  role?: string;
-  level?: number | string;
-  userLevel?: number | string;
-  membershipLevel?: number | string;
-  experience?: number;
-  nextLevelNeed?: number;
-  emailVerified?: boolean;
-  banned?: boolean;
-  walletBalance?: string;
-  customTitle?: string;
-  avatarUrl?: string;
-  membershipExpiresAt?: string | null;
-  novaBetaEligible?: boolean;
-};
-
-export type LauncherLoginResult = {
-  token: string;
-  user: LauncherUser;
-};
-
 export type LauncherVersion = {
   id?: unknown;
   channel: string;
@@ -535,11 +476,6 @@ export type LauncherVersion = {
   changelog?: string | null;
   commitHash?: string | null;
   createdAt?: string | null;
-};
-
-export type LauncherAuthState = {
-  token: string;
-  user: LauncherUser;
 };
 
 export type LauncherVersionMap = Record<LauncherVersionType, LauncherVersion | null>;
@@ -602,21 +538,6 @@ export type LauncherUserStats = {
   latestActivityAt?: string | null;
 };
 
-export type LauncherDashboard = {
-  user: LauncherUser;
-  stats: LauncherUserStats;
-  weeklyPlaytime: WeeklyPlaytime;
-};
-
-export type TelemetryOnlineSummary = {
-  online: number;
-  total: number;
-  launcher: number;
-  edge: number;
-  nova: number;
-  generic: number;
-};
-
 export type LauncherAppUpdateInfo = {
   version: string;
   downloadUrl: string;
@@ -628,22 +549,10 @@ export type LauncherAppUpdateInfo = {
   target: string;
 };
 
-export type LauncherAppUpdateChannel = {
-  code: string;
-  name: string;
-};
-
 export type DownloadedLauncherUpdate = {
   version: string;
   fileName: string;
   filePath: string;
-};
-
-export type LauncherHomePayload = {
-  news: NewsItem[];
-  servers: ServerItem[];
-  online: TelemetryOnlineSummary;
-  dashboard?: LauncherDashboard | null;
 };
 
 // run_health_check

@@ -3,31 +3,22 @@ import HomePage from "../pages/Home";
 import type {
   DownloadedLauncherUpdate,
   Instance,
-  LauncherAppUpdateChannel,
   LauncherAppUpdateInfo,
-  LauncherDashboard,
-  LauncherUser,
   LauncherVersion,
   LauncherVersionMap,
   Loader,
   MinecraftAccount,
   ModpackInstallResult,
-  NewsItem,
   OptiFineVersion,
   Page,
   PresetPackageStatus,
-  ServerItem,
-  Settings,
-  TelemetryOnlineSummary
+  Settings
 } from "../types";
 
 const InstanceSettingsPage = lazy(() => import("../pages/InstanceSettings"));
 const InstallPage = lazy(() => import("../pages/Install"));
 const InstancesPage = lazy(() => import("../pages/Instances"));
-const ServersPage = lazy(() => import("../pages/Servers"));
 const ContentPage = lazy(() => import("../pages/Content"));
-const MandatoryUpdatePage = lazy(() => import("../pages/MandatoryUpdate"));
-const AccountCenterPage = lazy(() => import("../pages/AccountCenter"));
 const SettingsPage = lazy(() => import("../pages/Settings"));
 const DiagnosticsPage = lazy(() => import("../pages/Diagnostics"));
 
@@ -39,7 +30,6 @@ export type PageRouterContext = {
   instances: Instance[];
   current: Instance | null;
   busy: boolean;
-  user: LauncherUser | null;
   settings: Settings;
   launcherVersions: LauncherVersionMap;
   // Nova's selectable Minecraft game versions (keyed by MC version) and the current pick.
@@ -59,13 +49,7 @@ export type PageRouterContext = {
   onInstanceDuplicate: () => void;
   onInstanceExport: () => void;
   onUpdateInstance: (next: Instance) => void;
-  // launcher data
-  launcherNews: NewsItem[];
-  launcherServers: ServerItem[];
-  launcherOnlineSummary: TelemetryOnlineSummary | null;
-  launcherDashboard: LauncherDashboard | null;
   currentLauncherVersion: string;
-  onRefreshServers: () => void;
   // game launch
   launching: boolean;
   launchingInstanceId: string | null;
@@ -73,7 +57,6 @@ export type PageRouterContext = {
   launchProgressText: string;
   onLaunch: () => void;
   onQuickLaunch: () => void;
-  onLaunchToServer: (serverAddress: string) => void;
   gameRunning: boolean;
   // minecraft accounts
   minecraftAccounts: MinecraftAccount[];
@@ -86,7 +69,6 @@ export type PageRouterContext = {
   // launcher self-update
   launcherUpdate: LauncherAppUpdateInfo | null;
   launcherUpdateAvailable: boolean;
-  launcherUpdateChannels: LauncherAppUpdateChannel[];
   launcherUpdateChecking: boolean;
   launcherUpdateDownloading: boolean;
   launcherUpdateProgressPercent: number | null;
@@ -131,8 +113,6 @@ export type PageRouterContext = {
   onGoInstall: () => void;
   onGoInstances: () => void;
   onGoSettings: () => void;
-  onGoServers: () => void;
-  onLogoutLauncherAccount: () => void;
   onChangeSettings: (next: Settings) => void;
   onClampMemory: (input: string) => void;
   onResetSettings: () => void;
@@ -146,10 +126,6 @@ export default function PageRouter({ ctx }: { ctx: PageRouterContext }) {
       return (
         <HomePage
           availableInstances={ctx.instances}
-          launcherNews={ctx.launcherNews}
-          launcherServers={ctx.launcherServers}
-          launcherOnlineSummary={ctx.launcherOnlineSummary}
-          launcherDashboard={ctx.launcherDashboard}
           launcherUpdate={ctx.launcherUpdate}
           launcherUpdateAvailable={ctx.launcherUpdateAvailable}
           launcherUpdateDownloading={ctx.launcherUpdateDownloading}
@@ -159,7 +135,6 @@ export default function PageRouter({ ctx }: { ctx: PageRouterContext }) {
           launching={ctx.launching}
           launchProgressPercent={ctx.launchProgressPercent}
           launchProgressText={ctx.launchProgressText}
-          user={ctx.user}
           novaGameVersions={ctx.novaGameVersions}
           selectedNovaGameVersion={ctx.selectedNovaGameVersion}
           onSelectNovaGameVersion={ctx.onSelectNovaGameVersion}
@@ -170,30 +145,13 @@ export default function PageRouter({ ctx }: { ctx: PageRouterContext }) {
           onLaunch={ctx.onLaunch}
           onQuickLaunch={ctx.onQuickLaunch}
           gameRunning={ctx.gameRunning}
-          onLaunchToServer={ctx.onLaunchToServer}
           onOpenSettings={ctx.onGoSettings}
-          onOpenServers={ctx.onGoServers}
           onSelectMinecraftAccount={ctx.onSelectMinecraftAccount}
           onAddOfflineMinecraftAccount={ctx.onAddOfflineMinecraftAccount}
           onSaveMicrosoftMinecraftAccount={ctx.onSaveMinecraftAccount}
           onDeleteMinecraftAccount={ctx.onDeleteMinecraftAccount}
         />
       );
-    case "servers":
-      return (
-        <ServersPage
-          servers={ctx.launcherServers}
-          currentInstance={ctx.current}
-          busy={ctx.busy || ctx.gameRunning}
-          launching={ctx.launching}
-          launchProgressPercent={ctx.launchProgressPercent}
-          launchProgressText={ctx.launchProgressText}
-          onLaunch={ctx.onLaunchToServer}
-          onRefreshServers={ctx.onRefreshServers}
-        />
-      );
-    case "account-center":
-      return <AccountCenterPage launcherDashboard={ctx.launcherDashboard} />;
     case "instances":
       return (
         <InstancesPage
@@ -206,7 +164,6 @@ export default function PageRouter({ ctx }: { ctx: PageRouterContext }) {
           launchingInstanceId={ctx.launchingInstanceId}
           launchProgressPercent={ctx.launchProgressPercent}
           launchProgressText={ctx.launchProgressText}
-          user={ctx.user}
           presetPackageStatuses={ctx.presetPackageStatuses}
           selectedInstanceId={ctx.current?.id ?? null}
           onDelete={ctx.onRemoveInstance}
@@ -293,31 +250,17 @@ export default function PageRouter({ ctx }: { ctx: PageRouterContext }) {
           onOpenSettings={ctx.onGoSettings}
         />
       );
-    case "mandatory-update":
-      return (
-        <MandatoryUpdatePage
-          launcherUpdate={ctx.launcherUpdate}
-          launcherUpdateDownloading={ctx.launcherUpdateDownloading}
-          launcherUpdateProgressPercent={ctx.launcherUpdateProgressPercent}
-          launcherUpdateDownload={ctx.launcherUpdateDownload}
-          onInstallLauncherUpdate={ctx.onInstallLauncherUpdate}
-          onCancelLauncherUpdate={ctx.onCancelLauncherUpdate}
-        />
-      );
     default:
       return (
         <SettingsPage
           settings={ctx.settings}
           launcherCurrentVersion={ctx.currentLauncherVersion}
           launcherUpdate={ctx.launcherUpdate}
-          launcherUpdateChannels={ctx.launcherUpdateChannels}
           launcherUpdateAvailable={ctx.launcherUpdateAvailable}
           launcherUpdateChecking={ctx.launcherUpdateChecking}
           launcherUpdateDownloading={ctx.launcherUpdateDownloading}
           launcherUpdateProgressPercent={ctx.launcherUpdateProgressPercent}
           launcherUpdateDownload={ctx.launcherUpdateDownload}
-          launcherUser={ctx.user}
-          onLogoutLauncherAccount={ctx.onLogoutLauncherAccount}
           onRefreshLauncherUpdate={ctx.onRefreshLauncherUpdate}
           onInstallLauncherUpdate={ctx.onInstallLauncherUpdate}
           onCancelLauncherUpdate={ctx.onCancelLauncherUpdate}

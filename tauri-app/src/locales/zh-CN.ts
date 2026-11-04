@@ -83,6 +83,8 @@ const zhCN: EnUSTranslations = {
   "loader.fabric": "Fabric",
   "loader.optifine": "OptiFine",
   "home.welcomeBack": "欢迎回来",
+  "home.archived.title": "FPSMaster 已停止维护",
+  "home.archived.body": "这是最终版本。FPSMaster 的服务器已关停，启动器不再需要账号，所有功能都可以离线使用。\n所有项目的源代码都已在 GitHub（FPSMasterTeam）公开。感谢一路以来的陪伴！",
   "home.dashboardReady": "你的游戏面板已准备就绪。",
   "home.onlineTag": "{count} 人在线",
   "home.online.total": "总在线 {count}",

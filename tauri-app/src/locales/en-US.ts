@@ -86,6 +86,8 @@ const enUS = {
   "loader.fabric": "Fabric",
   "loader.optifine": "OptiFine",
   "home.welcomeBack": "Welcome Back",
+  "home.archived.title": "FPSMaster is no longer maintained",
+  "home.archived.body": "This is the final release. The FPSMaster servers have been shut down, so no account is needed and everything here works offline.\nThe source code of every project is public on GitHub (FPSMasterTeam). Thanks for playing!",
   "home.dashboardReady": "Your gaming dashboard is ready.",
   "home.onlineTag": "{count} online",
   "home.online.total": "Total {count}",

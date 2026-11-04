@@ -1,5 +1,4 @@
-import { FileText, FolderOpen, LoaderCircle, Send, Stethoscope } from "lucide-react";
-import { useState } from "react";
+import { FileText, FolderOpen, Stethoscope } from "lucide-react";
 import Button from "./Button";
 import Card from "./Card";
 import ModalFrame from "./ModalFrame";
@@ -14,39 +13,22 @@ type CrashDialogProps = {
   onOpenLogs: (() => void) | null;
   onOpenFile: (path: string) => void;
   onDiagnose: () => void;
-  /** Uploads the crash report; resolves once sent (or silently dropped on 429). */
-  onUpload: () => Promise<void>;
   onClose: () => void;
 };
 
 // Shown when a launched game exits abnormally (launcher-ui-20 / product-4):
-// what crashed, where the evidence is, and an opt-in report upload.
+// what crashed and where the evidence is. There is no upload any more: the
+// FPSMaster backend that received crash reports has been shut down.
 export default function CrashDialog({
   crash,
   instanceName,
   onOpenLogs,
   onOpenFile,
   onDiagnose,
-  onUpload,
   onClose
 }: CrashDialogProps) {
   const { t } = useI18n();
-  const [uploadState, setUploadState] = useState<"idle" | "sending" | "sent" | "failed">("idle");
-  const [uploadError, setUploadError] = useState("");
   const summary = crash.crashSummary?.trim() || crash.hsErrSummary?.trim() || "";
-  const canUpload = Boolean(crash.crashReportPath || crash.hsErrPath);
-
-  async function upload() {
-    setUploadState("sending");
-    setUploadError("");
-    try {
-      await onUpload();
-      setUploadState("sent");
-    } catch (error) {
-      setUploadState("failed");
-      setUploadError(String(error instanceof Error ? error.message : error));
-    }
-  }
 
   return (
     <ModalFrame
@@ -95,31 +77,6 @@ export default function CrashDialog({
             {t("crash.diagnose")}
           </Button>
         </div>
-
-        {canUpload && (
-          <div className="mt-5 rounded-[8px] border border-white/8 bg-black/15 px-4 py-3">
-            <p className="text-sm leading-6 text-[var(--text-secondary)]">{t("crash.uploadExplain")}</p>
-            {uploadState === "sent" ? (
-              <p className="mt-2 text-sm text-[var(--mc-grass)]">{t("crash.uploadDone")}</p>
-            ) : (
-              <Button
-                size="sm"
-                variant="primary"
-                className="mt-3 gap-2"
-                disabled={uploadState === "sending"}
-                onClick={() => void upload()}
-              >
-                {uploadState === "sending" ? <LoaderCircle size={14} className="minecraft-inline-spinner" /> : <Send size={14} />}
-                {t("crash.uploadConsent")}
-              </Button>
-            )}
-            {uploadState === "failed" && (
-              <p className="mt-2 text-xs text-[var(--accent-danger)]" role="alert">
-                {t("crash.uploadFailed", { error: uploadError })}
-              </p>
-            )}
-          </div>
-        )}
 
         <div className="mt-6 flex justify-end">
           <Button size="sm" variant="ghost" onClick={onClose}>

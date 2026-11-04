@@ -1,25 +1,14 @@
 import type {
   BlurMode,
   Instance,
-  LauncherLoginPrefs,
   Settings,
   VisualProfile
 } from "./types";
-
-export const DEFAULT_LOGIN_PREFS: LauncherLoginPrefs = {
-  usernameOrEmail: "",
-  password: "",
-  rememberPassword: false,
-  autoLogin: false
-};
 
 export const STORAGE_KEYS = {
   instances: "fpsmaster.instances",
   settings: "fpsmaster.settings",
   selected: "fpsmaster.selected",
-  launcherAuth: "fpsmaster.launcherAuth",
-  launcherLoginPrefs: "fpsmaster.launcherLoginPrefs",
-  launcherSessionId: "fpsmaster.launcherSessionId",
   minecraftAccounts: "fpsmaster.minecraftAccounts",
   selectedMinecraftAccount: "fpsmaster.selectedMinecraftAccount",
   // Which Minecraft game version the user picked inside the Nova region (Nova stays one preset,

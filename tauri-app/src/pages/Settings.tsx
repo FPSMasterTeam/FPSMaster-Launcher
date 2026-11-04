@@ -45,9 +45,7 @@ import type {
   BlurMode,
   DownloadSource,
   DownloadedLauncherUpdate,
-  LauncherAppUpdateChannel,
   LauncherAppUpdateInfo,
-  LauncherUser,
   Settings,
   SourceProbeReport,
   ThemeAccent,
@@ -75,14 +73,11 @@ type SettingsPageProps = {
   settings: Settings;
   launcherCurrentVersion: string;
   launcherUpdate: LauncherAppUpdateInfo | null;
-  launcherUpdateChannels: LauncherAppUpdateChannel[];
   launcherUpdateAvailable: boolean;
   launcherUpdateChecking: boolean;
   launcherUpdateDownloading: boolean;
   launcherUpdateProgressPercent: number | null;
   launcherUpdateDownload: DownloadedLauncherUpdate | null;
-  launcherUser: LauncherUser | null;
-  onLogoutLauncherAccount: () => void;
   onRefreshLauncherUpdate: () => void;
   onInstallLauncherUpdate: () => void;
   onCancelLauncherUpdate: () => void;
@@ -95,14 +90,11 @@ function SettingsPage({
   settings,
   launcherCurrentVersion,
   launcherUpdate,
-  launcherUpdateChannels,
   launcherUpdateAvailable,
   launcherUpdateChecking,
   launcherUpdateDownloading,
   launcherUpdateProgressPercent,
   launcherUpdateDownload,
-  launcherUser,
-  onLogoutLauncherAccount,
   onRefreshLauncherUpdate,
   onInstallLauncherUpdate,
   onCancelLauncherUpdate,
@@ -515,36 +507,15 @@ function SettingsPage({
     ? formatPublishedAt(launcherUpdate.publishedAt, t("settings.launcherUpdateUnknownDate"))
     : "--";
   const hasLauncherUpdateNotes = Boolean(launcherUpdate?.notes?.trim());
-  const availableLauncherChannels = useMemo(() => {
-    const normalizedCurrent = settings.launcherUpdateChannel.trim() || "beta";
-    const items = launcherUpdateChannels
-      .filter((item) => item.code.trim() !== "")
-      .map((item) => ({
-        code: item.code.trim(),
-        name: item.name.trim() || item.code.trim()
-      }));
-    if (items.some((item) => item.code === normalizedCurrent)) {
-      return items;
-    }
-    return [{ code: normalizedCurrent, name: normalizedCurrent }, ...items];
-  }, [settings.launcherUpdateChannel, launcherUpdateChannels]);
-
   const navSections = useMemo(() => {
     const items: { id: SettingsSectionId; label: string; icon: ReactNode }[] = [];
-    if (launcherUser) {
-      items.push({
-        id: "account",
-        label: t("settings.launcherAuth.title"),
-        icon: <User size={15} />
-      });
-    }
     items.push({ id: "runtime", label: t("settings.runtimeConfig"), icon: <Cpu size={15} /> });
     items.push({ id: "behavior", label: t("settings.behavior"), icon: <SlidersHorizontal size={15} /> });
     items.push({ id: "appearance", label: t("settings.appearance"), icon: <Palette size={15} /> });
     items.push({ id: "background", label: t("settings.background"), icon: <ImagePlus size={15} /> });
     items.push({ id: "updates", label: t("settings.launcherUpdates"), icon: <Download size={15} /> });
     return items;
-  }, [launcherUser, t]);
+  }, [t]);
 
   const sectionIds = useMemo(() => navSections.map((section) => section.id), [navSections]);
 
@@ -655,36 +626,6 @@ function SettingsPage({
         </nav>
 
         <div className="settings-content">
-          {launcherUser && (
-            <section id="settings-account" className="settings-section">
-              <h2 className="section-title mb-4">{t("settings.launcherAuth.title")}</h2>
-              <div className="settings-group">
-              <div className="settings-row">
-                <div className="settings-row-main">
-                  <p className="settings-row-title">{t("settings.launcherAuth.loggedInAs")}</p>
-                  <p className="settings-row-hint">
-                    {t("settings.launcherAuth.subtitle")}
-                  </p>
-                  <p className="mt-2 text-base font-semibold text-[var(--text-primary)]">
-                    {launcherUser.username || launcherUser.email || launcherUser.id || "-"}
-                  </p>
-                </div>
-                <div className="settings-row-control">
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className="gap-2"
-                    onClick={onLogoutLauncherAccount}
-                  >
-                    <LogOut size={14} />
-                    {t("settings.launcherAuth.logout")}
-                  </Button>
-                </div>
-              </div>
-              </div>
-            </section>
-          )}
-
           <section id="settings-runtime" className="settings-section">
             <h2 className="section-title mb-4">{t("settings.runtimeConfig")}</h2>
             <div className="grid gap-5">
@@ -1455,32 +1396,6 @@ function SettingsPage({
             <h2 className="section-title mb-4">{t("settings.launcherUpdates")}</h2>
             <div className="grid gap-5">
               <div className="settings-group">
-                <div className="settings-row">
-                  <div className="settings-row-main">
-                    <p className="settings-row-title">{t("settings.launcherUpdateChannel")}</p>
-                    <p className="settings-row-hint">{t("settings.launcherUpdatesDesc")}</p>
-                  </div>
-                  <div className="settings-row-control w-48">
-                    <Select
-                      value={settings.launcherUpdateChannel}
-                      onValueChange={(value) =>
-                        onChange({ ...settings, launcherUpdateChannel: value })
-                      }
-                    >
-                      <Select.Trigger className="ui-select-trigger w-full">
-                        <Select.Value />
-                      </Select.Trigger>
-                      <Select.Content>
-                        {availableLauncherChannels.map((item) => (
-                          <Select.Item key={item.code} value={item.code}>
-                            {item.name}
-                          </Select.Item>
-                        ))}
-                      </Select.Content>
-                    </Select>
-                  </div>
-                </div>
-
                 <InfoRow
                   label={t("settings.launcherCurrentVersion")}
                   value={launcherCurrentVersion}

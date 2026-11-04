@@ -19,7 +19,6 @@ import type {
   LaunchPrepareDialogState,
   LaunchPreparePhaseKey,
   LaunchPreparePhaseState,
-  LauncherUser,
   MinecraftAccount,
   Instance,
   Locale,
@@ -251,32 +250,6 @@ export function loadSettings(): Settings {
 }
 
 function resolveDefaultPlayerName(): string {
-  try {
-    const authRaw = localStorage.getItem(STORAGE_KEYS.launcherAuth);
-    if (authRaw) {
-      const parsed = JSON.parse(authRaw) as { user?: LauncherUser | null };
-      const username = parsed?.user?.username?.trim();
-      if (username) {
-        return username;
-      }
-    }
-  } catch {
-    // Ignore malformed launcher auth storage
-  }
-
-  try {
-    const prefsRaw = localStorage.getItem(STORAGE_KEYS.launcherLoginPrefs);
-    if (prefsRaw) {
-      const parsed = JSON.parse(prefsRaw) as { usernameOrEmail?: string };
-      const identity = parsed?.usernameOrEmail?.trim();
-      if (identity) {
-        return identity;
-      }
-    }
-  } catch {
-    // Ignore malformed launcher login prefs storage
-  }
-
   return "";
 }
 

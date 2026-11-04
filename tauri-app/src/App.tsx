@@ -15,9 +15,7 @@ import ChoiceDialog from "./components/ChoiceDialog";
 import CrashDialog from "./components/CrashDialog";
 import WindowTitleBar from "./components/WindowTitleBar";
 import {
-  DEFAULT_LOGIN_PREFS,
   DEFAULT_SETTINGS,
-  LAUNCHER_API_BASE_URL,
   NOVA_DEFAULT_GAME_VERSION,
   PRESET_INSTANCES,
   STORAGE_KEYS,
@@ -28,7 +26,6 @@ import {
   I18nProvider,
   resolveLocale
 } from "./i18n";
-import { acceptLanguageFor, syncApiLanguage } from "./lib/apiLanguage";
 import {
   mapLaunchPreparePhaseKey,
   mergePhaseByteProgress,
@@ -41,10 +38,8 @@ import {
 import { isLauncherVersionCompatible } from "./lib/version";
 import {
   describeApiError,
-  isAuthExpiredError,
   isCancelledError,
-  isNetworkError,
-  normalizeLoginError
+  isNetworkError
 } from "./lib/launcherError";
 import { notifyError, notifyInfo, notifySuccess, notifyWarning } from "./lib/toast";
 import { hasContentTasks, isContentTaskRunningFor } from "./lib/contentTasks";
@@ -53,13 +48,7 @@ import {
   resolveMinecraftLaunchIdentity,
   shouldRefreshMicrosoftAccount
 } from "./lib/minecraftAccount";
-import {
-  loadOrCreateLauncherSessionId,
-  normalizeStoredToken,
-  parseLauncherAuthState,
-  parseLauncherLoginPrefs,
-  readStoredLocale
-} from "./lib/launcherAuth";
+import { readStoredLocale } from "./lib/storedLocale";
 import {
   createDuplicatedInstanceName,
   createDuplicatedVersionId,
@@ -70,15 +59,11 @@ import { ensureJdk, openMonitor, syncAutostart, syncTrayBehavior } from "./lib/s
 import { createPresetPackageStatus, resolvePresetAccessState } from "./lib/presetPackage";
 import { buildNovaEffectiveInstance, NOVA_VERSION_ID_PREFIX } from "./lib/novaTargets";
 import { useLauncherUpdate } from "./hooks/useLauncherUpdate";
-import { useLauncherData } from "./hooks/useLauncherData";
-import { useLauncherTelemetry } from "./hooks/useLauncherTelemetry";
 import { useMinecraftAccounts } from "./hooks/useMinecraftAccounts";
 import { useInstallController } from "./hooks/useInstallController";
 import PageRouter, { type PageRouterContext } from "./components/PageRouter";
-// Login is the unauthenticated screen and Monitor is its own window route, so
-// they live in App directly. Every routed page is owned by PageRouter (each in
-// its own lazily-loaded chunk).
-import LoginPage from "./pages/Login";
+// Monitor is its own window route, so it lives in App directly. Every routed
+// page is owned by PageRouter (each in its own lazily-loaded chunk).
 const MonitorPage = lazy(() => import("./pages/Monitor"));
 import type {
   EdgeAotInstallResult,
@@ -98,13 +83,10 @@ import type {
   LaunchPrepareDialogState,
   LaunchPreparePhaseKey,
   LaunchPreparePhaseState,
-  LauncherAuthState,
   LauncherVersionMap,
-  LauncherLoginResult,
   LauncherModsInstallResult,
   LauncherPackageState,
   LauncherVersion,
-    LauncherLoginPrefs,
     Locale,
     LaunchExecutionResult,
   Loader,
@@ -132,7 +114,7 @@ import {
   resolveBackgroundVideoUrl,
   resolveInstallVersion
 } from "./utils/launcher";
-import { loadSecureRaw, persistSecureJson } from "./utils/secureStorage";
+import { loadSecureRaw, purgeRetiredSecrets } from "./utils/secureStorage";
 
 const FALLBACK_LAUNCHER_VERSION = packageInfo.version;
 const LAUNCHER_LOG_POLL_INTERVAL_MS = 500;
@@ -219,8 +201,6 @@ function Launcher() {
     localStorage.getItem(STORAGE_KEYS.selected) ?? PRESET_INSTANCES[0].id
   );
   const [settings, setSettings] = useState<Settings>(loadSettings);
-  const [launcherAuth, setLauncherAuth] = useState<LauncherAuthState | null>(null);
-  const [launcherLoginPrefs, setLauncherLoginPrefs] = useState<LauncherLoginPrefs>(DEFAULT_LOGIN_PREFS);
   const [secureStorageReady, setSecureStorageReady] = useState(false);
   const [secureStorageError, setSecureStorageError] = useState<string | null>(null);
   const [launcherVersions, setLauncherVersions] = useState<LauncherVersionMap>(EMPTY_LAUNCHER_VERSIONS);
@@ -230,14 +210,12 @@ function Launcher() {
   );
   const [currentLauncherVersion, setCurrentLauncherVersion] = useState(FALLBACK_LAUNCHER_VERSION);
   const [presetPackageStatuses, setPresetPackageStatuses] = useState<Record<string, PresetPackageStatus>>({});
-  const [launcherAuthLoading, setLauncherAuthLoading] = useState(false);
   const [launcherVersionLoading, setLauncherVersionLoading] = useState(false);
   const [defaultGameDir, setDefaultGameDir] = useState(() => DEFAULT_SETTINGS.gameDir);
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState(() =>
     createTranslator(loadSettings().language)("app.status.ready")
   );
-  const [authNotice, setAuthNotice] = useState<string | null>(null);
 
   const [activeGamePid, setActiveGamePid] = useState<number | null>(null);
   const [launchingInstanceId, setLaunchingInstanceId] = useState<string | null>(null);
@@ -249,7 +227,6 @@ function Launcher() {
   const [installDialog, setInstallDialog] = useState<InstallDialogState | null>(null);
   const [launchPrepareDialog, setLaunchPrepareDialog] = useState<LaunchPrepareDialogState | null>(null);
   const [windowVisible, setWindowVisible] = useState(false);
-  const autoLoginAttemptedRef = useRef(false);
   const [minecraftAccountPromptOpen, setMinecraftAccountPromptOpen] = useState(false);
   const [closeConfirmOpen, setCloseConfirmOpen] = useState(false);
   const [crashReport, setCrashReport] = useState<GameExitEvent | null>(null);
@@ -283,33 +260,11 @@ function Launcher() {
   );
 
   const backgroundMode = settings.minimizeToTray && !windowVisible;
-  const telemetry = useLauncherTelemetry({
-    token: launcherAuth?.token ?? null,
-    user: launcherAuth?.user ?? null,
-    playerName: settings.playerName,
-    backgroundMode,
-    language: settings.language,
-    t,
-    onAuthExpired: handleAuthExpired
-  });
   const launcherUpdate = useLauncherUpdate({
-    token: launcherAuth?.token ?? null,
-    channel: settings.launcherUpdateChannel,
     currentLauncherVersion,
     t,
-    setStatus,
-    flushTelemetry: telemetry.flushSession
+    setStatus
   });
-  const launcherData = useLauncherData({
-    token: launcherAuth?.token ?? null,
-    t,
-    setStatus,
-    onAuthExpired: handleAuthExpired,
-    onMergeUser: (user) =>
-      setLauncherAuth((prev) => (prev ? { ...prev, user: { ...prev.user, ...user } } : prev)),
-    setOnlineSummary: telemetry.setOnlineSummary
-  });
-  const launcherMandatoryUpdateRequired = launcherUpdate.mandatoryRequired;
   const mcAccounts = useMinecraftAccounts({
     secureStorageReady,
     playerName: settings.playerName,
@@ -326,26 +281,11 @@ function Launcher() {
   const activeBackgroundUrl =
     resolveBackgroundAssetUrl(settings);
   const activeBackgroundVideoUrl = resolveBackgroundVideoUrl(settings);
-  const authenticated = Boolean(launcherAuth?.token?.trim());
   const launching = busy && launchingInstanceId !== null;
   const loaderDisplayName = (value: Loader) => t(loaderLabelKey(value));
   const installCtl = useInstallController({ page, busy, settings, t, setStatus });
 
-  function ensureMandatoryLauncherUpdate(): boolean {
-    if (!launcherMandatoryUpdateRequired) {
-      return false;
-    }
-    setPage("mandatory-update");
-    setStatus(t("settings.launcherUpdateMandatory"));
-    return true;
-  }
-
   function navigatePage(nextPage: Page) {
-    if (launcherMandatoryUpdateRequired && nextPage !== "mandatory-update") {
-      setPage("mandatory-update");
-      setStatus(t("settings.launcherUpdateMandatory"));
-      return;
-    }
     setPage(nextPage);
   }
 
@@ -382,14 +322,9 @@ function Launcher() {
     let cancelled = false;
     (async () => {
       try {
-        const [authRaw, prefsRaw, accountsRaw] = await Promise.all([
-          loadSecureRaw(STORAGE_KEYS.launcherAuth),
-          loadSecureRaw(STORAGE_KEYS.launcherLoginPrefs),
-          loadSecureRaw(STORAGE_KEYS.minecraftAccounts)
-        ]);
+        const accountsRaw = await loadSecureRaw(STORAGE_KEYS.minecraftAccounts);
         if (cancelled) return;
-        setLauncherAuth(authRaw === null ? null : parseLauncherAuthState(authRaw));
-        setLauncherLoginPrefs(prefsRaw === null ? DEFAULT_LOGIN_PREFS : parseLauncherLoginPrefs(prefsRaw));
+        void purgeRetiredSecrets();
         const accounts = accountsRaw === null ? [] : parseMinecraftAccounts(accountsRaw);
         mcAccounts.setAccounts(accounts);
         setSecureStorageReady(true);
@@ -406,76 +341,19 @@ function Launcher() {
   }, []);
 
   useEffect(() => {
-    if (!secureStorageReady) return;
-    void persistSecureJson(STORAGE_KEYS.launcherAuth, launcherAuth).catch((error) => {
-      console.warn("[secure-storage] failed to persist launcherAuth:", error);
-    });
-  }, [launcherAuth, secureStorageReady]);
-
-  useEffect(() => {
-    if (!secureStorageReady) return;
-    void persistSecureJson(STORAGE_KEYS.launcherLoginPrefs, launcherLoginPrefs).catch((error) => {
-      console.warn("[secure-storage] failed to persist launcherLoginPrefs:", error);
-    });
-  }, [launcherLoginPrefs, secureStorageReady]);
-
-  useEffect(() => {
     if (secureStorageReady) {
       window.dispatchEvent(new Event("fpsmaster:loaded"));
     }
   }, [secureStorageReady]);
 
+  // The release catalog is bundled, so this resolves even fully offline; the
+  // network copy (if reachable) only refines it.
   useEffect(() => {
-    if (!launcherAuth?.token) {
-      setLauncherVersions(EMPTY_LAUNCHER_VERSIONS);
-      setNovaGameVersions({});
-      launcherData.clearDashboard();
-      telemetry.setOnlineSummary(null);
-      setPresetPackageStatuses({});
-      setPage("home");
-      if (!backgroundMode) {
-        void launcherData.refreshHome(true);
-      }
-      return;
-    }
     if (backgroundMode) {
       return;
     }
-    void telemetry.cacheSession();
     void refreshLauncherVersions(true);
-    void launcherData.refreshHome(true, launcherAuth.token);
-  }, [launcherAuth?.token, backgroundMode]);
-
-  useEffect(() => {
-    if (launcherMandatoryUpdateRequired && page !== "mandatory-update") {
-      setPage("mandatory-update");
-      setStatus(t("settings.launcherUpdateMandatory"));
-    }
-  }, [launcherMandatoryUpdateRequired, page, t]);
-
-  useEffect(() => {
-    if (launcherAuth?.token || launcherAuthLoading) {
-      return;
-    }
-    // Only attempt auto-login once per session
-    if (autoLoginAttemptedRef.current) {
-      return;
-    }
-    if (!launcherLoginPrefs.autoLogin || !launcherLoginPrefs.rememberPassword) {
-      return;
-    }
-    const identity = launcherLoginPrefs.usernameOrEmail.trim();
-    const password = launcherLoginPrefs.password;
-    if (!identity || !password) {
-      return;
-    }
-    autoLoginAttemptedRef.current = true;
-    void loginLauncherAccount({
-      ...launcherLoginPrefs,
-      usernameOrEmail: identity,
-      password
-    }, true);
-  }, [launcherAuth?.token, launcherAuthLoading, launcherLoginPrefs]);
+  }, [backgroundMode]);
 
   useEffect(() => {
     let disposed = false;
@@ -508,17 +386,6 @@ function Launcher() {
       }
     };
   }, []);
-
-  useEffect(() => {
-    if (backgroundMode || launcherAuth?.token) {
-      return;
-    }
-    void launcherData.refreshHome(true);
-  }, [backgroundMode, launcherAuth?.token]);
-
-  useEffect(() => {
-    void syncApiLanguage(settings.language);
-  }, [settings.language]);
 
   useEffect(() => {
     applyTheme(settings.themeMode, settings.themeAccent, settings.customAccentHex);
@@ -897,26 +764,14 @@ function Launcher() {
   }
 
   async function refreshLauncherVersions(
-    silent = false,
-    tokenOverride?: string
+    silent = false
   ): Promise<{ map: LauncherVersionMap | null; novaMap: NovaVersionMap | null; error: string | null }> {
-    const token = (tokenOverride ?? launcherAuth?.token ?? "").trim();
-    if (!token) {
-      setLauncherVersions(EMPTY_LAUNCHER_VERSIONS);
-      setNovaGameVersions({});
-      return { map: null, novaMap: null, error: t("app.status.authRequiredForPreset") };
-    }
-
-    const baseUrl = LAUNCHER_API_BASE_URL;
     if (!silent) {
       setStatus(t("app.status.loadingLauncherVersions"));
     }
     setLauncherVersionLoading(true);
     try {
-      const entries = await invoke<LauncherVersion[]>("launcher_list_available_versions", {
-        baseUrl,
-        token
-      });
+      const entries = await invoke<LauncherVersion[]>("catalog_list_versions");
       const map = pickLatestLauncherVersions(entries);
       const novaMap = pickNovaGameVersions(entries);
       setLauncherVersions(map);
@@ -934,10 +789,6 @@ function Launcher() {
       return { map, novaMap, error: null };
     } catch (error) {
       const errorText = describeApiError(error, t);
-      if (token && isAuthExpiredError(error)) {
-        handleAuthExpired(t("login.sessionExpired"));
-        return { map: null, novaMap: null, error: t("login.sessionExpired") };
-      }
       setStatus(t("app.status.failed", { error: errorText }));
       if (!silent) {
         notifyError(errorText, t("toast.title.requestFailed"));
@@ -1100,108 +951,6 @@ function Launcher() {
     }
   }
 
-  function persistLauncherLoginPrefs(next: LauncherLoginPrefs) {
-    setLauncherLoginPrefs({
-      usernameOrEmail: next.usernameOrEmail.trim(),
-      password: next.rememberPassword ? next.password : "",
-      rememberPassword: next.rememberPassword,
-      autoLogin: next.rememberPassword && next.autoLogin
-    });
-  }
-
-  function handleAuthExpired(message: string) {
-    void telemetry.flushSession();
-    setMinecraftAccountPromptOpen(false);
-    setLauncherAuth(null);
-    setLauncherVersions(EMPTY_LAUNCHER_VERSIONS);
-    setNovaGameVersions({});
-    launcherData.clearDashboard();
-    setPresetPackageStatuses({});
-    setPage("home");
-    setAuthNotice(message);
-    setStatus(message);
-  }
-
-  async function loginLauncherAccount(
-    prefs: LauncherLoginPrefs,
-    silent = false
-  ): Promise<string | null> {
-    const identity = prefs.usernameOrEmail.trim();
-    const password = prefs.password;
-    if (!identity || !password) {
-      return t("login.required");
-    }
-
-    persistLauncherLoginPrefs({
-      ...prefs,
-      usernameOrEmail: identity,
-      password
-    });
-    setAuthNotice(null);
-    setLauncherAuthLoading(true);
-    try {
-      const result = await invoke<LauncherLoginResult>("launcher_login", {
-        baseUrl: LAUNCHER_API_BASE_URL,
-        usernameOrEmail: identity,
-        password
-      });
-      const normalizedToken = normalizeStoredToken(result.token);
-      if (!normalizedToken) {
-        return t("login.missingToken");
-      }
-      setLauncherAuth({
-        token: normalizedToken,
-        user: result.user ?? {}
-      });
-      autoLoginAttemptedRef.current = false;
-      void telemetry.cacheSession({
-        username: result.user?.username,
-        id: result.user?.id ?? null
-      });
-      void launcherData.refreshHome(true, normalizedToken);
-      // Preset packages are downloaded when the user launches them, never
-      // silently in the background after sign-in.
-      const refresh = await refreshLauncherVersions(false, normalizedToken);
-      setPage("home");
-      // Sign-in itself succeeded, so the login page unmounts right here and can
-      // never render this error. Raise it as a toast instead of returning it
-      // into a dead component.
-      if (refresh.error) {
-        notifyWarning(refresh.error, t("toast.title.requestFailed"));
-      }
-      return null;
-    } catch (error) {
-      const errorText = normalizeLoginError(error, t);
-      setStatus(t("app.status.failed", { error: errorText }));
-      // Auto-login runs with `silent` and has no form to render the failure in,
-      // so it needs a toast; the interactive path shows it inline on the form.
-      if (silent) {
-        notifyWarning(t("login.autoLoginFailed", { error: errorText }), t("toast.title.loginFailed"));
-      }
-      return errorText;
-    } finally {
-      setLauncherAuthLoading(false);
-    }
-  }
-
-  function logoutLauncherAccount() {
-    void telemetry.flushSession();
-    // Manual logout must not bounce straight back in via auto-login.
-    // Block the once-per-session guard immediately and disable the
-    // auto-login preference so it stays off on the next launch too.
-    autoLoginAttemptedRef.current = true;
-    setMinecraftAccountPromptOpen(false);
-    persistLauncherLoginPrefs({ ...launcherLoginPrefs, autoLogin: false });
-    setLauncherAuth(null);
-    setLauncherVersions(EMPTY_LAUNCHER_VERSIONS);
-    setNovaGameVersions({});
-    launcherData.clearDashboard();
-    setPresetPackageStatuses({});
-    setPage("home");
-    setAuthNotice(t("login.tip.signInToContinue"));
-    setStatus(t("login.tip.signInToContinue"));
-  }
-
   // Status keys a preset package status is stored under: the instance id (home,
   // launch flow) and, for Nova, the per-game-version row key the instances page
   // reads (launcher-ui-6).
@@ -1266,15 +1015,9 @@ function Launcher() {
       return;
     }
 
-    const token = launcherAuth?.token?.trim() ?? "";
-    if (!token) {
-      setStatus(t("app.status.authRequiredForPreset"));
-      return;
-    }
-
     let targetVersion = isNova ? novaEntry : versionMap[instance.launcherVersionType];
     if (!targetVersion) {
-      const refresh = await refreshLauncherVersions(true, token);
+      const refresh = await refreshLauncherVersions(true);
       if (refresh.error) {
         // The release catalog is only needed to CHECK for a newer package. If this instance
         // already has a mod package installed on disk, a catalog hiccup (backend redeploy, a
@@ -2012,9 +1755,6 @@ function Launcher() {
   // place for the single-instance check, the release gate, the Extreme branch
   // and offline fallback (launcher-ui-1).
   async function launchInstance(rawTarget: Instance, options: LaunchOptions = {}) {
-    if (ensureMandatoryLauncherUpdate()) {
-      return;
-    }
     if (!requireMinecraftAccountForLaunch()) {
       return;
     }
@@ -2167,7 +1907,6 @@ function Launcher() {
       downloadSource: settings.downloadSource,
       waitForExit: false,
       serverAddress: options.serverAddress,
-      fpsmasterToken: launcherAuth?.token ?? null,
       useForge: prepared.launcherVersionType === "EDGE" ? prepared.useForge !== false : undefined,
       useOptiFine:
         prepared.launcherVersionType === "EDGE"
@@ -2257,14 +1996,6 @@ function Launcher() {
     await launchInstance(current);
   }
 
-  async function launchToServer(serverAddress: string) {
-    if (!current) {
-      notifyWarning(t("servers.noInstance"));
-      return;
-    }
-    await launchInstance(current, { serverAddress });
-  }
-
   async function quickLaunch() {
     if (!current) return;
     await launchInstance(current, { quick: true });
@@ -2292,9 +2023,6 @@ function Launcher() {
   }
 
   async function install() {
-    if (ensureMandatoryLauncherUpdate()) {
-      return;
-    }
     const { installVersion, loader, loaderVersion, optiFineEnabled, optiFineVersion } = installCtl;
     if (!installVersion) return;
     if (loader !== "vanilla" && !loaderVersion) {
@@ -2591,9 +2319,6 @@ function Launcher() {
   // progress, can be cancelled and uses the chosen download source; Extreme is
   // a native package and is force-reinstalled instead (launcher-ui-12).
   async function repairInstance(id: string) {
-    if (ensureMandatoryLauncherUpdate()) {
-      return;
-    }
     if (busy) {
       notifyInfo(t("launch.info.alreadyLaunching"));
       return;
@@ -2925,27 +2650,6 @@ function Launcher() {
     invoke("open_downloaded_file", { filePath: path }).catch((error) => notifyError(describeApiError(error, t)));
   }
 
-  // Sent only after the user pressed the consent button in the crash dialog.
-  async function uploadCrashReport(crash: GameExitEvent) {
-    try {
-      // "rate_limited" means the backend dropped it (HTTP 429): no retry, by contract.
-      await invoke<{ status: string }>("upload_game_crash_report", {
-        request: {
-          baseUrl: LAUNCHER_API_BASE_URL,
-          versionId: crash.versionId,
-          exitCode: crash.exitCode,
-          durationMs: crash.durationMs,
-          crashReportPath: crash.crashReportPath ?? undefined,
-          hsErrPath: crash.hsErrPath ?? undefined,
-          sessionId: loadOrCreateLauncherSessionId(),
-          language: acceptLanguageFor(settings.language)
-        }
-      });
-    } catch (error) {
-      throw new Error(describeApiError(error, t));
-    }
-  }
-
   // Only with explicit consent: the key then lives in a 0600 file instead of
   // the system keychain.
   async function enableCredentialFileFallback() {
@@ -3022,7 +2726,6 @@ function Launcher() {
   // re-render when an unrelated piece of App state changes (#5).
   const stableNavigate = useStableCallback(navigatePage);
   const stableLaunch = useStableCallback(launch);
-  const stableLaunchToServer = useStableCallback(launchToServer);
   const stableQuickLaunch = useStableCallback(quickLaunch);
   const stableRemoveInstance = useStableCallback(removeInstance);
   const stableAddOfflineAccount = useStableCallback((username: string) => {
@@ -3037,7 +2740,6 @@ function Launcher() {
   const stableInstall = useStableCallback(install);
   const stableUpdateSettings = useStableCallback(updateSettings);
   const stableUpdateMemory = useStableCallback(updateMemory);
-  const stableLogout = useStableCallback(logoutLauncherAccount);
   const stableCloseWindow = useStableCallback(closeLauncherWindow);
   const stableRequestQuit = useStableCallback(requestLauncherQuit);
 
@@ -3080,7 +2782,6 @@ function Launcher() {
   });
   const goInstall = useStableCallback(() => navigatePage("install"));
   const goSettings = useStableCallback(() => navigatePage("settings"));
-  const goServers = useStableCallback(() => navigatePage("servers"));
   const goInstances = useStableCallback(() => navigatePage("instances"));
   const goContent = useStableCallback(() => navigatePage("content"));
   const onLaunchInstance = useStableCallback(async (id: string, gameVersion?: string) => {
@@ -3160,7 +2861,6 @@ function Launcher() {
     }
     installCtl.setOptiFineEnabled((value) => !value);
   });
-  const onRefreshServers = useStableCallback(() => launcherData.refreshServers(false));
   const onSelectNovaGameVersion = useStableCallback((gameVersion: string) => {
     setSelectedNovaGameVersion(gameVersion);
   });
@@ -3189,7 +2889,6 @@ function Launcher() {
     instances,
     current,
     busy,
-    user: launcherAuth?.user ?? null,
     settings,
     launcherVersions,
     novaGameVersions,
@@ -3208,19 +2907,13 @@ function Launcher() {
     onInstanceDuplicate,
     onInstanceExport,
     onUpdateInstance,
-    launcherNews: launcherData.news,
-    launcherServers: launcherData.servers,
-    launcherOnlineSummary: telemetry.onlineSummary,
-    launcherDashboard: launcherData.dashboard,
     currentLauncherVersion,
-    onRefreshServers,
     launching,
     launchingInstanceId,
     launchProgressPercent,
     launchProgressText,
     onLaunch: stableLaunch,
     onQuickLaunch: stableQuickLaunch,
-    onLaunchToServer: stableLaunchToServer,
     gameRunning: activeGamePid !== null && activeGamePid > 0,
     minecraftAccounts: mcAccounts.accounts,
     currentMinecraftAccount: mcAccounts.currentAccount,
@@ -3231,7 +2924,6 @@ function Launcher() {
     onDeleteMinecraftAccount: stableDeleteMinecraftAccount,
     launcherUpdate: launcherUpdate.appUpdate,
     launcherUpdateAvailable: launcherUpdate.available,
-    launcherUpdateChannels: launcherUpdate.channels,
     launcherUpdateChecking: launcherUpdate.checking,
     launcherUpdateDownloading: launcherUpdate.downloading,
     launcherUpdateProgressPercent: launcherUpdate.progressPercent,
@@ -3274,8 +2966,6 @@ function Launcher() {
     onGoInstall: goInstall,
     onGoInstances: goInstances,
     onGoSettings: goSettings,
-    onGoServers: goServers,
-    onLogoutLauncherAccount: stableLogout,
     onChangeSettings: stableUpdateSettings,
     onClampMemory: stableUpdateMemory,
     onResetSettings: onSettingsReset,
@@ -3328,13 +3018,9 @@ function Launcher() {
               <PageFallback />
             )}
           </main>
-        ) : authenticated ? (
+        ) : (
           <div className="relative z-10 flex h-full w-full flex-1 pt-10">
-            <Sidebar
-              currentPage={page}
-              user={launcherAuth?.user ?? null}
-              setPage={stableNavigate}
-            />
+            <Sidebar currentPage={page} setPage={stableNavigate} />
 
             <main className="app-content-panel relative flex-1 overflow-hidden border-l border-white/5 bg-[var(--bg-secondary)]/34">
               <div key={page} className="relative z-10 h-full page-transition">
@@ -3344,22 +3030,13 @@ function Launcher() {
               </div>
             </main>
           </div>
-        ) : (
-          <main className="relative z-10 flex h-full w-full flex-1 items-center justify-center overflow-hidden px-6 py-8">
-            <LoginPage
-              loading={launcherAuthLoading}
-              initialPrefs={launcherLoginPrefs}
-              statusText={authNotice}
-              onSubmit={loginLauncherAccount}
-            />
-          </main>
         )}
 
-        {authenticated && installDialog && installDialog.open && (
+        {installDialog && installDialog.open && (
           <InstallDialog dialog={installDialog} onClose={closeInstallDialog} onCancel={cancelInstallDialog} />
         )}
 
-        {authenticated && launchPrepareDialog && launchPrepareDialog.open && (
+        {launchPrepareDialog && launchPrepareDialog.open && (
           <LaunchPrepareDialog
             key={launchPrepareDialog.sessionId}
             dialog={launchPrepareDialog}
@@ -3369,11 +3046,11 @@ function Launcher() {
           />
         )}
 
-        {authenticated && launchError && (
+        {launchError && (
           <LaunchErrorDialog message={launchError} onConfirm={() => setLaunchError(null)} />
         )}
 
-        {authenticated && crashReport && (
+        {crashReport && (
           <CrashDialog
             crash={crashReport}
             instanceName={crashInstanceName(crashReport)}
@@ -3389,12 +3066,11 @@ function Launcher() {
             }
             onOpenFile={openPathWithSystem}
             onDiagnose={() => diagnoseCrash(crashReport)}
-            onUpload={() => uploadCrashReport(crashReport)}
             onClose={() => setCrashReport(null)}
           />
         )}
 
-        {authenticated && autostartPromptOpen && !crashReport && (
+        {autostartPromptOpen && !crashReport && (
           <ChoiceDialog
             id="autostart-prompt"
             title={t("autostart.title")}
