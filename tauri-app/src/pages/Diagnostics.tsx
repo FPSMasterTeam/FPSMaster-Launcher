@@ -16,7 +16,6 @@ import { memo, useCallback, useEffect, useRef, useState } from "react";
 import Button from "../components/Button";
 import Card from "../components/Card";
 import { Checkbox } from "../components/Checkbox";
-import { LAUNCHER_API_BASE_URL } from "../constants";
 import { useI18n, type TranslationKey } from "../i18n";
 import { formatByteSize } from "../lib/launchPrepare";
 import { describeApiError, isCancelledError } from "../lib/launcherError";
@@ -69,7 +68,6 @@ const KNOWN_CODES = new Set([
 function sourceLabel(id: unknown, t: Translator): string {
   if (id === "official") return t("diagnostics.source.official");
   if (id === "bmclapi") return t("diagnostics.source.bmclapi");
-  if (id === "fpsmaster-api") return t("diagnostics.source.api");
   return String(id ?? "");
 }
 
@@ -141,7 +139,6 @@ function DiagnosticsPage({
         const next = await invoke<HealthReport>("run_health_check", {
           gameDir: settings.gameDir,
           versionId,
-          apiBaseUrl: LAUNCHER_API_BASE_URL,
           deep: deepCheck
         });
         if (requestRef.current === requestId) setReport(next);

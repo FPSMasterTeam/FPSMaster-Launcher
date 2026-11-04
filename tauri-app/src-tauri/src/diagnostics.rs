@@ -273,7 +273,7 @@ const AUTO_SOURCE_TTL: Duration = Duration::from_secs(30 * 60);
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct SourceProbeEntry {
-    /// "official" | "bmclapi" | "fpsmaster-api"
+    /// "official" | "bmclapi"
     id: String,
     #[serde(flatten)]
     result: ProbeResult,
@@ -287,18 +287,11 @@ pub(crate) struct SourceProbeReport {
     recommended: String,
 }
 
-fn probe_targets(api_base_url: Option<&str>) -> Vec<(String, String)> {
-    let mut targets = vec![
+fn probe_targets() -> Vec<(String, String)> {
+    vec![
         ("official".to_string(), OFFICIAL_PROBE_URL.to_string()),
         ("bmclapi".to_string(), MIRROR_PROBE_URL.to_string()),
-    ];
-    if let Some(base) = api_base_url.and_then(|raw| crate::normalize_api_base_url(raw).ok()) {
-        targets.push((
-            "fpsmaster-api".to_string(),
-            format!("{base}/api/v1/telemetry/online"),
-        ));
-    }
-    targets
+    ]
 }
 
 fn probe_all(targets: Vec<(String, String)>) -> Vec<SourceProbeEntry> {
@@ -373,22 +366,20 @@ pub(crate) fn auto_download_source() -> DownloadSource {
     }
     if !REFRESHING.swap(true, Ordering::SeqCst) {
         thread::spawn(|| {
-            remember_recommendation(recommend(&probe_all(probe_targets(None))));
+            remember_recommendation(recommend(&probe_all(probe_targets())));
             REFRESHING.store(false, Ordering::SeqCst);
         });
     }
     cached.map_or(DownloadSource::MirrorFirst, |(_, source)| source)
 }
 
-/// Measures latency/throughput of the Minecraft download sources (and the
-/// FPSMaster API when a base URL is given) and recommends the faster one.
+/// Measures latency/throughput of the Minecraft download sources and
+/// recommends the faster one.
 /// The recommendation is also what the "auto" download source resolves to.
 #[tauri::command]
-pub(crate) async fn probe_download_sources(
-    api_base_url: Option<String>,
-) -> Result<SourceProbeReport, String> {
+pub(crate) async fn probe_download_sources() -> Result<SourceProbeReport, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let sources = probe_all(probe_targets(api_base_url.as_deref()));
+        let sources = probe_all(probe_targets());
         let recommended = recommend(&sources);
         remember_recommendation(recommended);
         SourceProbeReport {
@@ -632,17 +623,15 @@ fn check_disk_space(game_dir: &Path, items: &mut Vec<HealthCheckItem>) {
     ));
 }
 
-fn check_network(api_base_url: Option<&str>, items: &mut Vec<HealthCheckItem>) {
+fn check_network(items: &mut Vec<HealthCheckItem>) {
     const SLOW_BYTES_PER_SECOND: u64 = 100 * 1024;
-    let sources = probe_all(probe_targets(api_base_url));
+    let sources = probe_all(probe_targets());
     remember_recommendation(recommend(&sources));
     for source in sources {
         let result = &source.result;
         let (status, code) = if !result.ok {
             ("error", "SOURCE_UNREACHABLE")
-        } else if source.id != "fpsmaster-api"
-            && result.bytes_per_second.unwrap_or(0) < SLOW_BYTES_PER_SECOND
-        {
+        } else if result.bytes_per_second.unwrap_or(0) < SLOW_BYTES_PER_SECOND {
             ("warning", "SOURCE_SLOW")
         } else {
             ("ok", "SOURCE_OK")
@@ -752,7 +741,6 @@ pub(crate) fn run_health_check_blocking(
     app: &AppHandle,
     game_dir: &Path,
     version_id: Option<&str>,
-    api_base_url: Option<&str>,
     deep: bool,
 ) -> HealthReport {
     let mut items = Vec::new();
@@ -763,7 +751,7 @@ pub(crate) fn run_health_check_blocking(
         }
     }
     check_disk_space(game_dir, &mut items);
-    check_network(api_base_url, &mut items);
+    check_network(&mut items);
     check_credentials(app, &mut items);
     check_recent_crashes(game_dir, &mut items);
     HealthReport {
@@ -780,7 +768,6 @@ pub(crate) async fn run_health_check(
     app: AppHandle,
     game_dir: String,
     version_id: Option<String>,
-    api_base_url: Option<String>,
     deep: Option<bool>,
 ) -> Result<HealthReport, String> {
     tauri::async_runtime::spawn_blocking(move || {
@@ -789,7 +776,6 @@ pub(crate) async fn run_health_check(
             &app,
             &game_dir,
             version_id.as_deref(),
-            api_base_url.as_deref(),
             deep.unwrap_or(false),
         ))
     })
@@ -906,9 +892,7 @@ fn export_support_bundle_blocking(
     ];
     let health = match health_report {
         Some(report) => report,
-        None => serde_json::to_value(run_health_check_blocking(
-            app, game_dir, version_id, None, false,
-        ))
+        None => serde_json::to_value(run_health_check_blocking(app, game_dir, version_id, false))
         .unwrap_or(Value::Null),
     };
     files.push((

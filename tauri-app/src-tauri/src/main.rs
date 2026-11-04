@@ -12,7 +12,7 @@ mod win7_compat;
 mod zip_budget;
 
 use launcher_api::{
-    download_launcher_app_update, normalize_api_base_url, open_downloaded_file, parse_api_envelope,
+    download_launcher_app_update, open_downloaded_file, parse_api_envelope,
 };
 use microsoft_auth::{
     get_minecraft_auth_config, lookup_minecraft_skin_url, poll_minecraft_device_login,
@@ -4458,8 +4458,8 @@ fn set_ui_language(language: String) {
     }
 }
 
-/// 面向 api.fpsmaster.top 的短超时客户端。API 调用必须快速失败。
-/// Every request carries the UI language so the backend's `message` matches it.
+/// Short-timeout HTTP client for JSON metadata requests (package manifests);
+/// they must fail fast. Carries the UI language as Accept-Language.
 pub(crate) fn build_api_http_client() -> Result<reqwest::blocking::Client, String> {
     let language = ui_language()
         .read()

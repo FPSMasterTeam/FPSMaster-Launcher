@@ -234,14 +234,6 @@ fn normalize_launcher_update_checksum(value: &str) -> Option<String> {
     }
 }
 
-pub(crate) fn normalize_api_base_url(base_url: &str) -> Result<String, String> {
-    let trimmed = base_url.trim().trim_end_matches('/');
-    if trimmed.is_empty() {
-        return Err("API base URL is empty".to_string());
-    }
-    Ok(trimmed.to_string())
-}
-
 fn current_launcher_update_target() -> String {
     let os = if cfg!(target_os = "windows") {
         "windows"

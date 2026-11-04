@@ -23,12 +23,7 @@ export const STORAGE_KEYS = {
 // Default/fallback Nova game version highlighted in the picker when the catalog hasn't loaded yet.
 export const NOVA_DEFAULT_GAME_VERSION = "1.21.11";
 
-// Rust backend needs the full API URL for invoke() calls
-// Vite proxy only works for direct fetch() calls from frontend
-export const LAUNCHER_API_BASE_URL = "https://api.fpsmaster.top";
 
-// Account registration happens on the website, not in the launcher.
-export const REGISTER_URL = "https://fpsmaster.top/register";
 
 export const DEFAULT_SETTINGS: Settings = {
   gameDir: "",

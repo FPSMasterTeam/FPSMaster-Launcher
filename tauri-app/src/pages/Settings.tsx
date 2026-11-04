@@ -36,7 +36,7 @@ import Button from "../components/Button";
 import ChangelogNotes from "../components/ChangelogNotes";
 import LiquidGlass from "../components/LiquidGlass";
 import Select from "../components/Select";
-import { LAUNCHER_API_BASE_URL, VISUAL_PROFILE_PRESETS, resolveVisualProfile } from "../constants";
+import { VISUAL_PROFILE_PRESETS, resolveVisualProfile } from "../constants";
 import { notifyError } from "../lib/toast";
 import { LOCALE_OPTIONS, useI18n } from "../i18n";
 import { describeApiError } from "../lib/launcherError";
@@ -217,7 +217,7 @@ function SettingsPage({
   async function probeSources() {
     setProbing(true);
     try {
-      setProbeReport(await invoke<SourceProbeReport>("probe_download_sources", { apiBaseUrl: LAUNCHER_API_BASE_URL }));
+      setProbeReport(await invoke<SourceProbeReport>("probe_download_sources"));
     } catch (error) {
       notifyError(describeApiError(error, t), t("settings.sourceProbe"));
     } finally {
@@ -749,7 +749,7 @@ function SettingsPage({
                         <span className={`badge normal-case tracking-normal ${source.ok ? "badge-success" : "badge-danger"}`}>
                           {source.ok ? t("settings.sourceProbeOk") : t("settings.sourceProbeFailed")}
                         </span>
-                        <span className="font-medium text-[var(--text-primary)]">{t(`diagnostics.source.${source.id === "fpsmaster-api" ? "api" : source.id}` as const)}</span>
+                        <span className="font-medium text-[var(--text-primary)]">{t(`diagnostics.source.${source.id}` as const)}</span>
                         {source.ok ? (
                           <span className="text-data text-[var(--text-muted)]">
                             {t("settings.sourceProbeStats", {

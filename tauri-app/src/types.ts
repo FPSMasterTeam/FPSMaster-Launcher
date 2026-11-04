@@ -574,7 +574,7 @@ export type SupportBundleResult = { path: string; entries: string[]; sizeBytes: 
 
 // probe_download_sources
 export type SourceProbe = {
-  id: "official" | "bmclapi" | "fpsmaster-api";
+  id: "official" | "bmclapi";
   url: string;
   ok: boolean;
   latencyMs?: number | null;
