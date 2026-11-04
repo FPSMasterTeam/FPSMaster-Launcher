@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod catalog;
 mod diagnostics;
 mod downloader;
 mod launcher_api;
@@ -12111,6 +12112,9 @@ fn main() {
             ensure_jdk,
             launcher_login,
             launcher_list_available_versions,
+            catalog::catalog_list_versions,
+            catalog::catalog_info,
+            catalog::catalog_get_app_update,
             launcher_list_news,
             launcher_list_servers,
             launcher_get_dashboard,

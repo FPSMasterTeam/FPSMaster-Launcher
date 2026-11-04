@@ -776,14 +776,14 @@ fn current_launcher_update_target() -> String {
 /// fixed-runtime build (`-win7` suffix) because current evergreen WebView2
 /// runtime versions are Windows 10+ only.
 #[cfg(target_os = "windows")]
-fn current_launcher_app_update_target() -> String {
+pub(crate) fn current_launcher_app_update_target() -> String {
     let mut target = current_launcher_update_target();
     target.push_str(win7_target_suffix());
     target
 }
 
 #[cfg(not(target_os = "windows"))]
-fn current_launcher_app_update_target() -> String {
+pub(crate) fn current_launcher_app_update_target() -> String {
     current_launcher_update_target()
 }
 

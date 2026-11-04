@@ -1,0 +1,92 @@
+{
+  "schema": 1,
+  "revision": 1,
+  "generatedAt": "2026-11-04T10:38:18+00:00",
+  "clients": [
+    {
+      "channel": "release",
+      "versionType": "EDGE",
+      "versionName": "1.0.0-beta",
+      "gameVersion": null,
+      "artifactSourceType": "external_url",
+      "downloadUrl": "https://github.com/FPSMasterTeam/FPSMaster-Edge/releases/download/v1.0.0/FPSMaster-edge.jar",
+      "fileSize": 14877439,
+      "checksum": "d06be89126faf2bb877c1dbf6fd758a27d30924b0667ced1ecb6b75414a6ad2a",
+      "recommended": true,
+      "changelog": "DRAFT catalog generated from pre-release builds; regenerate for the final release."
+    },
+    {
+      "channel": "release",
+      "versionType": "NOVA",
+      "versionName": "1.0.0-beta",
+      "gameVersion": "1.19.2",
+      "artifactSourceType": "external_url",
+      "downloadUrl": "https://github.com/FPSMasterTeam/FPSMaster-Nova/releases/download/v1.0.0-beta/fpsmaster-nova-1.19.2-1.0.0-beta.jar",
+      "fileSize": 8884047,
+      "checksum": "3ecfb82be5b18a0190e7573291c5d411cd33c96f7e0fe735120c9f46e0f70115",
+      "recommended": false,
+      "changelog": "DRAFT catalog generated from pre-release builds; regenerate for the final release."
+    },
+    {
+      "channel": "release",
+      "versionType": "NOVA",
+      "versionName": "1.0.0-beta",
+      "gameVersion": "1.20.1",
+      "artifactSourceType": "external_url",
+      "downloadUrl": "https://github.com/FPSMasterTeam/FPSMaster-Nova/releases/download/v1.0.0-beta/fpsmaster-nova-1.20.1-1.0.0-beta.jar",
+      "fileSize": 8915749,
+      "checksum": "f5edd4c856eacb6ffe87fcee02a4d85191ff81b22db6b5686f9d8e65823cf81d",
+      "recommended": false,
+      "changelog": "DRAFT catalog generated from pre-release builds; regenerate for the final release."
+    },
+    {
+      "channel": "release",
+      "versionType": "NOVA",
+      "versionName": "1.0.0-beta",
+      "gameVersion": "1.21.1",
+      "artifactSourceType": "external_url",
+      "downloadUrl": "https://github.com/FPSMasterTeam/FPSMaster-Nova/releases/download/v1.0.0-beta/fpsmaster-nova-1.21.1-1.0.0-beta.jar",
+      "fileSize": 8899765,
+      "checksum": "76fd9757b6668cc8768c3ca1ffe9a174ed4e0fd07267e33d1b69517420418c70",
+      "recommended": false,
+      "changelog": "DRAFT catalog generated from pre-release builds; regenerate for the final release."
+    },
+    {
+      "channel": "release",
+      "versionType": "NOVA",
+      "versionName": "1.0.0-beta",
+      "gameVersion": "1.21.8",
+      "artifactSourceType": "external_url",
+      "downloadUrl": "https://github.com/FPSMasterTeam/FPSMaster-Nova/releases/download/v1.0.0-beta/fpsmaster-nova-1.21.8-1.0.0-beta.jar",
+      "fileSize": 8939355,
+      "checksum": "6b6f59db8cc1bc5882b4f44c2b0919d2811e5c6c30378a810797ed05182923e0",
+      "recommended": false,
+      "changelog": "DRAFT catalog generated from pre-release builds; regenerate for the final release."
+    },
+    {
+      "channel": "release",
+      "versionType": "NOVA",
+      "versionName": "1.0.0-beta",
+      "gameVersion": "1.21.11",
+      "artifactSourceType": "external_url",
+      "downloadUrl": "https://github.com/FPSMasterTeam/FPSMaster-Nova/releases/download/v1.0.0-beta/fpsmaster-nova-1.21.11-1.0.0-beta.jar",
+      "fileSize": 8281664,
+      "checksum": "1175b929363e6abc387ccd00ffbb4bb65f0aee92c265cae5d4ac7da51627bcdf",
+      "recommended": true,
+      "changelog": "DRAFT catalog generated from pre-release builds; regenerate for the final release."
+    },
+    {
+      "channel": "release",
+      "versionType": "NOVA",
+      "versionName": "1.0.0-beta",
+      "gameVersion": "26.2",
+      "artifactSourceType": "external_url",
+      "downloadUrl": "https://github.com/FPSMasterTeam/FPSMaster-Nova/releases/download/v1.0.0-beta/fpsmaster-nova-26.2-1.0.0-beta.jar",
+      "fileSize": 8093215,
+      "checksum": "b50f0694223f6a8b2ac55fd3e56d599768109dba63837aa7df23481358e456d7",
+      "recommended": false,
+      "changelog": "DRAFT catalog generated from pre-release builds; regenerate for the final release."
+    }
+  ],
+  "launcher": []
+}
