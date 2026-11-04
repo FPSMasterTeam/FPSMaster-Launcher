@@ -1,6 +1,14 @@
 import type { EnUSTranslations } from "./en-US";
 
 const zhCN: EnUSTranslations = {
+  "launchOptions.title": "启动参数",
+  "launchOptions.hint": "留空继承全局设置（全局留空使用自动 Java 和游戏默认窗口尺寸）。JVM 参数每行一个，无需 Shell 引号；最大堆内存请使用内存设置，不要填写 -Xmx。",
+  "launchOptions.inherit": "使用默认设置",
+  "launchOptions.memory": "内存（MB）",
+  "launchOptions.width": "窗口宽度",
+  "launchOptions.height": "窗口高度",
+  "launchOptions.java": "Java 可执行文件路径",
+  "launchOptions.jvm": "额外 JVM 参数（每行一个）",
   "home.archiveNotice": "FPSMaster 正在收尾为可离线使用的最终版，无需 FPSMaster 账号或服务器。正版登录和新内容下载仍依赖第三方服务。",
   "launch.importJar.action": "导入客户端 jar",
   "launch.importJar.trust": "请选择可信来源、对应当前 Minecraft 版本的 Edge/Nova jar。只替换启动器管理的客户端包，保留其他模组，并停用客户端包自动更新。",

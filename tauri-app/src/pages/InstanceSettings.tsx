@@ -3,6 +3,7 @@ import { Archive, ArrowLeft, Copy, Eye, File, Folder, FolderOpen, Layers, MoreHo
 import { memo, type ReactNode, useEffect, useState } from "react";
 import Button from "../components/Button";
 import Card from "../components/Card";
+import LaunchOptionsEditor from "../components/LaunchOptionsEditor";
 import { resolvePresetVersionId } from "../constants";
 import { useI18n } from "../i18n";
 import { describeApiError } from "../lib/launcherError";
@@ -307,6 +308,12 @@ function InstanceSettingsPage({
           </Button>
         </div>
       </header>
+
+      <Card variant="frost" className="page-card mb-6 rounded-[10px]" interactive={false}>
+        <h2 className="section-title mb-4">{t("launchOptions.title")}</h2>
+        <LaunchOptionsEditor value={instance.launchOptions} disabled={busy}
+          onChange={(launchOptions) => onUpdateInstance({ ...instance, launchOptions })} />
+      </Card>
 
       {instance.launcherVersionType === "EDGE" && (
         <Card variant="frost" className="page-card mb-6 rounded-[10px]" interactive={false}>

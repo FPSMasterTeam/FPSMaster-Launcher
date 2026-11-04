@@ -224,6 +224,7 @@ pub(crate) struct VanillaLaunchRequest {
     pub(crate) java_path: PathBuf,
     pub(crate) max_memory_mb: i32,
     pub(crate) server_address: Option<String>,
+    pub(crate) offline: bool,
 }
 
 #[derive(Debug)]
@@ -2205,7 +2206,7 @@ pub(crate) fn build_vanilla_launch_plan(
     download_source_id: Option<&str>,
     use_optifine: Option<bool>,
 ) -> Result<VanillaResolvedLaunchPlan, String> {
-    let source = DownloadSource::from_id(download_source_id)?;
+    let source = if request.offline { DownloadSource::OfficialOnly } else { DownloadSource::from_id(download_source_id)? };
     let descriptor = resolve_version_descriptor(&request.game_dir, &request.version_id, 0)?;
     let version_json = descriptor.merged;
     let rule_features = build_rule_features();
@@ -2232,7 +2233,13 @@ pub(crate) fn build_vanilla_launch_plan(
     let natives_dir = create_temp_natives_dir(&natives_base_dir)?;
 
     let libraries = resolve_libraries(&version_json, &request.game_dir, &rule_features, source)?;
-    prefetch_missing_libraries(window, &libraries)?;
+    if request.offline {
+        if libraries.iter().any(|library| !library.path.is_file()) {
+            return Err("Offline launch: required libraries are missing; run normal launch to repair".to_string());
+        }
+    } else {
+        prefetch_missing_libraries(window, &libraries)?;
+    }
 
     let mut classpath_entries = Vec::new();
     let mut native_budget = crate::zip_budget::NATIVE_JAR_BUDGET.tracker();
@@ -2271,7 +2278,11 @@ pub(crate) fn build_vanilla_launch_plan(
         .join("versions")
         .join(&jar_version_id)
         .join(format!("{jar_version_id}.jar"));
-    ensure_client_jar_downloaded(window, &version_json, &client_jar, source)?;
+    if !request.offline {
+        ensure_client_jar_downloaded(window, &version_json, &client_jar, source)?;
+    } else if !client_jar.is_file() {
+        return Err("Offline launch: client jar is missing".to_string());
+    }
     classpath_entries.push(client_jar);
 
     let classpath = build_classpath(&classpath_entries);
@@ -2515,7 +2526,7 @@ pub(crate) fn build_edge_aot_launch_plan(
     download_source_id: Option<&str>,
     use_optifine: bool,
 ) -> Result<VanillaResolvedLaunchPlan, String> {
-    let source = DownloadSource::from_id(download_source_id)?;
+    let source = if request.offline { DownloadSource::OfficialOnly } else { DownloadSource::from_id(download_source_id)? };
     let descriptor = resolve_version_descriptor(&request.game_dir, &request.version_id, 0)?;
     let version_json = descriptor.merged;
     let rule_features = build_rule_features();
@@ -2594,7 +2605,13 @@ pub(crate) fn build_edge_aot_launch_plan(
         resolve_libraries(&version_json, &request.game_dir, &rule_features, source)?;
     let launchwrapper = resolve_edge_aot_launchwrapper_library(&request.game_dir, source)?;
     libraries.push(launchwrapper.clone());
-    prefetch_missing_libraries(window, &libraries)?;
+    if request.offline {
+        if libraries.iter().any(|library| !library.path.is_file()) {
+            return Err("Offline launch: required libraries are missing; run normal launch to repair".to_string());
+        }
+    } else {
+        prefetch_missing_libraries(window, &libraries)?;
+    }
     // The launchwrapper was appended only to share the parallel fetch; it is not
     // part of the resolved classpath order below.
     libraries.pop();
@@ -2623,7 +2640,11 @@ pub(crate) fn build_edge_aot_launch_plan(
         .join("versions")
         .join(&jar_version_id)
         .join(format!("{jar_version_id}.jar"));
-    ensure_client_jar_downloaded(window, &version_json, &notch_jar, source)?;
+    if !request.offline {
+        ensure_client_jar_downloaded(window, &version_json, &notch_jar, source)?;
+    } else if !notch_jar.is_file() {
+        return Err("Offline launch: client jar is missing".to_string());
+    }
     classpath_entries.push(notch_jar.clone());
 
     let mut tweak_classes = Vec::new();
@@ -4451,6 +4472,21 @@ fn append_launch_logging_argument(
     source: DownloadSource,
     jvm_args: &mut Vec<String>,
 ) {
+    if request.offline {
+        if let Some(logging) = version_json.get("logging").and_then(|v| v.get("client")) {
+            if let Some(id) = logging.get("file").and_then(|v| v.get("id")).and_then(Value::as_str) {
+                if Path::new(id).file_name() == Some(OsStr::new(id)) {
+                    let path = request.game_dir.join("assets/log_configs").join(id);
+                    if path.is_file() {
+                        if let Some(argument) = logging.get("argument").and_then(Value::as_str) {
+                            jvm_args.push(argument.replace("${path}", &path.to_string_lossy()));
+                        }
+                    }
+                }
+            }
+        }
+        return;
+    }
     match ensure_logging_config(window, version_json, &request.game_dir, "launch", None, source) {
         Ok(Some(logging_argument)) => {
             if !jvm_args
@@ -5669,6 +5705,7 @@ mod tests {
             java_path: PathBuf::from("java"),
             max_memory_mb: 1024,
             server_address: None,
+            offline: false,
         };
         let plan =
             build_vanilla_launch_plan(None, &request, None, None).expect("launch plan should be built");
@@ -5722,6 +5759,7 @@ mod tests {
             java_path: PathBuf::from("java"),
             max_memory_mb: 512,
             server_address: None,
+            offline: false,
         };
 
         let first = build_vanilla_launch_plan(None, &request, None, None)
@@ -5732,6 +5770,62 @@ mod tests {
         assert_ne!(first.natives_dir, second.natives_dir);
         assert!(first.natives_dir.starts_with(version_dir.join("natives")));
         assert!(second.natives_dir.starts_with(version_dir.join("natives")));
+    }
+
+    #[test]
+    fn offline_plan_uses_local_logging_and_never_contacts_download_urls() {
+        use std::io::Write;
+        use std::net::TcpListener;
+        use std::sync::{Arc, atomic::{AtomicBool, AtomicUsize, Ordering}};
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let url = format!("http://{}/missing", listener.local_addr().unwrap());
+        let hits = Arc::new(AtomicUsize::new(0));
+        let done = Arc::new(AtomicBool::new(false));
+        let (seen, stopped) = (hits.clone(), done.clone());
+        let server = std::thread::spawn(move || {
+            while !stopped.load(Ordering::Relaxed) {
+                if let Ok((mut socket, _)) = listener.accept() {
+                    seen.fetch_add(1, Ordering::Relaxed);
+                    let _ = socket.write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+                }
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+        });
+        let temp = tempfile::tempdir().unwrap();
+        let version = temp.path().join("versions/local");
+        fs::create_dir_all(&version).unwrap();
+        fs::write(version.join("local.jar"), "client").unwrap();
+        fs::write(version.join("local.json"), json!({
+            "id": "local", "mainClass": "game.Main", "libraries": [],
+            "assetIndex": { "id": "local" },
+            "downloads": { "client": { "url": url } },
+            "logging": { "client": {
+                "argument": "-Dlog4j.configurationFile=${path}",
+                "file": { "id": "local.xml", "url": url }
+            }},
+            "arguments": { "game": ["--username", "${auth_player_name}"] }
+        }).to_string()).unwrap();
+        let request = VanillaLaunchRequest {
+            game_dir: temp.path().to_path_buf(), version_id: "local".into(),
+            player_name: "Player".into(), uuid: "offline".into(), access_token: "offline".into(),
+            user_type: None, auth_xuid: None, java_path: PathBuf::from("java"),
+            max_memory_mb: 1024, server_address: None, offline: true,
+        };
+        // An offline plan must not even resolve/probe a selected download source.
+        let first = build_vanilla_launch_plan(None, &request, Some("invalid-source"), None);
+        fs::create_dir_all(temp.path().join("assets/log_configs")).unwrap();
+        fs::write(temp.path().join("assets/log_configs/local.xml"), "<Configuration/>").unwrap();
+        let cached = build_vanilla_launch_plan(None, &request, Some("invalid-source"), None);
+        fs::remove_file(version.join("local.jar")).unwrap();
+        let missing = build_vanilla_launch_plan(None, &request, Some("invalid-source"), None);
+        done.store(true, Ordering::Relaxed);
+        server.join().unwrap();
+        assert!(first.is_ok(), "{first:?}");
+        assert!(!first.unwrap().plan.command.iter().any(|arg| arg.starts_with("-Dlog4j.configurationFile=")));
+        assert!(cached.unwrap().plan.command.iter().any(|arg| arg.ends_with("log_configs/local.xml")));
+        assert!(missing.unwrap_err().contains("Offline launch"));
+        assert_eq!(hits.load(Ordering::Relaxed), 0);
     }
 
     #[test]
@@ -5829,6 +5923,7 @@ mod tests {
             java_path: PathBuf::from("java"),
             max_memory_mb: 1024,
             server_address: None,
+            offline: false,
         };
         let version_json = json!({ "assetIndex": { "id": "5" } });
 
@@ -5987,6 +6082,7 @@ mod tests {
             java_path: PathBuf::from("java"),
             max_memory_mb: 1024,
             server_address: None,
+            offline: false,
         };
 
         let plan = build_vanilla_launch_plan(None, &request, None, None)

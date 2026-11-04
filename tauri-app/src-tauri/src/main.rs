@@ -6560,6 +6560,7 @@ async fn build_vanilla_launch_plan(
             java_path: java_executable,
             max_memory_mb,
             server_address: None,
+            offline: false,
         };
         minecraft_core::build_vanilla_launch_plan(
             Some(&window),
@@ -6573,6 +6574,61 @@ async fn build_vanilla_launch_plan(
     .map_err(|e| format!("Failed to join launch plan task: {e}"))
     .and_then(std::convert::identity)
     .inspect_err(|e| log_command_error("build_vanilla_launch_plan", e))
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct JavaLaunchOptions {
+    #[serde(default)]
+    jvm_args: Vec<String>,
+    window_width: Option<u32>,
+    window_height: Option<u32>,
+}
+
+fn apply_custom_launch_options(
+    command: &mut Vec<String>,
+    main_class: &str,
+    options: Option<&JavaLaunchOptions>,
+) -> Result<(), String> {
+    let Some(options) = options else { return Ok(()) };
+    if options.jvm_args.len() > 256 {
+        return Err("Too many JVM arguments (maximum 256)".to_string());
+    }
+    for arg in &options.jvm_args {
+        if !arg.starts_with('-') || arg.len() > 8192 || arg.contains('\0')
+            || ["-cp", "-classpath", "--class-path", "-jar", "--module-path", "-p", "-m", "--module"].contains(&arg.as_str())
+            || arg.starts_with("--class-path=") || arg.starts_with("-Xmx")
+        {
+            return Err("Invalid JVM argument: use one option per line, keep the launcher classpath, and set -Xmx via Memory".to_string());
+        }
+    }
+    let main_index = command.iter().position(|arg| arg == main_class)
+        .ok_or_else(|| "Launch command is missing its main class".to_string())?;
+    command.splice(main_index..main_index, options.jvm_args.iter().cloned());
+    let game_start = main_index + options.jvm_args.len() + 1;
+    for (flag, value, minimum) in [
+        ("--width", options.window_width, 320),
+        ("--height", options.window_height, 240),
+    ] {
+        if let Some(value) = value {
+            if !(minimum..=16384).contains(&value) {
+                return Err("Window dimensions are outside the supported range".to_string());
+            }
+            let mut index = game_start;
+            while index < command.len() {
+                if command[index] == flag {
+                    command.remove(index);
+                    if index < command.len() { command.remove(index); }
+                } else if command[index].starts_with(&format!("{flag}=")) {
+                    command.remove(index);
+                } else {
+                    index += 1;
+                }
+            }
+            command.extend([flag.to_string(), value.to_string()]);
+        }
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -6592,6 +6648,8 @@ async fn launch_vanilla(
     use_optifine: Option<bool>,
     user_type: Option<String>,
     auth_xuid: Option<String>,
+    launch_options: Option<JavaLaunchOptions>,
+    offline: Option<bool>,
 ) -> Result<LaunchExecutionResult, String> {
     tauri::async_runtime::spawn_blocking(move || {
         launch_vanilla_blocking(
@@ -6610,6 +6668,8 @@ async fn launch_vanilla(
             use_optifine,
             user_type,
             auth_xuid,
+            launch_options,
+            offline,
         )
     })
     .await
@@ -6634,6 +6694,8 @@ fn launch_vanilla_blocking(
     use_optifine: Option<bool>,
     user_type: Option<String>,
     auth_xuid: Option<String>,
+    launch_options: Option<JavaLaunchOptions>,
+    offline: Option<bool>,
 ) -> Result<LaunchExecutionResult, String> {
     if let Some(pid) = detect_active_game_pid() {
         return Err(format!(
@@ -6658,6 +6720,7 @@ fn launch_vanilla_blocking(
         }),
         max_memory_mb,
         server_address: server_address.clone(),
+        offline: offline.unwrap_or(false),
     };
     // `use_forge == Some(false)` is the explicit "Edge, Forge disabled" AOT path (see
     // FPSMaster-Edge/runtime/README.md); every other case (Nova, or Edge with Forge
@@ -6688,6 +6751,10 @@ fn launch_vanilla_blocking(
         return Err("Launch command is empty".to_string());
     }
     let runtime_dir = resolve_version_runtime_dir(&game_dir_path, &version_id)?;
+    if let Err(error) = apply_custom_launch_options(&mut normalized_command, &plan.main_class, launch_options.as_ref()) {
+        let _ = fs::remove_dir_all(&natives_dir);
+        return Err(error);
+    }
     rewrite_launch_game_dir_argument(&mut normalized_command, &runtime_dir);
 
     let executable = normalized_command[0].clone();
@@ -8336,6 +8403,8 @@ struct OfflineLaunchReadiness {
 fn get_offline_launch_readiness_blocking(
     game_dir: String,
     version_id: String,
+    java_path: Option<String>,
+    use_forge: Option<bool>,
 ) -> Result<OfflineLaunchReadiness, String> {
     let version_id = version_id.trim().to_string();
     ensure_safe_child_name(&version_id, "Version id")?;
@@ -8377,12 +8446,30 @@ fn get_offline_launch_readiness_blocking(
         major,
         minecraft_core::macos_requires_x64_runtime(&game_dir_path, &version_id),
     );
-    match verify_runtime_install(&runtime_root, false) {
-        Ok(java) => readiness.java_path = Some(java.to_string_lossy().to_string()),
-        Err(error) => readiness.missing.push(format!("java {major}: {error}")),
+    if let Some(java) = java_path.filter(|path| !path.trim().is_empty()) {
+        if Path::new(java.trim()).is_file() {
+            readiness.java_path = Some(java.trim().to_string());
+        } else {
+            readiness.missing.push("Custom Java executable is missing".to_string());
+        }
+    } else {
+        match verify_runtime_install(&runtime_root, false) {
+            Ok(java) => readiness.java_path = Some(java.to_string_lossy().to_string()),
+            Err(error) => readiness.missing.push(format!("java {major}: {error}")),
+        }
     }
     readiness.missing.extend(inspection.missing);
     readiness.corrupted = inspection.corrupted;
+    if version_id == "FPSMaster-Edge" || version_id.starts_with("FPSMaster-Nova-") {
+        let package = if version_id == "FPSMaster-Edge" && use_forge == Some(false) {
+            get_edge_aot_package_state_blocking(game_dir, version_id, None, None, None)?
+        } else {
+            get_launcher_package_state_blocking(game_dir, version_id, None, None, None, None)?
+        };
+        if !package.installed || package.needs_repair {
+            readiness.missing.push("Client package is missing or needs repair".to_string());
+        }
+    }
     readiness.ready = readiness.missing.is_empty() && readiness.corrupted.is_empty();
     Ok(readiness)
 }
@@ -8392,9 +8479,11 @@ fn get_offline_launch_readiness_blocking(
 async fn get_offline_launch_readiness(
     game_dir: String,
     version_id: String,
+    java_path: Option<String>,
+    use_forge: Option<bool>,
 ) -> Result<OfflineLaunchReadiness, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        get_offline_launch_readiness_blocking(game_dir, version_id)
+        get_offline_launch_readiness_blocking(game_dir, version_id, java_path, use_forge)
     })
     .await
     .map_err(|e| format!("Failed to join offline readiness task: {e}"))
@@ -10139,6 +10228,8 @@ fn trim_to_mods_relative_path(path: &Path) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::{
+        apply_custom_launch_options, JavaLaunchOptions,
+        get_offline_launch_readiness_blocking,
         import_launcher_jar_blocking, get_launcher_package_state_blocking,
         cleanup_launch_natives_dir, delete_instance_section_entry, ensure_safe_child_name,
         extract_archive_to_stage, fabric_mod_uses_named_namespace, format_quoted_command,
@@ -10151,6 +10242,56 @@ mod tests {
     use std::io::Write;
     use std::path::Path;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn instance_jvm_and_window_options_are_inserted_without_shell_splitting() {
+        let mut command = ["java", "-Xmx4096M", "game.Main", "--width", "854", "--height=480"]
+            .map(str::to_string).to_vec();
+        let options = JavaLaunchOptions {
+            jvm_args: vec!["-Dpath=C:\\Program Files\\Java".to_string()],
+            window_width: Some(1280), window_height: Some(720),
+        };
+        apply_custom_launch_options(&mut command, "game.Main", Some(&options)).unwrap();
+        assert_eq!(command[2], "-Dpath=C:\\Program Files\\Java");
+        assert_eq!(&command[3..], ["game.Main", "--width", "1280", "--height", "720"]);
+        for invalid in ["-cp", "@args.txt", "game.OtherMain", "-Xmx64G"] {
+            let options = JavaLaunchOptions { jvm_args: vec![invalid.to_string()], ..Default::default() };
+            assert!(apply_custom_launch_options(&mut command, "game.Main", Some(&options)).is_err());
+        }
+    }
+
+    #[test]
+    fn offline_readiness_honors_custom_java_and_requires_preset_package() {
+        let temp = tempfile::tempdir().unwrap();
+        let game_dir = temp.path().to_string_lossy().to_string();
+        let java = temp.path().join("custom-java");
+        fs::write(&java, "java").unwrap();
+        fs::create_dir_all(temp.path().join("assets/indexes")).unwrap();
+        fs::write(temp.path().join("assets/indexes/local.json"), r#"{"objects":{}}"#).unwrap();
+        for id in ["local", "FPSMaster-Edge"] {
+            let dir = temp.path().join("versions").join(id);
+            fs::create_dir_all(&dir).unwrap();
+            fs::write(dir.join(format!("{id}.jar")), "client").unwrap();
+            fs::write(dir.join(format!("{id}.json")), serde_json::json!({
+                "id": id, "mainClass": "game.Main", "libraries": [],
+                "javaVersion": { "majorVersion": 8 }, "assetIndex": { "id": "local" }
+            }).to_string()).unwrap();
+        }
+        let ready = get_offline_launch_readiness_blocking(
+            game_dir.clone(), "local".into(), Some(java.to_string_lossy().to_string()), None
+        ).unwrap();
+        assert!(ready.ready, "{ready:?}");
+        let missing_java = get_offline_launch_readiness_blocking(
+            game_dir.clone(), "local".into(), Some("/missing-java".into()), None
+        ).unwrap();
+        assert!(!missing_java.ready);
+        assert!(missing_java.missing.iter().any(|item| item.contains("Custom Java")));
+        let missing_package = get_offline_launch_readiness_blocking(
+            game_dir, "FPSMaster-Edge".into(), Some(java.to_string_lossy().to_string()), Some(true)
+        ).unwrap();
+        assert!(!missing_package.ready);
+        assert!(missing_package.missing.iter().any(|item| item.contains("Client package")));
+    }
 
     #[test]
     fn metadata_lookup_falls_back_to_last_good_result() {

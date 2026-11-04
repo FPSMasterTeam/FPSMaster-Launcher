@@ -1,4 +1,12 @@
 const enUS = {
+  "launchOptions.title": "Launch options",
+  "launchOptions.hint": "Blank fields inherit global defaults (automatic Java and game default window size globally). JVM arguments: one per line, no shell quotes; set maximum heap using Memory, not -Xmx.",
+  "launchOptions.inherit": "Use default",
+  "launchOptions.memory": "Memory (MB)",
+  "launchOptions.width": "Window width",
+  "launchOptions.height": "Window height",
+  "launchOptions.java": "Java executable path",
+  "launchOptions.jvm": "Extra JVM arguments (one per line)",
   "home.archiveNotice": "FPSMaster is moving to its final, offline-capable release. No FPSMaster account or server is required. Microsoft sign-in and new downloads still need third-party services.",
   "launch.importJar.action": "Import client jar",
   "launch.importJar.trust": "Select an Edge/Nova jar for this Minecraft version from a trusted source. This replaces only the managed client package, keeps other mods, and disables automatic client-package updates.",

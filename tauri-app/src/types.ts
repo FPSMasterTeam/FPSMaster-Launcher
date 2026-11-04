@@ -40,7 +40,17 @@ export type InstalledContentUpdateStatus =
   | "unavailable"
   | "error";
 
+export type LaunchOptions = {
+  maxMemoryMb?: number;
+  javaPath?: string;
+  /** One JVM argument per entry; never shell-split. */
+  jvmArgs?: string[];
+  windowWidth?: number;
+  windowHeight?: number;
+};
+
 export type Instance = {
+  launchOptions?: LaunchOptions;
   id: string;
   name: string;
   versionId: string;
@@ -107,6 +117,7 @@ export type MinecraftDeviceLoginPollResult = {
 };
 
 export type Settings = {
+  launchOptions?: LaunchOptions;
   gameDir: string;
   playerName: string;
   downloadSource: DownloadSource;

@@ -20,6 +20,7 @@ import {
   User
 } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
+import LaunchOptionsEditor from "../components/LaunchOptionsEditor";
 import { open } from "@tauri-apps/plugin-dialog";
 import {
   memo,
@@ -630,6 +631,11 @@ function SettingsPage({
             <h2 className="section-title mb-4">{t("settings.runtimeConfig")}</h2>
             <div className="grid gap-5">
             <div className="settings-group">
+              <div className="settings-row is-stacked">
+                <h3 className="settings-row-title">{t("launchOptions.title")}</h3>
+                <LaunchOptionsEditor value={settings.launchOptions} showMemory={false}
+                  onChange={(launchOptions) => onChange({ ...settings, launchOptions })} />
+              </div>
               <div className="settings-row">
                 <div className="settings-row-main">
                   <p className="settings-row-title">{t("settings.playerName")}</p>

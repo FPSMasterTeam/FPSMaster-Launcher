@@ -36,6 +36,7 @@ import {
   upsertLaunchPrepareLogItem
 } from "./lib/launchPrepare";
 import { isLauncherVersionCompatible } from "./lib/version";
+import { resolveLaunchOptions } from "./lib/launchOptions";
 import {
   classifyApiError,
   describeApiError,
@@ -1715,7 +1716,9 @@ function Launcher() {
     try {
       return await invoke<OfflineLaunchReadiness>("get_offline_launch_readiness", {
         gameDir: settings.gameDir,
-        versionId: localVersionIdFor(instance)
+        versionId: localVersionIdFor(instance),
+        useForge: instance.useForge,
+        javaPath: resolveLaunchOptions(settings, instance.launchOptions).javaPath
       });
     } catch (error) {
       console.warn("[launch] offline readiness check failed:", error);
@@ -1817,7 +1820,11 @@ function Launcher() {
     setBusy(true);
     setStatus(t("app.status.launching", { name: target.name }));
 
-    const gate = await resolveLaunchGate(target);
+    const localReadiness = await readOfflineReadiness(target);
+    const localReady = Boolean(localReadiness?.ready);
+    const gate = localReady
+      ? { ok: true as const, catalogUnavailable: true, versionMap: launcherVersions, novaMap: novaGameVersions }
+      : await resolveLaunchGate(target);
     if (!gate.ok) {
       setStatus(gate.error);
       failLaunchPrepare(gate.error);
@@ -1829,7 +1836,9 @@ function Launcher() {
     try {
       markLaunchPreparePhase("login", "running", "prepare", t("launch.progress.login"));
       setLaunchProgressText(t("launch.progress.login"));
-      const readyAccount = await ensureMinecraftAccountReadyForLaunch(mcAccounts.currentAccount, sessionId);
+      const readyAccount = localReady && mcAccounts.currentAccount
+        ? mcAccounts.currentAccount
+        : await ensureMinecraftAccountReadyForLaunch(mcAccounts.currentAccount, sessionId);
       markLaunchPreparePhase("login", "done", "complete", t("launch.progress.loginCompleted"));
       throwIfLaunchCancelled(sessionId);
 
@@ -1877,8 +1886,10 @@ function Launcher() {
     options: LaunchOptions
   ): Promise<LaunchExecutionResult> {
     const launchIdentity = resolveMinecraftLaunchIdentity(account);
+    const launchOptions = resolveLaunchOptions(settings, target.launchOptions);
     let prepared: Instance | null = null;
     let javaPath: string | null = null;
+    let offline = false;
 
     // Quick launch / catalog down: use the installed files as they are, with no
     // Forge/OptiFine lookups and no content or package update checks.
@@ -1888,6 +1899,7 @@ function Launcher() {
       if (readiness?.ready) {
         prepared = { ...target, versionId: readiness.versionId };
         javaPath = readiness.javaPath ?? null;
+        offline = true;
         markLaunchPreparePhase("check-instance", "done", "complete", t("launch.progress.checkOffline"));
       } else if (options.quick) {
         notifyInfo(t("launch.offline.notReady"));
@@ -1906,6 +1918,7 @@ function Launcher() {
     markLaunchPreparePhase("runtime", "running", "prepare", t("launch.progress.prepareRuntime"));
     setLaunchProgressPercent(Math.round((2 / LAUNCH_PREPARE_STEPS) * 100));
     setLaunchProgressText(t("launch.progress.prepareRuntime"));
+    if (launchOptions.javaPath) javaPath = launchOptions.javaPath;
     if (!javaPath) {
       javaPath = (await ensureJdk(settings.gameDir, prepared.versionId, settings.downloadThreads, sessionId)).javaPath;
     }
@@ -1923,7 +1936,9 @@ function Launcher() {
       accessToken: launchIdentity.accessToken,
       userType: launchIdentity.userType,
       authXuid: launchIdentity.xuid,
-      maxMemoryMb: settings.maxMemoryMb,
+      maxMemoryMb: launchOptions.maxMemoryMb,
+      launchOptions,
+      offline,
       javaPath,
       downloadSource: settings.downloadSource,
       waitForExit: false,

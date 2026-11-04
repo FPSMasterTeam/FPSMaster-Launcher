@@ -410,7 +410,7 @@ impl<'a> Request<'a> {
 enum AttemptError {
     /// Cancelled or a local I/O failure: retrying cannot help.
     Fatal(String),
-    /// This URL will never serve the file (4xx); try the next candidate.
+    /// This URL is unavailable (4xx or connection failure); try the next candidate.
     Permanent(String),
     /// Network trouble; retry (resuming) after a backoff.
     Retryable(String),
@@ -444,7 +444,12 @@ pub(crate) fn download(request: &Request) -> Result<(), String> {
                 }
                 Ok(false) => {}
                 Err(AttemptError::Fatal(error)) => return Err(error),
-                Err(AttemptError::Permanent(error)) | Err(AttemptError::Retryable(error)) => {
+                Err(AttemptError::Permanent(error)) => {
+                    mirror_health::record_failure(url);
+                    last_error = error;
+                    continue;
+                }
+                Err(AttemptError::Retryable(error)) => {
                     // Segments exhausted their own retries; fall back to one stream.
                     mirror_health::record_failure(url);
                     discard_partial(target);
@@ -474,6 +479,7 @@ pub(crate) fn download(request: &Request) -> Result<(), String> {
                 }
                 Err(AttemptError::Fatal(error)) => return Err(error),
                 Err(AttemptError::Permanent(error)) => {
+                    mirror_health::record_failure(url);
                     last_error = error;
                     break;
                 }
@@ -595,10 +601,17 @@ fn attempt_stream(
         }
     }
     let mut response = builder.send().map_err(|e| {
-        AttemptError::Retryable(format!(
+        let message = format!(
             "Request to {url} failed: {}",
             crate::describe_http_error(&e)
-        ))
+        );
+        if e.is_connect() {
+            // A disconnected machine cannot benefit from repeating the same
+            // connection and its backoff. Other sources are still attempted.
+            AttemptError::Permanent(message)
+        } else {
+            AttemptError::Retryable(message)
+        }
     })?;
     let status = response.status();
 
@@ -888,6 +901,9 @@ fn download_segment(
                     "Segment request failed: {}",
                     crate::describe_http_error(&error)
                 );
+                if error.is_connect() {
+                    return Err(AttemptError::Permanent(last_error));
+                }
                 continue;
             }
         };
@@ -998,6 +1014,25 @@ pub(crate) fn probe_url(url: &str, max_bytes: u64, budget: Duration) -> ProbeRes
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn disconnected_source_fails_without_retry_backoff() {
+        let _guard = lock_recover(&GLOBAL_CANCEL_GUARD);
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/missing", listener.local_addr().unwrap());
+        drop(listener);
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("missing.jar");
+        let cancel = CancelToken::new(None);
+        let retries = std::sync::atomic::AtomicUsize::new(0);
+        let on_retry = |_: &str| { retries.fetch_add(1, Ordering::Relaxed); };
+        let mut request = Request::single(&url, &target, &cancel);
+        request.on_retry = Some(&on_retry);
+        let error = download(&request).unwrap_err();
+        assert!(error.contains("Request to"), "{error}");
+        assert_eq!(retries.load(Ordering::Relaxed), 0);
+        assert!(!target.exists());
+    }
 
     #[test]
     fn part_path_keeps_original_extension() {

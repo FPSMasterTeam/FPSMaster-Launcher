@@ -1,4 +1,5 @@
 import { convertFileSrc } from "@tauri-apps/api/core";
+import { normalizeLaunchOptions } from "../lib/launchOptions";
 import {
   DEFAULT_SETTINGS,
   PRESET_INSTANCES,
@@ -192,6 +193,7 @@ export function loadSettings(): Settings {
           ? clamp(Math.round(parsed.downloadThreads), 1, 32)
           : DEFAULT_SETTINGS.downloadThreads,
       launcherUpdateChannel: parseLauncherUpdateChannel(parsed.launcherUpdateChannel),
+      launchOptions: normalizeLaunchOptions(parsed.launchOptions),
       maxMemoryMb:
         typeof parsed.maxMemoryMb === "number"
           ? clamp(parsed.maxMemoryMb, 1024, 16384)
@@ -516,6 +518,7 @@ function withPresetInstances(instances: Instance[]): Instance[] {
       // preferences (Forge/OptiFine toggles) that must survive a reload.
       return {
         ...preset,
+        launchOptions: normalizeLaunchOptions(saved.launchOptions),
         useForge: saved.useForge !== undefined ? saved.useForge : preset.useForge,
         useOptiFine: saved.useOptiFine !== undefined ? saved.useOptiFine : preset.useOptiFine
       };
@@ -523,6 +526,7 @@ function withPresetInstances(instances: Instance[]): Instance[] {
     const keepLoaderVersion = saved.baseVersion === preset.baseVersion;
     return {
       ...preset,
+      launchOptions: normalizeLaunchOptions(saved.launchOptions),
       versionId: saved.versionId || preset.versionId,
       loaderVersion: keepLoaderVersion ? saved.loaderVersion : undefined,
       optiFineVersion: keepLoaderVersion ? saved.optiFineVersion : undefined
