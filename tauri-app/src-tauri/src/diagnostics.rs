@@ -7,7 +7,7 @@
 use crate::downloader::{self, ProbeResult};
 use crate::minecraft_core::{self, lock_recover, DownloadSource};
 use regex::Regex;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use serde_json::{json, Map, Value};
 use std::collections::HashSet;
 use std::fs;
@@ -87,13 +87,6 @@ fn read_text_head(path: &Path, max_bytes: u64) -> Option<String> {
         .read_to_end(&mut bytes)
         .ok()?;
     Some(String::from_utf8_lossy(&bytes).into_owned())
-}
-
-fn truncate_chars(text: &str, max: usize) -> String {
-    match text.char_indices().nth(max) {
-        Some((index, _)) => text[..index].to_string(),
-        None => text.to_string(),
-    }
 }
 
 pub(crate) fn iso8601_utc(time: SystemTime) -> String {
@@ -266,179 +259,6 @@ fn recent_crash_files(game_dir: &Path, max_age: Duration) -> Vec<PathBuf> {
 // ---------------------------------------------------------------------------
 // Crash upload
 // ---------------------------------------------------------------------------
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct CrashUploadRequest {
-    base_url: String,
-    version_id: String,
-    #[serde(default)]
-    exit_code: Option<i32>,
-    #[serde(default)]
-    duration_ms: Option<u64>,
-    #[serde(default)]
-    crash_report_path: Option<String>,
-    #[serde(default)]
-    hs_err_path: Option<String>,
-    #[serde(default)]
-    session_id: Option<String>,
-    /// UI language, sent as Accept-Language ("zh-CN" / "en").
-    #[serde(default)]
-    language: Option<String>,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct CrashUploadResult {
-    /// "sent" or "rate_limited" (HTTP 429: dropped silently, do not retry).
-    status: String,
-}
-
-/// Only files that are what they claim to be may be uploaded: the frontend
-/// passes paths, and this must not become a way to send arbitrary files.
-fn validated_crash_file(
-    raw: Option<&str>,
-    expect_crash_report: bool,
-) -> Result<Option<PathBuf>, String> {
-    let Some(raw) = raw.map(str::trim).filter(|value| !value.is_empty()) else {
-        return Ok(None);
-    };
-    let path = PathBuf::from(raw);
-    let name = path
-        .file_name()
-        .map(|value| value.to_string_lossy().into_owned())
-        .unwrap_or_default();
-    let valid = if expect_crash_report {
-        is_crash_report_name(&name)
-            && path
-                .parent()
-                .and_then(Path::file_name)
-                .is_some_and(|parent| parent == "crash-reports")
-    } else {
-        is_hs_err_name(&name)
-    };
-    if !valid || !path.is_file() {
-        return Err(format!("Not a game crash file: {name}"));
-    }
-    Ok(Some(path))
-}
-
-fn client_kind_for(version_id: &str) -> &'static str {
-    // Nova installs one directory per game version: FPSMaster-Nova-<gv>.
-    if version_id == "FPSMaster-Nova" || version_id.starts_with("FPSMaster-Nova-") {
-        return "NOVA";
-    }
-    match version_id {
-        "FPSMaster-Edge" => "EDGE",
-        _ => "GENERIC",
-    }
-}
-
-fn upload_crash_blocking(request: CrashUploadRequest) -> Result<CrashUploadResult, String> {
-    const MAX_FIELD: usize = 16_000;
-    let crash_report = validated_crash_file(request.crash_report_path.as_deref(), true)?;
-    let hs_err = validated_crash_file(request.hs_err_path.as_deref(), false)?;
-    if crash_report.is_none() && hs_err.is_none() {
-        return Err("No crash report to upload".to_string());
-    }
-    let report_text = crash_report
-        .as_deref()
-        .and_then(|path| read_text_head(path, 512 * 1024))
-        .map(|text| redact_secrets(&text));
-    let hs_err_text = hs_err
-        .as_deref()
-        .and_then(|path| read_text_head(path, 512 * 1024))
-        .map(|text| redact_secrets(&text));
-    let summary = report_text
-        .as_deref()
-        .and_then(summarize_crash_report)
-        .or_else(|| hs_err_text.as_deref().and_then(summarize_hs_err))
-        .unwrap_or_else(|| "Game crashed".to_string());
-    let message = summary
-        .lines()
-        .find(|line| !line.trim().is_empty())
-        .unwrap_or("Game crashed")
-        .to_string();
-    let stack_trace = report_text
-        .as_deref()
-        .or(hs_err_text.as_deref())
-        .unwrap_or("");
-    let payload = json!({
-        "exitCode": request.exit_code,
-        "durationMs": request.duration_ms,
-        "versionId": request.version_id,
-        "os": std::env::consts::OS,
-        "arch": std::env::consts::ARCH,
-        "launcherVersion": env!("CARGO_PKG_VERSION"),
-        "summary": summary,
-        "hsErrSummary": hs_err_text.as_deref().and_then(summarize_hs_err),
-    });
-    let body = json!({
-        "clientName": truncate_chars(request.version_id.trim(), 80),
-        "clientKind": client_kind_for(request.version_id.trim()),
-        "sessionId": request.session_id,
-        "appVersion": env!("CARGO_PKG_VERSION"),
-        "severity": "fatal",
-        "errorType": if report_text.is_some() { "GAME_CRASH" } else { "JVM_FATAL_ERROR" },
-        "message": truncate_chars(&message, 500),
-        "stackTrace": truncate_chars(stack_trace, MAX_FIELD),
-        "payloadJson": truncate_chars(&payload.to_string(), MAX_FIELD),
-        "occurredAt": iso8601_utc(SystemTime::now()),
-    });
-
-    let base = crate::normalize_api_base_url(&request.base_url)?;
-    let client = crate::build_api_http_client()?;
-    let mut builder = client
-        .post(format!("{base}/api/v1/telemetry/client-errors"))
-        .json(&body);
-    if let Some(language) = request
-        .language
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
-        builder = builder.header(reqwest::header::ACCEPT_LANGUAGE, language);
-    }
-    let response = builder.send().map_err(|e| {
-        format!(
-            "Crash report upload failed: {}",
-            crate::describe_http_error(&e)
-        )
-    })?;
-    let status = response.status();
-    if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
-        return Ok(CrashUploadResult {
-            status: "rate_limited".to_string(),
-        });
-    }
-    if !status.is_success() {
-        let text = response.text().unwrap_or_default();
-        let message = serde_json::from_str::<Value>(&text)
-            .ok()
-            .and_then(|value| {
-                value
-                    .get("message")
-                    .and_then(Value::as_str)
-                    .map(str::to_string)
-            })
-            .unwrap_or_else(|| format!("HTTP {status}"));
-        return Err(format!("Crash report upload failed: {message}"));
-    }
-    Ok(CrashUploadResult {
-        status: "sent".to_string(),
-    })
-}
-
-/// Uploads a crash report / hs_err file to /telemetry/client-errors. The UI
-/// decides whether the user agreed; this only performs the redacted upload.
-#[tauri::command]
-pub(crate) async fn upload_game_crash_report(
-    request: CrashUploadRequest,
-) -> Result<CrashUploadResult, String> {
-    tauri::async_runtime::spawn_blocking(move || upload_crash_blocking(request))
-        .await
-        .map_err(|e| format!("Failed to join crash upload task: {e}"))?
-}
 
 // ---------------------------------------------------------------------------
 // Download source probing
@@ -1277,22 +1097,6 @@ mod tests {
         let later =
             find_crash_artifacts(temp.path(), 7, SystemTime::now() + Duration::from_secs(60));
         assert!(later.crash_report_path.is_none() && later.hs_err_path.is_none());
-    }
-
-    #[test]
-    fn crash_upload_only_accepts_crash_files() {
-        let temp = tempfile::tempdir().unwrap();
-        let other = temp.path().join("secrets.txt");
-        fs::write(&other, "x").unwrap();
-        assert!(validated_crash_file(Some(&other.to_string_lossy()), true).is_err());
-        assert!(validated_crash_file(Some(&other.to_string_lossy()), false).is_err());
-        fs::create_dir_all(temp.path().join("crash-reports")).unwrap();
-        let report = temp.path().join("crash-reports/crash-1-client.txt");
-        fs::write(&report, "x").unwrap();
-        assert!(validated_crash_file(Some(&report.to_string_lossy()), true)
-            .unwrap()
-            .is_some());
-        assert!(validated_crash_file(None, true).unwrap().is_none());
     }
 
     #[test]

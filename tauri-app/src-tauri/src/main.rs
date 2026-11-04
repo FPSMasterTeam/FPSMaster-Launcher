@@ -12,10 +12,7 @@ mod win7_compat;
 mod zip_budget;
 
 use launcher_api::{
-    download_launcher_app_update, launcher_get_app_update, launcher_get_dashboard,
-    launcher_get_home, launcher_list_app_update_channels, launcher_list_available_versions,
-    launcher_list_news, launcher_list_servers, launcher_login, normalize_api_base_url,
-    open_downloaded_file, parse_api_envelope,
+    download_launcher_app_update, normalize_api_base_url, open_downloaded_file, parse_api_envelope,
 };
 use microsoft_auth::{
     get_minecraft_auth_config, lookup_minecraft_skin_url, poll_minecraft_device_login,
@@ -880,8 +877,6 @@ fn attach_main_window_handlers(window: &WebviewWindow, app: &AppHandle) {
             if should_minimize_to_tray(&app_handle) {
                 api.prevent_close();
                 let _ = hide_main_window_internal(&app_handle);
-            } else {
-                flush_launcher_telemetry_session(&app_handle);
             }
         }
         // A recreated window gets a fresh frontend that must claim again.
@@ -967,7 +962,6 @@ fn request_app_quit(app: &AppHandle) {
             }
         }
     }
-    flush_launcher_telemetry_session(app);
     app.exit(0);
 }
 
@@ -1010,11 +1004,6 @@ struct LauncherRuntimeState {
     minimize_to_tray: AtomicBool,
     /// Set once the main window's frontend registered its close/quit handlers.
     frontend_handles_close: AtomicBool,
-    telemetry_session: Mutex<Option<LauncherTelemetrySession>>,
-    /// The one live heartbeat loop. Each start creates its own handle, so a
-    /// stop followed by a quick start can never revive an older thread
-    /// (launcher-core-5: a shared stop flag was reset by the next start).
-    heartbeat: Mutex<Option<Arc<HeartbeatHandle>>>,
 }
 
 impl Default for LauncherRuntimeState {
@@ -1022,114 +1011,6 @@ impl Default for LauncherRuntimeState {
         Self {
             minimize_to_tray: AtomicBool::new(true),
             frontend_handles_close: AtomicBool::new(false),
-            telemetry_session: Mutex::new(None),
-            heartbeat: Mutex::new(None),
-        }
-    }
-}
-
-#[derive(Default)]
-struct HeartbeatHandle {
-    stopped: Mutex<bool>,
-    wake: std::sync::Condvar,
-}
-
-impl HeartbeatHandle {
-    fn stop(&self) {
-        *lock_recover(&self.stopped) = true;
-        self.wake.notify_all();
-    }
-
-    /// Sleeps up to `duration`; returns `true` once the handle was stopped.
-    fn wait_stopped(&self, duration: Duration) -> bool {
-        let guard = lock_recover(&self.stopped);
-        let (guard, _) = self
-            .wake
-            .wait_timeout_while(guard, duration, |stopped| !*stopped)
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        *guard
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct LauncherTelemetrySession {
-    #[serde(rename = "baseUrl")]
-    base_url: String,
-    #[serde(rename = "clientName")]
-    client_name: String,
-    #[serde(rename = "clientKind")]
-    client_kind: String,
-    #[serde(rename = "sessionId")]
-    session_id: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    username: Option<String>,
-    #[serde(rename = "playerUuid", skip_serializing_if = "Option::is_none")]
-    player_uuid: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-struct LauncherTelemetryOfflineRequest {
-    #[serde(rename = "clientName")]
-    client_name: String,
-    #[serde(rename = "clientKind")]
-    client_kind: String,
-    #[serde(rename = "sessionId")]
-    session_id: String,
-}
-
-impl From<&LauncherTelemetrySession> for LauncherTelemetryOfflineRequest {
-    fn from(value: &LauncherTelemetrySession) -> Self {
-        Self {
-            client_name: value.client_name.clone(),
-            client_kind: value.client_kind.clone(),
-            session_id: value.session_id.clone(),
-        }
-    }
-}
-
-fn cache_launcher_telemetry_session(app: &AppHandle, session: LauncherTelemetrySession) {
-    if let Ok(mut guard) = app.state::<LauncherRuntimeState>().telemetry_session.lock() {
-        *guard = Some(session);
-    }
-}
-
-fn take_launcher_telemetry_session(app: &AppHandle) -> Option<LauncherTelemetrySession> {
-    app.state::<LauncherRuntimeState>()
-        .telemetry_session
-        .lock()
-        .ok()
-        .and_then(|mut guard| guard.take())
-}
-
-fn post_launcher_telemetry_offline(session: &LauncherTelemetrySession) -> Result<(), String> {
-    let client = reqwest::blocking::Client::builder()
-        .connect_timeout(Duration::from_millis(250))
-        .timeout(Duration::from_millis(350))
-        .build()
-        .map_err(|e| format!("Failed to build telemetry HTTP client: {e}"))?;
-    let normalized_base = normalize_api_base_url(&session.base_url)?;
-    let url = reqwest::Url::parse(&format!("{normalized_base}/api/v1/telemetry/offline"))
-        .map_err(|e| format!("Invalid telemetry offline endpoint URL: {e}"))?;
-    let payload = LauncherTelemetryOfflineRequest::from(session);
-    let response = client
-        .post(url)
-        .json(&payload)
-        .send()
-        .map_err(|e| format!("Failed to submit launcher telemetry offline request: {}", describe_http_error(&e)))?;
-    if response.status().is_success() {
-        Ok(())
-    } else {
-        Err(format!(
-            "Launcher telemetry offline request failed with HTTP {}",
-            response.status()
-        ))
-    }
-}
-
-fn flush_launcher_telemetry_session(app: &AppHandle) {
-    if let Some(session) = take_launcher_telemetry_session(app) {
-        if let Err(err) = post_launcher_telemetry_offline(&session) {
-            push_ui_log("launcher", "warn", &err);
         }
     }
 }
@@ -2292,129 +2173,7 @@ fn open_external_link(url: String) -> Result<(), String> {
 
 #[tauri::command]
 fn quit_launcher_app(app: tauri::AppHandle) {
-    flush_launcher_telemetry_session(&app);
     app.exit(0);
-}
-
-#[tauri::command]
-fn launcher_cache_telemetry_session(app: tauri::AppHandle, session: LauncherTelemetrySession) {
-    cache_launcher_telemetry_session(&app, session);
-}
-
-#[tauri::command]
-fn launcher_offline_telemetry_session(app: tauri::AppHandle) {
-    flush_launcher_telemetry_session(&app);
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct LauncherHeartbeatRequest {
-    #[serde(rename = "clientName")]
-    client_name: String,
-    #[serde(rename = "clientKind")]
-    client_kind: String,
-    #[serde(rename = "sessionId")]
-    session_id: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    username: Option<String>,
-    #[serde(rename = "playerUuid", skip_serializing_if = "Option::is_none")]
-    player_uuid: Option<String>,
-}
-
-fn post_launcher_heartbeat(session: &LauncherTelemetrySession) -> Result<(), String> {
-    let client = reqwest::blocking::Client::builder()
-        .connect_timeout(Duration::from_secs(3))
-        .timeout(Duration::from_secs(10))
-        .build()
-        .map_err(|e| format!("Failed to build heartbeat HTTP client: {e}"))?;
-    let normalized_base = normalize_api_base_url(&session.base_url)?;
-    let url = reqwest::Url::parse(&format!("{normalized_base}/api/v1/telemetry/heartbeat"))
-        .map_err(|e| format!("Invalid heartbeat endpoint URL: {e}"))?;
-    let payload = LauncherHeartbeatRequest {
-        client_name: session.client_name.clone(),
-        client_kind: session.client_kind.clone(),
-        session_id: session.session_id.clone(),
-        username: session.username.clone(),
-        player_uuid: session.player_uuid.clone(),
-    };
-    let response = client
-        .post(url)
-        .json(&payload)
-        .send()
-        .map_err(|e| format!("Failed to send heartbeat request: {}", describe_http_error(&e)))?;
-    if response.status().is_success() {
-        Ok(())
-    } else {
-        Err(format!(
-            "Heartbeat request failed with HTTP {}",
-            response.status()
-        ))
-    }
-}
-
-#[tauri::command]
-fn start_launcher_heartbeat(app: tauri::AppHandle) -> Result<(), String> {
-    let state = app.state::<LauncherRuntimeState>();
-    if state
-        .telemetry_session
-        .lock()
-        .map_err(|e| format!("Failed to lock telemetry session: {e}"))?
-        .is_none()
-    {
-        return Err("No telemetry session cached".to_string());
-    }
-    let handle = {
-        let mut slot = lock_recover(&state.heartbeat);
-        if slot.is_some() {
-            return Ok(());
-        }
-        let handle = Arc::new(HeartbeatHandle::default());
-        *slot = Some(Arc::clone(&handle));
-        handle
-    };
-
-    let app_handle = app.clone();
-    thread::spawn(move || {
-        let interval = Duration::from_secs(90);
-        loop {
-            // Read the session on every beat: after a re-login the cached
-            // session changes, and a snapshot taken at start would keep
-            // reporting the previous account.
-            let session = app_handle
-                .state::<LauncherRuntimeState>()
-                .telemetry_session
-                .lock()
-                .ok()
-                .and_then(|guard| guard.clone());
-            let Some(session) = session else {
-                break;
-            };
-            if let Err(err) = post_launcher_heartbeat(&session) {
-                push_ui_log("launcher", "warn", &format!("heartbeat failed: {}", err));
-            }
-            let jitter = Duration::from_secs(rand::random::<u64>() % 15);
-            if handle.wait_stopped(interval + jitter) {
-                break;
-            }
-        }
-        // Only clear the slot if it still belongs to this loop.
-        let state = app_handle.state::<LauncherRuntimeState>();
-        let mut slot = lock_recover(&state.heartbeat);
-        if slot.as_ref().is_some_and(|current| Arc::ptr_eq(current, &handle)) {
-            *slot = None;
-        }
-        drop(slot);
-    });
-
-    Ok(())
-}
-
-#[tauri::command]
-fn stop_launcher_heartbeat(app: tauri::AppHandle) {
-    let state = app.state::<LauncherRuntimeState>();
-    let handle = lock_recover(&state.heartbeat).take();
-    if let Some(handle) = handle {
-        handle.stop();
-    }
 }
 
 #[tauri::command]
@@ -10927,21 +10686,6 @@ mod tests {
     }
 
     #[test]
-    fn heartbeat_stop_wakes_sleeping_loop_immediately() {
-        let handle = std::sync::Arc::new(super::HeartbeatHandle::default());
-        let waiter = std::sync::Arc::clone(&handle);
-        let started = std::time::Instant::now();
-        let thread = std::thread::spawn(move || waiter.wait_stopped(std::time::Duration::from_secs(60)));
-        std::thread::sleep(std::time::Duration::from_millis(50));
-        handle.stop();
-        assert!(thread.join().unwrap());
-        assert!(started.elapsed() < std::time::Duration::from_secs(5));
-        // A fresh handle (next start) is independent of the stopped one.
-        let next = super::HeartbeatHandle::default();
-        assert!(!next.wait_stopped(std::time::Duration::from_millis(10)));
-    }
-
-    #[test]
     fn runtime_without_completion_marker_is_not_reused() {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("jdk-17");
@@ -12110,17 +11854,9 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             set_ui_language,
             ensure_jdk,
-            launcher_login,
-            launcher_list_available_versions,
             catalog::catalog_list_versions,
             catalog::catalog_info,
             catalog::catalog_get_app_update,
-            launcher_list_news,
-            launcher_list_servers,
-            launcher_get_dashboard,
-            launcher_get_home,
-            launcher_get_app_update,
-            launcher_list_app_update_channels,
             download_launcher_app_update,
             open_downloaded_file,
             get_minecraft_auth_config,
@@ -12133,10 +11869,6 @@ fn main() {
             quit_launcher_app,
             claim_main_window_close,
             destroy_current_window,
-            launcher_cache_telemetry_session,
-            launcher_offline_telemetry_session,
-            start_launcher_heartbeat,
-            stop_launcher_heartbeat,
             modrinth_search_projects,
             install_modrinth_project,
             curseforge_search_projects,
@@ -12201,7 +11933,6 @@ fn main() {
             get_offline_launch_readiness,
             diagnostics::run_health_check,
             diagnostics::export_support_bundle,
-            diagnostics::upload_game_crash_report,
             diagnostics::probe_download_sources
         ])
         .run(tauri::generate_context!())
