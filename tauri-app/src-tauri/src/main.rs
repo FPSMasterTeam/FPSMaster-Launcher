@@ -2057,14 +2057,9 @@ fn import_background_image_into(app: &tauri::AppHandle, source: &Path) -> Result
 async fn extract_background_theme_accent(
     background_source: String,
     background_image: String,
-    background_web_url: String,
 ) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        extract_background_theme_accent_blocking(
-            background_source,
-            background_image,
-            background_web_url,
-        )
+        extract_background_theme_accent_blocking(background_source, background_image)
     })
     .await
     .map_err(|e| format!("Failed to join extract_background_theme_accent task: {e}"))
@@ -2075,13 +2070,9 @@ async fn extract_background_theme_accent(
 fn extract_background_theme_accent_blocking(
     background_source: String,
     background_image: String,
-    background_web_url: String,
 ) -> Result<String, String> {
-    let image_bytes = load_background_image_bytes(
-        background_source.trim(),
-        background_image.trim(),
-        background_web_url.trim(),
-    )?;
+    let image_bytes =
+        load_background_image_bytes(background_source.trim(), background_image.trim())?;
     extract_theme_accent_hex_from_bytes(&image_bytes)
 }
 
@@ -4551,27 +4542,6 @@ fn set_ui_language(language: String) {
         Ok(mut guard) => *guard = value,
         Err(poisoned) => *poisoned.into_inner() = value,
     }
-}
-
-/// Short-timeout HTTP client for JSON metadata requests (package manifests);
-/// they must fail fast. Carries the UI language as Accept-Language.
-pub(crate) fn build_api_http_client() -> Result<reqwest::blocking::Client, String> {
-    let language = ui_language()
-        .read()
-        .map(|guard| guard.clone())
-        .unwrap_or_else(|poisoned| poisoned.into_inner().clone());
-    let mut headers = reqwest::header::HeaderMap::new();
-    if let Ok(value) = reqwest::header::HeaderValue::from_str(&language) {
-        headers.insert(reqwest::header::ACCEPT_LANGUAGE, value);
-    }
-    reqwest::blocking::Client::builder()
-        .user_agent(LAUNCHER_HTTP_USER_AGENT)
-        .default_headers(headers)
-        .connect_timeout(std::time::Duration::from_secs(10))
-        .timeout(std::time::Duration::from_secs(20))
-        .redirect(reqwest::redirect::Policy::limited(10))
-        .build()
-        .map_err(|e| format!("Failed to build HTTP client: {e}"))
 }
 
 /// reqwest 的 Display 只输出最外层("error sending request for url (...)")，把真正
@@ -10261,6 +10231,12 @@ mod tests {
     }
 
     #[test]
+    fn removed_web_background_source_is_rejected_locally() {
+        let error = super::load_background_image_bytes("web-random", "").unwrap_err();
+        assert!(error.contains("Unsupported background source"));
+    }
+
+    #[test]
     fn offline_readiness_honors_custom_java_and_requires_preset_package() {
         let temp = tempfile::tempdir().unwrap();
         let game_dir = temp.path().to_string_lossy().to_string();
@@ -11169,10 +11145,8 @@ fn detect_image_mime(path: &Path, bytes: &[u8]) -> Result<&'static str, String> 
 fn load_background_image_bytes(
     background_source: &str,
     background_image: &str,
-    background_web_url: &str,
 ) -> Result<Vec<u8>, String> {
     match background_source {
-        "web-random" => load_remote_image_bytes(background_web_url),
         "local" | "system" => load_inline_image_bytes(background_image),
         other => Err(format!("Unsupported background source: {other}")),
     }
@@ -11186,28 +11160,6 @@ fn load_inline_image_bytes(value: &str) -> Result<Vec<u8>, String> {
         return decode_data_url_bytes(value);
     }
     fs::read(value).map_err(|e| format!("Failed to read background image file: {e}"))
-}
-
-fn load_remote_image_bytes(url: &str) -> Result<Vec<u8>, String> {
-    if url.is_empty() {
-        return Err("Background image URL is empty".to_string());
-    }
-    let client = build_api_http_client()?;
-    let response = client
-        .get(url)
-        .header(reqwest::header::ACCEPT, "image/*,*/*;q=0.8")
-        .send()
-        .map_err(|e| format!("Failed to fetch background image: {}", describe_http_error(&e)))?;
-    if !response.status().is_success() {
-        return Err(format!(
-            "Failed to fetch background image: HTTP {}",
-            response.status()
-        ));
-    }
-    response
-        .bytes()
-        .map(|bytes| bytes.to_vec())
-        .map_err(|e| format!("Failed to read background image response: {e}"))
 }
 
 fn decode_data_url_bytes(value: &str) -> Result<Vec<u8>, String> {

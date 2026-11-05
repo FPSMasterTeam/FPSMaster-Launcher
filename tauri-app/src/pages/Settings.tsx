@@ -6,7 +6,6 @@ import {
   Film,
   FolderOpen,
   Gauge,
-  Globe,
   ImagePlus,
   LogOut,
   Monitor,
@@ -237,8 +236,7 @@ function SettingsPage({
     try {
       const nextAccent = await invoke<string>("extract_background_theme_accent", {
         backgroundSource: targetSettings.backgroundSource,
-        backgroundImage: targetSettings.backgroundImage,
-        backgroundWebUrl: targetSettings.backgroundWebUrl
+        backgroundImage: targetSettings.backgroundImage
       });
       if (backgroundAccentRequestRef.current !== requestId) {
         return;
@@ -357,8 +355,6 @@ function SettingsPage({
     if (settings.backgroundSource === "video") {
       releaseBrowserVideoUrl();
       onChange({ ...settings, backgroundVideo: "" });
-    } else if (settings.backgroundSource === "web-random") {
-      onChange({ ...settings, backgroundWebUrl: "" });
     } else {
       onChange({ ...settings, backgroundImage: "" });
     }
@@ -368,15 +364,6 @@ function SettingsPage({
     if (source === "system" && !IS_WINDOWS) return;
     if (source === "video") {
       onChange({ ...settings, backgroundSource: "video" });
-      setBackgroundError("");
-      return;
-    }
-    if (source === "web-random") {
-      applyBackgroundSettings({
-        ...settings,
-        backgroundSource: "web-random",
-        backgroundWebUrl: settings.backgroundWebUrl || buildRandomBackgroundUrl()
-      });
       setBackgroundError("");
       return;
     }
@@ -401,40 +388,6 @@ function SettingsPage({
     }
     onChange({ ...settings, backgroundSource: "local" });
     setBackgroundError("");
-  }
-
-  function refreshRandomWebBackground() {
-    applyBackgroundSettings({
-      ...settings,
-      backgroundSource: "web-random",
-      backgroundWebUrl: buildRandomBackgroundUrl()
-    });
-  }
-
-  function handleBackgroundWebUrlChange(value: string) {
-    onChange({ ...settings, backgroundSource: "web-random", backgroundWebUrl: value });
-  }
-
-  function commitBackgroundWebUrl() {
-    const trimmedUrl = settings.backgroundWebUrl.trim();
-    if (trimmedUrl === "") {
-      return;
-    }
-    const nextSettings = {
-      ...settings,
-      backgroundSource: "web-random",
-      backgroundWebUrl: trimmedUrl
-    } satisfies Settings;
-    onChange(nextSettings);
-    if (nextSettings.themeAccent === "background") {
-      void requestBackgroundAccent(nextSettings, false);
-    }
-  }
-
-  function onBackgroundWebUrlKeyDown(event: KeyboardEvent<HTMLInputElement>) {
-    if (event.key !== "Enter") return;
-    event.preventDefault();
-    commitBackgroundWebUrl();
   }
 
   useEffect(() => {
@@ -1177,9 +1130,7 @@ function SettingsPage({
                   <div className="settings-row-main">
                     <p className="settings-row-title">{t("settings.backgroundMode")}</p>
                     <p className="settings-row-hint">
-                      {settings.backgroundSource === "web-random"
-                        ? t("settings.backgroundWebHint")
-                        : settings.backgroundSource === "system"
+                      {settings.backgroundSource === "system"
                           ? t("settings.backgroundSystemHint")
                           : settings.backgroundSource === "video"
                             ? t("settings.backgroundVideoHint")
@@ -1201,13 +1152,6 @@ function SettingsPage({
                         className={`segment-chip !min-h-8 px-3 ${settings.backgroundSource === "video" ? "is-active" : ""}`}
                       >
                         {t("settings.backgroundMode.video")}
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => void switchBackgroundSource("web-random")}
-                        className={`segment-chip !min-h-8 px-3 ${settings.backgroundSource === "web-random" ? "is-active" : ""}`}
-                      >
-                        {t("settings.backgroundMode.web")}
                       </button>
                       {IS_WINDOWS && (
                         <button
@@ -1283,16 +1227,6 @@ function SettingsPage({
                         <Film size={14} />
                         {t("settings.backgroundVideoPick")}
                       </Button>
-                    ) : settings.backgroundSource === "web-random" ? (
-                      <Button
-                        variant="secondary"
-                        size="sm"
-                        className="flex-1 gap-2"
-                        onClick={refreshRandomWebBackground}
-                      >
-                        <Globe size={14} />
-                        {t("settings.backgroundRefreshWeb")}
-                      </Button>
                     ) : (
                       <Button
                         variant="secondary"
@@ -1315,21 +1249,6 @@ function SettingsPage({
                       {t("settings.backgroundClear")}
                     </Button>
                   </div>
-                  {settings.backgroundSource === "web-random" && (
-                    <div>
-                      <p className="settings-row-title mb-2">{t("settings.backgroundUrl")}</p>
-                      <input
-                        type="url"
-                        value={settings.backgroundWebUrl}
-                        onChange={(event) => handleBackgroundWebUrlChange(event.target.value)}
-                        onBlur={commitBackgroundWebUrl}
-                        onKeyDown={onBackgroundWebUrlKeyDown}
-                        className="ui-input"
-                        placeholder="https://picsum.photos/1920/1080?random=..."
-                      />
-                      <p className="settings-row-hint mt-1">{t("settings.backgroundUrlHint")}</p>
-                    </div>
-                  )}
                 </div>
 
                 <div className="settings-row is-stacked">
@@ -1601,10 +1520,6 @@ function readFileAsDataUrl(file: File): Promise<string> {
     };
     reader.readAsDataURL(file);
   });
-}
-
-function buildRandomBackgroundUrl(): string {
-  return `https://picsum.photos/1920/1080?random=${Date.now()}-${Math.floor(Math.random() * 1000)}`;
 }
 
 function formatFileSize(bytes: number): string {

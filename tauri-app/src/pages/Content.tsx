@@ -249,6 +249,13 @@ function ResultSkeletonList() {
   );
 }
 
+function ProjectIcon({ src, title }: { src: string | null | undefined; title: string }) {
+  const [failedSrc, setFailedSrc] = useState<string>();
+  return src && failedSrc !== src
+    ? <img src={src} alt={title} className="h-full w-full object-cover" onError={() => setFailedSrc(src)} />
+    : <Archive size={18} />;
+}
+
 function ContentPage({
   instances,
   current,
@@ -1112,7 +1119,7 @@ function ContentPage({
                     <Card key={itemKey} variant="frost" className={`page-card page-card-compact rounded-[10px] ${isInstalled ? "border-[rgba(var(--accent-rgb),0.28)]" : ""}`} interactive={false}>
                       <div className="flex gap-4">
                         <div className="icon-tile h-14 w-14 rounded-[8px]">
-                          {item.iconUrl ? <img src={item.iconUrl} alt={item.title} className="h-full w-full object-cover" /> : <Archive size={18} />}
+                          <ProjectIcon src={item.iconUrl} title={item.title} />
                         </div>
                         <div className="min-w-0 flex-1">
                           <div className="flex flex-wrap items-center gap-2">

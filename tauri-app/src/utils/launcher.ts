@@ -1,5 +1,6 @@
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { normalizeLaunchOptions } from "../lib/launchOptions";
+import { normalizeBackgroundSettings } from "../lib/backgroundSettings";
 import {
   DEFAULT_SETTINGS,
   PRESET_INSTANCES,
@@ -12,7 +13,6 @@ import forgeIcon from "../assets/icons/forge.png";
 import grassIcon from "../assets/icons/grass.png";
 import { detectLocaleFromEnvironment } from "../i18n";
 import type {
-  BackgroundSource,
   BlurMode,
   DownloadSource,
   InstallIpcEvent,
@@ -166,7 +166,8 @@ export function loadSettings(): Settings {
     const themeMode = parseThemeMode(parsed.themeMode);
     const themeAccent = parseThemeAccent(parsed.themeAccent);
     const customAccentHex = parseCustomAccentHex(parsed.customAccentHex);
-    const parsedBackgroundSource = parseBackgroundSource(parsed.backgroundSource);
+    const background = normalizeBackgroundSettings(parsed);
+    const parsedBackgroundSource = background.backgroundSource;
     const backgroundSource =
       parsedBackgroundSource === "system" && !IS_WINDOWS ? DEFAULT_SETTINGS.backgroundSource : parsedBackgroundSource;
     const blurMode = parseBlurMode(parsed.blurMode);
@@ -215,16 +216,8 @@ export function loadSettings(): Settings {
       themeAccent,
       customAccentHex,
       backgroundSource,
-      backgroundImage:
-        typeof parsed.backgroundImage === "string" ? parsed.backgroundImage : DEFAULT_SETTINGS.backgroundImage,
-      backgroundVideo:
-        typeof parsed.backgroundVideo === "string"
-          ? parsed.backgroundVideo
-          : DEFAULT_SETTINGS.backgroundVideo,
-      backgroundWebUrl:
-        typeof parsed.backgroundWebUrl === "string"
-          ? parsed.backgroundWebUrl
-          : DEFAULT_SETTINGS.backgroundWebUrl,
+      backgroundImage: background.backgroundImage,
+      backgroundVideo: background.backgroundVideo,
       backgroundOpacity:
         typeof parsed.backgroundOpacity === "number"
           ? clamp(parsed.backgroundOpacity, 0, 100)
@@ -335,13 +328,6 @@ function parseCustomAccentHex(input: unknown): string {
   return normalized ?? DEFAULT_SETTINGS.customAccentHex;
 }
 
-function parseBackgroundSource(input: unknown): BackgroundSource {
-  if (input === "local" || input === "video" || input === "web-random" || input === "system") {
-    return input;
-  }
-  return DEFAULT_SETTINGS.backgroundSource;
-}
-
 function parseBlurMode(input: unknown): BlurMode {
   if (input === "off" || input === "background" || input === "frost") {
     return input;
@@ -353,16 +339,14 @@ export function resolveBackgroundAssetUrl(settings: Settings): string {
   if (settings.backgroundSource === "video") {
     return "";
   }
-  if (settings.backgroundSource === "web-random") {
-    return settings.backgroundWebUrl;
-  }
   // "local" and "system" store a file path (see import_background_image);
   // older settings and the browser-dev fallback still hold a data URL.
   const value = settings.backgroundImage.trim();
   if (!value) {
     return "";
   }
-  if (/^(data|blob|https?|asset):/i.test(value)) {
+  if (/^(https?:)?\/\//i.test(value)) return "";
+  if (/^(data|blob|asset):/i.test(value)) {
     return value;
   }
   try {
@@ -385,14 +369,7 @@ export function resolveBackgroundVideoUrl(settings: Settings): string {
   if (value.startsWith("blob:") || value.startsWith("data:")) {
     return value;
   }
-  try {
-    const protocol = new URL(value).protocol;
-    if (protocol === "http:" || protocol === "https:") {
-      return value;
-    }
-  } catch {
-    // Local file paths are handled by Tauri's scoped asset protocol below.
-  }
+  if (/^(https?:)?\/\//i.test(value)) return "";
   try {
     return convertFileSrc(value);
   } catch {

@@ -44,7 +44,6 @@ export const DEFAULT_SETTINGS: Settings = {
   backgroundSource: "local",
   backgroundImage: "",
   backgroundVideo: "",
-  backgroundWebUrl: "",
   backgroundOpacity: 32,
   backgroundBlur: 0,
   blurMode: "background",

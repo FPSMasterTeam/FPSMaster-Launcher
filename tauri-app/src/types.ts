@@ -22,7 +22,7 @@ export type ThemeAccent =
   | "lime"
   | "background"
   | "custom";
-export type BackgroundSource = "local" | "video" | "web-random" | "system";
+export type BackgroundSource = "local" | "video" | "system";
 // How blur is spent: none at all, on the background layer only, or on frosted
 // UI surfaces (translucent panels with backdrop blur).
 export type BlurMode = "off" | "background" | "frost";
@@ -135,7 +135,6 @@ export type Settings = {
   backgroundImage: string;
   // Absolute path to a local mp4/webm played muted on loop (source "video").
   backgroundVideo: string;
-  backgroundWebUrl: string;
   backgroundOpacity: number;
   backgroundBlur: number;
   blurMode: BlurMode;
