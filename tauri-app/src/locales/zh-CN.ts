@@ -598,7 +598,7 @@ const zhCN: EnUSTranslations = {
   "diagnostics.summaryProblems": "发现 {count} 个问题。",
   "diagnostics.checking": "正在检查...",
   "diagnostics.checkingHint": "测试下载源需要几秒钟。",
-  "diagnostics.fileFallbackConsent": "系统凭据存储不可用。是否允许启动器把加密密钥保存在仅当前用户可读的文件中？这种方式的安全性低于系统钥匙串。",
+  "diagnostics.fileFallbackConsent": "系统凭据存储不可用。是否允许启动器把加密密钥保存在仅当前用户可读的文件中？这种方式的安全性低于系统钥匙串；如果你使用正版账号，其登录凭据也将以同等方式保存。",
   "diagnostics.source.official": "Mojang 官方源",
   "diagnostics.source.bmclapi": "BMCLAPI 镜像",
   "diagnostics.source.api": "FPSMaster 服务器",

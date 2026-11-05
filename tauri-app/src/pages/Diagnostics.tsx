@@ -15,6 +15,7 @@ import {
 import { memo, useCallback, useEffect, useRef, useState } from "react";
 import Button from "../components/Button";
 import Card from "../components/Card";
+import ChoiceDialog from "../components/ChoiceDialog";
 import { Checkbox } from "../components/Checkbox";
 import { useI18n, type TranslationKey } from "../i18n";
 import { formatByteSize } from "../lib/launchPrepare";
@@ -127,6 +128,7 @@ function DiagnosticsPage({
   const [deep, setDeep] = useState(false);
   const [fixing, setFixing] = useState<{ itemId: string; sessionId: string } | null>(null);
   const [fixingAll, setFixingAll] = useState(false);
+  const [consentFix, setConsentFix] = useState<HealthCheckItem | null>(null);
   const [exporting, setExporting] = useState(false);
   const [lastExport, setLastExport] = useState<SupportBundleResult | null>(null);
   const requestRef = useRef(0);
@@ -187,15 +189,8 @@ function DiagnosticsPage({
     }
   }
 
-  async function runFix(item: HealthCheckItem): Promise<boolean> {
+  async function executeFix(item: HealthCheckItem): Promise<boolean> {
     if (!item.fix) return false;
-    if (item.fix.command === "export_support_bundle") {
-      await exportBundle();
-      return true;
-    }
-    if (CONSENT_FIXES.has(item.fix.command) && !window.confirm(t("diagnostics.fileFallbackConsent"))) {
-      return false;
-    }
     const sessionId = createSessionId();
     setFixing({ itemId: item.id, sessionId });
     try {
@@ -215,6 +210,30 @@ function DiagnosticsPage({
       return false;
     } finally {
       setFixing(null);
+    }
+  }
+
+  async function runFix(item: HealthCheckItem): Promise<boolean> {
+    if (!item.fix) return false;
+    if (item.fix.command === "export_support_bundle") {
+      await exportBundle();
+      return true;
+    }
+    // Consent fixes go through the in-app dialog: a synchronous
+    // window.confirm blocked the whole WebView (launcher L-008).
+    if (CONSENT_FIXES.has(item.fix.command)) {
+      setConsentFix(item);
+      return false;
+    }
+    return executeFix(item);
+  }
+
+  async function confirmConsentFix() {
+    const item = consentFix;
+    setConsentFix(null);
+    if (item && (await executeFix(item))) {
+      notifySuccess(t("diagnostics.fixDone"));
+      await runCheck(deep);
     }
   }
 
@@ -396,6 +415,19 @@ function DiagnosticsPage({
             );
           })}
         </div>
+      )}
+
+      {consentFix && (
+        <ChoiceDialog
+          id="credential-fallback-consent"
+          title={t("diagnostics.code.CREDENTIAL_STORE_UNAVAILABLE.title")}
+          message={t("diagnostics.fileFallbackConsent")}
+          onDismiss={() => setConsentFix(null)}
+          actions={[
+            { label: t("common.cancel"), variant: "ghost", onClick: () => setConsentFix(null) },
+            { label: t("secureStorage.useFileFallback"), variant: "primary", onClick: () => void confirmConsentFix() }
+          ]}
+        />
       )}
     </div>
   );

@@ -602,7 +602,7 @@ const enUS = {
   "diagnostics.summaryProblems": "{count} problem(s) found.",
   "diagnostics.checking": "Checking...",
   "diagnostics.checkingHint": "Testing the download sources takes a few seconds.",
-  "diagnostics.fileFallbackConsent": "The system credential store is unavailable. Allow the launcher to keep its encryption key in a file only your user account can read? Your accounts are less protected this way than in the system keychain.",
+  "diagnostics.fileFallbackConsent": "The system credential store is unavailable. Allow the launcher to keep its encryption key in a file only your user account can read? Your accounts are less protected this way than in the system keychain; Microsoft account sign-in credentials will be stored the same way.",
   "diagnostics.source.official": "Mojang (official)",
   "diagnostics.source.bmclapi": "BMCLAPI mirror",
   "diagnostics.source.api": "FPSMaster server",

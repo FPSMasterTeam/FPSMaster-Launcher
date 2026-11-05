@@ -234,6 +234,7 @@ function Launcher() {
     () => localStorage.getItem(STORAGE_KEYS.autostartPrompted) !== "1"
   );
   const [trayNoticeOpen, setTrayNoticeOpen] = useState(false);
+  const [credentialFallbackConsentOpen, setCredentialFallbackConsentOpen] = useState(false);
 
   const logCursorRef = useRef<number | null>(null);
   const pollingRef = useRef(false);
@@ -2585,9 +2586,11 @@ function Launcher() {
   }
 
   // Only with explicit consent: the key then lives in a 0600 file instead of
-  // the system keychain.
+  // the system keychain. The consent dialog is in-app: a synchronous
+  // window.confirm blocked the whole WebView while its native sheet was up
+  // (launcher L-008).
   async function enableCredentialFileFallback() {
-    if (!window.confirm(t("diagnostics.fileFallbackConsent"))) return;
+    setCredentialFallbackConsentOpen(false);
     try {
       await invoke("secure_storage_set_file_fallback", { enabled: true });
       window.location.reload();
@@ -2939,7 +2942,7 @@ function Launcher() {
                 </pre>
                 <div className="mt-5 flex flex-wrap justify-center gap-2">
                   {secureStorageError.startsWith("CREDENTIAL_STORE_UNAVAILABLE") && (
-                    <Button variant="secondary" onClick={() => void enableCredentialFileFallback()}>
+                    <Button variant="secondary" onClick={() => setCredentialFallbackConsentOpen(true)}>
                       {t("secureStorage.useFileFallback")}
                     </Button>
                   )}
@@ -3010,6 +3013,19 @@ function Launcher() {
             actions={[
               { label: t("autostart.decline"), variant: "ghost", onClick: () => answerAutostartPrompt(false) },
               { label: t("autostart.enable"), variant: "primary", onClick: () => answerAutostartPrompt(true) }
+            ]}
+          />
+        )}
+
+        {credentialFallbackConsentOpen && (
+          <ChoiceDialog
+            id="credential-fallback-consent"
+            title={t("diagnostics.code.CREDENTIAL_STORE_UNAVAILABLE.title")}
+            message={t("diagnostics.fileFallbackConsent")}
+            onDismiss={() => setCredentialFallbackConsentOpen(false)}
+            actions={[
+              { label: t("common.cancel"), variant: "ghost", onClick: () => setCredentialFallbackConsentOpen(false) },
+              { label: t("secureStorage.useFileFallback"), variant: "primary", onClick: () => void enableCredentialFileFallback() }
             ]}
           />
         )}
