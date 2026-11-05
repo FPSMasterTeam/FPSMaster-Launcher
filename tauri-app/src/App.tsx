@@ -211,7 +211,6 @@ function Launcher() {
   );
   const [currentLauncherVersion, setCurrentLauncherVersion] = useState(FALLBACK_LAUNCHER_VERSION);
   const [presetPackageStatuses, setPresetPackageStatuses] = useState<Record<string, PresetPackageStatus>>({});
-  const [launcherVersionLoading, setLauncherVersionLoading] = useState(false);
   const [defaultGameDir, setDefaultGameDir] = useState(() => DEFAULT_SETTINGS.gameDir);
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState(() =>
@@ -770,7 +769,6 @@ function Launcher() {
     if (!silent) {
       setStatus(t("app.status.loadingLauncherVersions"));
     }
-    setLauncherVersionLoading(true);
     try {
       const entries = await invoke<LauncherVersion[]>("catalog_list_versions");
       const map = pickLatestLauncherVersions(entries);
@@ -795,8 +793,6 @@ function Launcher() {
         notifyError(errorText, t("toast.title.requestFailed"));
       }
       return { map: null, novaMap: null, error: errorText };
-    } finally {
-      setLauncherVersionLoading(false);
     }
   }
 

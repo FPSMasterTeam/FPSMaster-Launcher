@@ -11,9 +11,9 @@ can verify the download.
   --launcher TARGET=LOCAL_FILE@URL                     (TARGET: windows-x86_64, macos-aarch64, ...)
 
 Example:
-  python3 build_catalog.py --revision 2 --client-version 2.0.0 --launcher-version 1.0.0 \\
-    --client edge=../dist/FPSMaster-Edge-2.0.0.jar@https://github.com/FPSMasterTeam/FPSMaster-Edge/releases/download/v2.0.0/FPSMaster-Edge-2.0.0.jar \\
-    --client nova:1.21.11=../dist/fpsmaster-nova-1.21.11-2.0.0.jar@https://github.com/.../fpsmaster-nova-1.21.11-2.0.0.jar \\
+  python3 build_catalog.py --revision 2 --edge-version 2.0.0-final --nova-version 1.0.0 --launcher-version 1.0.0 \\
+    --client edge=../dist/FPSMaster-Edge-2.0.0-final.jar@https://github.com/FPSMasterTeam/FPSMaster-Edge/releases/download/v2.0.0-final/FPSMaster-Edge-2.0.0-final.jar \\
+    --client nova:1.21.11=../dist/fpsmaster-nova-1.21.11-1.0.0.jar@https://github.com/.../fpsmaster-nova-1.21.11-1.0.0.jar \\
     --recommended-nova 1.21.11
 """
 import argparse, datetime, hashlib, json, os, sys
@@ -37,7 +37,8 @@ def split_spec(spec):
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('--revision', type=int, required=True, help='must be higher than the previous catalog')
-    ap.add_argument('--client-version', required=True)
+    ap.add_argument('--edge-version', help='Edge version (required when an edge client is listed)')
+    ap.add_argument('--nova-version', help='Nova version (required when a nova client is listed)')
     ap.add_argument('--launcher-version')
     ap.add_argument('--channel', default='release')
     ap.add_argument('--changelog', default='')
@@ -57,10 +58,13 @@ def main():
             sys.exit(f'unknown product {product}')
         if product == 'NOVA' and not game:
             sys.exit('nova entries need a game version: nova:1.21.11=...')
+        version = a.edge_version if product == 'EDGE' else a.nova_version
+        if not version or not version.strip():
+            ap.error(f'{product} needs --{product.lower()}-version')
         clients.append({
             'channel': a.channel,
             'versionType': product,
-            'versionName': a.client_version,
+            'versionName': version.strip(),
             'gameVersion': game or None,
             'artifactSourceType': 'external_url',
             'downloadUrl': url,

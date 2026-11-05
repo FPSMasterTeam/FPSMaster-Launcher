@@ -18,7 +18,7 @@
 
 use std::fs;
 use std::path::PathBuf;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use tauri::Manager;
@@ -37,6 +37,12 @@ const REMOTE_CATALOG_URLS: &[&str] = &[
 /// so a slow or blocked GitHub must not hold up the home screen.
 const REMOTE_TIMEOUT: Duration = Duration::from_secs(6);
 const CACHE_FILE_NAME: &str = "catalog-cache.json";
+/// Present (fresh) when the last remote fetch failed, so a blocked GitHub does
+/// not get retried on every catalog resolve.
+const FAILURE_MARKER_NAME: &str = "catalog-fetch.failed";
+/// How long a fresh cache or failure marker suppresses another remote fetch.
+/// Also dedupes the several resolves a single launcher run performs.
+const REMOTE_RETRY_TTL: Duration = Duration::from_secs(30 * 60);
 const SUPPORTED_SCHEMA: u32 = 1;
 /// Client products the launcher still installs. EXTREME was dropped with the
 /// final release; any leftover entry for it is filtered out.
@@ -142,24 +148,77 @@ fn write_cached_catalog(app: &tauri::AppHandle, raw: &str) {
     }
 }
 
-fn fetch_remote_catalog() -> Option<(Catalog, String)> {
+fn fetch_one_remote_catalog(url: &str) -> Option<(Catalog, String)> {
     let client = reqwest::blocking::Client::builder()
         .user_agent(crate::LAUNCHER_HTTP_USER_AGENT)
         .connect_timeout(REMOTE_TIMEOUT)
         .timeout(REMOTE_TIMEOUT)
         .build()
         .ok()?;
+    let response = client.get(url).send().ok()?;
+    if !response.status().is_success() {
+        return None;
+    }
+    let text = response.text().ok()?;
+    let catalog = parse_catalog(&text)?;
+    Some((catalog, text))
+}
+
+fn fetch_remote_catalog() -> Option<(Catalog, String)> {
+    // The mirrors serve the same document, so ask them in parallel and take
+    // the first valid answer instead of waiting out a slow or blocked source
+    // one after another (up to 2x REMOTE_TIMEOUT serially).
+    let (tx, rx) = std::sync::mpsc::channel();
+    let mut pending = 0usize;
     for url in REMOTE_CATALOG_URLS {
-        let Ok(response) = client.get(*url).send() else { continue };
-        if !response.status().is_success() {
-            continue;
+        pending += 1;
+        let sender = tx.clone();
+        std::thread::spawn(move || {
+            let _ = sender.send(fetch_one_remote_catalog(url));
+        });
+    }
+    drop(tx);
+    let deadline = std::time::Instant::now() + REMOTE_TIMEOUT + Duration::from_secs(2);
+    while pending > 0 {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            break;
         }
-        let Ok(text) = response.text() else { continue };
-        if let Some(catalog) = parse_catalog(&text) {
-            return Some((catalog, text));
+        match rx.recv_timeout(remaining) {
+            Ok(Some(result)) => return Some(result),
+            Ok(None) => pending -= 1,
+            Err(_) => break,
         }
     }
     None
+}
+
+fn is_fresh(path: &std::path::Path) -> bool {
+    fs::metadata(path)
+        .and_then(|meta| meta.modified())
+        .ok()
+        .and_then(|modified| modified.elapsed().ok())
+        .is_some_and(|age| age < REMOTE_RETRY_TTL)
+}
+
+/// Skip the network when a fetch (success writes the cache, failure writes the
+/// marker) happened recently; otherwise every resolve in a run would re-fetch.
+fn should_attempt_remote_fetch(app: &tauri::AppHandle) -> bool {
+    let Ok(dir) = app.path().app_data_dir() else { return true };
+    !is_fresh(&dir.join(CACHE_FILE_NAME)) && !is_fresh(&dir.join(FAILURE_MARKER_NAME))
+}
+
+fn mark_fetch_failure(app: &tauri::AppHandle) {
+    if let Ok(dir) = app.path().app_data_dir() {
+        let _ = fs::create_dir_all(&dir);
+        let _ = fs::write(dir.join(FAILURE_MARKER_NAME), b"");
+    }
+}
+
+fn clear_fetch_failure(app: &tauri::AppHandle) {
+    if let Ok(dir) = app.path().app_data_dir() {
+        let _ = fs::remove_file(dir.join(FAILURE_MARKER_NAME));
+    }
 }
 
 /// Picks the best catalog available right now. Never fails: the bundled copy
@@ -171,12 +230,19 @@ pub fn resolve_catalog(app: &tauri::AppHandle, allow_network: bool) -> (Catalog,
             best = (cached, CatalogSource::Cache);
         }
     }
-    if allow_network {
-        if let Some((remote, raw)) = fetch_remote_catalog() {
-            if remote.revision >= best.0.revision {
+    if allow_network && should_attempt_remote_fetch(app) {
+        match fetch_remote_catalog() {
+            Some((remote, raw)) => {
+                // Refresh the cache on any successful fetch, even when the
+                // remote turned out older than what we already had: the fresh
+                // cache is what dedupes further resolves in the TTL window.
                 write_cached_catalog(app, &raw);
-                best = (remote, CatalogSource::Remote);
+                clear_fetch_failure(app);
+                if remote.revision >= best.0.revision {
+                    best = (remote, CatalogSource::Remote);
+                }
             }
+            None => mark_fetch_failure(app),
         }
     }
     best
@@ -318,6 +384,15 @@ mod tests {
         assert_eq!(update.version, "0.10.0");
         assert!(!update.mandatory);
         assert!(pick_app_update(&catalog, "linux-x86_64").is_none());
+    }
+
+    #[test]
+    fn fresh_marker_suppresses_retry_and_missing_allows_it() {
+        let temp = tempfile::tempdir().unwrap();
+        let marker = temp.path().join(FAILURE_MARKER_NAME);
+        assert!(!is_fresh(&marker));
+        fs::write(&marker, b"").unwrap();
+        assert!(is_fresh(&marker));
     }
 
     #[test]
