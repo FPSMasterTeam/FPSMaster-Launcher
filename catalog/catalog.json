@@ -1,7 +1,7 @@
 {
   "schema": 1,
-  "revision": 2,
-  "generatedAt": "2026-11-15T15:56:11+00:00",
+  "revision": 3,
+  "generatedAt": "2026-11-15T16:48:42+00:00",
   "clients": [
     {
       "channel": "release",
@@ -91,5 +91,42 @@
       "changelog": null
     }
   ],
-  "launcher": []
+  "launcher": [
+    {
+      "version": "1.0.0",
+      "target": "windows-x86_64",
+      "downloadUrl": "https://github.com/FPSMasterTeam/FPSMaster-Launcher/releases/download/v1.0.0/FPSMaster.Launcher_1.0.0_x64-setup.exe",
+      "fileSize": 6145972,
+      "checksum": "2073cd4c27709b7a252fc989a439de191f1331f37dddc9cd75f618519bee328f",
+      "mandatory": false,
+      "notes": null
+    },
+    {
+      "version": "1.0.0",
+      "target": "windows-x86_64-win7",
+      "downloadUrl": "https://github.com/FPSMasterTeam/FPSMaster-Launcher/releases/download/v1.0.0/FPSMaster.Launcher.Win7_1.0.0_x64-setup.exe",
+      "fileSize": 185849963,
+      "checksum": "4efd2f92d3f87809f1a8a148a475c9acbd6f52f16d6c178df5894ecc523c3d86",
+      "mandatory": false,
+      "notes": null
+    },
+    {
+      "version": "1.0.0",
+      "target": "linux-x86_64",
+      "downloadUrl": "https://github.com/FPSMasterTeam/FPSMaster-Launcher/releases/download/v1.0.0/FPSMaster.Launcher_1.0.0_amd64.deb",
+      "fileSize": 10078158,
+      "checksum": "2b6a9682b718dde635d4fb7c508f282d3ac277cadac0b0711ae110df6d11a37c",
+      "mandatory": false,
+      "notes": null
+    },
+    {
+      "version": "1.0.0",
+      "target": "macos-aarch64",
+      "downloadUrl": "https://github.com/FPSMasterTeam/FPSMaster-Launcher/releases/download/v1.0.0/FPSMaster.Launcher_1.0.0_aarch64.dmg",
+      "fileSize": 8876958,
+      "checksum": "405b3599956c7ed9e09ea83aacb5e36139e74cfe034571bcca45705cf79ac503",
+      "mandatory": false,
+      "notes": null
+    }
+  ]
 }
