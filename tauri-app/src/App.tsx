@@ -2941,12 +2941,12 @@ function Launcher() {
                   {secureStorageError}
                 </pre>
                 <div className="mt-5 flex flex-wrap justify-center gap-2">
-                  {secureStorageError.startsWith("CREDENTIAL_STORE_UNAVAILABLE") && (
-                    <Button variant="secondary" onClick={() => setCredentialFallbackConsentOpen(true)}>
+                  {secureStorageError.startsWith("CREDENTIAL_STORE_") && (
+                    <Button variant="primary" onClick={() => setCredentialFallbackConsentOpen(true)}>
                       {t("secureStorage.useFileFallback")}
                     </Button>
                   )}
-                  <Button variant="primary" onClick={() => window.location.reload()}>
+                  <Button variant="secondary" onClick={() => window.location.reload()}>
                     {t("secureStorage.retry")}
                   </Button>
                 </div>

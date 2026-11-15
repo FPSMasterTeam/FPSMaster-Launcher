@@ -133,15 +133,24 @@ fn has_stored_credentials(dir: &Path) -> bool {
 }
 
 /// Master key from the 0600 file. Only used when the user enabled the file
-/// fallback. A new key is never created while credentials encrypted with an
-/// unreachable keychain key exist: that would silently orphan them.
-fn load_or_create_file_master_key(dir: &Path, keyring_error: String) -> Result<[u8; KEY_LEN], String> {
+/// fallback. Credentials encrypted with the unreachable keychain key cannot be
+/// read with a new key; they are moved aside (not deleted) so the launcher stays
+/// usable and they can be restored if the keychain comes back.
+fn load_or_create_file_master_key(dir: &Path) -> Result<[u8; KEY_LEN], String> {
     let path = dir.join(MASTER_KEY_FILE);
     match fs::read(&path) {
         Ok(bytes) => validate_master_key(&bytes),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             if has_stored_credentials(dir) {
-                return Err(keyring_error);
+                let backup = move_unreadable_credentials(dir)?;
+                crate::push_ui_log(
+                    "launcher",
+                    "warn",
+                    &format!(
+                        "Saved credentials were encrypted with the unavailable system key; moved to {}",
+                        backup.display()
+                    ),
+                );
             }
             let mut bytes = [0u8; KEY_LEN];
             OsRng.fill_bytes(&mut bytes);
@@ -150,6 +159,24 @@ fn load_or_create_file_master_key(dir: &Path, keyring_error: String) -> Result<[
         }
         Err(e) => Err(format!("Failed to read the file master key: {e}")),
     }
+}
+
+fn move_unreadable_credentials(dir: &Path) -> Result<PathBuf, String> {
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let backup = dir.join(format!("unreadable-{stamp}"));
+    fs::create_dir_all(&backup).map_err(|e| format!("Failed to create credential backup directory: {e}"))?;
+    set_mode(&backup, 0o700)?;
+    for entry in fs::read_dir(dir).map_err(|e| format!("Failed to list credentials: {e}"))?.flatten() {
+        let name = entry.file_name();
+        if name.to_string_lossy().ends_with(".credential") {
+            fs::rename(entry.path(), backup.join(&name))
+                .map_err(|e| format!("Failed to move unreadable credential: {e}"))?;
+        }
+    }
+    Ok(backup)
 }
 
 fn load_or_create_master_key(dir: &Path, config: &tauri::Config) -> Result<[u8; KEY_LEN], String> {
@@ -161,17 +188,24 @@ fn load_or_create_master_key(dir: &Path, config: &tauri::Config) -> Result<[u8; 
         return Ok(*key);
     }
     ensure_dir(dir)?;
-    let key = match load_master_key_from_keyring(dir, config) {
-        Ok(key) => key,
-        Err(error) if dir.join(FILE_FALLBACK_FLAG).exists() => {
-            crate::push_ui_log(
-                "launcher",
-                "warn",
-                &format!("System credential store unusable, using the file key: {error}"),
-            );
-            load_or_create_file_master_key(dir, error)?
+    let fallback = dir.join(FILE_FALLBACK_FLAG).exists();
+    // Once a file key exists it encrypts the credentials; switching back to a
+    // keychain that started working again would make them unreadable.
+    let key = if fallback && dir.join(MASTER_KEY_FILE).exists() {
+        load_or_create_file_master_key(dir)?
+    } else {
+        match load_master_key_from_keyring(dir, config) {
+            Ok(key) => key,
+            Err(error) if fallback => {
+                crate::push_ui_log(
+                    "launcher",
+                    "warn",
+                    &format!("System credential store unusable, using the file key: {error}"),
+                );
+                load_or_create_file_master_key(dir)?
+            }
+            Err(error) => return Err(error),
         }
-        Err(error) => return Err(error),
     };
     cache.insert(cache_key, key);
     Ok(key)
@@ -486,17 +520,25 @@ mod tests {
     }
 
     #[test]
-    fn file_fallback_never_orphans_existing_credentials() {
+    fn file_fallback_key_is_stable() {
         let temp = tempfile::tempdir().unwrap();
-        let key = load_or_create_file_master_key(temp.path(), "denied".into()).unwrap();
-        assert_eq!(load_or_create_file_master_key(temp.path(), "denied".into()).unwrap(), key);
+        let key = load_or_create_file_master_key(temp.path()).unwrap();
+        assert_eq!(load_or_create_file_master_key(temp.path()).unwrap(), key);
+    }
 
-        let other = tempfile::tempdir().unwrap();
-        fs::write(other.path().join("abc.credential"), b"x").unwrap();
-        assert_eq!(
-            load_or_create_file_master_key(other.path(), "denied".into()).unwrap_err(),
-            "denied"
-        );
+    #[test]
+    fn file_fallback_moves_unreadable_credentials_aside() {
+        let temp = tempfile::tempdir().unwrap();
+        fs::write(temp.path().join("abc.credential"), b"old").unwrap();
+        load_or_create_file_master_key(temp.path()).unwrap();
+        assert!(!has_stored_credentials(temp.path()));
+        let backups: Vec<_> = fs::read_dir(temp.path())
+            .unwrap()
+            .flatten()
+            .filter(|e| e.file_name().to_string_lossy().starts_with("unreadable-"))
+            .collect();
+        assert_eq!(backups.len(), 1);
+        assert_eq!(fs::read(backups[0].path().join("abc.credential")).unwrap(), b"old");
     }
 
     #[test]

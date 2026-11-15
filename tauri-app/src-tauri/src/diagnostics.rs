@@ -682,8 +682,7 @@ fn check_credentials(app: &AppHandle, items: &mut Vec<HealthCheckItem>) {
                 .error_code
                 .clone()
                 .unwrap_or_else(|| crate::secure_storage::CODE_STORE_UNAVAILABLE.to_string());
-            let offer_fallback = !status.file_fallback_enabled
-                && code == crate::secure_storage::CODE_STORE_UNAVAILABLE;
+            let offer_fallback = !status.file_fallback_enabled;
             items.push(item(
                 "credentials",
                 "credentials",
