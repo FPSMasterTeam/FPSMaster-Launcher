@@ -55,5 +55,4 @@ python3 catalog/build_catalog.py --revision 2 --edge-version 2.0.0 --nova-versio
 3. 运行 `cargo test catalog`。其中 `bundled_catalog_is_valid` 会拒绝不可用的目录。
 4. 提交到 `master` 后，已安装的启动器下次启动就会拿到新目录。
 
-> ⚠️ 当前的 `catalog.json`（revision 1）是用 8 月的预发布构建生成的**草稿**，其中的 URL 还不存在。
-> 发布最终版时必须重新生成。
+> 当前 `catalog.json` 为最终版目录：revision 2 收录 Edge 2.0.0（含免 Forge 包）与 Nova 1.0.0 六个游戏版本；启动器自身的下载条目在安装包发布后补入。

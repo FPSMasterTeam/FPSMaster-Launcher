@@ -1,91 +1,94 @@
 {
   "schema": 1,
-  "revision": 1,
-  "generatedAt": "2026-11-04T10:38:18+00:00",
+  "revision": 2,
+  "generatedAt": "2026-11-15T15:56:11+00:00",
   "clients": [
     {
       "channel": "release",
       "versionType": "EDGE",
-      "versionName": "1.0.0-beta",
+      "versionName": "2.0.0",
       "gameVersion": null,
       "artifactSourceType": "external_url",
-      "downloadUrl": "https://github.com/FPSMasterTeam/FPSMaster-Edge/releases/download/v1.0.0/FPSMaster-edge.jar",
-      "fileSize": 14877439,
-      "checksum": "d06be89126faf2bb877c1dbf6fd758a27d30924b0667ced1ecb6b75414a6ad2a",
+      "downloadUrl": "https://github.com/FPSMasterTeam/FPSMaster-Edge/releases/download/v2.0.0/FPSMaster-2.0.0.jar",
+      "fileSize": 16033530,
+      "checksum": "2094a60c73e52e37abda041d556d5abc27d12115c0b1da339a015e6908dd55ec",
       "recommended": true,
-      "changelog": "DRAFT catalog generated from pre-release builds; regenerate for the final release."
+      "changelog": null,
+      "aotDownloadUrl": "https://github.com/FPSMasterTeam/FPSMaster-Edge/releases/download/v2.0.0/fpsmaster-edge-aot-2.0.0.zip",
+      "aotFileSize": 15515355,
+      "aotChecksum": "cd3ffca065214eeb6d121449fe5de26878e6c018e8b0689a2275ce7d43438b21"
     },
     {
       "channel": "release",
       "versionType": "NOVA",
-      "versionName": "1.0.0-beta",
+      "versionName": "1.0.0",
       "gameVersion": "1.19.2",
       "artifactSourceType": "external_url",
-      "downloadUrl": "https://github.com/FPSMasterTeam/FPSMaster-Nova/releases/download/v1.0.0-beta/fpsmaster-nova-1.19.2-1.0.0-beta.jar",
-      "fileSize": 8884047,
-      "checksum": "3ecfb82be5b18a0190e7573291c5d411cd33c96f7e0fe735120c9f46e0f70115",
+      "downloadUrl": "https://github.com/FPSMasterTeam/FPSMaster-Nova/releases/download/v1.0.0/fpsmaster-nova-1.19.2-1.0.0.jar",
+      "fileSize": 16725385,
+      "checksum": "03361e427059e3d44d16ce17406774c453b8586be678cc9b7b585a9a273ba643",
       "recommended": false,
-      "changelog": "DRAFT catalog generated from pre-release builds; regenerate for the final release."
+      "changelog": null
     },
     {
       "channel": "release",
       "versionType": "NOVA",
-      "versionName": "1.0.0-beta",
+      "versionName": "1.0.0",
       "gameVersion": "1.20.1",
       "artifactSourceType": "external_url",
-      "downloadUrl": "https://github.com/FPSMasterTeam/FPSMaster-Nova/releases/download/v1.0.0-beta/fpsmaster-nova-1.20.1-1.0.0-beta.jar",
-      "fileSize": 8915749,
-      "checksum": "f5edd4c856eacb6ffe87fcee02a4d85191ff81b22db6b5686f9d8e65823cf81d",
+      "downloadUrl": "https://github.com/FPSMasterTeam/FPSMaster-Nova/releases/download/v1.0.0/fpsmaster-nova-1.20.1-1.0.0.jar",
+      "fileSize": 16723334,
+      "checksum": "3aae4600d72b5d8c286b8c724a070b6f2caa4fdc90e013d7b97e51afdad2f9f8",
       "recommended": false,
-      "changelog": "DRAFT catalog generated from pre-release builds; regenerate for the final release."
+      "changelog": null
     },
     {
       "channel": "release",
       "versionType": "NOVA",
-      "versionName": "1.0.0-beta",
+      "versionName": "1.0.0",
       "gameVersion": "1.21.1",
       "artifactSourceType": "external_url",
-      "downloadUrl": "https://github.com/FPSMasterTeam/FPSMaster-Nova/releases/download/v1.0.0-beta/fpsmaster-nova-1.21.1-1.0.0-beta.jar",
-      "fileSize": 8899765,
-      "checksum": "76fd9757b6668cc8768c3ca1ffe9a174ed4e0fd07267e33d1b69517420418c70",
+      "downloadUrl": "https://github.com/FPSMasterTeam/FPSMaster-Nova/releases/download/v1.0.0/fpsmaster-nova-1.21.1-1.0.0.jar",
+      "fileSize": 16725322,
+      "checksum": "337ac3871b1d51b51886dd0472897601f0479f05371b160eca31a81abec06a1d",
       "recommended": false,
-      "changelog": "DRAFT catalog generated from pre-release builds; regenerate for the final release."
+      "changelog": null
     },
     {
       "channel": "release",
       "versionType": "NOVA",
-      "versionName": "1.0.0-beta",
+      "versionName": "1.0.0",
       "gameVersion": "1.21.8",
       "artifactSourceType": "external_url",
-      "downloadUrl": "https://github.com/FPSMasterTeam/FPSMaster-Nova/releases/download/v1.0.0-beta/fpsmaster-nova-1.21.8-1.0.0-beta.jar",
-      "fileSize": 8939355,
-      "checksum": "6b6f59db8cc1bc5882b4f44c2b0919d2811e5c6c30378a810797ed05182923e0",
+      "downloadUrl": "https://github.com/FPSMasterTeam/FPSMaster-Nova/releases/download/v1.0.0/fpsmaster-nova-1.21.8-1.0.0.jar",
+      "fileSize": 16754646,
+      "checksum": "bcc385991472a2aa9965f665ee6a00cccd00d2a4e7ca3261899c2c822c3780e6",
       "recommended": false,
-      "changelog": "DRAFT catalog generated from pre-release builds; regenerate for the final release."
+      "changelog": null
     },
     {
       "channel": "release",
       "versionType": "NOVA",
-      "versionName": "1.0.0-beta",
+      "versionName": "1.0.0",
       "gameVersion": "1.21.11",
       "artifactSourceType": "external_url",
-      "downloadUrl": "https://github.com/FPSMasterTeam/FPSMaster-Nova/releases/download/v1.0.0-beta/fpsmaster-nova-1.21.11-1.0.0-beta.jar",
-      "fileSize": 8281664,
-      "checksum": "1175b929363e6abc387ccd00ffbb4bb65f0aee92c265cae5d4ac7da51627bcdf",
+      "downloadUrl": "https://github.com/FPSMasterTeam/FPSMaster-Nova/releases/download/v1.0.0/fpsmaster-nova-1.21.11-1.0.0.jar",
+      "fileSize": 16760327,
+      "checksum": "958fbe3b9b0230dd013fb3a4b11e2a69eb44b5cb6c1ab54a259829bc988034e0",
       "recommended": true,
-      "changelog": "DRAFT catalog generated from pre-release builds; regenerate for the final release."
+      "changelog": null
     },
     {
       "channel": "release",
       "versionType": "NOVA",
-      "versionName": "1.0.0-beta",
+      "versionName": "1.0.0",
       "gameVersion": "26.2",
       "artifactSourceType": "external_url",
-      "downloadUrl": "https://github.com/FPSMasterTeam/FPSMaster-Nova/releases/download/v1.0.0-beta/fpsmaster-nova-26.2-1.0.0-beta.jar",
-      "fileSize": 8093215,
-      "checksum": "b50f0694223f6a8b2ac55fd3e56d599768109dba63837aa7df23481358e456d7",
+      "downloadUrl": "https://github.com/FPSMasterTeam/FPSMaster-Nova/releases/download/v1.0.0/fpsmaster-nova-26.2-1.0.0.jar",
+      "fileSize": 16587146,
+      "checksum": "573fb393d94332c06ae5b2741eec462bf36e524f60f8a8e6c7d554e73123d83d",
       "recommended": false,
-      "changelog": "DRAFT catalog generated from pre-release builds; regenerate for the final release."
+      "changelog": null
     }
   ],
   "launcher": []
