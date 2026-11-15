@@ -41,9 +41,9 @@ HTTPS CONNECT 在代理层返回 404 只属于传输失败，不等同于源站�
 2. 用本地的同一份文件运行生成脚本（脚本会计算 sha256），`--revision` 必须比当前值大：
 
 ```bash
-python3 catalog/build_catalog.py --revision 2 --edge-version 2.0.0-final --nova-version 1.0.0 --launcher-version 1.0.0 \
-  --client edge=dist/FPSMaster-Edge-2.0.0-final.jar@https://github.com/FPSMasterTeam/FPSMaster-Edge/releases/download/v2.0.0-final/FPSMaster-Edge-2.0.0-final.jar \
-  --edge-aot dist/fpsmaster-edge-aot-2.0.0-final.zip@https://github.com/FPSMasterTeam/FPSMaster-Edge/releases/download/v2.0.0-final/fpsmaster-edge-aot-2.0.0-final.zip \
+python3 catalog/build_catalog.py --revision 2 --edge-version 2.0.0 --nova-version 1.0.0 --launcher-version 1.0.0 \
+  --client edge=dist/FPSMaster-Edge-2.0.0.jar@https://github.com/FPSMasterTeam/FPSMaster-Edge/releases/download/v2.0.0/FPSMaster-Edge-2.0.0.jar \
+  --edge-aot dist/fpsmaster-edge-aot-2.0.0.zip@https://github.com/FPSMasterTeam/FPSMaster-Edge/releases/download/v2.0.0/fpsmaster-edge-aot-2.0.0.zip \
   --client nova:1.21.11=dist/fpsmaster-nova-1.21.11-1.0.0.jar@https://github.com/FPSMasterTeam/FPSMaster-Nova/releases/download/v1.0.0/fpsmaster-nova-1.21.11-1.0.0.jar \
   --launcher windows-x86_64=dist/FPSMaster-Launcher_1.0.0_x64-setup.exe@https://github.com/FPSMasterTeam/FPSMaster-Launcher/releases/download/v1.0.0/FPSMaster-Launcher_1.0.0_x64-setup.exe \
   --recommended-nova 1.21.11

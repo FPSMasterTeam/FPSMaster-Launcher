@@ -34,7 +34,7 @@ Fork 应创建自己的 Microsoft Entra / Azure 应用注册，支持个人 Micr
 ## 品牌与发布来源
 
 - 修改 `tauri-app/src-tauri/tauri.conf.json` 中的 `identifier`（原为 `com.fpsmaster.launcher`）、`productName`、窗口标题与图标，以及 Windows/Win7 平台覆盖配置中的品牌设置。独立 identifier 同时隔离应用数据目录与钥匙串 service，不要复用原发行版标识。
-- 在 `tauri-app/package.json` 设置版本，运行 `npm run version:sync` 同步 package-lock、Cargo.toml / Cargo.lock 与 Tauri 配置；不要仅改单个版本字段。仓库当前开发版本仍是 0.4.0，最终 1.0.0 的版本同步在发布准备时完成。
+- 在 `tauri-app/package.json` 设置版本，运行 `npm run version:sync` 同步 package-lock、Cargo.toml / Cargo.lock 与 Tauri 配置；不要仅改单个版本字段。
 - 将 `tauri-app/src-tauri/src/catalog.rs` 的 `REMOTE_CATALOG_URLS` 中 GitHub raw / jsDelivr 地址与分支一起换为自己的仓库。内置副本路径仍是 `catalog/catalog.json`；仅替换远程地址不会替换内置产物来源。
 - 使用 `catalog/build_catalog.py` 根据真实发布文件重新生成 URL、大小与 SHA256，增加 `revision`，不要发布草稿中的占位 URL。
 - 最终版明确保留 GitHub catalog + 安装包 SHA-256 校验，不做数字签名，不需要 Tauri updater 插件或签名密钥。信任锚是 GitHub HTTPS 与仓库控制权（使用 jsDelivr 时也信任该 HTTPS 镜像）；保护仓库与发布权限。哈希不是发布者身份签名，不能抵抗 catalog 与产物同时被篡改。

@@ -2,7 +2,7 @@
 
 > **本项目停止维护（2026-12-31）。** 最终版本为 **1.0.0**，本仓库保留源代码，供自行构建与 fork。不再提供日常维护或功能更新。
 >
-> 安装包下载：[GitHub Releases](https://github.com/FPSMasterTeam/FPSMaster-Launcher/releases)。最终产物以该页面实际发布为准；当前开发版本仍是 0.4.0，发布前的限制见 [KNOWN_ISSUES.md](KNOWN_ISSUES.md)。
+> 安装包下载：[GitHub Releases](https://github.com/FPSMasterTeam/FPSMaster-Launcher/releases)。最终产物以该页面实际发布为准，限制见 [KNOWN_ISSUES.md](KNOWN_ISSUES.md)。
 
 ## 这是什么
 

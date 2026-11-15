@@ -11,8 +11,8 @@ can verify the download.
   --launcher TARGET=LOCAL_FILE@URL                     (TARGET: windows-x86_64, macos-aarch64, ...)
 
 Example:
-  python3 build_catalog.py --revision 2 --edge-version 2.0.0-final --nova-version 1.0.0 --launcher-version 1.0.0 \\
-    --client edge=../dist/FPSMaster-Edge-2.0.0-final.jar@https://github.com/FPSMasterTeam/FPSMaster-Edge/releases/download/v2.0.0-final/FPSMaster-Edge-2.0.0-final.jar \\
+  python3 build_catalog.py --revision 2 --edge-version 2.0.0 --nova-version 1.0.0 --launcher-version 1.0.0 \\
+    --client edge=../dist/FPSMaster-Edge-2.0.0.jar@https://github.com/FPSMasterTeam/FPSMaster-Edge/releases/download/v2.0.0/FPSMaster-Edge-2.0.0.jar \\
     --client nova:1.21.11=../dist/fpsmaster-nova-1.21.11-1.0.0.jar@https://github.com/.../fpsmaster-nova-1.21.11-1.0.0.jar \\
     --recommended-nova 1.21.11
 """
