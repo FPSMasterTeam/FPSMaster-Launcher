@@ -49,7 +49,7 @@ Fork 应创建自己的 Microsoft Entra / Azure 应用注册，支持个人 Micr
 5. 用实际 Release 文件与准确 URL 运行 `catalog/build_catalog.py`，包含 Edge jar、Edge AOT、各 Minecraft 版本的 Nova 和各平台启动器条目；增加 `revision`，运行 `cargo test catalog`，核对大小/hash/URL。示例见 `../catalog/README.md`，不要照抄其中示例产物版本。
 6. 把更新后的 catalog 提交到 `REMOTE_CATALOG_URLS` 所指分支。若最终安装包还要内置新目录，先准备客户端目录再构建启动器，上传安装包后再补远程启动器条目，避免自包含安装包 hash 的循环依赖。
 
-本文描述发布流程，不代表已创建 tag、上传产物或发布最终版。停止维护日期统一保留为 `<停止维护日期>`，实际发布时再替换。
+本文描述发布流程，不代表已创建 tag、上传产物或发布最终版。停止维护日期为 2026-12-31。
 
 ## 手动导入客户端
 
