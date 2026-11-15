@@ -42,7 +42,7 @@
 
 步骤：
 
-1. 安装 CI 产出的 `*win7*` NSIS 包，不要用普通 Windows 包。
+1. 安装 `*win7*` NSIS 包，不要用普通 Windows 包。
 2. 确认安装目录同时存在：
    - `fpsmaster-launcher.exe`
    - `ucrtbase.dll`、`vcruntime140.dll`、`vcruntime140_1.dll`、`msvcp140.dll`

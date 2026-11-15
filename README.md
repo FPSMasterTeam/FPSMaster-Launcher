@@ -44,7 +44,6 @@ npm run tauri dev   # 开发运行
   - `src-tauri/src/`：Rust 命令层、catalog、下载器、启动核心、诊断、安全存储
 - `catalog/`：静态发布目录 `catalog.json` 与生成脚本 `build_catalog.py`
 - `docs/`：fork、架构、旧版迁移契约、更新日志规范、Windows 7 说明
-- `.github/workflows/`：GitHub Actions 打包与发版
 
 ## 离线使用与 Microsoft 登录
 
@@ -58,7 +57,7 @@ Microsoft 登录仍依赖 Azure 应用注册和 Microsoft/Mojang 服务，维护
 
 更新日志取自被打 tag 的那个 commit 的提交信息，会直接展示给玩家，写法要求见 [docs/release-notes.md](docs/release-notes.md)。
 
-发布只依赖 GitHub Releases。旧版启动器的最后一次升级由后端 sunset 配置人工指向 GitHub 安装包，不再由 CI 上传七牛或调用后端。迁移契约见 [docs/legacy-update-contract.md](docs/legacy-update-contract.md)。
+发布只依赖 GitHub Releases。旧版启动器的最后一次升级由后端 sunset 配置人工指向 GitHub 安装包，不调用任何上传或登记接口。迁移契约见 [docs/legacy-update-contract.md](docs/legacy-update-contract.md)。
 
 ## 许可证
 

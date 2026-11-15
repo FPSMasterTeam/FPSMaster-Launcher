@@ -38,13 +38,13 @@ Fork 应创建自己的 Microsoft Entra / Azure 应用注册，支持个人 Micr
 - 将 `tauri-app/src-tauri/src/catalog.rs` 的 `REMOTE_CATALOG_URLS` 中 GitHub raw / jsDelivr 地址与分支一起换为自己的仓库。内置副本路径仍是 `catalog/catalog.json`；仅替换远程地址不会替换内置产物来源。
 - 使用 `catalog/build_catalog.py` 根据真实发布文件重新生成 URL、大小与 SHA256，增加 `revision`，不要发布草稿中的占位 URL。
 - 最终版明确保留 GitHub catalog + 安装包 SHA-256 校验，不做数字签名，不需要 Tauri updater 插件或签名密钥。信任锚是 GitHub HTTPS 与仓库控制权（使用 jsDelivr 时也信任该 HTTPS 镜像）；保护仓库与发布权限。哈希不是发布者身份签名，不能抵抗 catalog 与产物同时被篡改。
-- 旧启动器迁移由后端 sunset 配置人工完成，见 `legacy-update-contract.md`，CI 不再调用后端。
+- 旧启动器迁移由后端 sunset 配置人工完成，见 `legacy-update-contract.md`。
 
 ## 自行发布
 
-1. 修改品牌、identifier、Microsoft client id 与 catalog 地址，检查 README、Cargo `repository`、工作流与所有产物 URL 不再指向原仓库。
+1. 修改品牌、identifier、Microsoft client id 与 catalog 地址，检查 README、Cargo `repository` 与所有产物 URL 不再指向原仓库。
 2. 按上述方法同步版本，执行 typecheck、前端测试、lint、build 与 Rust 测试。各平台在自己的构建环境做真机验证，特别是 Windows 7。
-3. 阅读 `.github/workflows/ci-release.yml`：PR、分支 push 与手动工作流只做构建校验；语义化 `v*` tag 才创建 GitHub Release。`v1.0.0` 属于 release 通道，带预发布后缀的 tag 属于 beta。Fork 必须自行授权并配置发布权限，不能沿用原仓库私有凭据。
+3. 仓库不含 CI。各平台在对应系统上执行 `npm run tauri build`：Windows 产出 NSIS 安装包，Windows 7 版按 `windows7.md` 使用 `x86_64-win7-windows-msvc` 目标并附带 WebView2 109 与 VC++ 运行库，Linux 产出 deb，macOS（Apple 芯片）产出 dmg。用 `gh release create v<版本>` 上传全部安装包。
 4. 发布时使用的 commit message 会成为玩家看到的更新说明，遵守 `release-notes.md`。macOS 当前为 ad-hoc 签名/不公证，不要求 Apple Developer ID；这与未使用自更新数字签名是两件事。
 5. 用实际 Release 文件与准确 URL 运行 `catalog/build_catalog.py`，包含 Edge jar、Edge AOT、各 Minecraft 版本的 Nova 和各平台启动器条目；增加 `revision`，运行 `cargo test catalog`，核对大小/hash/URL。示例见 `../catalog/README.md`，不要照抄其中示例产物版本。
 6. 把更新后的 catalog 提交到 `REMOTE_CATALOG_URLS` 所指分支。若最终安装包还要内置新目录，先准备客户端目录再构建启动器，上传安装包后再补远程启动器条目，避免自包含安装包 hash 的循环依赖。

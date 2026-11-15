@@ -9,13 +9,7 @@
 
 ## 它是从哪来的
 
-`.github/workflows/ci-release.yml` 只在 `v*` 语义化版本 tag 上发版，changelog 直接取被打 tag 的那个 commit 的完整提交信息：
-
-```bash
-changelog="$(git log -1 --pretty=format:'%s%n%n%b')"
-```
-
-**所以：打 tag 的那个 commit 的提交信息，就是用户看到的更新日志。** 发版前先把这个 commit 的 message 写好（通常就是版本号 bump 的那个 commit），不要指望之后再改——已经发布的 Release 和 catalog 不会随 commit 改写而自动更新。
+手动发版时，Release 正文和 catalog 的 `notes` 都使用被打 tag 的那个提交的完整提交信息（`git log -1 --pretty=format:'%s%n%n%b'`）。发版前先把这个提交的信息写好；已发布的 Release 和 catalog 不会随提交改写而更新。
 
 ## 写法要求
 

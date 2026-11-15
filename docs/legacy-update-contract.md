@@ -12,7 +12,7 @@ User-Agent: <launcher user agent>
 
 不需要 Authorization，无请求签名。`installId` 是本地持久 UUID。`channel` 可省略，有值时 trim 后小写。
 
-`target` 为 `<windows|macos|linux>-<x86_64|aarch64|x86|unknown>`，Windows 7 及以下另加 `-win7`。当前 CI 产物只有：
+`target` 为 `<windows|macos|linux>-<x86_64|aarch64|x86|unknown>`，Windows 7 及以下另加 `-win7`。最终版发布的平台只有：
 
 - `windows-x86_64`
 - `windows-x86_64-win7`
@@ -49,4 +49,4 @@ User-Agent: <launcher user agent>
 
 旧版没有数字签名验证，不接收 Tauri updater 的 `signature` 来替代 SHA256。它先比较版本，下载比本机更新的安装器并校验，再调用系统打开，Windows 随即退出启动器。`mandatory: true` 可以引导旧版用户进入最后一次更新流程。不要返回最终版自身依赖的新格式。
 
-发布时人工把各平台真实 GitHub Releases URL 和 hash 配到后端即可，不再需要启动器 CI 上传七牛或登记 API。此工作流不自动发布任何产物。
+发布时人工把各平台真实 GitHub Releases URL 和 hash 配到后端即可，不需要上传七牛或登记 API。
