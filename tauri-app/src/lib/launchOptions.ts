@@ -26,3 +26,16 @@ export function resolveLaunchOptions(
     ...normalizeLaunchOptions(settings.launchOptions), ...normalizeLaunchOptions(instance)
   };
 }
+
+const BLOCKED_JVM_FLAGS = ["-cp", "-classpath", "--class-path", "-jar", "--module-path", "-p", "-m", "--module"];
+
+/** Mirrors `apply_custom_launch_options` in main.rs; returns the first rejected argument. */
+export function findInvalidJvmArg(args: readonly string[] | undefined): string | null {
+  for (const raw of args ?? []) {
+    const arg = raw.trim();
+    if (!arg) continue;
+    if (!arg.startsWith("-") || arg.length > 8192 || arg.includes("\0") || BLOCKED_JVM_FLAGS.includes(arg)
+      || arg.startsWith("--class-path=") || arg.startsWith("-Xmx")) return arg;
+  }
+  return null;
+}

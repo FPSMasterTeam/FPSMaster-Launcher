@@ -372,6 +372,10 @@ export function describeApiError(error: unknown, t: Translator): string {
       if (item.serverMessage) {
         return item.serverMessage;
       }
+      const jvmError = localizeLaunchValidationError(item.raw, t);
+      if (jvmError) {
+        return jvmError;
+      }
       const maybeJson = item.raw.match(/(\{[\s\S]*\}|\[[\s\S]*\])$/);
       const business = maybeJson ? tryExtractMessageFromJson(maybeJson[1]) : null;
       if (business) {
@@ -380,4 +384,19 @@ export function describeApiError(error: unknown, t: Translator): string {
       return item.raw === "" ? t("error.unknown") : item.raw;
     }
   }
+}
+
+/** Validation errors raised by the Rust launch-option and local-jar import checks (English source text). */
+function localizeLaunchValidationError(raw: string, t: Translator): string | null {
+  if (raw.includes("Invalid JVM argument")) return t("error.jvm.invalid");
+  if (raw.includes("Too many JVM arguments")) return t("error.jvm.tooMany");
+  if (raw.includes("Window dimensions are outside")) return t("error.window.range");
+  if (raw.includes("Local client import requires")) return t("error.import.notPreset");
+  if (raw.includes("Select a client .jar file")) return t("error.import.notJar");
+  if (raw.includes("Invalid client jar:")) return t("error.import.invalidJar");
+  if (/Client jar is missing \S+/.test(raw)) return t("error.import.missingMeta");
+  if (raw.includes("This jar is not an FPSMaster client")) return t("error.import.wrongProduct");
+  if (raw.includes("A user-owned fpsmaster-local.jar already exists")) return t("error.import.userOwned");
+  if (raw.includes("Client jar is incompatible with this runtime")) return t("error.import.incompatible");
+  return null;
 }

@@ -54,3 +54,19 @@ test("public authorization failures do not imply a launcher session", () => {
   assert.equal(classifyApiError("HTTP 401 Unauthorized from https://example.org/package.jar").kind, "forbidden");
   assert.equal(classifyApiError("token is required").kind, "business");
 });
+
+test("backend validation errors for JVM arguments and local jar import are localized", () => {
+  const t = (key: string) => key;
+  assert.equal(
+    describeApiError("Invalid JVM argument: use one option per line, keep the launcher classpath, and set -Xmx via Memory", t as never),
+    "error.jvm.invalid"
+  );
+  assert.equal(
+    describeApiError("This jar is not an FPSMaster client for the selected loader", t as never),
+    "error.import.wrongProduct"
+  );
+  assert.equal(
+    describeApiError("Client jar is missing mcmod.info", t as never),
+    "error.import.missingMeta"
+  );
+});

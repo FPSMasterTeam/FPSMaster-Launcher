@@ -2,6 +2,7 @@ import Card from "./Card";
 import ModalFrame from "./ModalFrame";
 import { useI18n } from "../i18n";
 import { formatByteSize, formatEta, phasePercent } from "../lib/launchPrepare";
+import { localizeProgressMessage, translateStageName } from "../lib/progressText";
 import type { InstallDialogState, InstallPhaseState, LaunchPrepareItem, LaunchPrepareItemStatus } from "../types";
 
 type InstallDialogProps = {
@@ -54,7 +55,7 @@ function InstallPhaseView({ phase }: { phase: InstallPhaseState }) {
   const { t } = useI18n();
   const percent = phasePercent(phase);
 
-  const stage = translateStage(phase.stage, t);
+  const stage = translateStageName(phase.stage, t);
   const status = translateStatus(phase.status, t);
 
   return (
@@ -67,7 +68,7 @@ function InstallPhaseView({ phase }: { phase: InstallPhaseState }) {
         </p>
       </div>
       <p className="phaseMeta">{t("dialog.stage", { stage })}</p>
-      <p className="phaseMeta">{phase.message || t("dialog.waiting")}</p>
+      <p className="phaseMeta">{phase.message ? localizeProgressMessage(phase.message, t) : t("dialog.waiting")}</p>
       <div className="progressTrack">
         <div className="progressFill" style={{ width: `${percent}%` }} />
       </div>
@@ -134,9 +135,3 @@ function translateItemStatus(status: LaunchPrepareItemStatus, t: ReturnType<type
   return t("launch.prepare.item.running");
 }
 
-function translateStage(stage: string, t: ReturnType<typeof useI18n>["t"]): string {
-  if (stage === "prepare") return t("dialog.stage.prepare");
-  if (stage === "complete") return t("dialog.stage.complete");
-  if (stage === "failed") return t("dialog.stage.failed");
-  return stage || t("dialog.stage.default");
-}

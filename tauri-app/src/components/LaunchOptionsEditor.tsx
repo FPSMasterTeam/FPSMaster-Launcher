@@ -1,10 +1,12 @@
 import { useI18n } from "../i18n";
+import { findInvalidJvmArg } from "../lib/launchOptions";
 import type { LaunchOptions } from "../types";
 
 export default function LaunchOptionsEditor({ value = {}, onChange, disabled = false, showMemory = true }: {
   value?: LaunchOptions; onChange: (value: LaunchOptions) => void; disabled?: boolean; showMemory?: boolean;
 }) {
   const { t } = useI18n();
+  const invalidJvmArg = findInvalidJvmArg(value.jvmArgs);
   const numberField = (key: "maxMemoryMb" | "windowWidth" | "windowHeight", label: string, min: number, max: number) => (
     <label className="grid gap-2 text-sm">
       <span>{label}</span>
@@ -30,6 +32,7 @@ export default function LaunchOptionsEditor({ value = {}, onChange, disabled = f
       <textarea className="ui-input min-h-24" disabled={disabled} placeholder={t("launchOptions.inherit")}
         value={value.jvmArgs?.join("\n") ?? ""}
         onChange={(e) => onChange({ ...value, jvmArgs: e.target.value ? e.target.value.split("\n") : undefined })} />
+      {invalidJvmArg && <span role="alert" className="text-sm text-[var(--danger)]">{t("error.jvm.invalid")}</span>}
     </label>
   </div>;
 }
