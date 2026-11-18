@@ -3,6 +3,7 @@ import Card from "./Card";
 import ModalFrame from "./ModalFrame";
 import { useI18n } from "../i18n";
 import { formatByteSize, formatEta, phasePercent } from "../lib/launchPrepare";
+import { localizeProgressMessage } from "../lib/progressText";
 import type {
   LaunchPrepareDialogState,
   LaunchPrepareItem,
@@ -97,8 +98,8 @@ export default function LaunchPrepareDialog({ dialog, onClose, onCancel, onRetry
                 <div className={`progressFill ${activePhase?.status === "error" ? "isError" : ""}`} style={{ width: `${taskPercent}%` }} />
               </div>
               <div className="launchPrepareBarMeta">
-                <span className="launchPrepareBarMessage" title={activePhase?.message || undefined}>
-                  {activePhase?.message || t("dialog.waiting")}
+                <span className="launchPrepareBarMessage" title={activePhase?.message ? localizeProgressMessage(activePhase.message, t) : undefined}>
+                  {activePhase?.message ? localizeProgressMessage(activePhase.message, t) : t("dialog.waiting")}
                 </span>
                 {activePhase && activePhase.bytesTotal > 0 ? (
                   <span className="launchPrepareBarCounts">

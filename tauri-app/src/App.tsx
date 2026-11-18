@@ -2475,19 +2475,10 @@ function Launcher() {
   }
 
   function completeLaunchPrepare() {
-    setLaunchPrepareDialog((prev) => {
-      if (!prev) return prev;
-      if (prev.errorText) {
-        return {
-          ...prev,
-          canClose: true
-        };
-      }
-      return {
-        ...prev,
-        canClose: true
-      };
-    });
+    // On success the monitor window takes over, so the prepare dialog closes by
+    // itself instead of lingering at 100% after the game exits. A dialog that
+    // holds an error stays open until the user dismisses it.
+    setLaunchPrepareDialog((prev) => (prev && !prev.errorText ? null : prev));
   }
 
   function updateSettings(next: Settings) {

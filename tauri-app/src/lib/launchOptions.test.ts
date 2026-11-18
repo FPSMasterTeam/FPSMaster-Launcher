@@ -30,3 +30,12 @@ test("malformed saved options are bounded and cannot pass non-string arguments",
   }), { jvmArgs: ["-ea"], windowWidth: 320, windowHeight: 16384 });
   assert.deepEqual(normalizeLaunchOptions(null), {});
 });
+
+test("JVM argument check rejects -Xmx and classpath flags like the backend", async () => {
+  const { findInvalidJvmArg } = await import("./launchOptions.ts");
+  assert.equal(findInvalidJvmArg(["-Dname=a b", " -XX:+UseG1GC ", ""]), null);
+  assert.equal(findInvalidJvmArg(["-Dok=1", "-Xmx4G"]), "-Xmx4G");
+  assert.equal(findInvalidJvmArg(["-cp"]), "-cp");
+  assert.equal(findInvalidJvmArg(["notAnOption"]), "notAnOption");
+  assert.equal(findInvalidJvmArg(undefined), null);
+});

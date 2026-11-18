@@ -372,6 +372,10 @@ export function describeApiError(error: unknown, t: Translator): string {
       if (item.serverMessage) {
         return item.serverMessage;
       }
+      const jvmError = localizeJvmOptionError(item.raw, t);
+      if (jvmError) {
+        return jvmError;
+      }
       const maybeJson = item.raw.match(/(\{[\s\S]*\}|\[[\s\S]*\])$/);
       const business = maybeJson ? tryExtractMessageFromJson(maybeJson[1]) : null;
       if (business) {
@@ -380,4 +384,12 @@ export function describeApiError(error: unknown, t: Translator): string {
       return item.raw === "" ? t("error.unknown") : item.raw;
     }
   }
+}
+
+/** Validation errors raised by the Rust launch-option checks (English source text). */
+function localizeJvmOptionError(raw: string, t: Translator): string | null {
+  if (raw.includes("Invalid JVM argument")) return t("error.jvm.invalid");
+  if (raw.includes("Too many JVM arguments")) return t("error.jvm.tooMany");
+  if (raw.includes("Window dimensions are outside")) return t("error.window.range");
+  return null;
 }
