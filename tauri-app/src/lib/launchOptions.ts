@@ -34,7 +34,7 @@ export function findInvalidJvmArg(args: readonly string[] | undefined): string |
   for (const raw of args ?? []) {
     const arg = raw.trim();
     if (!arg) continue;
-    if (!arg.startsWith("-") || arg.length > 8192 || BLOCKED_JVM_FLAGS.includes(arg)
+    if (!arg.startsWith("-") || arg.length > 8192 || arg.includes("\0") || BLOCKED_JVM_FLAGS.includes(arg)
       || arg.startsWith("--class-path=") || arg.startsWith("-Xmx")) return arg;
   }
   return null;

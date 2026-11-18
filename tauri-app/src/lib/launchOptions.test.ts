@@ -39,3 +39,8 @@ test("JVM argument check rejects -Xmx and classpath flags like the backend", asy
   assert.equal(findInvalidJvmArg(["notAnOption"]), "notAnOption");
   assert.equal(findInvalidJvmArg(undefined), null);
 });
+
+test("JVM argument check rejects NUL characters", async () => {
+  const { findInvalidJvmArg } = await import("./launchOptions.ts");
+  assert.equal(findInvalidJvmArg(["-Da\0b"]), "-Da\0b");
+});
